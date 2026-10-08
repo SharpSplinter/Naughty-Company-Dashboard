@@ -1,0 +1,53 @@
+{
+  "companies": {
+    "Adult Novelties": [
+      {"rank": "Human Resources", "primary": "INT", "primaryMin": 12000, "secondary": "END", "secondaryMin": 6000, "special": "Trainer"},
+      {"rank": "Sexpert", "primary": "INT", "primaryMin": 10000, "secondary": "END", "secondaryMin": 5000, "special": null},
+      {"rank": "Store Manager", "primary": "END", "primaryMin": 8000, "secondary": "INT", "secondaryMin": 4000, "special": "Manager"},
+      {"rank": "Marketing Manager", "primary": "INT", "primaryMin": 8000, "secondary": "END", "secondaryMin": 4000, "special": "Marketer"},
+      {"rank": "Receptionist", "primary": "END", "primaryMin": 6000, "secondary": "INT", "secondaryMin": 3000, "special": "Secretary"},
+      {"rank": "Sales Assistant", "primary": "END", "primaryMin": 4000, "secondary": "MAN", "secondaryMin": 2000, "special": null},
+      {"rank": "Cleaner", "primary": "MAN", "primaryMin": 2000, "secondary": "END", "secondaryMin": 1000, "special": "Cleaner"}
+    ],
+    "Gun Shop": [
+      {"rank": "Clerk", "primary": "END", "primaryMin": 7500, "secondary": "MAN", "secondaryMin": 3750, "special": null},
+      {"rank": "Gunsmith", "primary": "MAN", "primaryMin": 15000, "secondary": "INT", "secondaryMin": 7500, "special": null},
+      {"rank": "Cleaner", "primary": "MAN", "primaryMin": 4000, "secondary": "END", "secondaryMin": 2000, "special": "Cleaner"},
+      {"rank": "Manager", "primary": "END", "primaryMin": 15000, "secondary": "INT", "secondaryMin": 7500, "special": "Manager"},
+      {"rank": "Bookkeeper", "primary": "END", "primaryMin": 11500, "secondary": "INT", "secondaryMin": 5750, "special": "Secretary"},
+      {"rank": "Marketer", "primary": "INT", "primaryMin": 15000, "secondary": "END", "secondaryMin": 7500, "special": "Marketer"},
+      {"rank": "Instructor", "primary": "INT", "primaryMin": 22500, "secondary": "END", "secondaryMin": 11250, "special": "Trainer"}
+    ],
+    "Hair Salon": [
+      {"rank": "Stylist", "primary": "MAN", "primaryMin": 1500, "secondary": "END", "secondaryMin": 750, "special": null},
+      {"rank": "Colorist", "primary": "MAN", "primaryMin": 2000, "secondary": "END", "secondaryMin": 1000, "special": null},
+      {"rank": "Nail Technician", "primary": "END", "primaryMin": 1500, "secondary": "MAN", "secondaryMin": 750, "special": null},
+      {"rank": "Apprentice", "primary": "MAN", "primaryMin": 500, "secondary": "END", "secondaryMin": 250, "special": null},
+      {"rank": "Shampooist", "primary": "MAN", "primaryMin": 1000, "secondary": "END", "secondaryMin": 500, "special": "Cleaner"},
+      {"rank": "Senior Stylist", "primary": "MAN", "primaryMin": 3000, "secondary": "END", "secondaryMin": 1500, "special": "Manager"},
+      {"rank": "Receptionist", "primary": "END", "primaryMin": 2500, "secondary": "INT", "secondaryMin": 1250, "special": "Secretary"},
+      {"rank": "Trainer", "primary": "INT", "primaryMin": 4500, "secondary": "END", "secondaryMin": 2250, "special": "Trainer"},
+      {"rank": "Aesthetician", "primary": "INT", "primaryMin": 4500, "secondary": "END", "secondaryMin": 2250, "special": null}
+    ],
+    "Oil Rig": [
+      {"rank": "Driller", "primary": "MAN", "primaryMin": 150000, "secondary": "INT", "secondaryMin": 75000, "special": null},
+      {"rank": "Roughneck", "primary": "MAN", "primaryMin": 75000, "secondary": "END", "secondaryMin": 37500, "special": "Cleaner"},
+      {"rank": "Derrick Hand", "primary": "MAN", "primaryMin": 94000, "secondary": "END", "secondaryMin": 47000, "special": null},
+      {"rank": "Secretary", "primary": "END", "primaryMin": 112500, "secondary": "INT", "secondaryMin": 56250, "special": "Secretary"},
+      {"rank": "Inspector", "primary": "INT", "primaryMin": 225000, "secondary": "END", "secondaryMin": 112500, "special": "Trainer"},
+      {"rank": "Sales Executive", "primary": "INT", "primaryMin": 131500, "secondary": "END", "secondaryMin": 65750, "special": null},
+      {"rank": "Motor Hand", "primary": "MAN", "primaryMin": 112500, "secondary": "INT", "secondaryMin": 56250, "special": null}
+    ],
+    "Logistics Management": [
+      {"rank": "Lumper", "primary": "MAN", "primaryMin": 45000, "secondary": "END", "secondaryMin": 22500, "special": null},
+      {"rank": "Driver", "primary": "END", "primaryMin": 57500, "secondary": "MAN", "secondaryMin": 28750, "special": null},
+      {"rank": "Forklift Operator", "primary": "END", "primaryMin": 60000, "secondary": "MAN", "secondaryMin": 30000, "special": null},
+      {"rank": "Transport Coordinator", "primary": "INT", "primaryMin": 85000, "secondary": "END", "secondaryMin": 42500, "special": null},
+      {"rank": "Warehouse Manager", "primary": "INT", "primaryMin": 115000, "secondary": "END", "secondaryMin": 57500, "special": "Cleaner"},
+      {"rank": "Shift Manager", "primary": "INT", "primaryMin": 90000, "secondary": "END", "secondaryMin": 45000, "special": "Secretary"},
+      {"rank": "Supply Chain Manager", "primary": "INT", "primaryMin": 125000, "secondary": "END", "secondaryMin": 62500, "special": "Manager"},
+      {"rank": "Procurement Manager", "primary": "INT", "primaryMin": 140000, "secondary": "END", "secondaryMin": 70000, "special": "Marketer"}
+    ]
+  },
+  "notes": "Recommended Stats = minimum primary/secondary for base effectiveness. Source: wiki.torn.com/Company/Company_List. Expand with remaining companies as needed."
+}
