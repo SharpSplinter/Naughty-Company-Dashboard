@@ -1,0 +1,2 @@
+// migrate
+console.log('migrate');
