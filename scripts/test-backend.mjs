@@ -115,6 +115,55 @@ try {
       error.message.includes("rate limit"))
   })
 
+  await test("sign-in automatically uses a company director login key when Torn returns director as a numeric ID", async () => {
+    const originalFetch = globalThis.fetch
+    const apiKeys = new Map()
+    const companyKeys = new Map()
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async run() {
+            const lower = sql.toLowerCase()
+            if (lower.includes("insert into api_keys")) apiKeys.set(String(values[0]), { last_four: values[3], updated_at: values[5], ciphertext: values[1], iv: values[2] })
+            if (lower.includes("insert into company_keys")) companyKeys.set(String(values[0]), { last_four: values[3], updated_at: values[5], ciphertext: values[1], iv: values[2] })
+            return { success: true }
+          },
+          async first() {
+            const lower = sql.toLowerCase()
+            if (lower.includes("from company_keys")) return companyKeys.get(String(values[0])) ?? null
+            if (lower.includes("from api_keys")) return apiKeys.get(String(values[0])) ?? null
+            return null
+          },
+          async all() { return { results: [] } },
+        }
+      },
+    }
+    globalThis.fetch = async (input) => {
+      const path = new URL(String(input)).pathname
+      if (path.endsWith("/v2/user/profile")) return new Response(JSON.stringify({ profile: { id: 777, name: "Test Director" } }))
+      if (path.endsWith("/v2/user/faction")) return new Response(JSON.stringify({ faction: { id: 8317, name: "Naughty Souls" } }))
+      if (path.endsWith("/v2/company/profile")) return new Response(JSON.stringify({ company: { id: 77, name: "Test Company", director: 777 } }))
+      return new Response(JSON.stringify({ error: { code: 16, error: "Not granted" } }), { status: 403 })
+    }
+    try {
+      const response = await worker.fetch(new Request("https://worker.test/api/auth/sign-in", {
+        method: "POST",
+        headers: { Origin: "https://naughty-company-dashboard.pages.dev", "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: "primary-login-key-7777" }),
+      }), { DB: db, KEY_ENCRYPTION_SECRET: "test-secret-0123456789-abcdefghijklmnopqrstuvwxyz" })
+      assert.equal(response.status, 200)
+      const payload = await response.json()
+      assert.equal(payload.company.isDirector, true)
+      assert.equal(payload.company.key.saved, true)
+      assert.equal(payload.company.key.lastFour, "7777")
+      assert.equal(companyKeys.get("777").last_four, apiKeys.get("777").last_four)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   await test("Worker health endpoint applies dashboard CORS", async () => {
     const response = await worker.fetch(new Request("https://worker.test/health", {
       headers: { Origin: "https://naughty-company-dashboard.pages.dev" },

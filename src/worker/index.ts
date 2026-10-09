@@ -127,8 +127,13 @@ async function inspectDirectorKey(apiKey: string, playerId: string): Promise<{ i
     const client = new TornApiClient({ apiKey })
     const profile = await client.getCompanyProfile()
     const company = isRecord(profile) && isRecord(profile.company) ? profile.company : isRecord(profile) && isRecord(profile.profile) ? profile.profile : isRecord(profile) ? profile : {}
-    const director = isRecord(company.director) ? company.director : {}
-    const directorId = director.id ?? director.player_id ?? company.director_id
+    const directorValue = company.director
+    const director = isRecord(directorValue) ? directorValue : {}
+    // Torn API v2 may represent `company.director` as a numeric player ID, while
+    // other responses wrap it in an object. Support both shapes before falling
+    // back to legacy director_id fields.
+    const directorId = (typeof directorValue === "number" || typeof directorValue === "string" ? directorValue : undefined)
+      ?? director.id ?? director.player_id ?? director.playerId ?? company.director_id ?? company.directorId
     return { isDirector: directorId !== undefined && String(directorId) === playerId, profile }
   } catch {
     return { isDirector: false }
