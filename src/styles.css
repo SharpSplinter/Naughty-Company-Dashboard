@@ -129,3 +129,59 @@
 .shared-company-compare-heading span{font-size:10px;color:var(--muted)}
 .shared-employee-table{min-width:620px}
 @media(max-width:700px){.sharing-control-heading{align-items:flex-start;gap:12px}.sharing-control-heading p{font-size:9px}.switch-control{font-size:9px;gap:6px}.shared-data-compare{align-items:stretch;flex-direction:column;gap:7px}.shared-data-compare select{min-width:100%;width:100%}.shared-financial-summary{grid-template-columns:1fr}.sharing-control-panel,.employee-compare-panel{padding:12px}.employee-sharing-control{margin:10px 0}}
+
+
+/* Global wrapping: keep dashboard tables readable without horizontal scrolling. */
+body, #root, .app-shell, .main-area, .page-content, .panel, .panel-heading,
+.panel-heading > div, .company-facts > div, .health-grid > div,
+.income-grid article, .ratings-grid > div, .employee-summary-strip > span,
+.metric-card, .content-grid > *, .connect-layout > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+body, #root, .app-shell, .main-area { max-width: 100%; }
+.page-content, .panel, .catalog-panel, .company-panel, .ranking-panel,
+.employee-page-panel, .chart-panel, .compare-picker { min-width: 0; }
+.table-scroll, .ranking-panel .table-scroll {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible !important;
+  overscroll-behavior-x: auto;
+}
+.table-scroll table, table.ranking-table, table.shared-employee-table {
+  width: 100%;
+  min-width: 0 !important;
+  max-width: 100%;
+  table-layout: fixed;
+  white-space: normal !important;
+}
+.table-scroll th, .table-scroll td, .ranking-table th, .ranking-table td {
+  min-width: 0;
+  white-space: normal !important;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  hyphens: auto;
+  line-height: 1.45;
+}
+.table-scroll th, .ranking-table th {
+  vertical-align: bottom;
+  overflow-wrap: anywhere;
+}
+.table-scroll td strong, .table-scroll td span, .ranking-table td strong,
+.ranking-table td span, .table-scroll a, .table-scroll button {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.ranking-table { min-width: 0 !important; }
+.shared-employee-table { min-width: 0 !important; }
+@media (min-width: 1151px) {
+  .health-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+@media (max-width: 1150px) {
+  .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 480px) {
+  .health-grid { grid-template-columns: minmax(0, 1fr); }
+}
