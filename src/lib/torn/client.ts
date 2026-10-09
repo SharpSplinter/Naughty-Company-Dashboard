@@ -76,6 +76,30 @@ function apiErrorStatus(
   return 502
 }
 
+function normalizeCompanyProfilePayload(value: unknown): TornCompanyResponse<TornCompanyProfile> | null {
+  if (!isRecord(value)) return null
+  let root: Record<string, unknown> = value
+  if (isRecord(root.company)) root = root.company
+  if (isRecord(root.profile)) root = root.profile
+  if (isRecord(root.company)) root = root.company
+  if (isRecord(root.profile)) root = root.profile
+  return Object.keys(root).length ? { profile: root } as TornCompanyResponse<TornCompanyProfile> : null
+}
+
+function normalizeCompanyEmployeesPayload(value: unknown): TornCompanyResponse<TornCompanyEmployees> | null {
+  if (Array.isArray(value)) return { employees: value } as TornCompanyResponse<TornCompanyEmployees>
+  if (!isRecord(value)) return null
+  const rows = Array.isArray(value.employees) ? value.employees : isRecord(value.employees) ? Object.values(value.employees) : null
+  return rows ? { employees: rows } as TornCompanyResponse<TornCompanyEmployees> : null
+}
+
+function normalizeCompanyStockPayload(value: unknown): Record<string, unknown> | null {
+  if (Array.isArray(value)) return { stock: value }
+  if (!isRecord(value)) return null
+  const rows = Array.isArray(value.stock) ? value.stock : isRecord(value.stock) ? Object.values(value.stock) : null
+  return rows ? { stock: rows } : null
+}
+
 export class TornApiClient {
   private readonly apiKey: string
   private readonly baseUrl: string
@@ -127,26 +151,38 @@ export class TornApiClient {
   }
 
   async getCompanySelections(): Promise<{ profile: TornCompanyResponse<TornCompanyProfile>; employees: TornCompanyResponse<TornCompanyEmployees>; stock: Record<string, unknown> }> {
-    // Follow Torn's current OpenAPI /company endpoint and normalize both the
-    // combined-selection shape and the single-selection response wrappers.
-    const payload = await this.request<Record<string, unknown>>("/company?selections=employees%2Cstock%2Cprofile")
-    if (!isRecord(payload) || !isRecord(payload.profile)) {
-      throw new TornApiClientError("Torn did not return a company profile in the combined response.", { status: 502 })
+    // Prefer Torn's combined selection to conserve API calls. Some limited keys
+    // may be allowed to read the company profile but not every optional selection,
+    // and Torn can reject the whole combined request in that case. Fall back to
+    // individual endpoints and require only the profile to identify the company.
+    let payload: Record<string, unknown> | null = null
+    try {
+      const combined = await this.request<Record<string, unknown>>("/company?selections=employees%2Cstock%2Cprofile")
+      if (isRecord(combined)) payload = combined
+    } catch {
+      // A failed combined selection is retried by the individual endpoints below.
     }
-    const profilePayload = isRecord(payload.profile.profile) ? payload.profile : { profile: payload.profile }
-    const employeePayload = Array.isArray(payload.employees)
-      ? { employees: payload.employees }
-      : isRecord(payload.employees) && Array.isArray(payload.employees.employees) ? payload.employees : null
-    const stockPayload = Array.isArray(payload.stock)
-      ? { stock: payload.stock }
-      : isRecord(payload.stock) && Array.isArray(payload.stock.stock) ? payload.stock : null
-    if (!employeePayload || !stockPayload) {
-      throw new TornApiClientError("Torn did not return company employees and stock in the combined response.", { status: 502 })
+
+    const profilePayload = payload ? normalizeCompanyProfilePayload(payload.profile) : null
+    const employeePayload = payload ? normalizeCompanyEmployeesPayload(payload.employees) : null
+    const stockPayload = payload ? normalizeCompanyStockPayload(payload.stock) : null
+    if (profilePayload && employeePayload && stockPayload) {
+      return { profile: profilePayload, employees: employeePayload, stock: stockPayload }
+    }
+
+    // The profile is required; employee and stock permissions/data are optional
+    // and should not prevent a director from connecting their company workspace.
+    const profilePromise = profilePayload ? Promise.resolve(profilePayload) : this.getCompanyProfile().then(normalizeCompanyProfilePayload)
+    const employeesPromise = employeePayload ? Promise.resolve(employeePayload) : this.getCompanyEmployees().then(normalizeCompanyEmployeesPayload).catch(() => null)
+    const stockPromise = stockPayload ? Promise.resolve(stockPayload) : this.getCompanyStock().then(normalizeCompanyStockPayload).catch(() => null)
+    const [profile, employees, stock] = await Promise.all([profilePromise, employeesPromise, stockPromise])
+    if (!profile) {
+      throw new TornApiClientError("Torn did not return a company profile for this API key. Confirm that the key has company profile access.", { status: 403 })
     }
     return {
-      profile: profilePayload as TornCompanyResponse<TornCompanyProfile>,
-      employees: employeePayload as TornCompanyResponse<TornCompanyEmployees>,
-      stock: stockPayload,
+      profile,
+      employees: employees ?? { employees: [] },
+      stock: stock ?? { stock: [] },
     }
   }
 
