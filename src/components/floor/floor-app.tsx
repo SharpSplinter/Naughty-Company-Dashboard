@@ -40,13 +40,14 @@ export function FloorApp() {
   const [loading, setLoading] = useState(false)
   const [showRaw, setShowRaw] = useState(false)
   const [sessionToken, setSessionToken] = useState("")
+  const [authChecking, setAuthChecking] = useState(true)
   const [playerName, setPlayerName] = useState("")
   const [keySaved, setKeySaved] = useState(false)
   const [savedCompanies, setSavedCompanies] = useState<SavedCompany[]>([])
 
   useEffect(() => {
     const token = sessionStorage.getItem("ncd_session") || ""
-    if (!token) return
+    if (!token) { setAuthChecking(false); return }
     let cancelled = false
     async function restoreSession() {
       try {
@@ -72,6 +73,8 @@ export function FloorApp() {
         }
       } catch {
         sessionStorage.removeItem("ncd_session")
+      } finally {
+        if (!cancelled) setAuthChecking(false)
       }
     }
     void restoreSession()
@@ -114,6 +117,46 @@ export function FloorApp() {
     finally { setLoading(false) }
   }
 
+  async function signIn(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError("")
+    if (!apiKey.trim()) { setError("Enter your limited-access Torn API key to continue."); return }
+    setLoading(true)
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/sign-in`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ apiKey: apiKey.trim() }),
+      })
+      const payload = await response.json() as { error?: string; token?: string; player?: { id: string; name: string }; key?: { saved: boolean } }
+      if (!response.ok) throw new Error(payload.error || "Sign-in failed. Check that your Torn key is valid and has limited permissions.")
+      if (!payload.token) throw new Error("The sign-in service did not return a session. Please try again.")
+      sessionStorage.setItem("ncd_session", payload.token)
+      setSessionToken(payload.token)
+      setPlayerName(payload.player?.name || "Torn member")
+      setKeySaved(payload.key?.saved ?? true)
+      setApiKey("")
+      const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
+      if (listResponse.ok) {
+        const list = await listResponse.json() as { companies: SavedCompany[] }
+        setSavedCompanies(list.companies || [])
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not sign in.")
+    } finally { setLoading(false) }
+  }
+
+  function signOut() {
+    sessionStorage.removeItem("ncd_session")
+    setSessionToken("")
+    setPlayerName("")
+    setKeySaved(false)
+    setSavedCompanies([])
+    setResult(null)
+    setApiKey("")
+    setActiveView("overview")
+  }
+
   async function connectCompany(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError("")
@@ -151,6 +194,29 @@ export function FloorApp() {
     finally { setLoading(false) }
   }
 
+  if (authChecking) return <div className="login-screen"><div className="login-card login-loading"><span className="brand-mark">NC</span><p>Checking your member session…</p></div></div>
+
+  if (!sessionToken) return (
+    <main className="login-screen">
+      <section className="login-card" aria-labelledby="login-title">
+        <div className="login-brand"><span className="brand-mark">NC</span><span><strong>NAUGHTY</strong><small>COMPANY OPERATIONS</small></span></div>
+        <div className="login-eyebrow"><span className="eyebrow-line" /> FACTION MEMBER ACCESS</div>
+        <h1 id="login-title">Naughty Company Dashboard</h1>
+        <p className="login-subtitle">A private operations workspace for members of <strong>Naughty Souls</strong>.</p>
+        <div className="member-notice"><span>◆</span><p><strong>Naughty Souls members only</strong><br />Sign in with your own limited-access Torn API key. Use the minimum permissions needed for the company data you are authorized to view.</p></div>
+        <form className="login-form" onSubmit={signIn}>
+          <label htmlFor="login-api-key">Limited-access Torn API key</label>
+          <input id="login-api-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your Torn API key" required />
+          <p className="login-hint">Your key is sent securely to the dashboard API for validation. It is never stored in this browser's local storage.</p>
+          {error && <div className="error-banner" role="alert">{error}</div>}
+          <button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Verifying key…</> : <>Sign in securely <span>→</span></>}</button>
+        </form>
+        <div className="policy-block"><strong>Data & API policy</strong><p>Use only a key you own and keep its access limited. The dashboard requests Torn data available to that key, which may include company and employee details, and stores retrieved company records to support your workspace. Saved keys are intended to be encrypted at rest; deleting a key does not delete previously saved company records. Data is for Naughty Souls faction operations only. Do not submit another player's key or use data you are not authorized to access.</p></div>
+        <div className="login-footer"><span>NAUGHTY COMPANY DASHBOARD</span><span>TORN API · CLOUDFLARE</span></div>
+      </section>
+    </main>
+  )
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -165,7 +231,7 @@ export function FloorApp() {
           <button className={activeView === "connect" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("connect")}><span>⌁</span> Connect Torn API</button>
         </nav>
         <div className="sidebar-bottom">
-          <div className="connection-indicator"><span className={result ? "status-dot live" : "status-dot"} />{sessionToken ? (keySaved ? `Signed in${playerName ? ` as ${playerName}` : ""}` : "Player signed in · key deleted") : "Sign in with Torn key"}</div>
+          <div className="connection-indicator"><span className={result ? "status-dot live" : "status-dot"} />{keySaved ? `Signed in${playerName ? ` as ${playerName}` : ""}` : "Player signed in · key deleted"}</div><button className="signout-button" onClick={signOut}>Sign out</button>
           <div className="sidebar-foot">EARLY ACCESS <span>•</span> BUILD 0.2</div>
         </div>
       </aside>
