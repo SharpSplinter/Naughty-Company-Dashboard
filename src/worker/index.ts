@@ -130,7 +130,7 @@ async function companyKeyMeta(env: WorkerEnv, playerId: string): Promise<{ saved
 }
 async function validateCompanyKey(apiKey: string): Promise<{ companyId: number; profile: unknown; employees: unknown }> {
   const client = new TornApiClient({ apiKey })
-  const [profile, employees] = await Promise.all([client.getCompanyProfile(), client.getCompanyEmployees()])
+  const { profile, employees } = await client.getCompanySelections()
   const companyId = companyIdFromPayload(profile)
   if (!companyId) throw Object.assign(new Error("That key did not return a valid company profile. Use a key with company profile and employee access."), { status: 403 })
   return { companyId, profile, employees }
@@ -249,7 +249,7 @@ async function refreshRankingProfiles(env: WorkerEnv): Promise<void> {
     try {
       const apiKey = await decryptKey(env, keyRow.ciphertext, keyRow.iv)
       const client = new TornApiClient({ apiKey })
-      const [profile, employeePayload, stock] = await Promise.all([client.getCompanyProfile(), client.getCompanyEmployees().catch(() => null), client.getCompanyStock().catch(() => null)])
+      const { profile, employees: employeePayload, stock } = await client.getCompanySelections()
       const companyId = companyIdFromPayload(profile)
       if (!companyId || (keyRow.company_id && String(companyId) !== keyRow.company_id)) continue
       const root = isRecord(profile) && isRecord(profile.company) ? profile.company : isRecord(profile) && isRecord(profile.profile) ? profile.profile : isRecord(profile) ? profile : {}
@@ -407,7 +407,14 @@ export default {
       const row = await requireDb(env).prepare("SELECT company_id, company_name, company_type, profile_json, employees_json, fetched_at FROM companies WHERE player_id = ? AND company_id = ?").bind(session.player_id, String(id)).first<Record<string, unknown>>()
       if (!row) return jsonResponse({ error: "No saved data for this company yet. Refresh it from the saved company key first." }, 404, origin)
       const financials = await requireDb(env).prepare("SELECT stock_json FROM company_financials WHERE player_id = ? AND company_id = ?").bind(session.player_id, String(id)).first<{ stock_json: string }>()
-      return jsonResponse({ companyId: row.company_id, companyName: row.company_name, companyType: row.company_type, profile: JSON.parse(String(row.profile_json)), employees: JSON.parse(String(row.employees_json)), stock: financials ? JSON.parse(financials.stock_json) : null, fetchedAt: row.fetched_at }, 200, origin)
+      const snapshots = await requireDb(env).prepare("SELECT profile_json, fetched_at FROM company_snapshots WHERE player_id = ? AND company_id = ? AND fetched_at >= ? ORDER BY fetched_at ASC").bind(session.player_id, String(id), new Date(Date.now() - 40 * DAY * 1000).toISOString()).all<{ profile_json: string; fetched_at: string }>()
+      const incomeHistory = (snapshots.results ?? []).map((snapshot) => {
+        const saved = JSON.parse(snapshot.profile_json) as Record<string, unknown>
+        const profile = isRecord(saved.company) ? saved.company : isRecord(saved.profile) ? saved.profile : saved
+        const income = isRecord(profile.income) ? profile.income : {}
+        return { fetchedAt: snapshot.fetched_at, dailyIncome: typeof income.daily === "number" && Number.isFinite(income.daily) ? income.daily : null }
+      }).filter((snapshot) => snapshot.dailyIncome !== null)
+      return jsonResponse({ companyId: row.company_id, companyName: row.company_name, companyType: row.company_type, profile: JSON.parse(String(row.profile_json)), employees: JSON.parse(String(row.employees_json)), stock: financials ? JSON.parse(financials.stock_json) : null, incomeHistory, fetchedAt: row.fetched_at }, 200, origin)
     }
     if (url.pathname === "/api/company/refresh" && request.method === "POST") {
       const session = await authenticate(request, env)
@@ -419,7 +426,7 @@ export default {
         if (!apiKey && !requestedId) apiKey = await savedCompanyKey(env, session.player_id)
         if (!apiKey) return jsonResponse({ error: requestedId ? "No saved API key for that company. Add its authorized company key first." : "No saved company API key is available. Add an authorized company key first." }, 409, origin)
         const client = new TornApiClient({ apiKey })
-        const [profile, employees, stock] = await Promise.all([client.getCompanyProfile(), client.getCompanyEmployees(), client.getCompanyStock().catch(() => null)])
+        const { profile, employees, stock } = await client.getCompanySelections()
         const companyId = companyIdFromPayload(profile)
         if (!companyId) return jsonResponse({ error: "Torn did not return a valid company ID for this API key's company profile." }, 502, origin)
         if (requestedId && String(companyId) !== requestedId) return jsonResponse({ error: "The saved key returned a different company ID than expected. No company data was changed." }, 409, origin)
