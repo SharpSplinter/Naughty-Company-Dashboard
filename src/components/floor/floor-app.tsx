@@ -335,6 +335,7 @@ export function FloorApp() {
 
   useEffect(() => {
     if (!sessionToken || demoMode) return
+    setSharingSettingsLoaded(false)
     let cancelled = false
     async function loadSharingSettings() {
       try {
@@ -460,7 +461,6 @@ export function FloorApp() {
     })
     return rows
   }, [rankingCompanies, model?.company.id, model?.company.name, model?.company.typeName, model?.company.typeId, model?.company.weeklyIncome, model?.company.dailyIncome, model?.company.rating, model?.fetchedAt, playerId, playerName])
-  const allTornRows = globalRankingCompanies.length ? globalRankingCompanies : factionRankingCompanies
   const currentRankingCompany = model ? globalRankingCompanies.find((row) => row.companyId === String(model.company.id)) : undefined
   const companyPeerRows = connectedTypeId !== null
     ? globalRankingCompanies.filter((row) => Number(row.companyTypeId) === connectedTypeId)

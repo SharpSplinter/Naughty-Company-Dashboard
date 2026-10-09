@@ -545,7 +545,7 @@ export default {
         try {
           const profile = companyProfileRoot(JSON.parse(row.profileJson))
           const type = isRecord(profile.type) ? profile.type : {}
-          const id = typeof type.id === "number" ? type.id : null
+          const id = typeof type.id === "number" ? type.id : typeof type.id === "string" && /^\d+$/.test(type.id) ? Number(type.id) : null
           const name = typeof type.name === "string" ? type.name : row.companyType ?? ""
           return [{ id, name: name.toLocaleLowerCase() }]
         } catch { return [] }
@@ -558,7 +558,8 @@ export default {
           const profilePayload = JSON.parse(String(row.profileJson)) as unknown
           const profile = companyProfileRoot(profilePayload)
           const companyType = isRecord(profile.type) && typeof profile.type.name === "string" ? profile.type.name : String(row.companyType ?? "Unknown")
-          const rowTypeId = isRecord(profile.type) && typeof profile.type.id === "number" ? profile.type.id : null
+          const rowTypeValue = isRecord(profile.type) ? profile.type.id : null
+          const rowTypeId = typeof rowTypeValue === "number" ? rowTypeValue : typeof rowTypeValue === "string" && /^\d+$/.test(rowTypeValue) ? Number(rowTypeValue) : null
           const matchesType = selectedType.id !== null && rowTypeId !== null ? rowTypeId === selectedType.id : companyType.toLocaleLowerCase() === selectedType.name
           if (!matchesType) return []
           const result: Record<string, unknown> = {
@@ -568,9 +569,15 @@ export default {
             shareFinancialData: row.shareFinancialData === 1, shareEmployeeData: row.shareEmployeeData === 1,
           }
           if (row.shareFinancialData === 1) {
-            const adBudgetKeys = ["advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"]
-            const adBudget = adBudgetKeys.map((key) => profile[key]).find((value) => typeof value === "number" && Number.isFinite(value))
-            if (typeof adBudget === "number") result.adBudget = adBudget
+            const adBudgetKeys = ["advertisement_budget", "advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"]
+            const findAdBudget = (value: unknown, depth: number): number | null => {
+              if (!isRecord(value) || depth > 5) return null
+              for (const key of adBudgetKeys) if (typeof value[key] === "number" && Number.isFinite(value[key])) return value[key] as number
+              for (const child of Object.values(value)) { const found = findAdBudget(child, depth + 1); if (found !== null) return found }
+              return null
+            }
+            const adBudget = findAdBudget(profile, 0)
+            if (adBudget !== null) result.adBudget = adBudget
             if (row.stockJson) {
               const stockPayload = JSON.parse(String(row.stockJson)) as unknown
               const stockRoot = isRecord(stockPayload) && Array.isArray(stockPayload.stock) ? stockPayload.stock : Array.isArray(stockPayload) ? stockPayload : isRecord(stockPayload) && isRecord(stockPayload.stock) ? Object.values(stockPayload.stock) : []
@@ -578,7 +585,7 @@ export default {
                 const sharedItem: Record<string, unknown> = {}
                 if (typeof item.name === "string") sharedItem.name = item.name
                 for (const key of ["in_stock", "quantity", "amount"]) if (typeof item[key] === "number" && Number.isFinite(item[key])) { sharedItem.quantity = item[key]; break }
-                for (const key of ["cost", "unit_cost", "cost_per_unit", "price", "selling_price"]) if (typeof item[key] === "number" && Number.isFinite(item[key])) { sharedItem.unitPrice = item[key]; break }
+                for (const key of ["price", "sell_price", "selling_price", "price_per_unit", "cost", "unit_cost", "cost_per_unit"]) if (typeof item[key] === "number" && Number.isFinite(item[key])) { sharedItem.unitPrice = item[key]; break }
                 return sharedItem
               })
             }
@@ -749,4 +756,8 @@ export default {
         const client = new TornApiClient({ apiKey })
         const data = legacyRoute[1] === "profile" ? await client.getCompanyProfile() : legacyRoute[1] === "employees" ? await client.getCompanyEmployees() : await client.getCompanyStock()
         return jsonResponse(data, 200, origin, { "cache-control": "private, no-store" })
-      } catch (error) { return tornError
+      } catch (error) { return tornError(error, origin) }
+    }
+    return jsonResponse({ error: "Route not found." }, 404, origin)
+  },
+}
