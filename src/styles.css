@@ -93,3 +93,5 @@
   .weekly-star-counts{gap:6px;padding:8px;}
   .weekly-star-counts article{min-width:36px;padding:5px;}
 }
+
+.chart-point{cursor:pointer;outline:none}.chart-point:focus{stroke:#f0f4ff;stroke-width:2.5}.chart-selected-value rect{fill:#111a2b;stroke:#63dfbc;stroke-width:1}.chart-selected-value text{fill:#f0f4ff;font-size:10px;pointer-events:none}.chart-interaction-hint{font-size:10px;color:var(--muted);margin:0 2px}
