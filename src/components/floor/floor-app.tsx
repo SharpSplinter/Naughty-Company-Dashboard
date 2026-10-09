@@ -8,8 +8,8 @@ const companyNames = Object.keys(catalog.companies).sort()
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "")
   || "https://naughty-company-api.kboone801.workers.dev"
 
-type ApiResult = { model: CompanyDashboardModel; profile: unknown; employees: unknown }
-type SavedCompany = { company_id: string; company_name: string | null; company_type: string | null; fetched_at: string }
+type ApiResult = { model: CompanyDashboardModel; profile: unknown; employees: unknown; stock?: unknown }
+type SavedCompany = { company_id: string; company_name: string | null; company_type: string | null; fetched_at: string; has_api_key?: boolean }
 type RankingCompany = { companyId: string; companyName: string; companyType: string; companyTypeId: number | string | null; starRating: number | null; weeklyIncome: number | null; dailyIncome: number | null; averageDailyIncome: number | null; directorName: string; playerId: string; fetchedAt: string }
 
 function formatNumber(value: number | null | undefined): string {
@@ -28,6 +28,36 @@ function getObject(value: unknown): Record<string, unknown> | null {
 
 function pretty(value: unknown): string {
   return JSON.stringify(value, null, 2) ?? "No data returned."
+}
+function firstNumeric(root: unknown, names: string[]): number | null {
+  const visit = (value: unknown, depth: number): number | null => {
+    if (!value || typeof value !== "object" || depth > 5) return null
+    const object = value as Record<string, unknown>
+    for (const name of names) if (typeof object[name] === "number" && Number.isFinite(object[name])) return object[name] as number
+    for (const child of Object.values(object)) { const found = visit(child, depth + 1); if (found !== null) return found }
+    return null
+  }
+  return visit(root, 0)
+}
+function stockCostTotal(value: unknown): number {
+  let total = 0
+  const visit = (item: unknown, depth: number) => {
+    if (!item || typeof item !== "object" || depth > 6) return
+    if (Array.isArray(item)) { item.forEach((child) => visit(child, depth + 1)); return }
+    const row = item as Record<string, unknown>
+    const quantity = [row.quantity, row.amount, row.in_stock, row.stock].find((n) => typeof n === "number" && Number.isFinite(n)) as number | undefined
+    const unitCost = [row.cost, row.unit_cost, row.cost_per_unit, row.purchase_price].find((n) => typeof n === "number" && Number.isFinite(n)) as number | undefined
+    if (quantity !== undefined && unitCost !== undefined) total += Math.max(0, quantity) * Math.max(0, unitCost)
+    for (const [key, child] of Object.entries(row)) if (!['quantity','amount','in_stock','stock','cost','unit_cost','cost_per_unit','purchase_price'].includes(key)) visit(child, depth + 1)
+  }
+  visit(value, 0)
+  return total
+}
+function financialCosts(profile: unknown, stock: unknown, normalized: CompanyDashboardModel) {
+  const adBudget = firstNumeric(profile, ["advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"]) ?? 0
+  const wages = normalized.employees.reduce((sum, employee) => sum + Math.max(0, employee.wage ?? 0), 0)
+  const stockCosts = stockCostTotal(stock)
+  return { adBudget, wages, stockCosts, hasStockCosts: stock !== null && stock !== undefined, dailyCosts: adBudget + wages + stockCosts }
 }
 
 export function FloorApp() {
@@ -83,9 +113,9 @@ export function FloorApp() {
           setSelectedCompanyId(list.companies[0].company_id)
           const dataResponse = await fetch(`${API_BASE}/api/me/companies/${list.companies[0].company_id}`, { headers: { Authorization: `Bearer ${token}` } })
           if (!dataResponse.ok || cancelled) return
-          const data = await dataResponse.json() as { profile: unknown; employees: unknown }
+          const data = await dataResponse.json() as { profile: unknown; employees: unknown; stock?: unknown }
           const normalized = runEngine(data.profile, data.employees, catalog)
-          if (normalized && !cancelled) { setResult({ profile: data.profile, employees: data.employees, model: normalized }); setSelectedRankingType(normalized.company.typeName) }
+          if (normalized && !cancelled) { setResult({ profile: data.profile, employees: data.employees, stock: data.stock, model: normalized }); setSelectedRankingType(normalized.company.typeName) }
         }
       } catch {
         sessionStorage.removeItem("ncd_session")
@@ -147,7 +177,12 @@ export function FloorApp() {
   const popularity = typeof operatingRatings.popularity === "number" ? operatingRatings.popularity : null
   const efficiency = typeof operatingRatings.efficiency === "number" ? operatingRatings.efficiency : null
   const environment = typeof operatingRatings.environment === "number" ? operatingRatings.environment : null
-  const monthlyIncome = model?.company.dailyIncome === null || model?.company.dailyIncome === undefined ? null : model.company.dailyIncome * (365.2425 / 12)
+  const averageMonthDays = 365.2425 / 12
+  const monthlyIncome = model?.company.dailyIncome == null ? null : model.company.dailyIncome * averageMonthDays
+  const costs = model && result ? financialCosts(result.profile, result.stock, model) : null
+  const dailyProfit = model?.company.dailyIncome == null || !costs ? null : model.company.dailyIncome - costs.dailyCosts
+  const weeklyProfit = currentWeeklyIncome == null || !costs ? null : currentWeeklyIncome - costs.dailyCosts * 7
+  const monthlyProfit = monthlyIncome == null || !costs ? null : monthlyIncome - costs.dailyCosts * averageMonthDays
   const rankingRows = useMemo(() => rankingCompanies
     .filter((company) => activeView !== "type-rankings" || !selectedRankingType || company.companyType === selectedRankingType)
     .slice()
@@ -185,12 +220,16 @@ export function FloorApp() {
     setError("")
     setLoading(true)
     try {
-      const response = await fetch(`${API_BASE}/api/me/companies/${id}`, { headers: { Authorization: `Bearer ${sessionToken}` } })
-      const payload = await response.json() as { error?: string; profile?: unknown; employees?: unknown }
+      let response = await fetch(`${API_BASE}/api/me/companies/${id}`, { headers: { Authorization: `Bearer ${sessionToken}` } })
+      let payload = await response.json() as { error?: string; profile?: unknown; employees?: unknown; stock?: unknown }
+      if (!response.ok) {
+        response = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${sessionToken}` }, body: JSON.stringify({ companyId: id }) })
+        payload = await response.json() as { error?: string; profile?: unknown; employees?: unknown; stock?: unknown }
+      }
       if (!response.ok) throw new Error(payload.error || "Could not load saved company data.")
       const normalized = runEngine(payload.profile, payload.employees, catalog)
       if (!normalized) throw new Error("The saved company profile could not be normalized.")
-      setResult({ profile: payload.profile, employees: payload.employees, model: normalized })
+      setResult({ profile: payload.profile, employees: payload.employees, stock: payload.stock, model: normalized })
       setSelectedCompanyId(id)
       setShowCompanySelector(false)
       setActiveView("overview")
@@ -234,16 +273,16 @@ export function FloorApp() {
         setSelectedCompanyId(company.company_id)
         const companyResponse = await fetch(`${API_BASE}/api/me/companies/${company.company_id}`, { headers: { Authorization: `Bearer ${payload.token}` } })
         if (companyResponse.ok) {
-          const data = await companyResponse.json() as { profile: unknown; employees: unknown }
+          const data = await companyResponse.json() as { profile: unknown; employees: unknown; stock?: unknown }
           const normalized = runEngine(data.profile, data.employees, catalog)
-          if (normalized) { setResult({ profile: data.profile, employees: data.employees, model: normalized }); setSelectedRankingType(normalized.company.typeName) }
+          if (normalized) { setResult({ profile: data.profile, employees: data.employees, stock: data.stock, model: normalized }); setSelectedRankingType(normalized.company.typeName) }
         }
       } else if (payload.company?.key?.saved) {
         const companyResponse = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { Authorization: `Bearer ${payload.token}` } })
         if (companyResponse.ok) {
-          const data = await companyResponse.json() as { profile: unknown; employees: unknown; companyId?: string | number }
+          const data = await companyResponse.json() as { profile: unknown; employees: unknown; stock?: unknown; companyId?: string | number }
           const normalized = runEngine(data.profile, data.employees, catalog)
-          if (normalized) { setResult({ profile: data.profile, employees: data.employees, model: normalized }); setSelectedCompanyId(String(data.companyId ?? normalized.company.id)); setSelectedRankingType(normalized.company.typeName) }
+          if (normalized) { setResult({ profile: data.profile, employees: data.employees, stock: data.stock, model: normalized }); setSelectedCompanyId(String(data.companyId ?? normalized.company.id)); setSelectedRankingType(normalized.company.typeName) }
           const refreshedList = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
           if (refreshedList.ok) { const saved = await refreshedList.json() as { companies: SavedCompany[] }; setSavedCompanies(saved.companies || []) }
         }
@@ -278,22 +317,24 @@ export function FloorApp() {
     setLoading(true)
     try {
       let token = sessionToken
+      let targetCompanyId = selectedCompanyId
       if (secondaryCompanyKey.trim()) {
         if (!token) throw new Error("Sign in with your primary Torn API key first.")
         const keyResponse = await fetch(`${API_BASE}/api/auth/company-key`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ apiKey: secondaryCompanyKey.trim() }) })
-        const keyPayload = await keyResponse.json() as { error?: string; saved?: boolean }
-        if (!keyResponse.ok) throw new Error(keyPayload.error || "Could not save the secondary company key.")
+        const keyPayload = await keyResponse.json() as { error?: string; saved?: boolean; companyId?: string | number }
+        if (!keyResponse.ok) throw new Error(keyPayload.error || "Could not save the authorized company key.")
+        targetCompanyId = String(keyPayload.companyId ?? "")
         setCompanyKeySaved(true)
         setNeedsSecondaryKey(false)
         setSecondaryCompanyKey("")
       }
       if (!token) throw new Error("Sign in with a Torn API key first.")
-      const response = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { Authorization: `Bearer ${token}` } })
-      const payload = await response.json() as { error?: string; profile?: unknown; employees?: unknown }
+      const response = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${token}` }, body: targetCompanyId ? JSON.stringify({ companyId: targetCompanyId }) : "{}" })
+      const payload = await response.json() as { error?: string; profile?: unknown; employees?: unknown; stock?: unknown }
       if (!response.ok) throw new Error(payload.error || "The API request failed. Check the key and its company-data permissions.")
       const normalized = runEngine(payload.profile, payload.employees, catalog)
       if (!normalized) throw new Error("Torn returned an unexpected company profile. The response was not added to your saved workspace.")
-      setResult({ profile: payload.profile, employees: payload.employees, model: normalized })
+      setResult({ profile: payload.profile, employees: payload.employees, stock: payload.stock, model: normalized })
       setSelectedRankingType(normalized.company.typeName)
       setSelectedCompanyId(String(normalized.company.id))
       setShowCompanySelector(false)
@@ -385,7 +426,7 @@ export function FloorApp() {
             </section>
           ) : activeView === "connect" ? (
             <section className="connect-layout">
-              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Connect to Torn</h2><p>Fetch profile and employee data for the company linked to your key</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-key">{needsSecondaryKey ? "Secondary company key" : "Company key (optional replacement)"}</label><input id="company-key" type="password" autoComplete="off" value={secondaryCompanyKey} onChange={(event) => setSecondaryCompanyKey(event.target.value)} placeholder={needsSecondaryKey ? "Enter a company key with profile and employee access" : "Login key is active; enter only to replace it"} /><p className="field-hint"><span>♢</span> {needsSecondaryKey ? "The login key did not provide company profile and employee access, so a separate key is needed to refresh company data." : "Your login key is saved as the primary company data key. A secondary key is not required."}</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}<button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>{needsSecondaryKey ? "Your login key does not currently have company access. Add a secondary key to refresh live company data." : "Your login key is the primary company data key."}</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <button key={company.company_id} type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}>{company.company_name || `Company #${company.company_id}`} <span>#{company.company_id}</span></button>)}</div>}</div>}</div>
+              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Connect to Torn</h2><p>Add an authorized key for each company you manage, including companies where you are the appointed director</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-key">{needsSecondaryKey ? "First company API key" : "Add another company API key"}</label><input id="company-key" type="password" autoComplete="off" value={secondaryCompanyKey} onChange={(event) => setSecondaryCompanyKey(event.target.value)} placeholder="Paste an authorized API key for a company you are permitted to manage" /><p className="field-hint"><span>♢</span> "Each key is validated for company profile and employee access, then saved against that company. Only add keys you have permission to use."</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}<button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>"Company keys are encrypted and stored separately, so adding another company does not replace your other saved company keys."</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <button key={company.company_id} type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}>{company.company_name || `Company #${company.company_id}`} <span>#{company.company_id}</span></button>)}</div>}</div>}</div>
               <div className="panel guide-panel"><span className="guide-icon">✳</span><h2>Before you connect</h2><ul><li>Use a Torn API key with the access needed for your company.</li><li>Private employee stats may only be available to authorized company directors.</li><li>Requests pass through the Cloudflare Worker to Torn's API.</li></ul><div className="guide-note"><strong>Privacy by design</strong><p>Your player account is identified by Torn. Deleting the saved key does not delete recorded company data.</p></div></div>
             </section>
           ) : (
@@ -393,7 +434,7 @@ export function FloorApp() {
               {model ? <>
                 <section className="panel company-panel company-overview-panel"><div className="panel-heading"><div><h2>{model.company.name}</h2><p>{model.company.typeName} · Company #{model.company.id}</p></div><span className="status-badge success"><i /> COMPANY DATA</span></div>
                   <div className="company-facts overview-facts"><div><small>COMPANY TYPE</small><strong>{model.company.typeName}</strong></div><div><small>EMPLOYEES</small><strong>{formatNumber(model.company.employeesHired ?? model.employees.length)} / {formatNumber(model.company.employeeCapacity)}</strong></div><div><small>STAR RATING</small><strong>{currentStar === null ? "—" : `${currentStar} ★`}</strong></div><div><small>DIRECTOR</small><strong>{model.company.directorName ?? "Restricted"}</strong></div></div>
-                  <div className="income-grid"><article><small>DAILY INCOME</small><strong>{formatMoney(model.company.dailyIncome)}</strong></article><article><small>WEEKLY INCOME</small><strong>{formatMoney(currentWeeklyIncome)}</strong></article><article><small>AVERAGE MONTHLY INCOME</small><strong>{formatMoney(monthlyIncome)}</strong><span>Daily income annualized across average month length</span></article></div>
+                  <div className="income-grid"><article><small>DAILY INCOME</small><strong>{formatMoney(model.company.dailyIncome)}</strong><span className="profit-line">Profit {formatMoney(dailyProfit)}</span></article><article><small>WEEKLY INCOME</small><strong>{formatMoney(currentWeeklyIncome)}</strong><span className="profit-line">Profit {formatMoney(weeklyProfit)}</span></article><article><small>AVERAGE MONTHLY INCOME</small><strong>{formatMoney(monthlyIncome)}</strong><span className="profit-line">Profit {formatMoney(monthlyProfit)}</span><span>Daily income annualized across average month length</span></article></div>{costs && <p className="profit-footnote">Estimated daily costs: {formatMoney(costs.adBudget)} ad budget + {formatMoney(costs.wages)} employee wages + {formatMoney(costs.stockCosts)} identified stock costs.</p>}
                   <div className="ratings-section"><div className="section-heading"><div><h3>Operating ratings</h3><p>Current company performance indicators from Torn.</p></div></div><div className="ratings-grid"><div><span>POPULARITY</span><strong>{formatNumber(popularity)}</strong></div><div><span>EFFICIENCY</span><strong>{formatNumber(efficiency)}</strong></div><div><span>ENVIRONMENT</span><strong>{formatNumber(environment)}</strong></div></div></div>
                   <div className="employee-heading overview-actions"><div><h3>Company health scorecard</h3><p>Benchmarked against companies of the same type.</p></div><button className="text-button" onClick={() => setActiveView("type-rankings")}>View rankings ↗</button></div>
                   <div className="health-grid"><div><small>TYPE + STAR PLACE</small><strong>{currentRankingCompany ? placement(currentRankingCompany, "stars") : "—"}</strong><span>Same company type and star level</span></div><div><small>WEEKLY INCOME VS TYPE</small><strong>{currentRankingCompany && currentRankingCompany.weeklyIncome !== null ? formatMoney(currentRankingCompany.weeklyIncome) : formatMoney(currentWeeklyIncome)}</strong><span>{companyPeerRows.length ? `${companyPeerRows.length} same-type companies in snapshot` : "Comparison snapshot unavailable"}</span></div><div><small>GAP TO NEXT STAR</small><strong>{nextStarGap === null ? "—" : formatMoney(nextStarGap)}</strong><span>{nextStarIncome === null ? "No higher-star benchmark available" : `Observed next-level benchmark: ${formatMoney(nextStarIncome)}/week`}</span></div><div><small>GAP TO PREVIOUS STAR</small><strong>{previousStarGap === null ? "—" : formatMoney(previousStarGap)}</strong><span>{previousStarIncome === null ? "No lower-star benchmark available" : `Observed previous-level benchmark: ${formatMoney(previousStarIncome)}/week`}</span></div></div>

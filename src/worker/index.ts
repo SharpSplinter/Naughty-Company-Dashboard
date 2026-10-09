@@ -111,6 +111,17 @@ async function savedCompanyKey(env: WorkerEnv, playerId: string): Promise<string
   const row = await requireDb(env).prepare("SELECT ciphertext, iv FROM company_keys WHERE player_id = ?").bind(playerId).first<{ ciphertext: string; iv: string }>()
   return row ? decryptKey(env, row.ciphertext, row.iv) : null
 }
+async function saveCompanyApiKey(env: WorkerEnv, playerId: string, companyId: number, apiKey: string, profile: unknown): Promise<void> {
+  const encrypted = await encryptKey(env, apiKey)
+  const root = isRecord(profile) && isRecord(profile.company) ? profile.company : isRecord(profile) && isRecord(profile.profile) ? profile.profile : isRecord(profile) ? profile : {}
+  const type = isRecord(root.type) ? root.type : {}
+  const now = new Date().toISOString()
+  await requireDb(env).prepare("INSERT INTO company_api_keys (player_id, company_id, ciphertext, iv, last_four, company_name, company_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, company_name = excluded.company_name, company_type = excluded.company_type, updated_at = excluded.updated_at").bind(playerId, String(companyId), encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), typeof root.name === "string" ? root.name : `Company #${companyId}`, typeof type.name === "string" ? type.name : null, now, now).run()
+}
+async function savedCompanyApiKey(env: WorkerEnv, playerId: string, companyId: string): Promise<string | null> {
+  const row = await requireDb(env).prepare("SELECT ciphertext, iv FROM company_api_keys WHERE player_id = ? AND company_id = ?").bind(playerId, companyId).first<{ ciphertext: string; iv: string }>()
+  return row ? decryptKey(env, row.ciphertext, row.iv) : null
+}
 async function companyKeyMeta(env: WorkerEnv, playerId: string): Promise<{ saved: boolean; lastFour?: string; updatedAt?: string }> {
   const row = await requireDb(env).prepare("SELECT last_four, updated_at FROM company_keys WHERE player_id = ?").bind(playerId).first<{ last_four: string; updated_at: string }>()
   return row ? { saved: true, lastFour: row.last_four, updatedAt: row.updated_at } : { saved: false }
@@ -272,6 +283,7 @@ export default {
         // Prefer the login key whenever it actually has company profile + employee access.
         if (loginKeyHasCompanyAccess || directorCheck.isDirector) {
           await saveCompanyKey(env, player.id, apiKey)
+          try { const validated = await validateCompanyKey(apiKey); await saveCompanyApiKey(env, player.id, validated.companyId, apiKey, validated.profile) } catch { /* Keep the legacy director key record; company refresh will report missing endpoint access. */ }
         } else if (secondaryCompanyKey) {
           await validateCompanyKey(secondaryCompanyKey)
           await saveCompanyKey(env, player.id, secondaryCompanyKey)
@@ -295,7 +307,10 @@ export default {
         try { await validateCompanyKey(loginKey); loginKeyHasCompanyAccess = true } catch { /* Keep an existing company key if login access is insufficient. */ }
       }
       // Repair older sessions and promote the login key whenever it can read company data.
-      if (loginKey && (loginKeyHasCompanyAccess || directorCheck.isDirector)) await saveCompanyKey(env, session.player_id, loginKey)
+      if (loginKey && (loginKeyHasCompanyAccess || directorCheck.isDirector)) {
+        await saveCompanyKey(env, session.player_id, loginKey)
+        try { const validated = await validateCompanyKey(loginKey); await saveCompanyApiKey(env, session.player_id, validated.companyId, loginKey, validated.profile) } catch { /* Retain an existing company-specific key if this key lacks endpoint access. */ }
+      }
       const companyKey = await companyKeyMeta(env, session.player_id)
       return jsonResponse({ player: { id: session.player_id, name: session.player_name }, key: key ? { saved: true, lastFour: key.last_four, updatedAt: key.updated_at } : { saved: false }, company: { isDirector: directorCheck.isDirector, key: companyKey, needsSecondaryKey: !directorCheck.isDirector && !companyKey.saved } }, 200, origin)
     }
@@ -320,8 +335,10 @@ export default {
         const apiKey = isRecord(body) && typeof body.apiKey === "string" ? body.apiKey.trim() : ""
         if (!apiKey) return jsonResponse({ error: "A secondary company API key is required." }, 400, origin)
         const validated = await validateCompanyKey(apiKey)
-        await saveCompanyKey(env, session.player_id, apiKey)
-        return jsonResponse({ saved: true, companyId: validated.companyId, key: await companyKeyMeta(env, session.player_id) }, 200, origin)
+        await saveCompanyApiKey(env, session.player_id, validated.companyId, apiKey, validated.profile)
+        const root = isRecord(validated.profile) && isRecord(validated.profile.company) ? validated.profile.company : isRecord(validated.profile) && isRecord(validated.profile.profile) ? validated.profile.profile : {}
+        const type = isRecord(root.type) ? root.type : {}
+        return jsonResponse({ saved: true, companyId: validated.companyId, companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}`, companyType: typeof type.name === "string" ? type.name : null }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
     if (url.pathname === "/api/auth/key" && request.method === "DELETE") {
@@ -329,6 +346,7 @@ export default {
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       await requireDb(env).prepare("DELETE FROM api_keys WHERE player_id = ?").bind(session.player_id).run()
       await requireDb(env).prepare("DELETE FROM company_keys WHERE player_id = ?").bind(session.player_id).run()
+      await requireDb(env).prepare("DELETE FROM company_api_keys WHERE player_id = ?").bind(session.player_id).run()
       return jsonResponse({ deleted: true, companyDataRetained: true }, 200, origin)
     }
     if (url.pathname === "/api/auth/sign-out" && request.method === "POST") {
@@ -365,8 +383,12 @@ export default {
     if (url.pathname === "/api/me/companies" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
-      const rows = await requireDb(env).prepare("SELECT company_id, company_name, company_type, fetched_at FROM companies WHERE player_id = ? ORDER BY fetched_at DESC").bind(session.player_id).all()
-      return jsonResponse({ companies: rows.results ?? [] }, 200, origin)
+      const rows = await requireDb(env).prepare("SELECT company_id, company_name, company_type, fetched_at FROM companies WHERE player_id = ? ORDER BY fetched_at DESC").bind(session.player_id).all<Record<string, unknown>>()
+      const keys = await requireDb(env).prepare("SELECT company_id, company_name, company_type, updated_at FROM company_api_keys WHERE player_id = ? ORDER BY updated_at DESC").bind(session.player_id).all<Record<string, unknown>>()
+      const merged = new Map<string, Record<string, unknown>>()
+      for (const row of rows.results ?? []) merged.set(String(row.company_id), row)
+      for (const row of keys.results ?? []) { const id = String(row.company_id); const current = merged.get(id); merged.set(id, { company_id: id, company_name: current?.company_name ?? row.company_name, company_type: current?.company_type ?? row.company_type, fetched_at: current?.fetched_at ?? row.updated_at, has_api_key: true }) }
+      return jsonResponse({ companies: Array.from(merged.values()).sort((a, b) => String(b.fetched_at ?? "").localeCompare(String(a.fetched_at ?? ""))) }, 200, origin)
     }
     const savedMatch = url.pathname.match(/^\/api\/me\/companies\/(\d+)$/)
     if (savedMatch && request.method === "GET") {
@@ -375,19 +397,24 @@ export default {
       const id = Number(savedMatch[1])
       if (!Number.isSafeInteger(id) || id <= 0) return jsonResponse({ error: "Invalid company ID." }, 400, origin)
       const row = await requireDb(env).prepare("SELECT company_id, company_name, company_type, profile_json, employees_json, fetched_at FROM companies WHERE player_id = ? AND company_id = ?").bind(session.player_id, String(id)).first<Record<string, unknown>>()
-      if (!row) return jsonResponse({ error: "No saved data for this company yet." }, 404, origin)
-      return jsonResponse({ companyId: row.company_id, companyName: row.company_name, companyType: row.company_type, profile: JSON.parse(String(row.profile_json)), employees: JSON.parse(String(row.employees_json)), fetchedAt: row.fetched_at }, 200, origin)
+      if (!row) return jsonResponse({ error: "No saved data for this company yet. Refresh it from the saved company key first." }, 404, origin)
+      const financials = await requireDb(env).prepare("SELECT stock_json FROM company_financials WHERE player_id = ? AND company_id = ?").bind(session.player_id, String(id)).first<{ stock_json: string }>()
+      return jsonResponse({ companyId: row.company_id, companyName: row.company_name, companyType: row.company_type, profile: JSON.parse(String(row.profile_json)), employees: JSON.parse(String(row.employees_json)), stock: financials ? JSON.parse(financials.stock_json) : null, fetchedAt: row.fetched_at }, 200, origin)
     }
     if (url.pathname === "/api/company/refresh" && request.method === "POST") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       try {
-        const apiKey = await savedCompanyKey(env, session.player_id)
-        if (!apiKey) return jsonResponse({ error: "Your login key does not have director company access and no secondary company key is saved. Add a secondary company key to refresh live data. Previously saved company data is still available." }, 409, origin)
+        const refreshBody: unknown = await request.json().catch(() => null)
+        const requestedId = isRecord(refreshBody) && (typeof refreshBody.companyId === "string" || typeof refreshBody.companyId === "number") ? String(refreshBody.companyId) : ""
+        let apiKey = requestedId ? await savedCompanyApiKey(env, session.player_id, requestedId) : null
+        if (!apiKey && !requestedId) apiKey = await savedCompanyKey(env, session.player_id)
+        if (!apiKey) return jsonResponse({ error: requestedId ? "No saved API key for that company. Add its authorized company key first." : "No saved company API key is available. Add an authorized company key first." }, 409, origin)
         const client = new TornApiClient({ apiKey })
-        const [profile, employees] = await Promise.all([client.getCompanyProfile(), client.getCompanyEmployees()])
+        const [profile, employees, stock] = await Promise.all([client.getCompanyProfile(), client.getCompanyEmployees(), client.getCompanyStock().catch(() => null)])
         const companyId = companyIdFromPayload(profile)
         if (!companyId) return jsonResponse({ error: "Torn did not return a valid company ID for this API key's company profile." }, 502, origin)
+        if (requestedId && String(companyId) !== requestedId) return jsonResponse({ error: "The saved key returned a different company ID than expected. No company data was changed." }, 409, origin)
         const profileObj = isRecord(profile) && isRecord(profile.company) ? profile.company : isRecord(profile) && isRecord(profile.profile) ? profile.profile : {}
         const companyName = typeof profileObj.name === "string" ? profileObj.name : `Company #${companyId}`
         const type = profileObj.type
@@ -396,7 +423,9 @@ export default {
         const db = requireDb(env)
         await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, employees_json = excluded.employees_json, fetched_at = excluded.fetched_at").bind(session.player_id, String(companyId), companyName, companyType, asJson(profile), asJson(employees), now).run()
         await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(session.player_id, String(companyId), asJson(profile), asJson(employees), now).run()
-        return jsonResponse({ companyId, companyName, companyType, profile, employees, fetchedAt: now }, 200, origin)
+        await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(session.player_id, String(companyId), asJson(stock), now).run()
+        await saveCompanyApiKey(env, session.player_id, companyId, apiKey, profile)
+        return jsonResponse({ companyId, companyName, companyType, profile, employees, stock, fetchedAt: now }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
     // Compatibility routes use the same key-scoped endpoints; path IDs are ignored intentionally.
