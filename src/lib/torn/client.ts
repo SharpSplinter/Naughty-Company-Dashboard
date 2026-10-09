@@ -38,6 +38,33 @@ function validateCompanyId(companyId: number): void {
   }
 }
 
+function apiErrorMessage(code: number | undefined): string {
+  switch (code) {
+    case 2:
+      return "The Torn API key is invalid."
+    case 3:
+      return "The Torn API key does not have the required access."
+    case 4:
+      return "The Torn company ID is invalid."
+    case 9:
+      return "Torn API rate limit reached. Please retry shortly."
+    default:
+      return "Torn API request failed."
+  }
+}
+
+function apiErrorStatus(
+  responseStatus: number,
+  code: number | undefined,
+): number {
+  if (responseStatus === 429 || code === 9) return 429
+  if (code === 2) return 401
+  if (code === 3) return 403
+  if (code === 4) return 400
+  if (responseStatus >= 500) return 502
+  return 502
+}
+
 export class TornApiClient {
   private readonly apiKey: string
   private readonly baseUrl: string
@@ -118,18 +145,11 @@ export class TornApiClient {
             : undefined
         const retryAfter = response.headers.get("Retry-After") ?? undefined
 
-        throw new TornApiClientError(
-          apiCode === 5
-            ? "Torn API rate limit reached. Please retry shortly."
-            : apiCode === 2
-              ? "The Torn API key is invalid or does not have the required access."
-              : "Torn API request failed.",
-          {
-            status: upstreamStatus === 429 ? 429 : upstreamStatus >= 500 ? 502 : 400,
-            code: apiCode,
-            retryAfter,
-          },
-        )
+        throw new TornApiClientError(apiErrorMessage(apiCode), {
+          status: apiErrorStatus(upstreamStatus, apiCode),
+          code: apiCode,
+          retryAfter,
+        })
       }
 
       return payload as T

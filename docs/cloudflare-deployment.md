@@ -15,8 +15,6 @@ Pages build settings:
 - Root directory: repository root
 - Build variable: `VITE_API_BASE_URL=https://naughty-company-api.kboone801.workers.dev`
 
-The Pages project has been created and connected to the repository in Cloudflare's project configuration. At initial verification, no deployment had yet been reported by the Pages API, so the Pages URL may not serve a successful build until the first build completes.
-
 ## API Worker
 
 The Worker exposes:
@@ -27,18 +25,20 @@ The Worker exposes:
 
 The company ID must be a positive integer. Torn API keys are accepted using the `Authorization: ApiKey <key>` request header. The key is forwarded to Torn by the Worker and is not persisted. Never put a key in a URL, source file, or logs.
 
-The first Worker was uploaded through the Cloudflare API. The live health URL has not been successfully verified from the current execution environment, so the source configuration remains the intended source of truth.
+The Worker maps Torn API error codes into stable HTTP statuses, including rate limits (HTTP 429), invalid keys (HTTP 401), insufficient permissions (HTTP 403), and invalid company IDs (HTTP 400). It accepts requests from the production Pages domain, its Pages preview subdomains, and localhost port 3000 for local development.
 
 ## Security notes
 
-The initial API accepts a caller-supplied Torn key and does not use a global shared key. The deployed prototype currently allows broad CORS for integration testing. Before production, restrict the allowed origin and ensure the deployed Worker matches `src/worker/index.ts`. Authentication and authorization must be added before exposing private company data publicly. CORS is not authentication.
+The initial API accepts a caller-supplied Torn key and does not use a global shared key. This is not account authentication and no credentials are persisted. The API key is held in frontend component memory and forwarded in an Authorization header.
 
-Database-backed sessions, account authentication, and persisted key management are intentionally deferred.
+Database-backed sessions, account authentication, and persisted key management are intentionally deferred. CORS restrictions are useful browser hygiene but are not a replacement for authentication.
 
 ## Local development
 
 - Node.js 20+
-- `npm install`
+- `npm ci`
 - `npm run dev`
 - `npm run build`
 - `npm run typecheck`
+
+Cloudflare Pages is configured to build the repository with `npm run build` and publish `dist/`. The first deployment is triggered from the feature branch while `main` remains unchanged.
