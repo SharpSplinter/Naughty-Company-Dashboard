@@ -135,22 +135,20 @@ async function validateCompanyKey(apiKey: string): Promise<{ companyId: number; 
   if (!companyId) throw Object.assign(new Error("That key did not return a valid company profile. Use a key with company profile and employee access."), { status: 403 })
   return { companyId, profile, employees }
 }
-async function inspectDirectorKey(apiKey: string, playerId: string): Promise<{ isDirector: boolean; profile?: unknown }> {
+async function inspectDirectorKey(apiKey: string): Promise<{ isDirector: boolean; companyId?: string }> {
   try {
     const client = new TornApiClient({ apiKey })
+    // Torn's typed UserJobResponse wraps either a regular UserJob, a UserCompany,
+    // or null in `job`. A company director is identified by type="company",
+    // position="Director", and the UserCompany `id` field (not company_id).
+    // Optional employee/stock permissions must not affect this role check.
     const jobPayload = await client.getUserJob()
-    const job = isRecord(jobPayload) && isRecord(jobPayload.job) ? jobPayload.job : {}
+    const job = isRecord(jobPayload) && isRecord(jobPayload.job) ? jobPayload.job : null
+    if (!job || job.type !== "company") return { isDirector: false }
     const position = typeof job.position === "string" ? job.position.trim().toLowerCase() : ""
-    const jobCompanyId = job.id
-    if (position !== "director" || (typeof jobCompanyId !== "number" && !(typeof jobCompanyId === "string" && /^\d+$/.test(jobCompanyId)))) {
-      return { isDirector: false }
-    }
-    // /user/job is the authoritative director/permission signal. Confirm the
-    // same company can be read using the combined profile, employees and stock endpoint.
-    const selections = await client.getCompanySelections()
-    const companyId = companyIdFromPayload(selections.profile)
-    if (!companyId || String(companyId) !== String(jobCompanyId)) return { isDirector: false }
-    return { isDirector: true, profile: selections.profile }
+    const companyId = positiveId(job.id)
+    if (position !== "director" || !companyId) return { isDirector: false }
+    return { isDirector: true, companyId }
   } catch {
     return { isDirector: false }
   }
@@ -294,15 +292,15 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
     const checkedAt = new Date().toISOString()
     try {
       const jobPayload = await client.getUserJobFor(id)
-      const job = isRecord(jobPayload.job) ? jobPayload.job : {}
-      const position = typeof job.position === "string" ? job.position.trim().toLowerCase() : ""
-      const isDirector = position === "director" && Boolean(positiveId(job.id ?? job.company_id))
-      if (!isDirector) {
+      const job = isRecord(jobPayload.job) ? jobPayload.job : null
+      const position = job && typeof job.position === "string" ? job.position.trim().toLowerCase() : ""
+      const companyId = job?.type === "company" ? positiveId(job.id) : null
+      const isDirector = Boolean(job && job.type === "company" && position === "director" && companyId)
+      if (!isDirector || !job || !companyId) {
         await db.prepare("INSERT INTO faction_member_cache (player_id, player_name, faction_id, checked_at, is_director, job_json, updated_at) VALUES (?, ?, '8317', ?, 0, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, faction_id = excluded.faction_id, checked_at = excluded.checked_at, is_director = 0, company_id = NULL, company_name = NULL, company_type = NULL, company_type_id = NULL, company_rating = NULL, daily_income = NULL, weekly_income = NULL, job_json = excluded.job_json, profile_json = NULL, updated_at = excluded.updated_at")
           .bind(id, name, checkedAt, asJson(jobPayload), checkedAt).run()
         continue
       }
-      const companyId = positiveId(job.id ?? job.company_id)!
       let profile: unknown = null
       try { profile = await client.getCompanyProfileById(companyId) } catch { /* Keep job-derived company identity if profile access is temporarily unavailable. */ }
       const root = companyProfileRoot(profile)
@@ -382,7 +380,7 @@ export default {
         const secondaryCompanyKey = isRecord(body) && typeof body.secondaryCompanyKey === "string" ? body.secondaryCompanyKey.trim() : ""
         if (!apiKey) return jsonResponse({ error: "A Torn API key is required." }, 400, origin)
         const player = await validateTornKey(apiKey)
-        const directorCheck = await inspectDirectorKey(apiKey, player.id)
+        const directorCheck = await inspectDirectorKey(apiKey)
         let loginKeyHasCompanyAccess = false
         try { await validateCompanyKey(apiKey); loginKeyHasCompanyAccess = true } catch { /* A separate company key may be needed. */ }
         const db = requireDb(env)
@@ -410,7 +408,7 @@ export default {
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       const key = await requireDb(env).prepare("SELECT last_four, updated_at FROM api_keys WHERE player_id = ?").bind(session.player_id).first<{ last_four: string; updated_at: string }>()
       const loginKey = await savedKey(env, session.player_id)
-      const directorCheck = loginKey ? await inspectDirectorKey(loginKey, session.player_id) : { isDirector: false }
+      const directorCheck = loginKey ? await inspectDirectorKey(loginKey) : { isDirector: false }
       let loginKeyHasCompanyAccess = false
       if (loginKey) {
         try { await validateCompanyKey(loginKey); loginKeyHasCompanyAccess = true } catch { /* Keep an existing company key if login access is insufficient. */ }
@@ -462,6 +460,76 @@ export default {
       const token = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
       if (token && env.DB) await requireDb(env).prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256(token)).run()
       return jsonResponse({ signedOut: true }, 200, origin)
+    }
+    if (url.pathname === "/api/me/data-sharing" && (request.method === "GET" || request.method === "POST")) {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const db = requireDb(env)
+      const defaults = { adBudget: false, employeeWages: false, employeePositions: false, employeeEffectiveness: false, stockQuantityPricing: false }
+      if (request.method === "GET") {
+        const row = await db.prepare("SELECT ad_budget, employee_wages, employee_positions, employee_effectiveness, stock_quantity_pricing FROM company_data_sharing WHERE player_id = ?").bind(session.player_id).first<Record<string, unknown>>()
+        return jsonResponse({ settings: row ? { adBudget: row.ad_budget === 1, employeeWages: row.employee_wages === 1, employeePositions: row.employee_positions === 1, employeeEffectiveness: row.employee_effectiveness === 1, stockQuantityPricing: row.stock_quantity_pricing === 1 } : defaults }, 200, origin)
+      }
+      const body: unknown = await request.json().catch(() => null)
+      const supplied = isRecord(body) && isRecord(body.settings) ? body.settings : isRecord(body) ? body : {}
+      const settings = {
+        adBudget: supplied.adBudget === true,
+        employeeWages: supplied.employeeWages === true,
+        employeePositions: supplied.employeePositions === true,
+        employeeEffectiveness: supplied.employeeEffectiveness === true,
+        stockQuantityPricing: supplied.stockQuantityPricing === true,
+      }
+      const now = new Date().toISOString()
+      await db.prepare("INSERT INTO company_data_sharing (player_id, ad_budget, employee_wages, employee_positions, employee_effectiveness, stock_quantity_pricing, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET ad_budget = excluded.ad_budget, employee_wages = excluded.employee_wages, employee_positions = excluded.employee_positions, employee_effectiveness = excluded.employee_effectiveness, stock_quantity_pricing = excluded.stock_quantity_pricing, updated_at = excluded.updated_at")
+        .bind(session.player_id, Number(settings.adBudget), Number(settings.employeeWages), Number(settings.employeePositions), Number(settings.employeeEffectiveness), Number(settings.stockQuantityPricing), now).run()
+      return jsonResponse({ settings, updatedAt: now }, 200, origin)
+    }
+    if (url.pathname === "/api/faction/shared-company-data" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const rows = await requireDb(env).prepare("SELECT c.player_id AS playerId, p.player_name AS directorName, c.company_id AS companyId, c.company_name AS companyName, c.company_type AS companyType, c.profile_json AS profileJson, c.employees_json AS employeesJson, c.fetched_at AS fetchedAt, f.stock_json AS stockJson, s.ad_budget AS adBudgetEnabled, s.employee_wages AS wagesEnabled, s.employee_positions AS positionsEnabled, s.employee_effectiveness AS effectivenessEnabled, s.stock_quantity_pricing AS stockEnabled FROM company_data_sharing s JOIN companies c ON c.player_id = s.player_id JOIN players p ON p.player_id = c.player_id LEFT JOIN company_financials f ON f.player_id = c.player_id AND f.company_id = c.company_id WHERE c.player_id != ? AND (s.ad_budget = 1 OR s.employee_wages = 1 OR s.employee_positions = 1 OR s.employee_effectiveness = 1 OR s.stock_quantity_pricing = 1) ORDER BY c.company_type, c.company_name").bind(session.player_id).all<Record<string, unknown>>()
+      const shared = (rows.results ?? []).flatMap((row) => {
+        try {
+          const profilePayload = JSON.parse(String(row.profileJson)) as unknown
+          const profile = companyProfileRoot(profilePayload)
+          const result: Record<string, unknown> = { playerId: String(row.playerId), directorName: String(row.directorName ?? "Faction member"), companyId: String(row.companyId), companyName: String(profile.name ?? row.companyName ?? `Company #${row.companyId}`), companyType: String((isRecord(profile.type) ? profile.type.name : undefined) ?? row.companyType ?? "Unknown"), fetchedAt: String(row.fetchedAt) }
+          if (row.adBudgetEnabled === 1) {
+            const keys = ["advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"]
+            const adBudget = keys.map((key) => profile[key]).find((value) => typeof value === "number" && Number.isFinite(value))
+            if (typeof adBudget === "number") result.adBudget = adBudget
+          }
+          const employeesPayload = JSON.parse(String(row.employeesJson)) as unknown
+          const employeeRoot = isRecord(employeesPayload) && Array.isArray(employeesPayload.employees) ? employeesPayload.employees : Array.isArray(employeesPayload) ? employeesPayload : isRecord(employeesPayload) && isRecord(employeesPayload.employees) ? Object.values(employeesPayload.employees) : []
+          if (row.wagesEnabled === 1 || row.positionsEnabled === 1 || row.effectivenessEnabled === 1) {
+            result.employees = employeeRoot.filter(isRecord).map((employee) => {
+              const item: Record<string, unknown> = {}
+              const name = typeof employee.name === "string" ? employee.name : undefined
+              if (name) item.name = name
+              const position = isRecord(employee.position) ? employee.position.name : employee.position
+              if (row.positionsEnabled === 1 && typeof position === "string") item.position = position
+              const wage = [employee.wage, employee.salary].find((value) => typeof value === "number" && Number.isFinite(value))
+              if (row.wagesEnabled === 1 && typeof wage === "number") item.wage = wage
+              const effectivenessRoot = isRecord(employee.effectiveness) ? employee.effectiveness : {}
+              const effectiveness = [effectivenessRoot.total, employee.effectiveness, employee.effectiveness_total].find((value) => typeof value === "number" && Number.isFinite(value))
+              if (row.effectivenessEnabled === 1 && typeof effectiveness === "number") item.effectiveness = effectiveness
+              return item
+            })
+          }
+          if (row.stockEnabled === 1 && row.stockJson) {
+            const stockPayload = JSON.parse(String(row.stockJson)) as unknown
+            const stockRoot = isRecord(stockPayload) && Array.isArray(stockPayload.stock) ? stockPayload.stock : Array.isArray(stockPayload) ? stockPayload : isRecord(stockPayload) && isRecord(stockPayload.stock) ? Object.values(stockPayload.stock) : []
+            result.stock = stockRoot.filter(isRecord).map((item) => {
+              const sharedItem: Record<string, unknown> = {}
+              if (typeof item.name === "string") sharedItem.name = item.name
+              for (const key of ["in_stock", "quantity", "amount"]) if (typeof item[key] === "number" && Number.isFinite(item[key])) { sharedItem.quantity = item[key]; break }
+              for (const key of ["cost", "unit_cost", "cost_per_unit", "price"]) if (typeof item[key] === "number" && Number.isFinite(item[key])) { sharedItem.unitPrice = item[key]; break }
+              return sharedItem
+            })
+          }
+          return [result]
+        } catch { return [] }
+      })
+      return jsonResponse({ companies: shared, generatedAt: new Date().toISOString() }, 200, origin)
     }
     if (url.pathname === "/api/rankings" && request.method === "GET") {
       const session = await authenticate(request, env)
@@ -516,16 +584,18 @@ export default {
       const db = requireDb(env)
       const director = await db.prepare("SELECT player_id AS playerId, player_name AS directorName, company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, company_rating AS starRating, daily_income AS dailyIncome, weekly_income AS weeklyIncome, updated_at AS fetchedAt FROM faction_member_cache WHERE player_id = ? AND faction_id = '8317' AND is_director = 1").bind(playerId).first<Record<string, unknown>>()
       if (!director) return jsonResponse({ error: "That faction member has not been confirmed as a company director yet. Refresh the faction directory and try again." }, 404, origin)
+      const sharePrefs = await db.prepare("SELECT stock_quantity_pricing FROM company_data_sharing WHERE player_id = ?").bind(playerId).first<{ stock_quantity_pricing: number }>()
+      const mayShareStock = sharePrefs?.stock_quantity_pricing === 1
       const snapshots = await db.prepare("SELECT snapshot_day AS day, profile_json AS profileJson, stock_json AS stockJson, fetched_at AS fetchedAt FROM faction_director_snapshots WHERE player_id = ? AND company_id = ? ORDER BY snapshot_day ASC LIMIT 120").bind(playerId, String(director.companyId)).all<{ day: string; profileJson: string; stockJson: string | null; fetchedAt: string }>()
       const history = (snapshots.results ?? []).map((row) => {
         let root: Record<string, unknown> = {}
         let stock: unknown = null
         try { root = companyProfileRoot(JSON.parse(row.profileJson)) } catch { /* Ignore a corrupt historical snapshot. */ }
-        try { stock = row.stockJson ? JSON.parse(row.stockJson) : null } catch { /* Stock history is optional. */ }
+        try { stock = mayShareStock && row.stockJson ? JSON.parse(row.stockJson) : null } catch { /* Stock history is optional. */ }
         const income = isRecord(root.income) ? root.income : {}
         return { day: row.day, dailyIncome: typeof income.daily === "number" ? income.daily : null, weeklyIncome: typeof income.weekly === "number" ? income.weekly : null, stock }
       })
-      return jsonResponse({ director, history, stockHistoryAvailable: history.some((row) => row.stock !== null), generatedAt: new Date().toISOString() }, 200, origin)
+      return jsonResponse({ director, history, stockHistoryAvailable: mayShareStock && history.some((row) => row.stock !== null), generatedAt: new Date().toISOString() }, 200, origin)
     }
     if (url.pathname === "/api/me/companies" && request.method === "GET") {
       const session = await authenticate(request, env)

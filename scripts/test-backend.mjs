@@ -115,6 +115,23 @@ try {
     assert.equal(response.stock.stock.length, 1)
   })
 
+  await test("company profile remains usable when a login key lacks employee and stock selections", async () => {
+    const requested = []
+    const client = new TornApiClient({ apiKey: "test", fetcher: async (input) => {
+      const url = new URL(String(input)); requested.push(url.pathname + url.search)
+      if (url.pathname.endsWith("/company/profile")) return new Response(JSON.stringify({ profile: { id: 79, name: "Profile-only Company" } }))
+      return new Response(JSON.stringify({ error: { code: 3, error: "Selection not granted" } }), { status: 403 })
+    } })
+    const response = await client.getCompanySelections()
+    assert.equal(response.profile.profile.id, 79)
+    assert.deepEqual(response.employees.employees, [])
+    assert.deepEqual(response.stock.stock, [])
+    assert.ok(requested.some((path) => path.includes("/company?")), JSON.stringify(requested))
+    assert.ok(requested.some((path) => path.endsWith("/company/profile")))
+    assert.ok(requested.some((path) => path.endsWith("/company/employees")))
+    assert.ok(requested.some((path) => path.endsWith("/company/stock")))
+  })
+
   await test("uses the OpenAPI faction member, user job-by-ID, and company profile-by-ID endpoints", async () => {
     const requested = []
     const client = new TornApiClient({ apiKey: "test", fetcher: async (input) => {
@@ -161,7 +178,7 @@ try {
       error.message.includes("rate limit"))
   })
 
-  await test("sign-in automatically uses a company director login key when Torn returns director as a numeric ID", async () => {
+  await test("authenticates faction members through user/faction and directors through typed UserCompany id", async () => {
     const originalFetch = globalThis.fetch
     const apiKeys = new Map()
     const companyKeys = new Map()
@@ -196,17 +213,20 @@ try {
       },
     }
     let combinedCompanyRequest = false
+    const requestedTornPaths = []
     globalThis.fetch = async (input) => {
       const url = new URL(String(input))
       const path = url.pathname
+      requestedTornPaths.push(path + url.search)
       if (path.endsWith("/v2/user/profile")) return new Response(JSON.stringify({ profile: { id: 777, name: "Test Director" } }))
       if (path.endsWith("/v2/user/faction")) return new Response(JSON.stringify({ faction: { id: 8317, name: "Naughty Souls" } }))
-      if (path.endsWith("/v2/user/job")) return new Response(JSON.stringify({ job: { type: "company", id: 77, type_id: 28, name: "Test Company", position: "Director" } }))
-      if (path.endsWith("/v2/company/profile")) return new Response(JSON.stringify({ company: { id: 77, name: "Test Company", director: 777 } }))
+      if (path.endsWith("/v2/user/job")) return new Response(JSON.stringify({ job: { type: "company", id: 77, type_id: 28, name: "Test Company", rating: 3, position: "Director", days_in_company: 100 } }))
+      if (path.endsWith("/v2/company/profile")) return new Response(JSON.stringify({ profile: { id: 77, name: "Test Company", type: { id: 28, name: "Oil Rig" }, director: 777 } }))
       if (path.endsWith("/v2/company") && url.searchParams.get("selections") === "employees,stock,profile") {
         combinedCompanyRequest = true
-        return new Response(JSON.stringify({ employees: [], stock: [], profile: { id: 77, name: "Test Company", type: { id: 28, name: "Oil Rig" }, director: { id: 777, name: "Test Director" } } }))
+        return new Response(JSON.stringify({ error: { code: 3, error: "Combined company selection not granted" } }), { status: 403 })
       }
+      if (path.endsWith("/v2/company/employees") || path.endsWith("/v2/company/stock")) return new Response(JSON.stringify({ error: { code: 3, error: "Selection not granted" } }), { status: 403 })
       return new Response(JSON.stringify({ error: { code: 16, error: "Not granted" } }), { status: 403 })
     }
     try {
@@ -221,6 +241,10 @@ try {
       assert.equal(payload.company.key.saved, true)
       assert.equal(payload.company.key.lastFour, "7777")
       assert.equal(combinedCompanyRequest, true)
+      assert.ok(requestedTornPaths.includes("/v2/user/profile"))
+      assert.ok(requestedTornPaths.includes("/v2/user/faction"))
+      assert.ok(requestedTornPaths.includes("/v2/user/job"))
+      assert.ok(requestedTornPaths.includes("/v2/company/profile"))
       assert.equal(companyKeys.get("777").last_four, apiKeys.get("777").last_four)
 
       // Simulate a pre-fix session with no company key, then restore the session.
@@ -236,6 +260,47 @@ try {
     } finally {
       globalThis.fetch = originalFetch
     }
+  })
+
+  await test("private company sharing defaults off and only persists explicitly enabled categories", async () => {
+    const token = "sharing-test-session-token"
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
+    const tokenHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
+    let preferences = null
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            const lower = sql.toLowerCase()
+            if (lower.includes("from sessions s join players p")) return values[0] === tokenHash ? { player_id: "777", player_name: "Test Director" } : null
+            if (lower.includes("from company_data_sharing")) return preferences
+            return null
+          },
+          async run() {
+            if (sql.toLowerCase().includes("insert into company_data_sharing")) {
+              preferences = { ad_budget: values[1], employee_wages: values[2], employee_positions: values[3], employee_effectiveness: values[4], stock_quantity_pricing: values[5], updated_at: values[6] }
+            }
+            return { success: true }
+          },
+          async all() { return { results: [] } },
+        }
+      },
+    }
+    const env = { DB: db }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: `Bearer ${token}` }
+    const initial = await worker.fetch(new Request("https://worker.test/api/me/data-sharing", { headers }), env)
+    assert.equal(initial.status, 200)
+    assert.deepEqual((await initial.json()).settings, { adBudget: false, employeeWages: false, employeePositions: false, employeeEffectiveness: false, stockQuantityPricing: false })
+    const saved = await worker.fetch(new Request("https://worker.test/api/me/data-sharing", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ settings: { employeeWages: true, stockQuantityPricing: true, adBudget: "true", employeePositions: 1 } }) }), env)
+    assert.equal(saved.status, 200)
+    assert.deepEqual((await saved.json()).settings, { adBudget: false, employeeWages: true, employeePositions: false, employeeEffectiveness: false, stockQuantityPricing: true })
+    const reloaded = await worker.fetch(new Request("https://worker.test/api/me/data-sharing", { headers }), env)
+    assert.deepEqual((await reloaded.json()).settings, { adBudget: false, employeeWages: true, employeePositions: false, employeeEffectiveness: false, stockQuantityPricing: true })
+    const shared = await worker.fetch(new Request("https://worker.test/api/faction/shared-company-data", { headers }), env)
+    assert.equal(shared.status, 200)
+    assert.deepEqual((await shared.json()).companies, [])
   })
 
   await test("Worker health endpoint applies dashboard CORS", async () => {
