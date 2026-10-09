@@ -263,11 +263,14 @@ export default {
         if (!apiKey) return jsonResponse({ error: "A Torn API key is required." }, 400, origin)
         const player = await validateTornKey(apiKey)
         const directorCheck = await inspectDirectorKey(apiKey, player.id)
+        let loginKeyHasCompanyAccess = false
+        try { await validateCompanyKey(apiKey); loginKeyHasCompanyAccess = true } catch { /* A separate company key may be needed. */ }
         const db = requireDb(env)
         const now = new Date().toISOString()
         await db.prepare("INSERT INTO players (player_id, player_name, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, updated_at = excluded.updated_at").bind(player.id, player.name, now, now).run()
         await saveKey(env, player.id, apiKey)
-        if (directorCheck.isDirector) {
+        // Prefer the login key whenever it actually has company profile + employee access.
+        if (loginKeyHasCompanyAccess || directorCheck.isDirector) {
           await saveCompanyKey(env, player.id, apiKey)
         } else if (secondaryCompanyKey) {
           await validateCompanyKey(secondaryCompanyKey)
@@ -287,9 +290,12 @@ export default {
       const key = await requireDb(env).prepare("SELECT last_four, updated_at FROM api_keys WHERE player_id = ?").bind(session.player_id).first<{ last_four: string; updated_at: string }>()
       const loginKey = await savedKey(env, session.player_id)
       const directorCheck = loginKey ? await inspectDirectorKey(loginKey, session.player_id) : { isDirector: false }
-      // Repair existing sessions too: older sign-ins may have missed the scalar
-      // director ID and therefore never wrote the primary key to company_keys.
-      if (loginKey && directorCheck.isDirector) await saveCompanyKey(env, session.player_id, loginKey)
+      let loginKeyHasCompanyAccess = false
+      if (loginKey) {
+        try { await validateCompanyKey(loginKey); loginKeyHasCompanyAccess = true } catch { /* Keep an existing company key if login access is insufficient. */ }
+      }
+      // Repair older sessions and promote the login key whenever it can read company data.
+      if (loginKey && (loginKeyHasCompanyAccess || directorCheck.isDirector)) await saveCompanyKey(env, session.player_id, loginKey)
       const companyKey = await companyKeyMeta(env, session.player_id)
       return jsonResponse({ player: { id: session.player_id, name: session.player_name }, key: key ? { saved: true, lastFour: key.last_four, updatedAt: key.updated_at } : { saved: false }, company: { isDirector: directorCheck.isDirector, key: companyKey, needsSecondaryKey: !directorCheck.isDirector && !companyKey.saved } }, 200, origin)
     }
