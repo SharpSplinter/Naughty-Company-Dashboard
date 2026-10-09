@@ -48,6 +48,7 @@ export function FloorApp() {
   const [keySaved, setKeySaved] = useState(false)
   const [savedCompanies, setSavedCompanies] = useState<SavedCompany[]>([])
   const [rankingCompanies, setRankingCompanies] = useState<RankingCompany[]>([])
+  const [globalRankingCompanies, setGlobalRankingCompanies] = useState<RankingCompany[]>([])
   const [rankingsUpdatedAt, setRankingsUpdatedAt] = useState("")
   const [rankingError, setRankingError] = useState("")
   const [selectedRankingType, setSelectedRankingType] = useState("")
@@ -102,6 +103,18 @@ export function FloorApp() {
         if (cancelled) return
         const sorted = (payload.companies || []).slice().sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1))
         setRankingCompanies(sorted)
+        let globalRows = sorted
+        if (scope === "global") setGlobalRankingCompanies(sorted)
+        else {
+          try {
+            const globalResponse = await fetch(`${API_BASE}/api/rankings?scope=global`, { headers: { Authorization: `Bearer ${sessionToken}` } })
+            const globalPayload = await globalResponse.json() as { companies?: RankingCompany[] }
+            if (globalResponse.ok && Array.isArray(globalPayload.companies)) {
+              globalRows = globalPayload.companies.slice().sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1))
+              setGlobalRankingCompanies(globalRows)
+            }
+          } catch { /* Keep faction rankings usable if the all-Torn reference cannot load. */ }
+        }
         setRankingsUpdatedAt(payload.generatedAt || "")
         setSelectedRankingType((current) => current || sorted[0]?.companyType || "")
       } catch (caught) {
@@ -122,6 +135,24 @@ export function FloorApp() {
     .filter((company) => activeView !== "type-rankings" || !selectedRankingType || company.companyType === selectedRankingType)
     .slice()
     .sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1)), [rankingCompanies, activeView, selectedRankingType])
+  const allTornRows = globalRankingCompanies.length ? globalRankingCompanies : activeView === "type-rankings" ? rankingCompanies : []
+  const companyTypeCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const company of allTornRows) counts.set(company.companyType, (counts.get(company.companyType) || 0) + 1)
+    return Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+  }, [allTornRows])
+  function placement(company: RankingCompany, dimension: "type" | "stars"): string {
+    const target = allTornRows.find((row) => row.companyId === company.companyId)
+    if (!target) return "—"
+    const reference = dimension === "type"
+      ? allTornRows.filter((row) => row.companyType === target.companyType)
+      : allTornRows.filter((row) => row.starRating !== null && row.starRating === target.starRating)
+    if (!reference.length || (dimension === "stars" && target.starRating === null)) return "—"
+    const rank = reference.filter((row) => (row.weeklyIncome ?? -1) > (target.weeklyIncome ?? -1)).length + 1
+    const total = reference.length
+    const suffix = total % 100 >= 11 && total % 100 <= 13 ? "th" : total % 10 === 1 ? "st" : total % 10 === 2 ? "nd" : total % 10 === 3 ? "rd" : "th"
+    return `${rank}/${total}${suffix}`
+  }
 
   async function deleteSavedKey() {
     if (!sessionToken || !window.confirm("Permanently delete your saved login and company keys? Your player profile and saved company data will remain.")) return
@@ -291,8 +322,8 @@ export function FloorApp() {
             <section className="panel ranking-panel">
               <div className="panel-heading ranking-heading"><div><h2>{activeView === "type-rankings" ? "Rank within company type" : "Naughty Souls dashboard leaderboard"}</h2><p>{activeView === "type-rankings" ? "All companies in Torn, grouped by company type. Weekly income alone determines rank." : "Only companies connected by Naughty Souls dashboard users, ordered by weekly income."}</p></div>{activeView === "type-rankings" && <label className="ranking-filter">Company type<select value={selectedRankingType} onChange={(event) => setSelectedRankingType(event.target.value)}><option value="">All types</option>{Array.from(new Set(rankingCompanies.map((company) => company.companyType))).sort().map((type) => <option key={type} value={type}>{type}</option>)}</select></label>}</div>
               <div className="ranking-meta"><span><i className="status-dot live" /> {rankingCompanies.length.toLocaleString()} {activeView === "type-rankings" ? "companies in Torn snapshot" : "companies from dashboard users"}</span><span>Data refresh: daily at 18:05 UTC · Star ratings update Sundays after 18:00 UTC</span></div>
-              {rankingError && <div className="error-banner" role="alert">{rankingError}</div>}
-              <div className="table-scroll"><table className="ranking-table"><thead><tr><th>RANK</th><th>COMPANY</th>{activeView === "faction-rankings" && <th>DIRECTOR</th>}<th>TYPE</th><th>STARS</th><th>WEEKLY INCOME</th><th>DAILY INCOME</th><th>AVG / DAY</th><th>DATA AS OF (UTC)</th></tr></thead><tbody>{rankingRows.map((company, index) => <tr key={`${company.playerId}-${company.companyId}`}><td><span className={`rank-number $(company.weeklyIncome !== null && rankingRows.findIndex((row) => row.weeklyIncome === company.weeklyIncome) < 3) ? "top-rank" : ""}`}>{company.weeklyIncome === null ? "—" : rankingRows.findIndex((row) => row.weeklyIncome === company.weeklyIncome) + 1}</span></td><td><strong>{company.companyName}</strong><div className="muted">Company #{company.companyId}</div></td>{activeView === "faction-rankings" && <td>{company.directorName}</td>}<td>{company.companyType}</td><td><span className="star-rating">{company.starRating === null ? "—" : `${company.starRating} ★`}</span></td><td className="income-primary">{formatMoney(company.weeklyIncome)}</td><td>{formatMoney(company.dailyIncome)}</td><td>{formatMoney(company.averageDailyIncome)}</td><td className="muted">{company.fetchedAt ? new Date(company.fetchedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }) : "—"}</td></tr>)}</tbody></table></div>
+              <div className="type-counts"><strong>COMPANIES BY TYPE</strong><div className="type-count-list">{companyTypeCounts.map(([type, count]) => <span key={type} className="type-count-chip">{type}<b>{count.toLocaleString()}</b></span>)}{companyTypeCounts.length === 0 && <span className="muted">Type counts load with the all-Torn snapshot.</span>}</div></div>{rankingError && <div className="error-banner" role="alert">{rankingError}</div>}
+              <div className="table-scroll"><table className="ranking-table"><thead><tr><th>RANK</th><th>COMPANY</th>{activeView === "faction-rankings" && <th>DIRECTOR</th>}<th>TYPE</th><th>STARS</th><th>STAR-LEVEL PLACE</th><th>TYPE PLACE</th><th>WEEKLY INCOME</th><th>DAILY INCOME</th><th>AVG / DAY</th><th>DATA AS OF (UTC)</th></tr></thead><tbody>{rankingRows.map((company, index) => <tr key={`${company.playerId}-${company.companyId}`}><td><span className={`rank-number $(company.weeklyIncome !== null && rankingRows.findIndex((row) => row.weeklyIncome === company.weeklyIncome) < 3) ? "top-rank" : ""}`}>{company.weeklyIncome === null ? "—" : rankingRows.findIndex((row) => row.weeklyIncome === company.weeklyIncome) + 1}</span></td><td><strong>{company.companyName}</strong><div className="muted">Company #{company.companyId}</div></td>{activeView === "faction-rankings" && <td>{company.directorName}</td>}<td>{company.companyType}</td><td><span className="star-rating">{company.starRating === null ? "—" : `${company.starRating} ★`}</span></td><td>{placement(company, "stars")}</td><td>{placement(company, "type")}</td><td className="income-primary">{formatMoney(company.weeklyIncome)}</td><td>{formatMoney(company.dailyIncome)}</td><td>{formatMoney(company.averageDailyIncome)}</td><td className="muted">{company.fetchedAt ? new Date(company.fetchedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }) : "—"}</td></tr>)}</tbody></table></div>
               {rankingRows.length === 0 && <div className="empty-state">{activeView === "type-rankings" ? "The all-company Torn snapshot is empty or unavailable." : "No Naughty Souls companies have been added by dashboard users yet. A director can connect a company key to add a company."}</div>}
               <div className="ranking-footnote"><strong>How ranking works</strong><p>Rank is determined exclusively by weekly income, highest first. Average daily income is weekly income divided by seven. Company Rankings uses Torn’s all-company snapshot. Faction Rankings only includes companies connected by dashboard users.</p><p>{rankingsUpdatedAt ? `${activeView === "type-rankings" ? "Torn snapshot retrieved" : "Faction leaderboard checked"} ${new Date(rankingsUpdatedAt).toLocaleString("en-GB", { timeZone: "UTC", timeZoneName: "short" })}.` : "Leaderboard refreshes from saved company profiles."} Daily company income data locks at 18:00 UTC; star-rating changes lock on Sundays at 18:00 UTC.</p></div>
             </section>
