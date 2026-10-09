@@ -243,14 +243,37 @@ async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string): Promi
   if (!env.DB) return
   const db = requireDb(env)
   await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_cache (cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1), companies_json TEXT NOT NULL, fetched_at TEXT NOT NULL)").run()
-  let key = apiKey
-  if (!key) {
-    const row = await db.prepare("SELECT player_id FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string }>()
-    if (row) key = (await savedKey(env, row.player_id)) ?? undefined
+  await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_refresh_lock (lock_id INTEGER PRIMARY KEY CHECK (lock_id = 1), lease_until INTEGER NOT NULL DEFAULT 0)").run()
+  await db.prepare("INSERT INTO global_rankings_refresh_lock (lock_id, lease_until) VALUES (1, 0) ON CONFLICT(lock_id) DO NOTHING").run()
+
+  const cached = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
+  const nowMs = Date.now()
+  const cacheAge = cached?.fetchedAt ? nowMs - Date.parse(cached.fetchedAt) : Number.POSITIVE_INFINITY
+  const maxAgeMs = 24 * 60 * 60 * 1000
+  if (Number.isFinite(cacheAge) && cacheAge >= 0 && cacheAge < maxAgeMs) return
+
+  const nowSeconds = Math.floor(nowMs / 1000)
+  const leaseUntil = nowSeconds + 120
+  const claim = await db.prepare("UPDATE global_rankings_refresh_lock SET lease_until = ? WHERE lock_id = 1 AND lease_until < ?").bind(leaseUntil, nowSeconds).run()
+  if (claim.meta?.changes === 0) return
+
+  try {
+    // Another request may have refreshed the shared snapshot while this request waited for the lease.
+    const latest = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
+    const latestAge = latest?.fetchedAt ? Date.now() - Date.parse(latest.fetchedAt) : Number.POSITIVE_INFINITY
+    if (Number.isFinite(latestAge) && latestAge >= 0 && latestAge < maxAgeMs) return
+
+    let key = apiKey
+    if (!key) {
+      const row = await db.prepare("SELECT player_id FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string }>()
+      if (row) key = (await savedKey(env, row.player_id)) ?? undefined
+    }
+    if (!key) return
+    const snapshot = await fetchGlobalCompanyRankings(key)
+    await db.prepare("INSERT INTO global_rankings_cache (cache_id, companies_json, fetched_at) VALUES (1, ?, ?) ON CONFLICT(cache_id) DO UPDATE SET companies_json = excluded.companies_json, fetched_at = excluded.fetched_at").bind(asJson(snapshot.companies), snapshot.snapshotFetchedAt).run()
+  } finally {
+    await db.prepare("UPDATE global_rankings_refresh_lock SET lease_until = 0 WHERE lock_id = 1 AND lease_until = ?").bind(leaseUntil).run().catch(() => undefined)
   }
-  if (!key) return
-  const snapshot = await fetchGlobalCompanyRankings(key)
-  await db.prepare("INSERT INTO global_rankings_cache (cache_id, companies_json, fetched_at) VALUES (1, ?, ?) ON CONFLICT(cache_id) DO UPDATE SET companies_json = excluded.companies_json, fetched_at = excluded.fetched_at").bind(asJson(snapshot.companies), snapshot.snapshotFetchedAt).run()
 }
 
 function companyProfileRoot(payload: unknown): Record<string, unknown> {
@@ -493,6 +516,99 @@ export default {
       if (token && env.DB) await requireDb(env).prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256(token)).run()
       return jsonResponse({ signedOut: true }, 200, origin)
     }
+    if (url.pathname === "/api/me/data-sharing" && (request.method === "GET" || request.method === "POST")) {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const db = requireDb(env)
+      await db.prepare("CREATE TABLE IF NOT EXISTS company_data_sharing (player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), updated_at TEXT NOT NULL)").run()
+      if (request.method === "GET") {
+        const row = await db.prepare("SELECT share_financial_data AS shareFinancialData, share_employee_data AS shareEmployeeData, updated_at AS updatedAt FROM company_data_sharing WHERE player_id = ?").bind(session.player_id).first<Record<string, unknown>>()
+        return jsonResponse({ settings: { shareFinancialData: row?.shareFinancialData === 1, shareEmployeeData: row?.shareEmployeeData === 1 }, updatedAt: row?.updatedAt ?? null }, 200, origin)
+      }
+      const body: unknown = await request.json().catch(() => null)
+      const supplied = isRecord(body) && isRecord(body.settings) ? body.settings : isRecord(body) ? body : {}
+      const settings = { shareFinancialData: supplied.shareFinancialData === true, shareEmployeeData: supplied.shareEmployeeData === true }
+      const now = new Date().toISOString()
+      await db.prepare("INSERT INTO company_data_sharing (player_id, share_financial_data, share_employee_data, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET share_financial_data = excluded.share_financial_data, share_employee_data = excluded.share_employee_data, updated_at = excluded.updated_at").bind(session.player_id, Number(settings.shareFinancialData), Number(settings.shareEmployeeData), now).run()
+      return jsonResponse({ settings, updatedAt: now }, 200, origin)
+    }
+    if (url.pathname === "/api/faction/shared-company-data" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const db = requireDb(env)
+      await db.prepare("CREATE TABLE IF NOT EXISTS company_data_sharing (player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), updated_at TEXT NOT NULL)").run()
+      const typeIdRaw = url.searchParams.get("typeId")
+      const typeId = typeIdRaw && /^\d+$/.test(typeIdRaw) ? Number(typeIdRaw) : null
+      const requestedType = (url.searchParams.get("type") ?? "").trim().toLocaleLowerCase()
+      const ownRows = await db.prepare("SELECT company_type AS companyType, profile_json AS profileJson FROM companies WHERE player_id = ? ORDER BY fetched_at DESC").bind(session.player_id).all<{ companyType: string | null; profileJson: string }>()
+      const ownTypes = (ownRows.results ?? []).flatMap((row) => {
+        try {
+          const profile = companyProfileRoot(JSON.parse(row.profileJson))
+          const type = isRecord(profile.type) ? profile.type : {}
+          const id = typeof type.id === "number" ? type.id : null
+          const name = typeof type.name === "string" ? type.name : row.companyType ?? ""
+          return [{ id, name: name.toLocaleLowerCase() }]
+        } catch { return [] }
+      })
+      const selectedType = typeId !== null ? ownTypes.find((type) => type.id === typeId) : requestedType ? ownTypes.find((type) => type.name === requestedType) : ownTypes[0]
+      if (!selectedType) return jsonResponse({ error: "Choose a company type connected to your account before comparing shared data." }, 400, origin)
+      const rows = await db.prepare("SELECT c.player_id AS playerId, p.player_name AS directorName, c.company_id AS companyId, c.company_name AS companyName, c.company_type AS companyType, c.profile_json AS profileJson, c.employees_json AS employeesJson, c.fetched_at AS fetchedAt, f.stock_json AS stockJson, s.share_financial_data AS shareFinancialData, s.share_employee_data AS shareEmployeeData FROM company_data_sharing s JOIN companies c ON c.player_id = s.player_id JOIN players p ON p.player_id = c.player_id LEFT JOIN company_financials f ON f.player_id = c.player_id AND f.company_id = c.company_id WHERE c.player_id != ? AND (s.share_financial_data = 1 OR s.share_employee_data = 1) ORDER BY c.company_type, c.company_name").bind(session.player_id).all<Record<string, unknown>>()
+      const shared = (rows.results ?? []).flatMap((row) => {
+        try {
+          const profilePayload = JSON.parse(String(row.profileJson)) as unknown
+          const profile = companyProfileRoot(profilePayload)
+          const companyType = isRecord(profile.type) && typeof profile.type.name === "string" ? profile.type.name : String(row.companyType ?? "Unknown")
+          const rowTypeId = isRecord(profile.type) && typeof profile.type.id === "number" ? profile.type.id : null
+          const matchesType = selectedType.id !== null && rowTypeId !== null ? rowTypeId === selectedType.id : companyType.toLocaleLowerCase() === selectedType.name
+          if (!matchesType) return []
+          const result: Record<string, unknown> = {
+            playerId: String(row.playerId), directorName: String(row.directorName ?? "Faction member"),
+            companyId: String(row.companyId), companyName: String(profile.name ?? row.companyName ?? `Company #${row.companyId}`),
+            companyType, companyTypeId: rowTypeId, fetchedAt: String(row.fetchedAt),
+            shareFinancialData: row.shareFinancialData === 1, shareEmployeeData: row.shareEmployeeData === 1,
+          }
+          if (row.shareFinancialData === 1) {
+            const adBudgetKeys = ["advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"]
+            const adBudget = adBudgetKeys.map((key) => profile[key]).find((value) => typeof value === "number" && Number.isFinite(value))
+            if (typeof adBudget === "number") result.adBudget = adBudget
+            if (row.stockJson) {
+              const stockPayload = JSON.parse(String(row.stockJson)) as unknown
+              const stockRoot = isRecord(stockPayload) && Array.isArray(stockPayload.stock) ? stockPayload.stock : Array.isArray(stockPayload) ? stockPayload : isRecord(stockPayload) && isRecord(stockPayload.stock) ? Object.values(stockPayload.stock) : []
+              result.stock = stockRoot.filter(isRecord).map((item) => {
+                const sharedItem: Record<string, unknown> = {}
+                if (typeof item.name === "string") sharedItem.name = item.name
+                for (const key of ["in_stock", "quantity", "amount"]) if (typeof item[key] === "number" && Number.isFinite(item[key])) { sharedItem.quantity = item[key]; break }
+                for (const key of ["cost", "unit_cost", "cost_per_unit", "price", "selling_price"]) if (typeof item[key] === "number" && Number.isFinite(item[key])) { sharedItem.unitPrice = item[key]; break }
+                return sharedItem
+              })
+            }
+          }
+          if (row.shareEmployeeData === 1) {
+            const employeesPayload = JSON.parse(String(row.employeesJson)) as unknown
+            const employeeRoot = isRecord(employeesPayload) && Array.isArray(employeesPayload.employees) ? employeesPayload.employees : Array.isArray(employeesPayload) ? employeesPayload : isRecord(employeesPayload) && isRecord(employeesPayload.employees) ? Object.values(employeesPayload.employees) : []
+            result.employees = employeeRoot.filter(isRecord).map((employee) => {
+              const item: Record<string, unknown> = {}
+              if (typeof employee.name === "string") item.name = employee.name
+              const position = isRecord(employee.position) ? employee.position.name : employee.position_name ?? employee.position
+              if (typeof position === "string") item.position = position
+              const stats = isRecord(employee.stats) ? employee.stats : {}
+              const normalizedStats: Record<string, number> = {}
+              const statFields: Array<[string, string]> = [["MAN", "manual_labor"], ["INT", "intelligence"], ["END", "endurance"]]
+              for (const [shortName, sourceName] of statFields) if (typeof stats[sourceName] === "number" && Number.isFinite(stats[sourceName])) normalizedStats[shortName] = stats[sourceName] as number
+              if (Object.keys(normalizedStats).length) item.stats = normalizedStats
+              const effectiveness = isRecord(employee.effectiveness) ? employee.effectiveness.total : employee.effectiveness
+              const totalEffectiveness = [effectiveness, employee.effectiveness_total, employee.total_effectiveness].find((value) => typeof value === "number" && Number.isFinite(value))
+              if (typeof totalEffectiveness === "number") item.effectiveness = totalEffectiveness
+              const wage = [employee.wage, employee.salary].find((value) => typeof value === "number" && Number.isFinite(value))
+              if (typeof wage === "number") item.wage = wage
+              return item
+            })
+          }
+          return [result]
+        } catch { return [] }
+      })
+      return jsonResponse({ companies: shared, generatedAt: new Date().toISOString(), companyTypeId: selectedType.id, companyType: selectedType.name }, 200, origin)
+    }
     if (url.pathname === "/api/rankings" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
@@ -506,7 +622,7 @@ export default {
         const requestedTypeId = requestedTypeIdRaw && /^\d+$/.test(requestedTypeIdRaw) ? Number(requestedTypeIdRaw) : null
         const companies = requestedTypeId !== null
           ? snapshotCompanies.filter((company) => Number(company.companyTypeId) === requestedTypeId)
-          : requestedType ? snapshotCompanies.filter((company) => String(company.companyType ?? "").trim().toLocaleLowerCase() === requestedType) : []
+          : requestedType ? snapshotCompanies.filter((company) => String(company.companyType ?? "").trim().toLocaleLowerCase() === requestedType) : snapshotCompanies
         return jsonResponse({ companies, generatedAt: cached?.fetchedAt ?? "", source: "Daily cached Torn API v2 company snapshot", scope: "all-torn", companyType: requestedType || null, companyTypeId: requestedTypeId, incomeDataUpdatesAt: "18:10 UTC daily", starRatingUpdatesAt: "18:10 UTC Sundays", cacheAvailable: Boolean(cached) }, 200, origin, { "cache-control": "private, max-age=300" })
       }
       // Faction view is intentionally private to the signed-in dashboard user.
@@ -531,9 +647,11 @@ export default {
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       try {
         if (request.method === "GET" || request.method === "POST") {
-          const rows = await requireDb(env).prepare("SELECT player_id AS playerId, player_name AS directorName, company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, company_rating AS starRating, daily_income AS dailyIncome, weekly_income AS weeklyIncome, updated_at AS fetchedAt FROM faction_member_cache WHERE faction_id = '8317' AND is_director = 1 ORDER BY company_type ASC, weekly_income DESC").all()
+          const rows = await requireDb(env).prepare("SELECT player_id AS playerId, player_name AS directorName, company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, company_rating AS starRating, daily_income AS dailyIncome, weekly_income AS weeklyIncome, updated_at AS fetchedAt FROM faction_member_cache WHERE faction_id = '8317' AND is_director = 1 ORDER BY company_type ASC, weekly_income DESC").all<Record<string, unknown>>()
           const weeklyCounts = await getWeeklyFactionStarCounts(env)
-          return jsonResponse({ directors: rows.results ?? [], processed: 0, pending: 0, syncing: false, ...weeklyCounts, generatedAt: new Date().toISOString(), source: "Daily cached Torn API snapshots" }, 200, origin)
+          const directors = rows.results ?? []
+          const generatedAt = directors.map((director) => String(director.fetchedAt ?? "")).filter(Boolean).sort().at(-1) || weeklyCounts.weeklyStarCountsCapturedAt || ""
+          return jsonResponse({ directors, processed: 0, pending: 0, syncing: false, ...weeklyCounts, generatedAt, source: "Daily cached Torn API snapshots" }, 200, origin)
         }
       } catch (error) { return tornError(error, origin) }
     }
@@ -545,12 +663,18 @@ export default {
       const db = requireDb(env)
       const director = await db.prepare("SELECT player_id AS playerId, player_name AS directorName, company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, company_rating AS starRating, daily_income AS dailyIncome, weekly_income AS weeklyIncome, updated_at AS fetchedAt FROM faction_member_cache WHERE player_id = ? AND faction_id = '8317' AND is_director = 1").bind(playerId).first<Record<string, unknown>>()
       if (!director) return jsonResponse({ error: "That faction member has not been confirmed as a company director yet. Refresh the faction directory and try again." }, 404, origin)
+      await db.prepare("CREATE TABLE IF NOT EXISTS company_data_sharing (player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), updated_at TEXT NOT NULL)").run()
+      let mayShareStock = playerId === session.player_id
+      if (!mayShareStock) {
+        const sharing = await db.prepare("SELECT share_financial_data AS shareFinancialData FROM company_data_sharing WHERE player_id = ?").bind(playerId).first<{ shareFinancialData: number }>()
+        mayShareStock = sharing?.shareFinancialData === 1
+      }
       const snapshots = await db.prepare("SELECT snapshot_day AS day, profile_json AS profileJson, stock_json AS stockJson, fetched_at AS fetchedAt FROM faction_director_snapshots WHERE player_id = ? AND company_id = ? ORDER BY snapshot_day ASC LIMIT 120").bind(playerId, String(director.companyId)).all<{ day: string; profileJson: string; stockJson: string | null; fetchedAt: string }>()
       const history = (snapshots.results ?? []).map((row) => {
         let root: Record<string, unknown> = {}
         let stock: unknown = null
         try { root = companyProfileRoot(JSON.parse(row.profileJson)) } catch { /* Ignore a corrupt historical snapshot. */ }
-        try { stock = row.stockJson ? JSON.parse(row.stockJson) : null } catch { /* Stock history is optional. */ }
+        try { stock = mayShareStock && row.stockJson ? JSON.parse(row.stockJson) : null } catch { /* Stock history is optional. */ }
         const income = isRecord(root.income) ? root.income : {}
         const profit = isRecord(root.profit) ? root.profit : {}
         const dailyProfit = [profit.daily, root.daily_profit, root.dailyProfit, root.profit_daily].find((value) => typeof value === "number" && Number.isFinite(value)) as number | undefined
@@ -558,7 +682,7 @@ export default {
         const stockQuantity = stockRows.reduce((sum, item) => { if (!isRecord(item)) return sum; const quantity = [item.in_stock, item.quantity, item.amount].find((value) => typeof value === "number" && Number.isFinite(value)) as number | undefined; return sum + (quantity ?? 0) }, 0)
         return { day: row.day, dailyIncome: typeof income.daily === "number" ? income.daily : null, weeklyIncome: typeof income.weekly === "number" ? income.weekly : null, dailyProfit: dailyProfit ?? null, stockQuantity: stock === null ? null : stockQuantity, stock }
       })
-      return jsonResponse({ director, history, stockHistoryAvailable: history.some((row) => row.stock !== null), generatedAt: new Date().toISOString() }, 200, origin)
+      return jsonResponse({ director, history, stockHistoryAvailable: mayShareStock && history.some((row) => row.stock !== null), generatedAt: new Date().toISOString() }, 200, origin)
     }
     if (url.pathname === "/api/me/companies" && request.method === "GET") {
       const session = await authenticate(request, env)
