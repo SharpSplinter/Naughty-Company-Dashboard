@@ -502,7 +502,7 @@ export default {
           const companies = requestedTypeId !== null
             ? snapshot.companies.filter((company) => Number(company.companyTypeId) === requestedTypeId)
             : requestedType ? snapshot.companies.filter((company) => String(company.companyType ?? "").trim().toLocaleLowerCase() === requestedType) : []
-          return jsonResponse({ companies, generatedAt: snapshot.snapshotFetchedAt, source: "Torn API v2 company snapshot", scope: "all-torn", companyType: requestedType || null, companyTypeId: requestedTypeId, incomeDataUpdatesAt: "18:00 UTC daily", starRatingUpdatesAt: "18:00 UTC Sundays" }, 200, origin, { "cache-control": "private, max-age=300" })
+          return jsonResponse({ companies, generatedAt: snapshot.snapshotFetchedAt, source: "Torn API v2 company snapshot", scope: "all-torn", companyType: requestedType || null, companyTypeId: requestedTypeId, incomeDataUpdatesAt: "18:10 UTC daily", starRatingUpdatesAt: "18:00 UTC Sundays" }, 200, origin, { "cache-control": "private, max-age=300" })
         } catch (error) { return tornError(error, origin) }
       }
       // Faction view is intentionally private to the signed-in dashboard user.
@@ -520,7 +520,7 @@ export default {
           return [{ companyId: String(row.company_id), companyName: String(root.name ?? row.company_name ?? `Company #${row.company_id}`), companyType: String(type.name ?? row.company_type ?? "Unknown"), companyTypeId: type.id ?? null, starRating: rating, weeklyIncome, dailyIncome, averageDailyIncome: weeklyIncome === null ? null : weeklyIncome / 7, directorName: String(row.player_name ?? "Unknown director"), playerId: String(row.player_id), fetchedAt: String(row.fetched_at) }]
         } catch { return [] }
       }).sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1))
-      return jsonResponse({ companies, generatedAt: new Date().toISOString(), source: "Dashboard-connected Naughty Souls companies", scope: "faction", incomeDataUpdatesAt: "18:00 UTC daily", starRatingUpdatesAt: "18:00 UTC Sundays" }, 200, origin)
+      return jsonResponse({ companies, generatedAt: new Date().toISOString(), source: "Dashboard-connected Naughty Souls companies", scope: "faction", incomeDataUpdatesAt: "18:10 UTC daily", starRatingUpdatesAt: "18:00 UTC Sundays" }, 200, origin)
     }
     if (url.pathname === "/api/faction/directors" && (request.method === "GET" || request.method === "POST")) {
       const session = await authenticate(request, env)
