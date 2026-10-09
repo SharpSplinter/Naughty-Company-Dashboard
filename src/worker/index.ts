@@ -138,13 +138,15 @@ async function validateCompanyKey(apiKey: string): Promise<{ companyId: number; 
 async function inspectDirectorKey(apiKey: string): Promise<{ isDirector: boolean; companyId?: string }> {
   try {
     const client = new TornApiClient({ apiKey })
-    // This endpoint is the authoritative initial director signal. Torn returns
-    // company_id here (not id); do not make identity/role detection depend on
-    // whether separate company profile, employee, or stock selections succeed.
+    // Torn's typed UserJobResponse wraps either a regular UserJob, a UserCompany,
+    // or null in `job`. A company director is identified by type="company",
+    // position="Director", and the UserCompany `id` field (not company_id).
+    // Optional employee/stock permissions must not affect this role check.
     const jobPayload = await client.getUserJob()
-    const job = isRecord(jobPayload) && isRecord(jobPayload.job) ? jobPayload.job : isRecord(jobPayload) ? jobPayload : {}
+    const job = isRecord(jobPayload) && isRecord(jobPayload.job) ? jobPayload.job : null
+    if (!job || job.type !== "company") return { isDirector: false }
     const position = typeof job.position === "string" ? job.position.trim().toLowerCase() : ""
-    const companyId = positiveId(job.company_id ?? job.companyId ?? job.id)
+    const companyId = positiveId(job.id)
     if (position !== "director" || !companyId) return { isDirector: false }
     return { isDirector: true, companyId }
   } catch {
@@ -290,15 +292,15 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
     const checkedAt = new Date().toISOString()
     try {
       const jobPayload = await client.getUserJobFor(id)
-      const job = isRecord(jobPayload.job) ? jobPayload.job : {}
-      const position = typeof job.position === "string" ? job.position.trim().toLowerCase() : ""
-      const isDirector = position === "director" && Boolean(positiveId(job.id ?? job.company_id))
-      if (!isDirector) {
+      const job = isRecord(jobPayload.job) ? jobPayload.job : null
+      const position = job && typeof job.position === "string" ? job.position.trim().toLowerCase() : ""
+      const companyId = job?.type === "company" ? positiveId(job.id) : null
+      const isDirector = Boolean(job && job.type === "company" && position === "director" && companyId)
+      if (!isDirector || !job || !companyId) {
         await db.prepare("INSERT INTO faction_member_cache (player_id, player_name, faction_id, checked_at, is_director, job_json, updated_at) VALUES (?, ?, '8317', ?, 0, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, faction_id = excluded.faction_id, checked_at = excluded.checked_at, is_director = 0, company_id = NULL, company_name = NULL, company_type = NULL, company_type_id = NULL, company_rating = NULL, daily_income = NULL, weekly_income = NULL, job_json = excluded.job_json, profile_json = NULL, updated_at = excluded.updated_at")
           .bind(id, name, checkedAt, asJson(jobPayload), checkedAt).run()
         continue
       }
-      const companyId = positiveId(job.id ?? job.company_id)!
       let profile: unknown = null
       try { profile = await client.getCompanyProfileById(companyId) } catch { /* Keep job-derived company identity if profile access is temporarily unavailable. */ }
       const root = companyProfileRoot(profile)

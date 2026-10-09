@@ -178,7 +178,7 @@ try {
       error.message.includes("rate limit"))
   })
 
-  await test("authenticates faction members through user/faction and directors through user/job company_id", async () => {
+  await test("authenticates faction members through user/faction and directors through typed UserCompany id", async () => {
     const originalFetch = globalThis.fetch
     const apiKeys = new Map()
     const companyKeys = new Map()
@@ -220,7 +220,7 @@ try {
       requestedTornPaths.push(path + url.search)
       if (path.endsWith("/v2/user/profile")) return new Response(JSON.stringify({ profile: { id: 777, name: "Test Director" } }))
       if (path.endsWith("/v2/user/faction")) return new Response(JSON.stringify({ faction: { id: 8317, name: "Naughty Souls" } }))
-      if (path.endsWith("/v2/user/job")) return new Response(JSON.stringify({ job: { job: "company", position: "Director", company_id: 77, company_name: "Test Company", company_type: 28 } }))
+      if (path.endsWith("/v2/user/job")) return new Response(JSON.stringify({ job: { type: "company", id: 77, type_id: 28, name: "Test Company", rating: 3, position: "Director", days_in_company: 100 } }))
       if (path.endsWith("/v2/company/profile")) return new Response(JSON.stringify({ profile: { id: 77, name: "Test Company", type: { id: 28, name: "Oil Rig" }, director: 777 } }))
       if (path.endsWith("/v2/company") && url.searchParams.get("selections") === "employees,stock,profile") {
         combinedCompanyRequest = true
