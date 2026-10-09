@@ -307,7 +307,10 @@ export function FloorApp() {
   const allTornRows = activeView === "faction-rankings" ? rankingCompanies : globalRankingCompanies.length ? globalRankingCompanies : activeView === "type-rankings" ? rankingCompanies : []
   const model = result?.model
   const currentRankingCompany = model ? allTornRows.find((row) => row.companyId === String(model.company.id)) : undefined
-  const companyPeerRows = model ? allTornRows.filter((row) => row.companyType === model.company.typeName) : currentRankingCompany ? allTornRows.filter((row) => row.companyType === currentRankingCompany.companyType) : []
+  const connectedTypeId = companyTypeIdFromProfile(result?.profile) ?? (currentRankingCompany?.companyTypeId == null ? null : Number(currentRankingCompany.companyTypeId))
+  const companyPeerRows = connectedTypeId !== null
+    ? allTornRows.filter((row) => Number(row.companyTypeId) === connectedTypeId)
+    : model ? allTornRows.filter((row) => row.companyType === model.company.typeName) : currentRankingCompany ? allTornRows.filter((row) => row.companyType === currentRankingCompany.companyType) : []
   const currentStar = currentRankingCompany?.starRating ?? model?.company.rating ?? null
   const nextStarIncome = currentStar === null ? null : companyPeerRows.filter((row) => row.starRating !== null && row.starRating > currentStar && row.weeklyIncome !== null).sort((a, b) => (a.starRating! - b.starRating!) || (a.weeklyIncome! - b.weeklyIncome!))[0]?.weeklyIncome ?? null
   const previousStarIncome = currentStar === null ? null : companyPeerRows.filter((row) => row.starRating !== null && row.starRating < currentStar && row.weeklyIncome !== null).sort((a, b) => (b.starRating! - a.starRating!) || (b.weeklyIncome! - a.weeklyIncome!))[0]?.weeklyIncome ?? null
