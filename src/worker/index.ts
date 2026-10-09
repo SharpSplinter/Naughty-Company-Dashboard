@@ -129,7 +129,7 @@ async function companyKeyMeta(env: WorkerEnv, playerId: string): Promise<{ saved
   return row ? { saved: true, lastFour: row.last_four, updatedAt: row.updated_at } : { saved: false }
 }
 async function validateCompanyKey(apiKey: string): Promise<{ companyId: number; profile: unknown; employees: unknown }> {
-  const client = new TornApiClient({ apiKey })
+  const client = new TornApiClient({ apiKey, diagnostic: true })
   const { profile, employees } = await client.getCompanySelections()
   const companyId = companyIdFromPayload(profile)
   if (!companyId) throw Object.assign(new Error("That key did not return a valid company profile. Use a key with company profile and employee access."), { status: 403 })

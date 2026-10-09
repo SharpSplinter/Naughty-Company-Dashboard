@@ -16,6 +16,7 @@ export type TornClientOptions = {
   baseUrl?: string
   fetcher?: typeof fetch
   timeoutMs?: number
+  diagnostic?: boolean
 }
 
 export type TornCompanyData = {

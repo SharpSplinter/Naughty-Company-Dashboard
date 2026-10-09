@@ -105,6 +105,7 @@ export class TornApiClient {
   private readonly baseUrl: string
   private readonly fetcher: typeof fetch
   private readonly timeoutMs: number
+  private readonly diagnostic: boolean
 
   constructor(options: TornClientOptions) {
     const apiKey = options.apiKey.trim()
@@ -118,6 +119,7 @@ export class TornApiClient {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "")
     this.fetcher = options.fetcher ?? fetch
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    this.diagnostic = options.diagnostic ?? false
   }
 
   async getUserJob(): Promise<Record<string, unknown>> {
@@ -222,6 +224,9 @@ export class TornApiClient {
             ? apiError.code
             : undefined
         const retryAfter = response.headers.get("Retry-After") ?? undefined
+        if (this.diagnostic) {
+          console.warn("[torn-api-diagnostic]", JSON.stringify({ endpoint: path, outcome: "upstream_error", upstreamStatus, tornCode: apiCode ?? null }))
+        }
 
         throw new TornApiClientError(apiErrorMessage(apiCode), {
           status: apiErrorStatus(upstreamStatus, apiCode),
@@ -230,13 +235,20 @@ export class TornApiClient {
         })
       }
 
+      if (this.diagnostic) {
+        console.info("[torn-api-diagnostic]", JSON.stringify({ endpoint: path, outcome: "success", upstreamStatus: response.status }))
+      }
       return payload as T
     } catch (error) {
       if (error instanceof TornApiClientError) throw error
       if (error instanceof Error && error.name === "AbortError") {
+        if (this.diagnostic) console.warn("[torn-api-diagnostic]", JSON.stringify({ endpoint: path, outcome: "timeout" }))
         throw new TornApiClientError("Torn API request timed out.", {
           status: 504,
         })
+      }
+      if (this.diagnostic) {
+        console.warn("[torn-api-diagnostic]", JSON.stringify({ endpoint: path, outcome: "network_error", errorType: error instanceof Error ? error.name : typeof error }))
       }
       throw new TornApiClientError("Could not reach the Torn API.", {
         status: 502,
