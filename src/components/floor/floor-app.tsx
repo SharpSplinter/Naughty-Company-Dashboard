@@ -33,7 +33,6 @@ export function FloorApp() {
   const [activeView, setActiveView] = useState<"overview" | "catalog" | "connect">("overview")
   const [search, setSearch] = useState("")
   const [selectedCompany, setSelectedCompany] = useState(companyNames[0] ?? "")
-  const [companyId, setCompanyId] = useState("")
   const [apiKey, setApiKey] = useState("")
   const [result, setResult] = useState<ApiResult | null>(null)
   const [error, setError] = useState("")
@@ -64,7 +63,6 @@ export function FloorApp() {
         if (cancelled) return
         setSavedCompanies(list.companies || [])
         if (list.companies?.length) {
-          setCompanyId(list.companies[0].company_id)
           const dataResponse = await fetch(`${API_BASE}/api/me/companies/${list.companies[0].company_id}`, { headers: { Authorization: `Bearer ${token}` } })
           if (!dataResponse.ok || cancelled) return
           const data = await dataResponse.json() as { profile: unknown; employees: unknown }
@@ -111,7 +109,6 @@ export function FloorApp() {
       const normalized = runEngine(payload.profile, payload.employees, catalog)
       if (!normalized) throw new Error("The saved company profile could not be normalized.")
       setResult({ profile: payload.profile, employees: payload.employees, model: normalized })
-      setCompanyId(id)
       setActiveView("overview")
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load saved company data.") }
     finally { setLoading(false) }
@@ -160,8 +157,6 @@ export function FloorApp() {
   async function connectCompany(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError("")
-    const id = Number(companyId)
-    if (!Number.isSafeInteger(id) || id <= 0) { setError("Enter a valid positive Torn company ID."); return }
     if (!sessionToken && !apiKey.trim()) { setError("Sign in with your Torn API key to create your player workspace."); return }
     setLoading(true)
     try {
@@ -181,9 +176,9 @@ export function FloorApp() {
         setApiKey("")
       }
       if (!token) throw new Error("Sign in with a Torn API key first.")
-      const response = await fetch(`${API_BASE}/api/company/${id}/refresh`, { method: "POST", headers: { Authorization: `Bearer ${token}` } })
+      const response = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { Authorization: `Bearer ${token}` } })
       const payload = await response.json() as { error?: string; profile?: unknown; employees?: unknown }
-      if (!response.ok) throw new Error(payload.error || "The API request failed. Check the key, company ID, and access permissions.")
+      if (!response.ok) throw new Error(payload.error || "The API request failed. Check the key and its company-data permissions.")
       const normalized = runEngine(payload.profile, payload.employees, catalog)
       if (!normalized) throw new Error("Torn returned an unexpected company profile. The response was not added to your saved workspace.")
       setResult({ profile: payload.profile, employees: payload.employees, model: normalized })
@@ -257,7 +252,7 @@ export function FloorApp() {
             </section>
           ) : activeView === "connect" ? (
             <section className="connect-layout">
-              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Connect to Torn</h2><p>Fetch live profile and employee data</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-id">Company ID</label><input id="company-id" inputMode="numeric" value={companyId} onChange={(event) => setCompanyId(event.target.value)} placeholder="e.g. 12345" /><label htmlFor="api-key">Torn API key</label><input id="api-key" type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={keySaved ? "Paste a replacement key (optional)" : "Paste your Torn API key to sign in"} /><p className="field-hint"><span>♢</span> Your key is encrypted in the server-side key store. Company records are stored separately.</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}<button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>{keySaved ? "Encrypted at rest. Only the last four characters are shown by the key store." : "Your saved company records remain available. Add a key again to refresh live data."}</p></div>{keySaved && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete key</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <button key={company.company_id} type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}>{company.company_name || `Company #${company.company_id}`} <span>#{company.company_id}</span></button>)}</div>}</div>}</div>
+              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Connect to Torn</h2><p>Fetch profile and employee data for the company linked to your key</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="api-key">Torn API key</label><input id="api-key" type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={keySaved ? "Paste a replacement key (optional)" : "Paste your Torn API key to sign in"} /><p className="field-hint"><span>♢</span> Your key is encrypted in the server-side key store. Company records are stored separately.</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}<button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>{keySaved ? "Encrypted at rest. Only the last four characters are shown by the key store." : "Your saved company records remain available. Add a key again to refresh live data."}</p></div>{keySaved && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete key</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <button key={company.company_id} type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}>{company.company_name || `Company #${company.company_id}`} <span>#{company.company_id}</span></button>)}</div>}</div>}</div>
               <div className="panel guide-panel"><span className="guide-icon">✳</span><h2>Before you connect</h2><ul><li>Use a Torn API key with the access needed for your company.</li><li>Private employee stats may only be available to authorized company directors.</li><li>Requests pass through the Cloudflare Worker to Torn's API.</li></ul><div className="guide-note"><strong>Privacy by design</strong><p>Your player account is identified by Torn. Deleting the saved key does not delete recorded company data.</p></div></div>
             </section>
           ) : (

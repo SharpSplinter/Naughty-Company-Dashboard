@@ -9,6 +9,17 @@ import type {
 const DEFAULT_BASE_URL = "https://api.torn.com/v2"
 const DEFAULT_TIMEOUT_MS = 10_000
 
+function extractCompanyId(payload: unknown): number | null {
+  if (!isRecord(payload)) return null
+  const company = isRecord(payload.company) ? payload.company : isRecord(payload.profile) ? payload.profile : payload
+  const candidates = [company.id, company.company_id, company.companyId, company.ID, payload.company_id, payload.companyId]
+  for (const candidate of candidates) {
+    const id = typeof candidate === "number" ? candidate : typeof candidate === "string" && /^\d+$/.test(candidate) ? Number(candidate) : NaN
+    if (Number.isSafeInteger(id) && id > 0) return id
+  }
+  return null
+}
+
 export class TornApiClientError extends Error {
   readonly status: number
   readonly code?: number
@@ -85,37 +96,26 @@ export class TornApiClient {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   }
 
-  async getCompanyProfile(
-    companyId: number,
-  ): Promise<TornCompanyResponse<TornCompanyProfile>> {
-    validateCompanyId(companyId)
-    return this.request<TornCompanyResponse<TornCompanyProfile>>(
-      `/company/${companyId}/profile`,
-    )
+  async getCompanyProfile(): Promise<TornCompanyResponse<TornCompanyProfile>> {
+    return this.request<TornCompanyResponse<TornCompanyProfile>>("/company/profile")
   }
 
-  async getCompanyEmployees(
-    companyId: number,
-  ): Promise<TornCompanyResponse<TornCompanyEmployees>> {
-    validateCompanyId(companyId)
-    return this.request<TornCompanyResponse<TornCompanyEmployees>>(
-      `/company/${companyId}/employees`,
-    )
+  async getCompanyEmployees(): Promise<TornCompanyResponse<TornCompanyEmployees>> {
+    return this.request<TornCompanyResponse<TornCompanyEmployees>>("/company/employees")
   }
 
-  async getCompanyData(companyId: number): Promise<TornCompanyData> {
-    validateCompanyId(companyId)
+  async getCompanyStock(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("/company/stock")
+  }
+
+  async getCompanyData(): Promise<TornCompanyData> {
     const [profile, employees] = await Promise.all([
-      this.getCompanyProfile(companyId),
-      this.getCompanyEmployees(companyId),
+      this.getCompanyProfile(),
+      this.getCompanyEmployees(),
     ])
-
-    return {
-      companyId,
-      profile,
-      employees,
-      fetchedAt: new Date().toISOString(),
-    }
+    const companyId = extractCompanyId(profile)
+    if (!companyId) throw new TornApiClientError("Torn did not return a valid company ID for this API key.", { status: 502 })
+    return { companyId, profile, employees, fetchedAt: new Date().toISOString() }
   }
 
   private async request<T>(path: string): Promise<T> {

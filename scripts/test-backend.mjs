@@ -74,15 +74,15 @@ try {
     assert.equal(model.employees[1].fit, "unknown")
   })
 
-  await test("rejects invalid company IDs before making a request", async () => {
-    let called = false
-    const client = new TornApiClient({ apiKey: "test", fetcher: async () => {
-      called = true
-      return new Response("{}")
+  await test("uses the primary company profile endpoint without a path company ID", async () => {
+    let requestedUrl = ""
+    const client = new TornApiClient({ apiKey: "test", fetcher: async (input) => {
+      requestedUrl = String(input)
+      return new Response(JSON.stringify({ company: { id: 77 } }))
     } })
-    await assert.rejects(() => client.getCompanyProfile(0), (error) =>
-      error instanceof TornApiClientError && error.status === 400)
-    assert.equal(called, false)
+    const response = await client.getCompanyProfile()
+    assert.equal(requestedUrl, "https://api.torn.com/v2/company/profile")
+    assert.equal(response.company.id, 77)
   })
 
   await test("sends the Torn key in Authorization, never in the URL", async () => {
@@ -96,8 +96,8 @@ try {
         return new Response(JSON.stringify({ profile: { id: 77 } }), { status: 200 })
       },
     })
-    const response = await client.getCompanyProfile(77)
-    assert.equal(requestedUrl, "https://api.torn.com/v2/company/77/profile")
+    const response = await client.getCompanyProfile()
+    assert.equal(requestedUrl, "https://api.torn.com/v2/company/profile")
     assert.equal(authorization, "ApiKey sample-key")
     assert.equal(response.profile.id, 77)
   })
@@ -109,7 +109,7 @@ try {
         error: { code: 9, error: "Too many requests" },
       }), { status: 200 }),
     })
-    await assert.rejects(() => client.getCompanyEmployees(77), (error) =>
+    await assert.rejects(() => client.getCompanyEmployees(), (error) =>
       error instanceof TornApiClientError &&
       error.status === 429 &&
       error.message.includes("rate limit"))
@@ -132,7 +132,7 @@ try {
   })
 
   await test("Worker requires a caller-supplied Torn key", async () => {
-    const response = await worker.fetch(new Request("https://worker.test/api/company/77/profile", {
+    const response = await worker.fetch(new Request("https://worker.test/api/company/profile", {
       headers: { Origin: "https://naughty-company-dashboard.pages.dev" },
     }), {})
     assert.equal(response.status, 401)
@@ -147,7 +147,7 @@ try {
       return new Response(JSON.stringify({ profile: { id: 77, name: "Sample Shop" } }), { status: 200 })
     }
     try {
-      const response = await worker.fetch(new Request("https://worker.test/api/company/77/profile", {
+      const response = await worker.fetch(new Request("https://worker.test/api/company/profile", {
         headers: {
           Origin: "https://naughty-company-dashboard.pages.dev",
           Authorization: "ApiKey test-key",

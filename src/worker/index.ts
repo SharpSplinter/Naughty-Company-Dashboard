@@ -102,12 +102,17 @@ async function savedKey(env: WorkerEnv, playerId: string): Promise<string | null
   const row = await requireDb(env).prepare("SELECT ciphertext, iv FROM api_keys WHERE player_id = ?").bind(playerId).first<{ ciphertext: string; iv: string }>()
   return row ? decryptKey(env, row.ciphertext, row.iv) : null
 }
-function companyIdFromPath(pathname: string): number | null {
-  const match = pathname.match(/^\/api\/company\/(\d+)(?:\/(profile|employees|refresh))?$/)
-  if (!match) return null
-  const id = Number(match[1])
-  return Number.isSafeInteger(id) && id > 0 ? id : null
+function companyIdFromPayload(payload: unknown): number | null {
+  if (!isRecord(payload)) return null
+  const company = isRecord(payload.company) ? payload.company : isRecord(payload.profile) ? payload.profile : payload
+  const candidates = [company.id, company.company_id, company.companyId, company.ID, payload.company_id, payload.companyId]
+  for (const candidate of candidates) {
+    const id = typeof candidate === "number" ? candidate : typeof candidate === "string" && /^\d+$/.test(candidate) ? Number(candidate) : NaN
+    if (Number.isSafeInteger(id) && id > 0) return id
+  }
+  return null
 }
+
 function tornError(error: unknown, origin: string): Response {
   if (error instanceof TornApiClientError) return jsonResponse({ error: error.message }, error.status, origin, error.retryAfter ? { "retry-after": error.retryAfter } : {})
   const status = isRecord(error) && typeof error.status === "number" ? error.status : 500
@@ -184,16 +189,17 @@ export default {
       if (!row) return jsonResponse({ error: "No saved data for this company yet." }, 404, origin)
       return jsonResponse({ companyId: row.company_id, companyName: row.company_name, companyType: row.company_type, profile: JSON.parse(String(row.profile_json)), employees: JSON.parse(String(row.employees_json)), fetchedAt: row.fetched_at }, 200, origin)
     }
-    const companyId = companyIdFromPath(url.pathname)
-    if (companyId && url.pathname.endsWith("/refresh") && request.method === "POST") {
+    if (url.pathname === "/api/company/refresh" && request.method === "POST") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       try {
         const apiKey = await savedKey(env, session.player_id)
         if (!apiKey) return jsonResponse({ error: "No Torn API key is saved. Add a key to refresh live data. Previously saved company data is still available." }, 409, origin)
         const client = new TornApiClient({ apiKey })
-        const [profile, employees] = await Promise.all([client.getCompanyProfile(companyId), client.getCompanyEmployees(companyId)])
-        const profileObj = isRecord(profile) && isRecord(profile.profile) ? profile.profile : {}
+        const [profile, employees] = await Promise.all([client.getCompanyProfile(), client.getCompanyEmployees()])
+        const companyId = companyIdFromPayload(profile)
+        if (!companyId) return jsonResponse({ error: "Torn did not return a valid company ID for this API key's company profile." }, 502, origin)
+        const profileObj = isRecord(profile) && isRecord(profile.company) ? profile.company : isRecord(profile) && isRecord(profile.profile) ? profile.profile : {}
         const companyName = typeof profileObj.name === "string" ? profileObj.name : `Company #${companyId}`
         const type = profileObj.type
         const companyType = isRecord(type) && typeof type.name === "string" ? type.name : null
@@ -204,15 +210,14 @@ export default {
         return jsonResponse({ companyId, companyName, companyType, profile, employees, fetchedAt: now }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
-    const routeMatch = url.pathname.match(/^\/api\/company\/(\d+)\/(profile|employees)$/)
-    if (routeMatch && request.method === "GET") {
-      const id = Number(routeMatch[1])
-      if (!Number.isSafeInteger(id) || id <= 0) return jsonResponse({ error: "Invalid company ID." }, 400, origin)
+    // Compatibility routes use the same key-scoped endpoints; path IDs are ignored intentionally.
+    const legacyRoute = url.pathname.match(/^\/api\/company\/(?:\d+\/)?(profile|employees|stock)$/)
+    if (legacyRoute && request.method === "GET") {
       const apiKey = request.headers.get("Authorization")?.match(/^ApiKey\s+(.+)$/i)?.[1]?.trim() ?? ""
       if (!apiKey) return jsonResponse({ error: "A Torn API key is required." }, 401, origin)
       try {
         const client = new TornApiClient({ apiKey })
-        const data = routeMatch[2] === "profile" ? await client.getCompanyProfile(id) : await client.getCompanyEmployees(id)
+        const data = legacyRoute[1] === "profile" ? await client.getCompanyProfile() : legacyRoute[1] === "employees" ? await client.getCompanyEmployees() : await client.getCompanyStock()
         return jsonResponse(data, 200, origin, { "cache-control": "private, no-store" })
       } catch (error) { return tornError(error, origin) }
     }
