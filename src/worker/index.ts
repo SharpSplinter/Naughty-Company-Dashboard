@@ -102,6 +102,38 @@ async function savedKey(env: WorkerEnv, playerId: string): Promise<string | null
   const row = await requireDb(env).prepare("SELECT ciphertext, iv FROM api_keys WHERE player_id = ?").bind(playerId).first<{ ciphertext: string; iv: string }>()
   return row ? decryptKey(env, row.ciphertext, row.iv) : null
 }
+async function saveCompanyKey(env: WorkerEnv, playerId: string, apiKey: string): Promise<void> {
+  const encrypted = await encryptKey(env, apiKey)
+  const now = new Date().toISOString()
+  await requireDb(env).prepare("INSERT INTO company_keys (player_id, ciphertext, iv, last_four, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, updated_at = excluded.updated_at").bind(playerId, encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), now, now).run()
+}
+async function savedCompanyKey(env: WorkerEnv, playerId: string): Promise<string | null> {
+  const row = await requireDb(env).prepare("SELECT ciphertext, iv FROM company_keys WHERE player_id = ?").bind(playerId).first<{ ciphertext: string; iv: string }>()
+  return row ? decryptKey(env, row.ciphertext, row.iv) : null
+}
+async function companyKeyMeta(env: WorkerEnv, playerId: string): Promise<{ saved: boolean; lastFour?: string; updatedAt?: string }> {
+  const row = await requireDb(env).prepare("SELECT last_four, updated_at FROM company_keys WHERE player_id = ?").bind(playerId).first<{ last_four: string; updated_at: string }>()
+  return row ? { saved: true, lastFour: row.last_four, updatedAt: row.updated_at } : { saved: false }
+}
+async function validateCompanyKey(apiKey: string): Promise<{ companyId: number; profile: unknown; employees: unknown }> {
+  const client = new TornApiClient({ apiKey })
+  const [profile, employees] = await Promise.all([client.getCompanyProfile(), client.getCompanyEmployees()])
+  const companyId = companyIdFromPayload(profile)
+  if (!companyId) throw Object.assign(new Error("That key did not return a valid company profile. Use a key with company profile and employee access."), { status: 403 })
+  return { companyId, profile, employees }
+}
+async function inspectDirectorKey(apiKey: string, playerId: string): Promise<{ isDirector: boolean; profile?: unknown }> {
+  try {
+    const client = new TornApiClient({ apiKey })
+    const profile = await client.getCompanyProfile()
+    const company = isRecord(profile) && isRecord(profile.company) ? profile.company : isRecord(profile) && isRecord(profile.profile) ? profile.profile : isRecord(profile) ? profile : {}
+    const director = isRecord(company.director) ? company.director : {}
+    const directorId = director.id ?? director.player_id ?? company.director_id
+    return { isDirector: directorId !== undefined && String(directorId) === playerId, profile }
+  } catch {
+    return { isDirector: false }
+  }
+}
 function companyIdFromPayload(payload: unknown): number | null {
   if (!isRecord(payload)) return null
   const company = isRecord(payload.company) ? payload.company : isRecord(payload.profile) ? payload.profile : payload
@@ -130,24 +162,35 @@ export default {
       try {
         const body: unknown = await request.json().catch(() => null)
         const apiKey = isRecord(body) && typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+        const secondaryCompanyKey = isRecord(body) && typeof body.secondaryCompanyKey === "string" ? body.secondaryCompanyKey.trim() : ""
         if (!apiKey) return jsonResponse({ error: "A Torn API key is required." }, 400, origin)
         const player = await validateTornKey(apiKey)
+        const directorCheck = await inspectDirectorKey(apiKey, player.id)
         const db = requireDb(env)
         const now = new Date().toISOString()
         await db.prepare("INSERT INTO players (player_id, player_name, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, updated_at = excluded.updated_at").bind(player.id, player.name, now, now).run()
         await saveKey(env, player.id, apiKey)
+        if (directorCheck.isDirector) {
+          await saveCompanyKey(env, player.id, apiKey)
+        } else if (secondaryCompanyKey) {
+          await validateCompanyKey(secondaryCompanyKey)
+          await saveCompanyKey(env, player.id, secondaryCompanyKey)
+        }
+        const companyKey = await companyKeyMeta(env, player.id)
         const token = randomToken()
         const expiresAt = Math.floor(Date.now() / 1000) + 30 * DAY
         await db.prepare("INSERT INTO sessions (token_hash, player_id, expires_at, created_at) VALUES (?, ?, ?, ?)").bind(await sha256(token), player.id, expiresAt, now).run()
         const meta = await db.prepare("SELECT last_four, updated_at FROM api_keys WHERE player_id = ?").bind(player.id).first<{ last_four: string; updated_at: string }>()
-        return jsonResponse({ token, expiresAt, player, key: { saved: true, lastFour: meta?.last_four, updatedAt: meta?.updated_at } }, 200, origin)
+        return jsonResponse({ token, expiresAt, player, key: { saved: true, lastFour: meta?.last_four, updatedAt: meta?.updated_at }, company: { isDirector: directorCheck.isDirector, key: companyKey, needsSecondaryKey: !directorCheck.isDirector && !companyKey.saved } }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
     if (url.pathname === "/api/auth/session" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       const key = await requireDb(env).prepare("SELECT last_four, updated_at FROM api_keys WHERE player_id = ?").bind(session.player_id).first<{ last_four: string; updated_at: string }>()
-      return jsonResponse({ player: { id: session.player_id, name: session.player_name }, key: key ? { saved: true, lastFour: key.last_four, updatedAt: key.updated_at } : { saved: false } }, 200, origin)
+      const loginKey = await savedKey(env, session.player_id)
+      const directorCheck = loginKey ? await inspectDirectorKey(loginKey, session.player_id) : { isDirector: false }
+      return jsonResponse({ player: { id: session.player_id, name: session.player_name }, key: key ? { saved: true, lastFour: key.last_four, updatedAt: key.updated_at } : { saved: false }, company: { isDirector: directorCheck.isDirector, key: await companyKeyMeta(env, session.player_id), needsSecondaryKey: !directorCheck.isDirector && !(await companyKeyMeta(env, session.player_id)).saved } }, 200, origin)
     }
     if (url.pathname === "/api/auth/key" && request.method === "POST") {
       const session = await authenticate(request, env)
@@ -162,10 +205,23 @@ export default {
         return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), updatedAt: new Date().toISOString() }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
+    if (url.pathname === "/api/auth/company-key" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      try {
+        const body: unknown = await request.json().catch(() => null)
+        const apiKey = isRecord(body) && typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+        if (!apiKey) return jsonResponse({ error: "A secondary company API key is required." }, 400, origin)
+        const validated = await validateCompanyKey(apiKey)
+        await saveCompanyKey(env, session.player_id, apiKey)
+        return jsonResponse({ saved: true, companyId: validated.companyId, key: await companyKeyMeta(env, session.player_id) }, 200, origin)
+      } catch (error) { return tornError(error, origin) }
+    }
     if (url.pathname === "/api/auth/key" && request.method === "DELETE") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       await requireDb(env).prepare("DELETE FROM api_keys WHERE player_id = ?").bind(session.player_id).run()
+      await requireDb(env).prepare("DELETE FROM company_keys WHERE player_id = ?").bind(session.player_id).run()
       return jsonResponse({ deleted: true, companyDataRetained: true }, 200, origin)
     }
     if (url.pathname === "/api/auth/sign-out" && request.method === "POST") {
@@ -193,8 +249,8 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       try {
-        const apiKey = await savedKey(env, session.player_id)
-        if (!apiKey) return jsonResponse({ error: "No Torn API key is saved. Add a key to refresh live data. Previously saved company data is still available." }, 409, origin)
+        const apiKey = await savedCompanyKey(env, session.player_id)
+        if (!apiKey) return jsonResponse({ error: "Your login key does not have director company access and no secondary company key is saved. Add a secondary company key to refresh live data. Previously saved company data is still available." }, 409, origin)
         const client = new TornApiClient({ apiKey })
         const [profile, employees] = await Promise.all([client.getCompanyProfile(), client.getCompanyEmployees()])
         const companyId = companyIdFromPayload(profile)
