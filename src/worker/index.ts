@@ -268,7 +268,7 @@ export default {
           const rating = typeof root.rating === "number" && Number.isFinite(root.rating) ? root.rating : null
           return [{ companyId: String(row.company_id), companyName: String(root.name ?? row.company_name ?? `Company #${row.company_id}`), companyType: String(type.name ?? row.company_type ?? "Unknown"), companyTypeId: type.id ?? null, starRating: rating, weeklyIncome, dailyIncome, averageDailyIncome: weeklyIncome === null ? null : weeklyIncome / 7, directorName: String(row.player_name ?? "Unknown director"), playerId: String(row.player_id), fetchedAt: String(row.fetched_at) }]
         } catch { return [] }
-      }).sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1) || a.companyName.localeCompare(b.companyName))
+      }).sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1))
       return jsonResponse({ companies, generatedAt: new Date().toISOString(), incomeDataUpdatesAt: "18:00 UTC daily", starRatingUpdatesAt: "18:00 UTC Sundays" }, 200, origin)
     }
     if (url.pathname === "/api/me/companies" && request.method === "GET") {
