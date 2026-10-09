@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import positionsData from "../../lib/company/positions.json"
 import { runEngine } from "../../lib/company/engine"
 import type { CompanyDashboardModel, CompanyPositionCatalog } from "../../lib/company/types"
@@ -9,6 +9,7 @@ const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.repl
   || "https://naughty-company-api.kboone801.workers.dev"
 
 type ApiResult = { model: CompanyDashboardModel; profile: unknown; employees: unknown }
+type SavedCompany = { company_id: string; company_name: string | null; company_type: string | null; fetched_at: string }
 
 function formatNumber(value: number | null | undefined): string {
   return value === null || value === undefined ? "—" : value.toLocaleString()
@@ -38,6 +39,44 @@ export function FloorApp() {
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
   const [showRaw, setShowRaw] = useState(false)
+  const [sessionToken, setSessionToken] = useState("")
+  const [playerName, setPlayerName] = useState("")
+  const [keySaved, setKeySaved] = useState(false)
+  const [savedCompanies, setSavedCompanies] = useState<SavedCompany[]>([])
+
+  useEffect(() => {
+    const token = sessionStorage.getItem("ncd_session") || ""
+    if (!token) return
+    let cancelled = false
+    async function restoreSession() {
+      try {
+        const response = await fetch(`${API_BASE}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } })
+        if (!response.ok) throw new Error("Session expired")
+        const session = await response.json() as { player: { id: string; name: string }; key: { saved: boolean } }
+        if (cancelled) return
+        setSessionToken(token)
+        setPlayerName(session.player.name)
+        setKeySaved(session.key.saved)
+        const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${token}` } })
+        if (!listResponse.ok) return
+        const list = await listResponse.json() as { companies: SavedCompany[] }
+        if (cancelled) return
+        setSavedCompanies(list.companies || [])
+        if (list.companies?.length) {
+          setCompanyId(list.companies[0].company_id)
+          const dataResponse = await fetch(`${API_BASE}/api/me/companies/${list.companies[0].company_id}`, { headers: { Authorization: `Bearer ${token}` } })
+          if (!dataResponse.ok || cancelled) return
+          const data = await dataResponse.json() as { profile: unknown; employees: unknown }
+          const normalized = runEngine(data.profile, data.employees, catalog)
+          if (normalized && !cancelled) setResult({ profile: data.profile, employees: data.employees, model: normalized })
+        }
+      } catch {
+        sessionStorage.removeItem("ncd_session")
+      }
+    }
+    void restoreSession()
+    return () => { cancelled = true }
+  }, [])
 
   const filteredCompanies = useMemo(
     () => companyNames.filter((name) => name.toLowerCase().includes(search.toLowerCase())),
@@ -46,45 +85,70 @@ export function FloorApp() {
   const positions = catalog.companies[selectedCompany] ?? []
   const model = result?.model
 
+  async function deleteSavedKey() {
+    if (!sessionToken || !window.confirm("Permanently delete the saved Torn API key? Your player profile and saved company data will remain.")) return
+    setError("")
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/key`, { method: "DELETE", headers: { Authorization: `Bearer ${sessionToken}` } })
+      const payload = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not delete the saved key.")
+      setKeySaved(false)
+      setApiKey("")
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not delete the saved key.") }
+  }
+
+  async function loadSavedCompany(id: string) {
+    if (!sessionToken) return
+    setError("")
+    setLoading(true)
+    try {
+      const response = await fetch(`${API_BASE}/api/me/companies/${id}`, { headers: { Authorization: `Bearer ${sessionToken}` } })
+      const payload = await response.json() as { error?: string; profile?: unknown; employees?: unknown }
+      if (!response.ok) throw new Error(payload.error || "Could not load saved company data.")
+      const normalized = runEngine(payload.profile, payload.employees, catalog)
+      if (!normalized) throw new Error("The saved company profile could not be normalized.")
+      setResult({ profile: payload.profile, employees: payload.employees, model: normalized })
+      setCompanyId(id)
+      setActiveView("overview")
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load saved company data.") }
+    finally { setLoading(false) }
+  }
+
   async function connectCompany(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError("")
-    setResult(null)
     const id = Number(companyId)
-    if (!Number.isSafeInteger(id) || id <= 0) {
-      setError("Enter a valid positive Torn company ID.")
-      return
-    }
-    if (!apiKey.trim()) {
-      setError("Enter your Torn API key. It stays in this page's memory and is not saved.")
-      return
-    }
-
+    if (!Number.isSafeInteger(id) || id <= 0) { setError("Enter a valid positive Torn company ID."); return }
+    if (!sessionToken && !apiKey.trim()) { setError("Sign in with your Torn API key to create your player workspace."); return }
     setLoading(true)
     try {
-      const headers = { Authorization: `ApiKey ${apiKey.trim()}`, Accept: "application/json" }
-      const [profileResponse, employeesResponse] = await Promise.all([
-        fetch(`${API_BASE}/api/company/${id}/profile`, { headers }),
-        fetch(`${API_BASE}/api/company/${id}/employees`, { headers }),
-      ])
-      const [profile, employees] = await Promise.all([
-        profileResponse.json() as Promise<unknown>,
-        employeesResponse.json() as Promise<unknown>,
-      ])
-      if (!profileResponse.ok || !employeesResponse.ok) {
-        const payload = getObject(!profileResponse.ok ? profile : employees)
-        throw new Error(typeof payload?.error === "string" ? payload.error : "The API request failed. Check the key, company ID, and access permissions.")
+      let token = sessionToken
+      if (apiKey.trim()) {
+        const path = token ? "/api/auth/key" : "/api/auth/sign-in"
+        const authResponse = await fetch(`${API_BASE}${path}`, { method: "POST", headers: { "content-type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ apiKey: apiKey.trim() }) })
+        const authPayload = await authResponse.json() as { error?: string; token?: string; player?: { id: string; name: string }; key?: { saved: boolean } }
+        if (!authResponse.ok) throw new Error(authPayload.error || "Torn-key sign-in failed.")
+        if (authPayload.token) {
+          token = authPayload.token
+          sessionStorage.setItem("ncd_session", token)
+          setSessionToken(token)
+        }
+        if (authPayload.player) setPlayerName(authPayload.player.name)
+        setKeySaved(true)
+        setApiKey("")
       }
-      const normalized = runEngine(profile, employees, catalog)
-      if (!normalized) throw new Error("Torn returned an unexpected company profile. No data was saved.")
-      setResult({ profile, employees, model: normalized })
-      setApiKey("")
+      if (!token) throw new Error("Sign in with a Torn API key first.")
+      const response = await fetch(`${API_BASE}/api/company/${id}/refresh`, { method: "POST", headers: { Authorization: `Bearer ${token}` } })
+      const payload = await response.json() as { error?: string; profile?: unknown; employees?: unknown }
+      if (!response.ok) throw new Error(payload.error || "The API request failed. Check the key, company ID, and access permissions.")
+      const normalized = runEngine(payload.profile, payload.employees, catalog)
+      if (!normalized) throw new Error("Torn returned an unexpected company profile. The response was not added to your saved workspace.")
+      setResult({ profile: payload.profile, employees: payload.employees, model: normalized })
       setActiveView("overview")
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not connect to the Torn API.")
-    } finally {
-      setLoading(false)
-    }
+      const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${token}` } })
+      if (listResponse.ok) { const list = await listResponse.json() as { companies: SavedCompany[] }; setSavedCompanies(list.companies || []) }
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not connect to the Torn API.") }
+    finally { setLoading(false) }
   }
 
   return (
@@ -101,7 +165,7 @@ export function FloorApp() {
           <button className={activeView === "connect" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("connect")}><span>⌁</span> Connect Torn API</button>
         </nav>
         <div className="sidebar-bottom">
-          <div className="connection-indicator"><span className={result ? "status-dot live" : "status-dot"} />{result ? "Torn API connected" : "Waiting for connection"}</div>
+          <div className="connection-indicator"><span className={result ? "status-dot live" : "status-dot"} />{sessionToken ? (keySaved ? `Signed in${playerName ? ` as ${playerName}` : ""}` : "Player signed in · key deleted") : "Sign in with Torn key"}</div>
           <div className="sidebar-foot">EARLY ACCESS <span>•</span> BUILD 0.2</div>
         </div>
       </aside>
@@ -127,8 +191,8 @@ export function FloorApp() {
             </section>
           ) : activeView === "connect" ? (
             <section className="connect-layout">
-              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Connect to Torn</h2><p>Fetch live profile and employee data</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-id">Company ID</label><input id="company-id" inputMode="numeric" value={companyId} onChange={(event) => setCompanyId(event.target.value)} placeholder="e.g. 12345" /><label htmlFor="api-key">Torn API key</label><input id="api-key" type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your API key" /><p className="field-hint"><span>♢</span> Your key is kept in page memory only, never saved to local storage.</p>{error && <div className="error-banner" role="alert">{error}</div>}<button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form></div>
-              <div className="panel guide-panel"><span className="guide-icon">✳</span><h2>Before you connect</h2><ul><li>Use a Torn API key with the access needed for your company.</li><li>Private employee stats may only be available to authorized company directors.</li><li>Requests pass through the Cloudflare Worker to Torn's API.</li></ul><div className="guide-note"><strong>Privacy by design</strong><p>Database storage and user accounts are not enabled yet. Avoid using a shared device with your API key.</p></div></div>
+              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Connect to Torn</h2><p>Fetch live profile and employee data</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-id">Company ID</label><input id="company-id" inputMode="numeric" value={companyId} onChange={(event) => setCompanyId(event.target.value)} placeholder="e.g. 12345" /><label htmlFor="api-key">Torn API key</label><input id="api-key" type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={keySaved ? "Paste a replacement key (optional)" : "Paste your Torn API key to sign in"} /><p className="field-hint"><span>♢</span> Your key is encrypted in the server-side key store. Company records are stored separately.</p>{error && <div className="error-banner" role="alert">{error}</div>}<button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>{keySaved ? "Encrypted at rest. Only the last four characters are shown by the key store." : "Your saved company records remain available. Add a key again to refresh live data."}</p></div>{keySaved && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete key</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <button key={company.company_id} type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}>{company.company_name || `Company #${company.company_id}`} <span>#{company.company_id}</span></button>)}</div>}</div>}</div>
+              <div className="panel guide-panel"><span className="guide-icon">✳</span><h2>Before you connect</h2><ul><li>Use a Torn API key with the access needed for your company.</li><li>Private employee stats may only be available to authorized company directors.</li><li>Requests pass through the Cloudflare Worker to Torn's API.</li></ul><div className="guide-note"><strong>Privacy by design</strong><p>Your player account is identified by Torn. Deleting the saved key does not delete recorded company data.</p></div></div>
             </section>
           ) : (
             <>
