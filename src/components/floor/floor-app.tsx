@@ -223,10 +223,30 @@ export function FloorApp() {
       setApiKey("")
       setSecondaryCompanyKey("")
       const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
+      let companies: SavedCompany[] = []
       if (listResponse.ok) {
         const list = await listResponse.json() as { companies: SavedCompany[] }
-        setSavedCompanies(list.companies || [])
-        if (list.companies?.length) setSelectedCompanyId(list.companies[0].company_id)
+        companies = list.companies || []
+        setSavedCompanies(companies)
+      }
+      if (companies.length) {
+        const company = companies[0]
+        setSelectedCompanyId(company.company_id)
+        const companyResponse = await fetch(`${API_BASE}/api/me/companies/${company.company_id}`, { headers: { Authorization: `Bearer ${payload.token}` } })
+        if (companyResponse.ok) {
+          const data = await companyResponse.json() as { profile: unknown; employees: unknown }
+          const normalized = runEngine(data.profile, data.employees, catalog)
+          if (normalized) { setResult({ profile: data.profile, employees: data.employees, model: normalized }); setSelectedRankingType(normalized.company.typeName) }
+        }
+      } else if (payload.company?.key?.saved) {
+        const companyResponse = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { Authorization: `Bearer ${payload.token}` } })
+        if (companyResponse.ok) {
+          const data = await companyResponse.json() as { profile: unknown; employees: unknown; companyId?: string | number }
+          const normalized = runEngine(data.profile, data.employees, catalog)
+          if (normalized) { setResult({ profile: data.profile, employees: data.employees, model: normalized }); setSelectedCompanyId(String(data.companyId ?? normalized.company.id)); setSelectedRankingType(normalized.company.typeName) }
+          const refreshedList = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
+          if (refreshedList.ok) { const saved = await refreshedList.json() as { companies: SavedCompany[] }; setSavedCompanies(saved.companies || []) }
+        }
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not sign in.")
