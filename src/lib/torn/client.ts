@@ -108,6 +108,18 @@ export class TornApiClient {
     return this.request<Record<string, unknown>>("/company/stock")
   }
 
+  async getCompanySelections(): Promise<{ profile: TornCompanyResponse<TornCompanyProfile>; employees: TornCompanyResponse<TornCompanyEmployees>; stock: Record<string, unknown> }> {
+    const payload = await this.request<Record<string, unknown>>("/company?selections=employees%2Cstock%2Cprofile")
+    if (!isRecord(payload) || !isRecord(payload.profile) || !Array.isArray(payload.employees) || !Array.isArray(payload.stock)) {
+      throw new TornApiClientError("Torn did not return company profile, employees, and stock in the combined response.", { status: 502 })
+    }
+    return {
+      profile: { profile: payload.profile },
+      employees: { employees: payload.employees },
+      stock: { stock: payload.stock },
+    }
+  }
+
   async getCompanyData(): Promise<TornCompanyData> {
     const [profile, employees] = await Promise.all([
       this.getCompanyProfile(),
