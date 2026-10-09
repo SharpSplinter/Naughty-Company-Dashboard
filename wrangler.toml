@@ -10,3 +10,6 @@ binding = "DB"
 database_name = "naughty-company-dashboard"
 database_id = "bbbe128a-c5cc-46ec-b8ef-93860183e795"
 migrations_dir = "migrations/auth"
+
+[triggers]
+crons = ["5 18 * * *"]

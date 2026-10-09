@@ -151,7 +151,31 @@ function tornError(error: unknown, origin: string): Response {
   return jsonResponse({ error: error instanceof Error ? error.message : "Unexpected server error." }, status, origin)
 }
 
+async function refreshRankingProfiles(env: WorkerEnv): Promise<void> {
+  if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return
+  const db = requireDb(env)
+  const keys = await db.prepare("SELECT player_id, ciphertext, iv FROM company_keys ORDER BY updated_at ASC").all<{ player_id: string; ciphertext: string; iv: string }>()
+  for (const keyRow of keys.results ?? []) {
+    try {
+      const apiKey = await decryptKey(env, keyRow.ciphertext, keyRow.iv)
+      const profile = await new TornApiClient({ apiKey }).getCompanyProfile()
+      const companyId = companyIdFromPayload(profile)
+      if (!companyId) continue
+      const root = isRecord(profile) && isRecord(profile.company) ? profile.company : isRecord(profile) && isRecord(profile.profile) ? profile.profile : isRecord(profile) ? profile : {}
+      const type = isRecord(root.type) ? root.type : {}
+      const existing = await db.prepare("SELECT employees_json FROM companies WHERE player_id = ? AND company_id = ?").bind(keyRow.player_id, String(companyId)).first<{ employees_json: string }>()
+      const employees = existing?.employees_json ?? "{}"
+      const now = new Date().toISOString()
+      await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), String(root.name ?? `Company #${companyId}`), typeof type.name === "string" ? type.name : null, asJson(profile), employees, now).run()
+      await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(profile), employees, now).run()
+    } catch { /* One stale key or Torn API error must not stop the remaining companies. */ }
+  }
+}
+
 export default {
+  async scheduled(_controller: { scheduledTime: number; cron: string }, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
+    ctx.waitUntil(refreshRankingProfiles(env))
+  },
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     const origin = allowedOrigin(request, env)
     if (!origin) return jsonResponse({ error: "Origin not allowed." }, 403)
@@ -228,6 +252,24 @@ export default {
       const token = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
       if (token && env.DB) await requireDb(env).prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256(token)).run()
       return jsonResponse({ signedOut: true }, 200, origin)
+    }
+    if (url.pathname === "/api/rankings" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const rows = await requireDb(env).prepare("SELECT c.player_id, c.company_id, c.company_name, c.company_type, c.profile_json, c.fetched_at, p.player_name FROM companies c JOIN players p ON p.player_id = c.player_id").all()
+      const companies = (rows.results ?? []).flatMap((row) => {
+        try {
+          const profile = JSON.parse(String(row.profile_json)) as unknown
+          const root = isRecord(profile) && isRecord(profile.company) ? profile.company : isRecord(profile) && isRecord(profile.profile) ? profile.profile : isRecord(profile) ? profile : {}
+          const income = isRecord(root.income) ? root.income : {}
+          const type = isRecord(root.type) ? root.type : {}
+          const weeklyIncome = typeof income.weekly === "number" && Number.isFinite(income.weekly) ? income.weekly : null
+          const dailyIncome = typeof income.daily === "number" && Number.isFinite(income.daily) ? income.daily : null
+          const rating = typeof root.rating === "number" && Number.isFinite(root.rating) ? root.rating : null
+          return [{ companyId: String(row.company_id), companyName: String(root.name ?? row.company_name ?? `Company #${row.company_id}`), companyType: String(type.name ?? row.company_type ?? "Unknown"), companyTypeId: type.id ?? null, starRating: rating, weeklyIncome, dailyIncome, averageDailyIncome: weeklyIncome === null ? null : weeklyIncome / 7, directorName: String(row.player_name ?? "Unknown director"), playerId: String(row.player_id), fetchedAt: String(row.fetched_at) }]
+        } catch { return [] }
+      }).sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1) || a.companyName.localeCompare(b.companyName))
+      return jsonResponse({ companies, generatedAt: new Date().toISOString(), incomeDataUpdatesAt: "18:00 UTC daily", starRatingUpdatesAt: "18:00 UTC Sundays" }, 200, origin)
     }
     if (url.pathname === "/api/me/companies" && request.method === "GET") {
       const session = await authenticate(request, env)

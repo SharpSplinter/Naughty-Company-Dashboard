@@ -10,6 +10,7 @@ const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.repl
 
 type ApiResult = { model: CompanyDashboardModel; profile: unknown; employees: unknown }
 type SavedCompany = { company_id: string; company_name: string | null; company_type: string | null; fetched_at: string }
+type RankingCompany = { companyId: string; companyName: string; companyType: string; companyTypeId: number | string | null; starRating: number | null; weeklyIncome: number | null; dailyIncome: number | null; averageDailyIncome: number | null; directorName: string; playerId: string; fetchedAt: string }
 
 function formatNumber(value: number | null | undefined): string {
   return value === null || value === undefined ? "—" : value.toLocaleString()
@@ -30,7 +31,7 @@ function pretty(value: unknown): string {
 }
 
 export function FloorApp() {
-  const [activeView, setActiveView] = useState<"overview" | "catalog" | "connect">("overview")
+  const [activeView, setActiveView] = useState<"overview" | "catalog" | "connect" | "type-rankings" | "faction-rankings">("overview")
   const [search, setSearch] = useState("")
   const [selectedCompany, setSelectedCompany] = useState(companyNames[0] ?? "")
   const [apiKey, setApiKey] = useState("")
@@ -46,6 +47,10 @@ export function FloorApp() {
   const [playerName, setPlayerName] = useState("")
   const [keySaved, setKeySaved] = useState(false)
   const [savedCompanies, setSavedCompanies] = useState<SavedCompany[]>([])
+  const [rankingCompanies, setRankingCompanies] = useState<RankingCompany[]>([])
+  const [rankingsUpdatedAt, setRankingsUpdatedAt] = useState("")
+  const [rankingError, setRankingError] = useState("")
+  const [selectedRankingType, setSelectedRankingType] = useState("")
 
   useEffect(() => {
     const token = sessionStorage.getItem("ncd_session") || ""
@@ -83,6 +88,28 @@ export function FloorApp() {
     void restoreSession()
     return () => { cancelled = true }
   }, [])
+
+  useEffect(() => {
+    if (!sessionToken || (activeView !== "type-rankings" && activeView !== "faction-rankings")) return
+    let cancelled = false
+    async function loadRankings() {
+      setRankingError("")
+      try {
+        const response = await fetch(`${API_BASE}/api/rankings`, { headers: { Authorization: `Bearer ${sessionToken}` } })
+        const payload = await response.json() as { error?: string; companies?: RankingCompany[]; generatedAt?: string }
+        if (!response.ok) throw new Error(payload.error || "Could not load company rankings.")
+        if (cancelled) return
+        const sorted = (payload.companies || []).slice().sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1) || a.companyName.localeCompare(b.companyName))
+        setRankingCompanies(sorted)
+        setRankingsUpdatedAt(payload.generatedAt || "")
+        setSelectedRankingType((current) => current || sorted[0]?.companyType || "")
+      } catch (caught) {
+        if (!cancelled) setRankingError(caught instanceof Error ? caught.message : "Could not load company rankings.")
+      }
+    }
+    void loadRankings()
+    return () => { cancelled = true }
+  }, [activeView, sessionToken])
 
   const filteredCompanies = useMemo(
     () => companyNames.filter((name) => name.toLowerCase().includes(search.toLowerCase())),
@@ -233,6 +260,8 @@ export function FloorApp() {
         <nav className="nav-list" aria-label="Main navigation">
           <button className={activeView === "overview" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("overview")}><span>◫</span> Overview</button>
           <button className={activeView === "catalog" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("catalog")}><span>▦</span> Position catalog <em>{companyNames.length}</em></button>
+          <button className={activeView === "type-rankings" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("type-rankings")}><span>↗</span> Company rankings</button>
+          <button className={activeView === "faction-rankings" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("faction-rankings")}><span>♜</span> Faction rankings</button>
           <button className={activeView === "connect" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("connect")}><span>⌁</span> Connect Torn API</button>
         </nav>
         <div className="sidebar-bottom">
@@ -243,17 +272,26 @@ export function FloorApp() {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs">Workspace <span>/</span> <strong>{activeView === "overview" ? "Overview" : activeView === "catalog" ? "Position catalog" : "Connect Torn API"}</strong></div>
+          <div className="breadcrumbs">Workspace <span>/</span> <strong>{activeView === "overview" ? "Overview" : activeView === "catalog" ? "Position catalog" : activeView === "type-rankings" ? "Company rankings" : activeView === "faction-rankings" ? "Faction rankings" : "Connect Torn API"}</strong></div>
           <div className="topbar-right"><span className="environment-pill"><i /> CLOUDFLARE WORKER</span><div className="avatar">NC</div></div>
         </header>
 
         <div className="page-content">
           <section className="welcome-row">
-            <div><div className="eyebrow"><span className="eyebrow-line" /> COMPANY INTELLIGENCE</div><h1>{activeView === "overview" ? "Operations overview" : activeView === "catalog" ? "Position catalog" : "Connect your company"}</h1><p className="subtitle">{activeView === "overview" ? "Your company, your people, one clear picture." : activeView === "catalog" ? "Explore role requirements across the Torn company ecosystem." : "Pull live company data through your secure API connection."}</p></div>
+            <div><div className="eyebrow"><span className="eyebrow-line" /> COMPANY INTELLIGENCE</div><h1>{activeView === "overview" ? "Operations overview" : activeView === "catalog" ? "Position catalog" : activeView === "type-rankings" ? "Company type rankings" : activeView === "faction-rankings" ? "Faction company rankings" : "Connect your company"}</h1><p className="subtitle">{activeView === "overview" ? "Your company, your people, one clear picture." : activeView === "catalog" ? "Explore role requirements across the Torn company ecosystem." : activeView === "type-rankings" ? "Compare companies within the same Torn company type, ranked by weekly income." : activeView === "faction-rankings" ? "See how dashboard-connected Naughty Souls companies stack up across the faction." : "Pull live company data through your secure API connection."}</p></div>
             <button className="primary-button" onClick={() => setActiveView("connect")}><span>＋</span> Connect company</button>
           </section>
 
-          {activeView === "catalog" ? (
+          {activeView === "type-rankings" || activeView === "faction-rankings" ? (
+            <section className="panel ranking-panel">
+              <div className="panel-heading ranking-heading"><div><h2>{activeView === "type-rankings" ? "Rank within company type" : "Naughty Souls dashboard leaderboard"}</h2><p>{activeView === "type-rankings" ? "Only companies of the selected type are shown. Weekly income alone determines rank." : "Companies recorded by dashboard users in Naughty Souls, ordered by weekly income."}</p></div>{activeView === "type-rankings" && <label className="ranking-filter">Company type<select value={selectedRankingType} onChange={(event) => setSelectedRankingType(event.target.value)}><option value="">All types</option>{Array.from(new Set(rankingCompanies.map((company) => company.companyType))).sort().map((type) => <option key={type} value={type}>{type}</option>)}</select></label>}</div>
+              <div className="ranking-meta"><span><i className="status-dot live" /> {rankingCompanies.length} saved companies in dashboard rankings</span><span>Data refresh: daily at 18:05 UTC · Star ratings update Sundays after 18:00 UTC</span></div>
+              {rankingError && <div className="error-banner" role="alert">{rankingError}</div>}
+              <div className="table-scroll"><table className="ranking-table"><thead><tr><th>RANK</th><th>COMPANY</th>{activeView === "faction-rankings" && <th>DIRECTOR</th>}<th>TYPE</th><th>STARS</th><th>WEEKLY INCOME</th><th>DAILY INCOME</th><th>AVG / DAY</th><th>DATA AS OF (UTC)</th></tr></thead><tbody>{rankingCompanies.filter((company) => activeView !== "type-rankings" || !selectedRankingType || company.companyType === selectedRankingType).map((company, index) => <tr key={`${company.playerId}-${company.companyId}`}><td><span className={`rank-number ${index < 3 ? "top-rank" : ""}`}>{index + 1}</span></td><td><strong>{company.companyName}</strong><div className="muted">Company #{company.companyId}</div></td>{activeView === "faction-rankings" && <td>{company.directorName}</td>}<td>{company.companyType}</td><td><span className="star-rating">{company.starRating === null ? "—" : `${company.starRating} ★`}</span></td><td className="income-primary">{formatMoney(company.weeklyIncome)}</td><td>{formatMoney(company.dailyIncome)}</td><td>{formatMoney(company.averageDailyIncome)}</td><td className="muted">{company.fetchedAt ? new Date(company.fetchedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }) : "—"}</td></tr>)}</tbody></table></div>
+              {rankingCompanies.filter((company) => activeView !== "type-rankings" || !selectedRankingType || company.companyType === selectedRankingType).length === 0 && <div className="empty-state">No saved companies have ranking data yet. A director can connect a company key to add its profile to the leaderboard.</div>}
+              <div className="ranking-footnote"><strong>How ranking works</strong><p>Rank is determined exclusively by weekly income, highest first. Average daily income is weekly income divided by seven. Rankings include companies whose directors have connected them to this dashboard, not every company in Torn.</p><p>{rankingsUpdatedAt ? `Leaderboard checked ${new Date(rankingsUpdatedAt).toLocaleString("en-GB", { timeZone: "UTC", timeZoneName: "short" })}.` : "Leaderboard refreshes from saved company profiles."} Daily company income data locks at 18:00 UTC; star-rating changes lock on Sundays at 18:00 UTC.</p></div>
+            </section>
+          ) : activeView === "catalog" ? (
             <section className="panel catalog-panel">
               <div className="panel-heading"><div><h2>Company role library</h2><p>{companyNames.length} company types · position requirements reference</p></div><div className="search-wrap"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search company types..." /></div></div>
               <div className="company-grid">{filteredCompanies.map((name) => <button key={name} className={selectedCompany === name ? "company-card selected" : "company-card"} onClick={() => setSelectedCompany(name)}><span className="company-glyph">{name.slice(0, 1)}</span><span className="company-card-copy"><strong>{name}</strong><small>{catalog.companies[name].length} defined roles</small></span><span className="card-arrow">↗</span></button>)}</div>
