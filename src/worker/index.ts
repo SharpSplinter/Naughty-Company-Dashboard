@@ -238,20 +238,26 @@ async function fetchGlobalCompanyRankings(apiKey: string): Promise<{ companies: 
 async function refreshRankingProfiles(env: WorkerEnv): Promise<void> {
   if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return
   const db = requireDb(env)
-  const keys = await db.prepare("SELECT player_id, ciphertext, iv FROM company_keys ORDER BY updated_at ASC").all<{ player_id: string; ciphertext: string; iv: string }>()
-  for (const keyRow of keys.results ?? []) {
+  const perCompany = await db.prepare("SELECT player_id, company_id, ciphertext, iv FROM company_api_keys ORDER BY updated_at ASC").all<{ player_id: string; company_id: string; ciphertext: string; iv: string }>()
+  const keys = perCompany.results ?? []
+  const keyedPlayers = new Set(keys.map((row) => row.player_id))
+  const legacy = await db.prepare("SELECT player_id, ciphertext, iv FROM company_keys ORDER BY updated_at ASC").all<{ player_id: string; ciphertext: string; iv: string }>()
+  const work = [...keys, ...(legacy.results ?? []).filter((row) => !keyedPlayers.has(row.player_id)).map((row) => ({ ...row, company_id: "" }))]
+  for (const keyRow of work) {
     try {
       const apiKey = await decryptKey(env, keyRow.ciphertext, keyRow.iv)
-      const profile = await new TornApiClient({ apiKey }).getCompanyProfile()
+      const client = new TornApiClient({ apiKey })
+      const [profile, employeePayload, stock] = await Promise.all([client.getCompanyProfile(), client.getCompanyEmployees().catch(() => null), client.getCompanyStock().catch(() => null)])
       const companyId = companyIdFromPayload(profile)
-      if (!companyId) continue
+      if (!companyId || (keyRow.company_id && String(companyId) !== keyRow.company_id)) continue
       const root = isRecord(profile) && isRecord(profile.company) ? profile.company : isRecord(profile) && isRecord(profile.profile) ? profile.profile : isRecord(profile) ? profile : {}
       const type = isRecord(root.type) ? root.type : {}
       const existing = await db.prepare("SELECT employees_json FROM companies WHERE player_id = ? AND company_id = ?").bind(keyRow.player_id, String(companyId)).first<{ employees_json: string }>()
-      const employees = existing?.employees_json ?? "{}"
+      const employees = employeePayload === null ? existing?.employees_json ?? "{}" : asJson(employeePayload)
       const now = new Date().toISOString()
-      await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), String(root.name ?? `Company #${companyId}`), typeof type.name === "string" ? type.name : null, asJson(profile), employees, now).run()
+      await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, employees_json = excluded.employees_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), String(root.name ?? `Company #${companyId}`), typeof type.name === "string" ? type.name : null, asJson(profile), employees, now).run()
       await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(profile), employees, now).run()
+      await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), asJson(stock), now).run()
     } catch { /* One stale key or Torn API error must not stop the remaining companies. */ }
   }
 }
