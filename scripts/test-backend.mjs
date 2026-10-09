@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { createRequire } from "node:module"
@@ -7,6 +7,7 @@ import ts from "typescript"
 
 const root = process.cwd()
 const temp = mkdtempSync(join(tmpdir(), "naughty-company-tests-"))
+writeFileSync(join(temp, "package.json"), JSON.stringify({ type: "commonjs" }))
 const sourceFiles = [
   "src/lib/company/engine.ts",
   "src/lib/company/types.ts",
