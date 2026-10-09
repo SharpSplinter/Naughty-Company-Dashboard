@@ -1,36 +1,44 @@
-# Cloudflare deployment plan
+# Cloudflare deployment
 
-The repository is being prepared for a split deployment:
+## Projects
 
-- **Cloudflare Pages** serves the Vite frontend.
-- **Cloudflare Workers** runs the portable Torn API backend from `src/worker/index.ts`.
-- **Database and application authentication** remain intentionally deferred.
+- **Pages project:** `naughty-company-dashboard`
+- **Pages URL:** https://naughty-company-dashboard.pages.dev
+- **API Worker:** https://naughty-company-api.kboone801.workers.dev
+- **Git repository:** `SharpSplinter/Naughty-Company-Dashboard`
+- **Cloudflare Pages production branch:** `fix/missing-grok-pwa-plugin` while the project is under development; `main` is intentionally untouched.
 
-## Initial API Worker
+Pages build settings:
 
-The first Worker has been created in the Cloudflare account at:
+- Build command: `npm run build`
+- Output directory: `dist`
+- Root directory: repository root
+- Build variable: `VITE_API_BASE_URL=https://naughty-company-api.kboone801.workers.dev`
 
-- Base URL: `https://naughty-company-api.kboone801.workers.dev`
-- Health endpoint: `GET /health`
-- Company profile: `GET /api/company/:companyId/profile`
-- Company employees: `GET /api/company/:companyId/employees`
+The Pages project has been created and connected to the repository in Cloudflare's project configuration. At initial verification, no deployment had yet been reported by the Pages API, so the Pages URL may not serve a successful build until the first build completes.
+
+## API Worker
+
+The Worker exposes:
+
+- `GET /health`
+- `GET /api/company/:companyId/profile`
+- `GET /api/company/:companyId/employees`
 
 The company ID must be a positive integer. Torn API keys are accepted using the `Authorization: ApiKey <key>` request header. The key is forwarded to Torn by the Worker and is not persisted. Never put a key in a URL, source file, or logs.
 
-The live Worker was uploaded through the Cloudflare API. Its deployment was accepted by Cloudflare, but an end-to-end runtime request has not yet been independently verified.
+The first Worker was uploaded through the Cloudflare API. The live health URL has not been successfully verified from the current execution environment, so the source configuration remains the intended source of truth.
 
 ## Security notes
 
-The initial API does not use a global Torn key because that would expose the same private key to every caller before application authentication exists. The current Worker accepts a caller-supplied key and has broad CORS enabled for early integration testing.
+The initial API accepts a caller-supplied Torn key and does not use a global shared key. The deployed prototype currently allows broad CORS for integration testing. Before production, restrict the allowed origin and ensure the deployed Worker matches `src/worker/index.ts`. Authentication and authorization must be added before exposing private company data publicly. CORS is not authentication.
 
-Before production, set `ALLOWED_ORIGIN` to the exact Pages origin and make the deployed Worker configuration match the source configuration. Authentication and authorization must be added before exposing private company data publicly. Do not treat CORS as an authentication mechanism.
+Database-backed sessions, account authentication, and persisted key management are intentionally deferred.
 
-## Deployment
+## Local development
 
-1. Restore and verify the existing frontend's dependencies and build.
-2. Keep the Worker source of truth in `src/worker/index.ts` and deploy it with `npx wrangler deploy --config wrangler.toml`.
-3. Configure the frontend's API base URL as a Pages environment variable.
-4. Connect the GitHub repository to Cloudflare Builds for preview and production deployments.
-5. Add database-backed sessions and credential storage only after the non-database backend is stable.
-
-The Worker uses the standard Fetch API and TypeScript, avoiding Node-specific server APIs so it can run on Cloudflare's runtime.
+- Node.js 20+
+- `npm install`
+- `npm run dev`
+- `npm run build`
+- `npm run typecheck`

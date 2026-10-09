@@ -15,5 +15,12 @@
     "strict": true,
     "types": ["vite/client"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": [
+    "src/main.tsx",
+    "src/components/**/*.tsx",
+    "src/lib/**/*.ts",
+    "src/lib/**/*.json",
+    "src/worker/**/*.ts",
+    "vite.config.ts"
+  ]
 }
