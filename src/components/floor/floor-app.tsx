@@ -81,11 +81,33 @@ function stockCostTotal(value: unknown): number {
   visit(value, 0)
   return total
 }
+function companyTypeIdFromProfile(profile: unknown): number | null {
+  const outer = getObject(profile)
+  const root = getObject(outer?.company) ?? getObject(outer?.profile) ?? outer
+  const type = getObject(root?.type)
+  const value = type?.id ?? root?.company_type_id ?? root?.type_id
+  return typeof value === "number" && Number.isFinite(value) ? value : typeof value === "string" && /^\d+$/.test(value) ? Number(value) : null
+}
+function stockPriceRows(stock: unknown): { name: string; quantity: number | null; price: number | null }[] {
+  const found: { name: string; quantity: number | null; price: number | null }[] = []
+  const visit = (value: unknown, depth: number) => {
+    if (!value || typeof value !== "object" || depth > 6) return
+    if (Array.isArray(value)) { value.forEach((child) => visit(child, depth + 1)); return }
+    const row = value as Record<string, unknown>
+    const name = [row.name, row.item_name, row.item].find((v) => typeof v === "string") as string | undefined
+    const quantity = [row.in_stock, row.quantity, row.amount].find((v) => typeof v === "number" && Number.isFinite(v)) as number | undefined
+    const price = [row.price, row.sell_price, row.selling_price, row.price_per_unit].find((v) => typeof v === "number" && Number.isFinite(v)) as number | undefined
+    if (name && (quantity !== undefined || price !== undefined)) found.push({ name, quantity: quantity ?? null, price: price ?? null })
+    for (const [key, child] of Object.entries(row)) if (!['name','item_name','item','in_stock','quantity','amount','price','sell_price','selling_price','price_per_unit'].includes(key)) visit(child, depth + 1)
+  }
+  visit(stock, 0)
+  return found
+}
 function financialCosts(profile: unknown, stock: unknown, normalized: CompanyDashboardModel) {
-  const adBudget = firstNumeric(profile, ["advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"]) ?? 0
+  const adBudget = firstNumeric(profile, ["advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"])
   const wages = normalized.employees.reduce((sum, employee) => sum + Math.max(0, employee.wage ?? 0), 0)
   const stockCosts = stockCostTotal(stock)
-  return { adBudget, wages, stockCosts, hasStockCosts: stock !== null && stock !== undefined, dailyCosts: adBudget + wages + stockCosts }
+  return { adBudget, wages, stockCosts, hasStockCosts: stock !== null && stock !== undefined, dailyCosts: (adBudget ?? 0) + wages + stockCosts }
 }
 
 function createDemoData() {
@@ -227,9 +249,11 @@ export function FloorApp() {
         return
       }
       const connectedType = result?.model.company.typeName || selectedRankingType || savedCompanies.find((company) => company.company_type)?.company_type || ""
-      if (!connectedType) { setRankingCompanies([]); setGlobalRankingCompanies([]); setRankingError("Connect a company first. Company rankings are limited to your connected company type."); return }
+      const connectedTypeId = companyTypeIdFromProfile(result?.profile) ?? (connectedType.toLocaleLowerCase() === "oil rig" ? 28 : null)
+      if (!connectedType && connectedTypeId === null) { setRankingCompanies([]); setGlobalRankingCompanies([]); setRankingError("Connect a company first. Company rankings are limited to your connected company type."); return }
       try {
-        const response = await fetch(`${API_BASE}/api/rankings?scope=global&type=${encodeURIComponent(connectedType)}`, { headers: { Authorization: `Bearer ${sessionToken}` } })
+        const typeQuery = connectedTypeId !== null ? `typeId=${encodeURIComponent(String(connectedTypeId))}` : `type=${encodeURIComponent(connectedType)}`
+        const response = await fetch(`${API_BASE}/api/rankings?scope=global&${typeQuery}`, { headers: { Authorization: `Bearer ${sessionToken}` } })
         const payload = await response.json() as { error?: string; companies?: RankingCompany[]; generatedAt?: string }
         if (!response.ok) throw new Error(payload.error || "Could not load company rankings.")
         if (cancelled) return
@@ -692,7 +716,7 @@ export function FloorApp() {
               {model ? <>
                 <section className="panel company-panel company-overview-panel"><div className="panel-heading"><div><h2>{model.company.name}</h2><p>{model.company.typeName} Â· Company #{model.company.id}</p></div><span className="status-badge success"><i /> COMPANY DATA</span></div>
                   <div className="company-facts overview-facts"><div><small>COMPANY TYPE</small><strong>{model.company.typeName}</strong></div><div><small>EMPLOYEES</small><strong>{formatNumber(model.company.employeesHired ?? model.employees.length)} / {formatNumber(model.company.employeeCapacity)}</strong></div><div><small>STAR RATING</small><strong>{currentStar === null ? "â" : `${currentStar} â`}</strong></div><div><small>DIRECTOR</small><strong>{model.company.directorName ?? "Restricted"}</strong></div></div>
-                  <div className="income-grid"><article><small>DAILY INCOME</small><strong>{formatMoney(model.company.dailyIncome)}</strong><span className="profit-line">Profit {formatMoney(dailyProfit)}</span></article><article><small>WEEKLY INCOME</small><strong>{formatMoney(weeklyIncome)}</strong><span className="profit-line">Profit {formatMoney(weeklyProfit)}</span><span>Sunday 18:00 UTC to Sunday 18:00 UTC</span></article><article><small>MONTH-TO-DATE INCOME</small><strong>{formatMoney(monthlyIncome)}</strong><span className="profit-line">Profit {formatMoney(monthlyProfit)}</span><span>Since the 1st at 18:00 UTC</span></article></div>{costs && <p className="profit-footnote">Estimated daily costs: {formatMoney(costs.adBudget)} ad budget + {formatMoney(costs.wages)} employee wages + {formatMoney(costs.stockCosts)} identified stock costs.</p>}
+                  <div className="income-grid"><article><small>DAILY INCOME</small><strong>{formatMoney(model.company.dailyIncome)}</strong><span className="profit-line">Profit {formatMoney(dailyProfit)}</span></article><article><small>WEEKLY INCOME</small><strong>{formatMoney(weeklyIncome)}</strong><span className="profit-line">Profit {formatMoney(weeklyProfit)}</span><span>Sunday 18:00 UTC to Sunday 18:00 UTC</span></article><article><small>MONTH-TO-DATE INCOME</small><strong>{formatMoney(monthlyIncome)}</strong><span className="profit-line">Profit {formatMoney(monthlyProfit)}</span><span>Since the 1st at 18:00 UTC</span></article></div><div className="overview-financial-strip"><article><small>CURRENT AD BUDGET</small><strong>{formatMoney(costs?.adBudget)}</strong><span>Daily advertising spend configured in Torn</span></article><article className="overview-stock-prices"><small>STOCK PRICES SET</small>{stockPriceRows(result?.stock).length ? <div className="stock-price-list">{stockPriceRows(result?.stock).map((item, index) => <div key={`${item.name}-${index}`}><span>{item.name}{item.quantity !== null ? ` · ${formatNumber(item.quantity)} in stock` : ""}</span><strong>{item.price === null ? "Price unavailable" : formatMoney(item.price)}</strong></div>)}</div> : <span>Current stock pricing was not returned by Torn for this company key.</span>}</article></div>{costs && <p className="profit-footnote">Estimated daily costs: {formatMoney(costs.adBudget)} ad budget + {formatMoney(costs.wages)} employee wages + {formatMoney(costs.stockCosts)} identified stock costs.</p>}
                   <div className="ratings-section"><div className="section-heading"><div><h3>Operating ratings</h3><p>Current company performance indicators from Torn.</p></div></div><div className="ratings-grid"><div><span>POPULARITY</span><strong>{formatNumber(popularity)}</strong></div><div><span>EFFICIENCY</span><strong>{formatNumber(efficiency)}</strong></div><div><span>ENVIRONMENT</span><strong>{formatNumber(environment)}</strong></div></div></div>
                   <div className="employee-heading overview-actions"><div><h3>Company health scorecard</h3><p>Benchmarked against companies of the same type.</p></div><button className="text-button" onClick={() => setActiveView("type-rankings")}>View rankings â</button></div>
                   <div className="health-grid"><div><small>TYPE + STAR PLACE</small><strong>{currentRankingCompany ? placement(currentRankingCompany, "stars") : "â"}</strong><span>Same company type and star level</span></div><div><small>WEEKLY INCOME VS TYPE</small><strong>{currentRankingCompany && currentRankingCompany.weeklyIncome !== null ? formatMoney(currentRankingCompany.weeklyIncome) : formatMoney(currentWeeklyIncome)}</strong><span>{companyPeerRows.length ? `${companyPeerRows.length} same-type companies in snapshot` : "Comparison snapshot unavailable"}</span></div><div><small>GAP TO NEXT STAR</small><strong>{nextStarGap === null ? "â" : formatMoney(nextStarGap)}</strong><span>{nextStarIncome === null ? "No higher-star benchmark available" : `Observed next-level benchmark: ${formatMoney(nextStarIncome)}/week`}</span></div><div><small>GAP TO PREVIOUS STAR</small><strong>{previousStarGap === null ? "â" : formatMoney(previousStarGap)}</strong><span>{previousStarIncome === null ? "No lower-star benchmark available" : `Observed previous-level benchmark: ${formatMoney(previousStarIncome)}/week`}</span></div></div>
