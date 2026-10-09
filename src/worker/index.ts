@@ -620,6 +620,12 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       if (url.searchParams.get("scope") === "global") {
+        // Refresh a stale shared snapshot on demand. The server-side 24-hour cache
+        // and database lease ensure concurrent dashboard users do not fan out to Torn.
+        try {
+          const userKey = await savedKey(env, session.player_id).catch(() => null)
+          await refreshGlobalRankingCache(env, userKey ?? undefined)
+        } catch { /* Serve the last saved ranking snapshot if Torn is temporarily unavailable. */ }
         const db = requireDb(env)
         await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_cache (cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1), companies_json TEXT NOT NULL, fetched_at TEXT NOT NULL)").run()
         const cached = await db.prepare("SELECT companies_json AS companiesJson, fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ companiesJson: string; fetchedAt: string }>()
