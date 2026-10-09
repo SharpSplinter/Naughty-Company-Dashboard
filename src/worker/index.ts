@@ -389,7 +389,7 @@ async function refreshRankingProfiles(env: WorkerEnv): Promise<void> {
 
 export default {
   async scheduled(controller: { scheduledTime: number; cron: string }, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
-    const isWeeklyLock = controller.cron === "0 18 * * 0"
+    const isWeeklyLock = controller.cron === "0 18 * * SUN"
     ctx.waitUntil(Promise.all([refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35)]).then(async () => {
       if (isWeeklyLock) await captureWeeklyFactionStarCounts(env, new Date(controller.scheduledTime).toISOString())
     }))
