@@ -53,24 +53,44 @@ async function authenticate(request: Request, env: WorkerEnv): Promise<Session |
   const hash = await sha256(token)
   return requireDb(env).prepare("SELECT p.player_id, p.player_name FROM sessions s JOIN players p ON p.player_id = s.player_id WHERE s.token_hash = ? AND s.expires_at > ?").bind(hash, Math.floor(Date.now() / 1000)).first<Session>()
 }
-async function validateTornKey(apiKey: string): Promise<{ id: string; name: string }> {
+async function validateTornKey(apiKey: string): Promise<{ id: string; name: string; factionId: string; factionName: string }> {
   if (!apiKey || apiKey.length > 256 || /\s/.test(apiKey)) throw new Error("Enter a valid Torn API key.")
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 10000)
   try {
-    const response = await fetch("https://api.torn.com/v2/user/profile", { headers: { Authorization: `ApiKey ${apiKey}`, Accept: "application/json" }, signal: controller.signal })
-    const payload: unknown = await response.json().catch(() => null)
-    if (!response.ok || (isRecord(payload) && isRecord(payload.error))) {
-      const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+    const headers = { Authorization: `ApiKey ${apiKey}`, Accept: "application/json" }
+    const profileResponse = await fetch("https://api.torn.com/v2/user/profile", { headers, signal: controller.signal })
+    const profilePayload: unknown = await profileResponse.json().catch(() => null)
+    if (!profileResponse.ok || (isRecord(profilePayload) && isRecord(profilePayload.error))) {
+      const error = isRecord(profilePayload) && isRecord(profilePayload.error) ? profilePayload.error : null
       const code = typeof error?.code === "number" ? error.code : undefined
-      const status = code === 2 ? 401 : code === 3 ? 403 : code === 9 ? 429 : response.status >= 500 ? 502 : 401
+      const status = code === 2 ? 401 : code === 3 ? 403 : code === 9 ? 429 : profileResponse.status >= 500 ? 502 : 401
       throw Object.assign(new Error(code === 2 ? "That Torn API key is invalid." : code === 3 ? "This Torn API key does not have profile access." : code === 9 ? "Torn rate limit reached. Try again shortly." : "Could not verify this Torn API key."), { status })
     }
-    const profile = isRecord(payload) && isRecord(payload.profile) ? payload.profile : null
+    const profile = isRecord(profilePayload) && isRecord(profilePayload.profile) ? profilePayload.profile : null
     const id = profile?.id ?? profile?.player_id
     const name = profile?.name
     if ((typeof id !== "number" && typeof id !== "string") || !/^\d+$/.test(String(id)) || Number(id) <= 0 || typeof name !== "string" || !name.trim()) throw Object.assign(new Error("Torn returned an unexpected player profile."), { status: 502 })
-    return { id: String(id), name: name.trim().slice(0, 100) }
+
+    // Validate faction membership server-side before saving the key or creating a session.
+    const factionResponse = await fetch("https://api.torn.com/v2/user/faction", { headers, signal: controller.signal })
+    const factionPayload: unknown = await factionResponse.json().catch(() => null)
+    if (!factionResponse.ok || (isRecord(factionPayload) && isRecord(factionPayload.error))) {
+      const error = isRecord(factionPayload) && isRecord(factionPayload.error) ? factionPayload.error : null
+      const code = typeof error?.code === "number" ? error.code : undefined
+      const status = code === 2 ? 401 : code === 3 ? 403 : code === 9 ? 429 : factionResponse.status >= 500 ? 502 : 502
+      throw Object.assign(new Error(code === 3 ? "The API key needs faction access so Naughty Souls membership can be verified. Use a limited-access key that includes faction access." : code === 9 ? "Torn rate limit reached while checking faction membership. Try again shortly." : "We could not verify your Naughty Souls membership with Torn. Please check your key permissions and try again."), { status })
+    }
+    const faction = isRecord(factionPayload) && isRecord(factionPayload.faction) ? factionPayload.faction : null
+    const factionId = faction?.id ?? (isRecord(factionPayload) ? factionPayload.faction_id : undefined)
+    const factionName = faction?.name
+    if ((typeof factionId !== "number" && typeof factionId !== "string") || !/^\d+$/.test(String(factionId))) {
+      throw Object.assign(new Error("ACCESS DENIED: Your Torn account is not a member of Naughty Souls (faction ID 8317). You must belong to Naughty Souls to use this dashboard."), { status: 403 })
+    }
+    if (String(factionId) !== "8317") {
+      throw Object.assign(new Error("ACCESS DENIED: You do not belong to Naughty Souls (faction ID 8317). This dashboard is exclusively for Naughty Souls faction members. Sign-in has been blocked."), { status: 403 })
+    }
+    return { id: String(id), name: name.trim().slice(0, 100), factionId: String(factionId), factionName: typeof factionName === "string" ? factionName.trim().slice(0, 100) : "Naughty Souls" }
   } finally { clearTimeout(timeout) }
 }
 async function saveKey(env: WorkerEnv, playerId: string, apiKey: string): Promise<void> {

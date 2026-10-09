@@ -28,3 +28,7 @@
 .login-footer{display:flex;justify-content:space-between;gap:10px;margin-top:24px;color:#5e6a87;font-size:7px;letter-spacing:.1em}
 .signout-button{width:100%;margin-top:8px;padding:9px;border:1px solid #29324a;border-radius:8px;background:transparent;color:#929db7;font-size:10px}.signout-button:hover{color:#e5e8f5;border-color:#665d9d}
 @media(max-width:480px){.login-card{padding:25px 20px}.login-footer{font-size:6px}}
+
+
+.access-denied-banner { border: 1px solid #a92e39; background: rgba(169, 46, 57, 0.14); color: #ffdadd; line-height: 1.55; }
+.access-denied-banner strong { display: inline-block; margin-bottom: 4px; color: #ff8c96; letter-spacing: .04em; font-size: .75rem; }
