@@ -95,3 +95,37 @@
 }
 
 .chart-point{cursor:pointer;outline:none}.chart-point:focus{stroke:#f0f4ff;stroke-width:2.5}.chart-selected-value rect{fill:#111a2b;stroke:#63dfbc;stroke-width:1}.chart-selected-value text{fill:#f0f4ff;font-size:10px;pointer-events:none}.chart-interaction-hint{font-size:10px;color:var(--muted);margin:0 2px}
+
+/* Privacy-first opt-in sharing controls and same-type comparisons */
+.sharing-control-panel{padding:16px 18px;border:1px solid #293650;background:linear-gradient(135deg,rgba(17,26,43,.96),rgba(12,19,33,.96));border-radius:10px;display:grid;gap:12px}
+.sharing-control-heading{display:flex;align-items:center;justify-content:space-between;gap:18px}
+.sharing-control-heading h2,.sharing-control-heading h3{margin:0 0 6px;color:#e5e9f5;font-size:13px}
+.sharing-control-heading p{margin:0;max-width:780px;color:var(--muted);font-size:10px;line-height:1.55}
+.switch-control{display:flex;align-items:center;gap:10px;flex-shrink:0;color:#cbd4e8;font-size:10px;font-weight:700;cursor:pointer}
+.switch-control input{position:absolute;opacity:0;width:1px;height:1px}
+.switch-control i{position:relative;display:inline-block;width:38px;height:22px;border-radius:99px;background:#303b58;border:1px solid #4b5874;transition:background .15s ease}
+.switch-control i:after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#cbd4e8;transition:transform .15s ease}
+.switch-control input:checked+i{background:#16866e;border-color:#35c5a1}
+.switch-control input:checked+i:after{transform:translateX(16px);background:#fff}
+.switch-control input:focus-visible+i{outline:2px solid #63dfbc;outline-offset:3px}
+.switch-control input:disabled+i{opacity:.55;cursor:not-allowed}
+.sharing-notice{margin:0;color:#63dfbc;font-size:10px}
+.shared-data-compare{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.shared-data-compare label{color:var(--muted);font-size:10px;letter-spacing:.04em;text-transform:uppercase}
+.shared-data-compare select{min-width:240px;max-width:100%;flex:1;background:#0b1221;border:1px solid #2b3550;border-radius:6px;color:#e4e9f5;padding:10px;font:inherit;font-size:11px}
+.shared-financial-summary{display:grid;grid-template-columns:minmax(120px,1fr) minmax(130px,.7fr) minmax(200px,1.5fr);gap:10px}
+.shared-financial-summary article{min-width:0;display:flex;flex-direction:column;gap:6px;padding:12px;background:#0b1221;border:1px solid #202b42;border-radius:7px}
+.shared-financial-summary small{color:var(--muted);font-size:8px;letter-spacing:.09em}
+.shared-financial-summary strong{color:#e5e9f5;font-size:12px;overflow-wrap:anywhere}
+.shared-financial-summary span{color:#aeb8ce;font-size:10px;line-height:1.5;overflow-wrap:anywhere}
+.shared-stock-summary span{padding-top:3px;border-top:1px solid #202b42}
+.employee-sharing-control{margin:14px 0}
+.employee-compare-panel{padding:16px 18px;margin:14px 0;border:1px solid #263149;background:#0c1424;border-radius:10px}
+.employee-compare-panel .panel-heading{margin-bottom:12px}
+.employee-compare-panel .panel-heading h3{margin:0 0 6px;font-size:13px}
+.employee-compare-panel .panel-heading p{margin:0;color:var(--muted);font-size:10px;line-height:1.5}
+.shared-company-compare-heading{display:flex;flex-direction:column;gap:4px;margin:14px 0 8px}
+.shared-company-compare-heading strong{font-size:12px;color:#e5e9f5}
+.shared-company-compare-heading span{font-size:10px;color:var(--muted)}
+.shared-employee-table{min-width:620px}
+@media(max-width:700px){.sharing-control-heading{align-items:flex-start;gap:12px}.sharing-control-heading p{font-size:9px}.switch-control{font-size:9px;gap:6px}.shared-data-compare{align-items:stretch;flex-direction:column;gap:7px}.shared-data-compare select{min-width:100%;width:100%}.shared-financial-summary{grid-template-columns:1fr}.sharing-control-panel,.employee-compare-panel{padding:12px}.employee-sharing-control{margin:10px 0}}

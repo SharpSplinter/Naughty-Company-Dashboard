@@ -242,6 +242,53 @@ try {
     }
   })
 
+  await test("persists privacy-first company sharing toggles on the server", async () => {
+    const token = "sharing-preferences-test-token"
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
+    const tokenHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
+    const sharing = new Map()
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async run() {
+            if (sql.toLowerCase().includes("insert into company_data_sharing")) {
+              sharing.set(String(values[0]), { shareFinancialData: Number(values[1]), shareEmployeeData: Number(values[2]), updatedAt: values[3] })
+            }
+            return { success: true, meta: { changes: 1 } }
+          },
+          async first() {
+            const lower = sql.toLowerCase()
+            if (lower.includes("from sessions s join players p")) {
+              return values[0] === tokenHash && Number(values[1]) < Math.floor(Date.now() / 1000) + 60
+                ? { player_id: "777", player_name: "Test Director" }
+                : null
+            }
+            if (lower.includes("from company_data_sharing where player_id")) return sharing.get(String(values[0])) ?? null
+            return null
+          },
+          async all() { return { results: [] } },
+        }
+      },
+    }
+    const env = { DB: db }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: `Bearer ${token}` }
+    const initial = await worker.fetch(new Request("https://worker.test/api/me/data-sharing", { headers }), env)
+    assert.equal(initial.status, 200)
+    assert.deepEqual((await initial.json()).settings, { shareFinancialData: false, shareEmployeeData: false })
+
+    const saved = await worker.fetch(new Request("https://worker.test/api/me/data-sharing", {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: { shareFinancialData: true, shareEmployeeData: true } }),
+    }), env)
+    assert.equal(saved.status, 200)
+    assert.deepEqual((await saved.json()).settings, { shareFinancialData: true, shareEmployeeData: true })
+
+    const restored = await worker.fetch(new Request("https://worker.test/api/me/data-sharing", { headers }), env)
+    assert.deepEqual((await restored.json()).settings, { shareFinancialData: true, shareEmployeeData: true })
+  })
+
   await test("Worker health endpoint applies dashboard CORS", async () => {
     const response = await worker.fetch(new Request("https://worker.test/health", {
       headers: { Origin: "https://naughty-company-dashboard.pages.dev" },
