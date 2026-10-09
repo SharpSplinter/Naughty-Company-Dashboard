@@ -327,13 +327,35 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
   return { processed, pending: Math.max(pending, 0), directors: rows.results ?? [] }
 }
 
-async function refreshFactionDirectoryFromAnyKey(env: WorkerEnv): Promise<void> {
+async function captureWeeklyFactionStarCounts(env: WorkerEnv, capturedAt = new Date().toISOString()): Promise<void> {
+  if (!env.DB) return
+  const db = requireDb(env)
+  const captured = new Date(capturedAt)
+  const weekKey = captured.toISOString().slice(0, 10)
+  await db.prepare("CREATE TABLE IF NOT EXISTS faction_star_weekly_counts (week_key TEXT NOT NULL, star_rating INTEGER NOT NULL, company_count INTEGER NOT NULL, captured_at TEXT NOT NULL, PRIMARY KEY (week_key, star_rating))").run()
+  const counts = await db.prepare("SELECT company_rating AS starRating, COUNT(DISTINCT company_id) AS companyCount FROM faction_member_cache WHERE faction_id = '8317' AND is_director = 1 AND company_id IS NOT NULL AND company_rating IS NOT NULL GROUP BY company_rating ORDER BY company_rating ASC").all<{ starRating: number; companyCount: number }>()
+  for (const row of counts.results ?? []) {
+    if (!Number.isInteger(row.starRating) || row.starRating < 0) continue
+    await db.prepare("INSERT INTO faction_star_weekly_counts (week_key, star_rating, company_count, captured_at) VALUES (?, ?, ?, ?) ON CONFLICT(week_key, star_rating) DO UPDATE SET company_count = excluded.company_count, captured_at = excluded.captured_at")
+      .bind(weekKey, row.starRating, row.companyCount, capturedAt).run()
+  }
+}
+async function getWeeklyFactionStarCounts(env: WorkerEnv): Promise<{ weeklyStarCounts: { starRating: number; companyCount: number }[]; weeklyStarCountsCapturedAt: string }> {
+  const db = requireDb(env)
+  await db.prepare("CREATE TABLE IF NOT EXISTS faction_star_weekly_counts (week_key TEXT NOT NULL, star_rating INTEGER NOT NULL, company_count INTEGER NOT NULL, captured_at TEXT NOT NULL, PRIMARY KEY (week_key, star_rating))").run()
+  const latest = await db.prepare("SELECT week_key AS weekKey, MAX(captured_at) AS capturedAt FROM faction_star_weekly_counts GROUP BY week_key ORDER BY week_key DESC LIMIT 1").first<{ weekKey: string; capturedAt: string }>()
+  if (!latest) return { weeklyStarCounts: [], weeklyStarCountsCapturedAt: "" }
+  const rows = await db.prepare("SELECT star_rating AS starRating, company_count AS companyCount FROM faction_star_weekly_counts WHERE week_key = ? ORDER BY star_rating ASC").bind(latest.weekKey).all<{ starRating: number; companyCount: number }>()
+  return { weeklyStarCounts: rows.results ?? [], weeklyStarCountsCapturedAt: latest.capturedAt }
+}
+
+async function refreshFactionDirectoryFromAnyKey(env: WorkerEnv, limit = 35): Promise<void> {
   if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return
   const row = await requireDb(env).prepare("SELECT player_id, ciphertext, iv FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string; ciphertext: string; iv: string }>()
   if (!row) return
   try {
     const apiKey = await decryptKey(env, row.ciphertext, row.iv)
-    await syncFactionDirectorDirectory(env, apiKey, 35)
+    await syncFactionDirectorDirectory(env, apiKey, limit)
   } catch { /* Keep scheduled sync resilient to a revoked key or temporary Torn failure. */ }
 }
 
@@ -366,8 +388,11 @@ async function refreshRankingProfiles(env: WorkerEnv): Promise<void> {
 }
 
 export default {
-  async scheduled(_controller: { scheduledTime: number; cron: string }, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
-    ctx.waitUntil(Promise.all([refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env)]))
+  async scheduled(controller: { scheduledTime: number; cron: string }, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
+    const isWeeklyLock = controller.cron === "0 18 * * 0"
+    ctx.waitUntil(Promise.all([refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35)]).then(async () => {
+      if (isWeeklyLock) await captureWeeklyFactionStarCounts(env, new Date(controller.scheduledTime).toISOString())
+    }))
   },
   async fetch(request: Request, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<Response> {
     const origin = allowedOrigin(request, env)
@@ -506,10 +531,12 @@ export default {
         if (request.method === "GET") {
           const rows = await requireDb(env).prepare("SELECT player_id AS playerId, player_name AS directorName, company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, company_rating AS starRating, daily_income AS dailyIncome, weekly_income AS weeklyIncome, updated_at AS fetchedAt FROM faction_member_cache WHERE faction_id = '8317' AND is_director = 1 ORDER BY company_type ASC, weekly_income DESC").all()
           ctx.waitUntil(syncFactionDirectorDirectory(env, apiKey, 20).catch(() => undefined))
-          return jsonResponse({ directors: rows.results ?? [], processed: 0, pending: 0, syncing: true, generatedAt: new Date().toISOString(), source: "Torn API v2 faction/members, user/{id}/job, company/{id}/profile" }, 200, origin)
+          const weeklyCounts = await getWeeklyFactionStarCounts(env)
+          return jsonResponse({ directors: rows.results ?? [], processed: 0, pending: 0, syncing: true, ...weeklyCounts, generatedAt: new Date().toISOString(), source: "Torn API v2 faction/members, user/{id}/job, company/{id}/profile" }, 200, origin)
         }
         const synced = await syncFactionDirectorDirectory(env, apiKey, 20)
-        return jsonResponse({ ...synced, syncing: false, generatedAt: new Date().toISOString(), source: "Torn API v2 faction/members, user/{id}/job, company/{id}/profile" }, 200, origin)
+        const weeklyCounts = await getWeeklyFactionStarCounts(env)
+        return jsonResponse({ ...synced, ...weeklyCounts, syncing: false, generatedAt: new Date().toISOString(), source: "Torn API v2 faction/members, user/{id}/job, company/{id}/profile" }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
     if (url.pathname === "/api/faction/compare" && request.method === "GET") {
