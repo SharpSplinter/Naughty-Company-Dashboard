@@ -82,8 +82,12 @@ function stockCostTotal(value: unknown): number {
   return total
 }
 function companyTypeIdFromProfile(profile: unknown): number | null {
-  const outer = getObject(profile)
-  const root = getObject(outer?.company) ?? getObject(outer?.profile) ?? outer
+  let root = getObject(profile)
+  for (let depth = 0; root && depth < 4; depth++) {
+    const nested = getObject(root.company) ?? getObject(root.profile)
+    if (!nested) break
+    root = nested
+  }
   const type = getObject(root?.type)
   const value = type?.id ?? root?.company_type_id ?? root?.type_id
   return typeof value === "number" && Number.isFinite(value) ? value : typeof value === "string" && /^\d+$/.test(value) ? Number(value) : null
