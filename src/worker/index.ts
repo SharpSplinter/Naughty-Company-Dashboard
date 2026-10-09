@@ -520,23 +520,23 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       const db = requireDb(env)
-      await db.prepare("CREATE TABLE IF NOT EXISTS company_data_sharing (player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), updated_at TEXT NOT NULL)").run()
+      await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_preferences (player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), updated_at TEXT NOT NULL)").run()
       if (request.method === "GET") {
-        const row = await db.prepare("SELECT share_financial_data AS shareFinancialData, share_employee_data AS shareEmployeeData, updated_at AS updatedAt FROM company_data_sharing WHERE player_id = ?").bind(session.player_id).first<Record<string, unknown>>()
+        const row = await db.prepare("SELECT share_financial_data AS shareFinancialData, share_employee_data AS shareEmployeeData, updated_at AS updatedAt FROM company_sharing_preferences WHERE player_id = ?").bind(session.player_id).first<Record<string, unknown>>()
         return jsonResponse({ settings: { shareFinancialData: row?.shareFinancialData === 1, shareEmployeeData: row?.shareEmployeeData === 1 }, updatedAt: row?.updatedAt ?? null }, 200, origin)
       }
       const body: unknown = await request.json().catch(() => null)
       const supplied = isRecord(body) && isRecord(body.settings) ? body.settings : isRecord(body) ? body : {}
       const settings = { shareFinancialData: supplied.shareFinancialData === true, shareEmployeeData: supplied.shareEmployeeData === true }
       const now = new Date().toISOString()
-      await db.prepare("INSERT INTO company_data_sharing (player_id, share_financial_data, share_employee_data, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET share_financial_data = excluded.share_financial_data, share_employee_data = excluded.share_employee_data, updated_at = excluded.updated_at").bind(session.player_id, Number(settings.shareFinancialData), Number(settings.shareEmployeeData), now).run()
+      await db.prepare("INSERT INTO company_sharing_preferences (player_id, share_financial_data, share_employee_data, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET share_financial_data = excluded.share_financial_data, share_employee_data = excluded.share_employee_data, updated_at = excluded.updated_at").bind(session.player_id, Number(settings.shareFinancialData), Number(settings.shareEmployeeData), now).run()
       return jsonResponse({ settings, updatedAt: now }, 200, origin)
     }
     if (url.pathname === "/api/faction/shared-company-data" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       const db = requireDb(env)
-      await db.prepare("CREATE TABLE IF NOT EXISTS company_data_sharing (player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), updated_at TEXT NOT NULL)").run()
+      await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_preferences (player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), updated_at TEXT NOT NULL)").run()
       const typeIdRaw = url.searchParams.get("typeId")
       const typeId = typeIdRaw && /^\d+$/.test(typeIdRaw) ? Number(typeIdRaw) : null
       const requestedType = (url.searchParams.get("type") ?? "").trim().toLocaleLowerCase()
@@ -552,7 +552,7 @@ export default {
       })
       const selectedType = typeId !== null ? ownTypes.find((type) => type.id === typeId) : requestedType ? ownTypes.find((type) => type.name === requestedType) : ownTypes[0]
       if (!selectedType) return jsonResponse({ error: "Choose a company type connected to your account before comparing shared data." }, 400, origin)
-      const rows = await db.prepare("SELECT c.player_id AS playerId, p.player_name AS directorName, c.company_id AS companyId, c.company_name AS companyName, c.company_type AS companyType, c.profile_json AS profileJson, c.employees_json AS employeesJson, c.fetched_at AS fetchedAt, f.stock_json AS stockJson, s.share_financial_data AS shareFinancialData, s.share_employee_data AS shareEmployeeData FROM company_data_sharing s JOIN companies c ON c.player_id = s.player_id JOIN players p ON p.player_id = c.player_id LEFT JOIN company_financials f ON f.player_id = c.player_id AND f.company_id = c.company_id WHERE c.player_id != ? AND (s.share_financial_data = 1 OR s.share_employee_data = 1) ORDER BY c.company_type, c.company_name").bind(session.player_id).all<Record<string, unknown>>()
+      const rows = await db.prepare("SELECT c.player_id AS playerId, p.player_name AS directorName, c.company_id AS companyId, c.company_name AS companyName, c.company_type AS companyType, c.profile_json AS profileJson, c.employees_json AS employeesJson, c.fetched_at AS fetchedAt, f.stock_json AS stockJson, s.share_financial_data AS shareFinancialData, s.share_employee_data AS shareEmployeeData FROM company_sharing_preferences s JOIN companies c ON c.player_id = s.player_id JOIN players p ON p.player_id = c.player_id LEFT JOIN company_financials f ON f.player_id = c.player_id AND f.company_id = c.company_id WHERE c.player_id != ? AND (s.share_financial_data = 1 OR s.share_employee_data = 1) ORDER BY c.company_type, c.company_name").bind(session.player_id).all<Record<string, unknown>>()
       const shared = (rows.results ?? []).flatMap((row) => {
         try {
           const profilePayload = JSON.parse(String(row.profileJson)) as unknown
@@ -663,10 +663,10 @@ export default {
       const db = requireDb(env)
       const director = await db.prepare("SELECT player_id AS playerId, player_name AS directorName, company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, company_rating AS starRating, daily_income AS dailyIncome, weekly_income AS weeklyIncome, updated_at AS fetchedAt FROM faction_member_cache WHERE player_id = ? AND faction_id = '8317' AND is_director = 1").bind(playerId).first<Record<string, unknown>>()
       if (!director) return jsonResponse({ error: "That faction member has not been confirmed as a company director yet. Refresh the faction directory and try again." }, 404, origin)
-      await db.prepare("CREATE TABLE IF NOT EXISTS company_data_sharing (player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), updated_at TEXT NOT NULL)").run()
+      await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_preferences (player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), updated_at TEXT NOT NULL)").run()
       let mayShareStock = playerId === session.player_id
       if (!mayShareStock) {
-        const sharing = await db.prepare("SELECT share_financial_data AS shareFinancialData FROM company_data_sharing WHERE player_id = ?").bind(playerId).first<{ shareFinancialData: number }>()
+        const sharing = await db.prepare("SELECT share_financial_data AS shareFinancialData FROM company_sharing_preferences WHERE player_id = ?").bind(playerId).first<{ shareFinancialData: number }>()
         mayShareStock = sharing?.shareFinancialData === 1
       }
       const snapshots = await db.prepare("SELECT snapshot_day AS day, profile_json AS profileJson, stock_json AS stockJson, fetched_at AS fetchedAt FROM faction_director_snapshots WHERE player_id = ? AND company_id = ? ORDER BY snapshot_day ASC LIMIT 120").bind(playerId, String(director.companyId)).all<{ day: string; profileJson: string; stockJson: string | null; fetchedAt: string }>()
@@ -749,8 +749,4 @@ export default {
         const client = new TornApiClient({ apiKey })
         const data = legacyRoute[1] === "profile" ? await client.getCompanyProfile() : legacyRoute[1] === "employees" ? await client.getCompanyEmployees() : await client.getCompanyStock()
         return jsonResponse(data, 200, origin, { "cache-control": "private, no-store" })
-      } catch (error) { return tornError(error, origin) }
-    }
-    return jsonResponse({ error: "Route not found." }, 404, origin)
-  },
-}
+      } catch (error) { return tornError

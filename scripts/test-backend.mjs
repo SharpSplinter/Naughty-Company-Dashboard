@@ -253,7 +253,7 @@ try {
         return {
           bind(...args) { values = args; return this },
           async run() {
-            if (sql.toLowerCase().includes("insert into company_data_sharing")) {
+            if (sql.toLowerCase().includes("insert into company_sharing_preferences")) {
               sharing.set(String(values[0]), { shareFinancialData: Number(values[1]), shareEmployeeData: Number(values[2]), updatedAt: values[3] })
             }
             return { success: true, meta: { changes: 1 } }
@@ -265,7 +265,7 @@ try {
                 ? { player_id: "777", player_name: "Test Director" }
                 : null
             }
-            if (lower.includes("from company_data_sharing where player_id")) return sharing.get(String(values[0])) ?? null
+            if (lower.includes("from company_sharing_preferences where player_id")) return sharing.get(String(values[0])) ?? null
             return null
           },
           async all() { return { results: [] } },
