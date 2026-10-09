@@ -17,6 +17,18 @@ type WeeklyStarCount = { starRating: number; companyCount: number }
 type CompareHistoryPoint = { day: string; dailyIncome: number | null; weeklyIncome: number | null; stock: unknown }
 type CompareData = { director: FactionDirector; history: CompareHistoryPoint[]; stockHistoryAvailable: boolean }
 type ChartSeries = { label: string; values: { label: string; value: number | null }[] }
+type SnapshotHistoryPoint = { day: string; period: number; capturedAt: number; dailyIncome: number | null; weeklyIncome: number | null; dailyProfit: number | null; weeklyProfit: number | null; rating: number | null; companyRank: number | null; companyRankTotal: number | null; stockQuantity: number | null; stockValue: number | null; averageEmployeeEfficiency: number | null }
+type SnapshotHistoryCompany = { companyId: string; name: string; typeName: string; typeId: number; history: SnapshotHistoryPoint[] }
+type SnapshotMetric = "dailyIncome" | "weeklyIncome" | "dailyProfit" | "weeklyProfit" | "rating" | "companyRank"
+
+function importedHistorySeries(companies: SnapshotHistoryCompany[], metric: SnapshotMetric): ChartSeries[] {
+  const days = Array.from(new Set(companies.flatMap((company) => company.history.map((point) => point.day)))).sort()
+  return companies.map((company) => ({ label: company.name, values: days.map((day) => {
+    const point = company.history.find((item) => item.day === day)
+    const value = point?.[metric]
+    return { label: day, value: typeof value === "number" && Number.isFinite(value) ? value : null }
+  }) }))
+}
 
 function LineChart({ title, series, money = false }: { title: string; series: ChartSeries[]; money?: boolean }) {
   const values = series.flatMap((item) => item.values.map((point) => point.value).filter((value): value is number => value !== null && Number.isFinite(value)))
@@ -174,6 +186,31 @@ export function FloorApp() {
   const [factionSyncing, setFactionSyncing] = useState(false)
   const [factionSyncProgress, setFactionSyncProgress] = useState("")
   const [selectedRankingType, setSelectedRankingType] = useState("")
+  const [snapshotHistory, setSnapshotHistory] = useState<SnapshotHistoryCompany[]>([])
+  const [snapshotSourceCreatedAt, setSnapshotSourceCreatedAt] = useState("")
+  const [snapshotHistoryLoading, setSnapshotHistoryLoading] = useState(true)
+  const [snapshotHistoryError, setSnapshotHistoryError] = useState("")
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadImportedHistory() {
+      try {
+        const response = await fetch("/history/knotty-company-history.json")
+        if (!response.ok) throw new Error("Could not load the imported company history file.")
+        const payload = await response.json() as { sourceSnapshotCreatedAt?: string; companies?: SnapshotHistoryCompany[] }
+        if (!cancelled) {
+          setSnapshotHistory(payload.companies || [])
+          setSnapshotSourceCreatedAt(payload.sourceSnapshotCreatedAt || "")
+        }
+      } catch (caught) {
+        if (!cancelled) setSnapshotHistoryError(caught instanceof Error ? caught.message : "Could not load imported company history.")
+      } finally {
+        if (!cancelled) setSnapshotHistoryLoading(false)
+      }
+    }
+    void loadImportedHistory()
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     const token = sessionStorage.getItem("ncd_session") || ""
@@ -634,6 +671,29 @@ export function FloorApp() {
             </section>
           ) : activeView === "charts" ? (
             <div className="charts-workspace">
+              <section className="panel imported-history-panel">
+                <div className="panel-heading"><div><h2>Imported company history</h2><p>Archived daily snapshots for Knotty Oil and Knotty Soles, kept separate from live Torn readings.</p></div><span className="count-chip">{snapshotHistory.reduce((sum, company) => sum + company.history.length, 0)} snapshots</span></div>
+                {snapshotSourceCreatedAt && <p className="snapshot-source-note">Source backup created {new Date(snapshotSourceCreatedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}. All dates shown below are UTC.</p>}
+                {snapshotHistoryError && <div className="error-banner" role="alert">{snapshotHistoryError}</div>}
+                {snapshotHistoryLoading ? <div className="empty-state">Loading imported history…</div> : snapshotHistory.length ? <>
+                  <div className="snapshot-summary-grid">{snapshotHistory.map((company) => {
+                    const first = company.history[0]
+                    const latest = company.history[company.history.length - 1]
+                    return <article className="snapshot-summary-card" key={company.companyId}>
+                      <div className="snapshot-company-heading"><div><strong>{company.name}</strong><span>Company #{company.companyId} · {company.typeName}</span></div><span className="star-rating">{latest?.rating == null ? "—" : `${latest.rating} ★`}</span></div>
+                      <div className="snapshot-metric-grid"><span><small>DAILY INCOME</small><strong>{formatMoney(latest?.dailyIncome ?? null)}</strong></span><span><small>WEEKLY INCOME</small><strong>{formatMoney(latest?.weeklyIncome ?? null)}</strong></span><span><small>DAILY PROFIT</small><strong>{formatMoney(latest?.dailyProfit ?? null)}</strong></span><span><small>COMPANY RANK</small><strong>{latest?.companyRank == null ? "—" : `#${latest.companyRank}${latest.companyRankTotal == null ? "" : ` / ${latest.companyRankTotal}`}`}</strong></span><span><small>STOCK QUANTITY</small><strong>{latest?.stockQuantity == null ? "—" : formatNumber(latest.stockQuantity)}</strong></span><span><small>AVG. EMPLOYEE EFFICIENCY</small><strong>{latest?.averageEmployeeEfficiency == null ? "—" : `${latest.averageEmployeeEfficiency.toFixed(1)}%`}</strong></span></div>
+                      <p className="snapshot-date-range">{first?.day || "—"} to {latest?.day || "—"} · {company.history.length} daily records</p>
+                    </article>
+                  })}</div>
+                  <LineChart title="Daily income · imported history" money series={importedHistorySeries(snapshotHistory, "dailyIncome")} />
+                  <LineChart title="Weekly income · reported Torn totals" money series={importedHistorySeries(snapshotHistory, "weeklyIncome")} />
+                  <LineChart title="Daily profit · imported history" money series={importedHistorySeries(snapshotHistory, "dailyProfit")} />
+                  <LineChart title="Weekly profit · reported totals" money series={importedHistorySeries(snapshotHistory, "weeklyProfit")} />
+                  <LineChart title="Star-rating history" series={importedHistorySeries(snapshotHistory, "rating")} />
+                  <LineChart title="Company ranking history · lower is better" series={importedHistorySeries(snapshotHistory, "companyRank")} />
+                  <div className="ranking-footnote"><strong>Historical-data notes</strong><p>These are imported backup snapshots, not a replacement for live profile data. Knotty Oil history starts on 19 August 2026; Knotty Soles starts on 25 August 2026. Weekly income and weekly profit use the values recorded in each snapshot and are not recalculated by summing daily values. Missing dates are left blank rather than interpolated.</p></div>
+                </> : <div className="empty-state">{snapshotHistoryError || "No imported history is available."}</div>}
+              </section>
               <section className="panel compare-picker"><div className="panel-heading"><div><h2>Choose a faction director</h2><p>Compare your connected company against a confirmed director from the faction roster.</p></div></div><div className="compare-picker-row"><label htmlFor="compare-director">Faction member / director</label><select id="compare-director" value={selectedComparePlayerId} onChange={(event) => setSelectedComparePlayerId(event.target.value)}><option value="">Select a director…</option>{factionDirectors.filter((director) => String(director.playerId) !== String(playerId)).map((director) => <option key={director.playerId} value={director.playerId}>{director.directorName} · {director.companyName} ({director.companyType || "Unknown type"})</option>)}</select><button className="secondary-button" onClick={() => void refreshFactionDirectory()} disabled={factionSyncing}>{factionSyncing ? "Refreshing…" : "Refresh directory"}</button></div>{compareError && <div className="error-banner" role="alert">{compareError}</div>}{compareData && <div className="compare-summary"><div><small>SELECTED DIRECTOR</small><strong>{compareData.director.directorName}</strong></div><div><small>COMPANY</small><strong>{compareData.director.companyName}</strong></div><div><small>TYPE / RATING</small><strong>{compareData.director.companyType || "Unknown"} · {compareData.director.starRating ?? "—"} ★</strong></div><div><small>WEEKLY INCOME</small><strong>{formatMoney(compareData.director.weeklyIncome)}</strong></div></div>}</section>
               <LineChart title="Daily company income" money series={[{label:"Your company",values:(ownCompareData?.history.length ? ownCompareData.history.map((point)=>({label:point.day,value:point.dailyIncome})) : (result?.incomeHistory || []).map((point)=>({label:new Date(point.fetchedAt).toISOString().slice(0,10),value:point.dailyIncome})))},{label:compareData?.director.directorName || "Selected director",values:(compareData?.history || []).map((point)=>({label:point.day,value:point.dailyIncome}))}]} />
               <LineChart title="Weekly company income" money series={[{label:"Your company",values:(ownCompareData?.history || []).map((point)=>({label:point.day,value:point.weeklyIncome}))},{label:compareData?.director.directorName || "Selected director",values:(compareData?.history || []).map((point)=>({label:point.day,value:point.weeklyIncome}))}]} />
