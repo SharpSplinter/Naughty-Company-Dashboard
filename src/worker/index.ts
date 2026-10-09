@@ -135,22 +135,18 @@ async function validateCompanyKey(apiKey: string): Promise<{ companyId: number; 
   if (!companyId) throw Object.assign(new Error("That key did not return a valid company profile. Use a key with company profile and employee access."), { status: 403 })
   return { companyId, profile, employees }
 }
-async function inspectDirectorKey(apiKey: string, playerId: string): Promise<{ isDirector: boolean; profile?: unknown }> {
+async function inspectDirectorKey(apiKey: string): Promise<{ isDirector: boolean; companyId?: string }> {
   try {
     const client = new TornApiClient({ apiKey })
+    // This endpoint is the authoritative initial director signal. Torn returns
+    // company_id here (not id); do not make identity/role detection depend on
+    // whether separate company profile, employee, or stock selections succeed.
     const jobPayload = await client.getUserJob()
-    const job = isRecord(jobPayload) && isRecord(jobPayload.job) ? jobPayload.job : {}
+    const job = isRecord(jobPayload) && isRecord(jobPayload.job) ? jobPayload.job : isRecord(jobPayload) ? jobPayload : {}
     const position = typeof job.position === "string" ? job.position.trim().toLowerCase() : ""
-    const jobCompanyId = job.id
-    if (position !== "director" || (typeof jobCompanyId !== "number" && !(typeof jobCompanyId === "string" && /^\d+$/.test(jobCompanyId)))) {
-      return { isDirector: false }
-    }
-    // /user/job is the authoritative director/permission signal. Confirm the
-    // same company can be read using the combined profile, employees and stock endpoint.
-    const selections = await client.getCompanySelections()
-    const companyId = companyIdFromPayload(selections.profile)
-    if (!companyId || String(companyId) !== String(jobCompanyId)) return { isDirector: false }
-    return { isDirector: true, profile: selections.profile }
+    const companyId = positiveId(job.company_id ?? job.companyId ?? job.id)
+    if (position !== "director" || !companyId) return { isDirector: false }
+    return { isDirector: true, companyId }
   } catch {
     return { isDirector: false }
   }
@@ -382,7 +378,7 @@ export default {
         const secondaryCompanyKey = isRecord(body) && typeof body.secondaryCompanyKey === "string" ? body.secondaryCompanyKey.trim() : ""
         if (!apiKey) return jsonResponse({ error: "A Torn API key is required." }, 400, origin)
         const player = await validateTornKey(apiKey)
-        const directorCheck = await inspectDirectorKey(apiKey, player.id)
+        const directorCheck = await inspectDirectorKey(apiKey)
         let loginKeyHasCompanyAccess = false
         try { await validateCompanyKey(apiKey); loginKeyHasCompanyAccess = true } catch { /* A separate company key may be needed. */ }
         const db = requireDb(env)
@@ -410,7 +406,7 @@ export default {
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       const key = await requireDb(env).prepare("SELECT last_four, updated_at FROM api_keys WHERE player_id = ?").bind(session.player_id).first<{ last_four: string; updated_at: string }>()
       const loginKey = await savedKey(env, session.player_id)
-      const directorCheck = loginKey ? await inspectDirectorKey(loginKey, session.player_id) : { isDirector: false }
+      const directorCheck = loginKey ? await inspectDirectorKey(loginKey) : { isDirector: false }
       let loginKeyHasCompanyAccess = false
       if (loginKey) {
         try { await validateCompanyKey(loginKey); loginKeyHasCompanyAccess = true } catch { /* Keep an existing company key if login access is insufficient. */ }
