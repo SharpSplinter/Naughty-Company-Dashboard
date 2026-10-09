@@ -120,6 +120,8 @@ try {
     const originalFetch = globalThis.fetch
     const apiKeys = new Map()
     const companyKeys = new Map()
+    const players = new Map()
+    const sessions = new Map()
     const db = {
       prepare(sql) {
         let values = []
@@ -127,14 +129,21 @@ try {
           bind(...args) { values = args; return this },
           async run() {
             const lower = sql.toLowerCase()
+            if (lower.includes("insert into players")) players.set(String(values[0]), { player_id: String(values[0]), player_name: values[1] })
             if (lower.includes("insert into api_keys")) apiKeys.set(String(values[0]), { last_four: values[3], updated_at: values[5], ciphertext: values[1], iv: values[2] })
             if (lower.includes("insert into company_keys")) companyKeys.set(String(values[0]), { last_four: values[3], updated_at: values[5], ciphertext: values[1], iv: values[2] })
+            if (lower.includes("insert into sessions")) sessions.set(String(values[0]), { token_hash: String(values[0]), player_id: String(values[1]), expires_at: Number(values[2]) })
             return { success: true }
           },
           async first() {
             const lower = sql.toLowerCase()
             if (lower.includes("from company_keys")) return companyKeys.get(String(values[0])) ?? null
             if (lower.includes("from api_keys")) return apiKeys.get(String(values[0])) ?? null
+            if (lower.includes("from sessions s join players p")) {
+              const savedSession = sessions.get(String(values[0]))
+              if (!savedSession || savedSession.expires_at <= Number(values[1])) return null
+              return { ...players.get(savedSession.player_id), player_id: savedSession.player_id }
+            }
             return null
           },
           async all() { return { results: [] } },
@@ -160,6 +169,17 @@ try {
       assert.equal(payload.company.key.saved, true)
       assert.equal(payload.company.key.lastFour, "7777")
       assert.equal(companyKeys.get("777").last_four, apiKeys.get("777").last_four)
+
+      // Simulate a pre-fix session with no company key, then restore the session.
+      companyKeys.clear()
+      const restored = await worker.fetch(new Request("https://worker.test/api/auth/session", {
+        headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: `Bearer ${payload.token}` },
+      }), { DB: db, KEY_ENCRYPTION_SECRET: "test-secret-0123456789-abcdefghijklmnopqrstuvwxyz" })
+      assert.equal(restored.status, 200)
+      const restoredPayload = await restored.json()
+      assert.equal(restoredPayload.company.isDirector, true)
+      assert.equal(restoredPayload.company.key.saved, true)
+      assert.equal(companyKeys.get("777").last_four, "7777")
     } finally {
       globalThis.fetch = originalFetch
     }

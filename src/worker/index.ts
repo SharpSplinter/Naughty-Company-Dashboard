@@ -287,7 +287,11 @@ export default {
       const key = await requireDb(env).prepare("SELECT last_four, updated_at FROM api_keys WHERE player_id = ?").bind(session.player_id).first<{ last_four: string; updated_at: string }>()
       const loginKey = await savedKey(env, session.player_id)
       const directorCheck = loginKey ? await inspectDirectorKey(loginKey, session.player_id) : { isDirector: false }
-      return jsonResponse({ player: { id: session.player_id, name: session.player_name }, key: key ? { saved: true, lastFour: key.last_four, updatedAt: key.updated_at } : { saved: false }, company: { isDirector: directorCheck.isDirector, key: await companyKeyMeta(env, session.player_id), needsSecondaryKey: !directorCheck.isDirector && !(await companyKeyMeta(env, session.player_id)).saved } }, 200, origin)
+      // Repair existing sessions too: older sign-ins may have missed the scalar
+      // director ID and therefore never wrote the primary key to company_keys.
+      if (loginKey && directorCheck.isDirector) await saveCompanyKey(env, session.player_id, loginKey)
+      const companyKey = await companyKeyMeta(env, session.player_id)
+      return jsonResponse({ player: { id: session.player_id, name: session.player_name }, key: key ? { saved: true, lastFour: key.last_four, updatedAt: key.updated_at } : { saved: false }, company: { isDirector: directorCheck.isDirector, key: companyKey, needsSecondaryKey: !directorCheck.isDirector && !companyKey.saved } }, 200, origin)
     }
     if (url.pathname === "/api/auth/key" && request.method === "POST") {
       const session = await authenticate(request, env)
