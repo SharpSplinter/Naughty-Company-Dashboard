@@ -48,7 +48,7 @@ function stockCostTotal(value: unknown): number {
     const quantity = [row.quantity, row.amount, row.in_stock, row.stock].find((n) => typeof n === "number" && Number.isFinite(n)) as number | undefined
     const unitCost = [row.cost, row.unit_cost, row.cost_per_unit, row.purchase_price].find((n) => typeof n === "number" && Number.isFinite(n)) as number | undefined
     if (quantity !== undefined && unitCost !== undefined) total += Math.max(0, quantity) * Math.max(0, unitCost)
-    for (const [key, child] of Object.entries(row)) if (!['quantity','amount','in_stock','stock','cost','unit_cost','cost_per_unit','purchase_price'].includes(key)) visit(child, depth + 1)
+    for (const [key, child] of Object.entries(row)) if (!['quantity','amount','in_stock','cost','unit_cost','cost_per_unit','purchase_price'].includes(key)) visit(child, depth + 1)
   }
   visit(value, 0)
   return total
