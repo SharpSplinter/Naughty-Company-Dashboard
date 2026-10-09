@@ -196,7 +196,9 @@ try {
       },
     }
     let combinedCompanyRequest = false
+    let tornRequestCount = 0
     globalThis.fetch = async (input) => {
+      tornRequestCount += 1
       const url = new URL(String(input))
       const path = url.pathname
       if (path.endsWith("/v2/user/profile")) return new Response(JSON.stringify({ profile: { id: 777, name: "Test Director" } }))
@@ -223,16 +225,18 @@ try {
       assert.equal(combinedCompanyRequest, true)
       assert.equal(companyKeys.get("777").last_four, apiKeys.get("777").last_four)
 
-      // Simulate a pre-fix session with no company key, then restore the session.
+      // Session restoration is cache-only and must not repair keys by polling Torn.
       companyKeys.clear()
+      const requestsBeforeRestore = tornRequestCount
       const restored = await worker.fetch(new Request("https://worker.test/api/auth/session", {
         headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: `Bearer ${payload.token}` },
       }), { DB: db, KEY_ENCRYPTION_SECRET: "test-secret-0123456789-abcdefghijklmnopqrstuvwxyz" })
       assert.equal(restored.status, 200)
       const restoredPayload = await restored.json()
-      assert.equal(restoredPayload.company.isDirector, true)
-      assert.equal(restoredPayload.company.key.saved, true)
-      assert.equal(companyKeys.get("777").last_four, "7777")
+      assert.equal(restoredPayload.company.isDirector, false)
+      assert.equal(restoredPayload.company.key.saved, false)
+      assert.equal(companyKeys.has("777"), false)
+      assert.equal(tornRequestCount, requestsBeforeRestore)
     } finally {
       globalThis.fetch = originalFetch
     }

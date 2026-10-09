@@ -428,7 +428,6 @@ export default {
         await db.prepare("INSERT INTO players (player_id, player_name, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, updated_at = excluded.updated_at").bind(player.id, player.name, now, now).run()
         await saveKey(env, player.id, apiKey)
         try { await refreshGlobalRankingCache(env, apiKey) } catch { /* Daily schedule retries the cache warm-up. */ }
-        try { await refreshGlobalRankingCache(env, apiKey) } catch { /* Ranking cache warms again on the next scheduled refresh. */ }
         // Prefer the login key whenever it actually has company profile + employee access.
         if (loginKeyHasCompanyAccess || directorCheck.isDirector) {
           await saveCompanyKey(env, player.id, apiKey)
