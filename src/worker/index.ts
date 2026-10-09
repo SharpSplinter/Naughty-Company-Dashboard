@@ -389,7 +389,7 @@ async function refreshRankingProfiles(env: WorkerEnv): Promise<void> {
 
 export default {
   async scheduled(controller: { scheduledTime: number; cron: string }, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
-    const isWeeklyLock = controller.cron === "0 18 * * SUN"
+    const isWeeklyLock = controller.cron === "10 18 * * SUN"
     ctx.waitUntil(Promise.all([refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35)]).then(async () => {
       if (isWeeklyLock) await captureWeeklyFactionStarCounts(env, new Date(controller.scheduledTime).toISOString())
     }))
@@ -554,7 +554,11 @@ export default {
         try { root = companyProfileRoot(JSON.parse(row.profileJson)) } catch { /* Ignore a corrupt historical snapshot. */ }
         try { stock = row.stockJson ? JSON.parse(row.stockJson) : null } catch { /* Stock history is optional. */ }
         const income = isRecord(root.income) ? root.income : {}
-        return { day: row.day, dailyIncome: typeof income.daily === "number" ? income.daily : null, weeklyIncome: typeof income.weekly === "number" ? income.weekly : null, stock }
+        const profit = isRecord(root.profit) ? root.profit : {}
+        const dailyProfit = [profit.daily, root.daily_profit, root.dailyProfit, root.profit_daily].find((value) => typeof value === "number" && Number.isFinite(value)) as number | undefined
+        const stockRows = Array.isArray(stock) ? stock : isRecord(stock) && Array.isArray(stock.stock) ? stock.stock : []
+        const stockQuantity = stockRows.reduce((sum, item) => { if (!isRecord(item)) return sum; const quantity = [item.in_stock, item.quantity, item.amount].find((value) => typeof value === "number" && Number.isFinite(value)) as number | undefined; return sum + (quantity ?? 0) }, 0)
+        return { day: row.day, dailyIncome: typeof income.daily === "number" ? income.daily : null, weeklyIncome: typeof income.weekly === "number" ? income.weekly : null, dailyProfit: dailyProfit ?? null, stockQuantity: stock === null ? null : stockQuantity, stock }
       })
       return jsonResponse({ director, history, stockHistoryAvailable: history.some((row) => row.stock !== null), generatedAt: new Date().toISOString() }, 200, origin)
     }

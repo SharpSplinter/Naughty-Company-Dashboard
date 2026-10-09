@@ -69,3 +69,27 @@
 .snapshot-metric-grid strong{display:block;color:#e5e9f5;font-size:12px;overflow-wrap:anywhere}
 .snapshot-date-range{margin:14px 0 0;padding-top:10px;border-top:1px solid #202b42;color:var(--muted);font-size:9px}
 @media(max-width:800px){.snapshot-summary-grid{grid-template-columns:1fr}.snapshot-metric-grid{gap:10px}}
+
+/* Mobile chart readability and compact ranking tables */
+.chart-scroll{overflow-x:auto;overflow-y:hidden;padding:4px 2px 8px;}
+.line-chart{min-width:560px;overflow:visible;}
+.ranking-panel .table-scroll{overflow-x:auto;overscroll-behavior-x:contain;}
+@media(max-width:700px){
+  .ranking-panel{padding:10px;}
+  .ranking-panel .panel-heading{gap:8px;align-items:flex-start;}
+  .ranking-heading h2{font-size:13px;}
+  .ranking-heading p{font-size:10px;line-height:1.35;}
+  .ranking-meta{font-size:9px;gap:6px;}
+  .ranking-table{width:100%;table-layout:fixed;font-size:9px;}
+  .ranking-table th,.ranking-table td{padding:7px 5px;line-height:1.25;overflow-wrap:anywhere;}
+  .ranking-table th{font-size:8px;letter-spacing:.025em;}
+  .ranking-table th:nth-child(1),.ranking-table td:nth-child(1){width:34px;}
+  .ranking-table .income-primary{font-size:9px;}
+  .ranking-table .company-type-subline{font-size:8px;}
+  .ranking-table .muted{font-size:8px;}
+  .ranking-hide-mobile{display:none!important;}
+  .ranking-panel .star-rating{font-size:9px;}
+  .ranking-panel .text-button{font-size:9px;padding:3px 0;}
+  .weekly-star-counts{gap:6px;padding:8px;}
+  .weekly-star-counts article{min-width:36px;padding:5px;}
+}
