@@ -1,23 +1,8 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import tsconfigPaths from "vite-tsconfig-paths";
-import { tanstackStart } from "@tanstack/react-start/plugin/vite";
-import tailwindcss from "@tailwindcss/vite";
-import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
-import { grokPwaPlugin } from "./scripts/grok-pwa-plugin.mjs";
+import { defineConfig } from "vite"
+import react from "@vitejs/plugin-react"
 
 export default defineConfig({
-  plugins: [
-    appEnvPlugin(),
-    tanstackStart({
-      customViteReactPlugin: true,
-    }),
-    react(),
-    tsconfigPaths(),
-    tailwindcss(),
-    grokPwaPlugin(),
-  ],
-  server: {
-    port: 3000,
-  },
-});
+  plugins: [react()],
+  server: { port: 3000, host: "0.0.0.0" },
+  build: { outDir: "dist", sourcemap: true },
+})
