@@ -100,7 +100,7 @@ export default {
     if (!origin) return jsonResponse({ error: "Origin not allowed." }, 403)
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { "access-control-allow-origin": origin, "access-control-allow-methods": "GET, POST, DELETE, OPTIONS", "access-control-allow-headers": "Authorization, Content-Type", "access-control-max-age": "86400", vary: "Origin" } })
     const url = new URL(request.url)
-    if (url.pathname === "/health" && request.method === "GET") return jsonResponse({ ok: true, service: "naughty-company-api", storage: Boolean(env.DB) }, 200, origin)
+    if (url.pathname === "/health" && request.method === "GET") return jsonResponse({ ok: true, service: "naughty-company-api" }, 200, origin)
     if (url.pathname === "/api/auth/sign-in" && request.method === "POST") {
       try {
         const body: unknown = await request.json().catch(() => null)
