@@ -86,6 +86,23 @@ try {
     assert.equal(response.company.id, 77)
   })
 
+  await test("fetches company profile, employees, and stock in one combined Torn request", async () => {
+    let requestedUrl = ""
+    const client = new TornApiClient({ apiKey: "test", fetcher: async (input) => {
+      requestedUrl = String(input)
+      return new Response(JSON.stringify({
+        employees: [{ id: 1, name: "Employee" }],
+        stock: [{ id: 173, name: "Oil (Barrel)" }],
+        profile: { id: 77, name: "Sample Oil Rig", type: { id: 28, name: "Oil Rig" } },
+      }))
+    } })
+    const response = await client.getCompanySelections()
+    assert.equal(requestedUrl, "https://api.torn.com/v2/company?selections=employees%2Cstock%2Cprofile")
+    assert.equal(response.profile.profile.id, 77)
+    assert.equal(response.employees.employees.length, 1)
+    assert.equal(response.stock.stock.length, 1)
+  })
+
   await test("sends the Torn key in Authorization, never in the URL", async () => {
     let requestedUrl = ""
     let authorization = ""
@@ -150,11 +167,17 @@ try {
         }
       },
     }
+    let combinedCompanyRequest = false
     globalThis.fetch = async (input) => {
-      const path = new URL(String(input)).pathname
+      const url = new URL(String(input))
+      const path = url.pathname
       if (path.endsWith("/v2/user/profile")) return new Response(JSON.stringify({ profile: { id: 777, name: "Test Director" } }))
       if (path.endsWith("/v2/user/faction")) return new Response(JSON.stringify({ faction: { id: 8317, name: "Naughty Souls" } }))
       if (path.endsWith("/v2/company/profile")) return new Response(JSON.stringify({ company: { id: 77, name: "Test Company", director: 777 } }))
+      if (path.endsWith("/v2/company") && url.searchParams.get("selections") === "employees,stock,profile") {
+        combinedCompanyRequest = true
+        return new Response(JSON.stringify({ employees: [], stock: [], profile: { id: 77, name: "Test Company", type: { id: 28, name: "Oil Rig" }, director: { id: 777, name: "Test Director" } } }))
+      }
       return new Response(JSON.stringify({ error: { code: 16, error: "Not granted" } }), { status: 403 })
     }
     try {
@@ -168,6 +191,7 @@ try {
       assert.equal(payload.company.isDirector, true)
       assert.equal(payload.company.key.saved, true)
       assert.equal(payload.company.key.lastFour, "7777")
+      assert.equal(combinedCompanyRequest, true)
       assert.equal(companyKeys.get("777").last_four, apiKeys.get("777").last_four)
 
       // Simulate a pre-fix session with no company key, then restore the session.
