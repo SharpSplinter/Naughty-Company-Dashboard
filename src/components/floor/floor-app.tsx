@@ -1,44 +1,27 @@
 import { useMemo, useState } from "react"
 import positionsData from "../../lib/company/positions.json"
+import { runEngine } from "../../lib/company/engine"
+import type { CompanyDashboardModel, CompanyPositionCatalog } from "../../lib/company/types"
 
-type Position = {
-  rank: string
-  primary: string
-  primaryMin: number
-  secondary: string
-  secondaryMin: number
-  special: string | null
-}
-type Catalog = { companies: Record<string, Position[]> }
-type ApiResult = { profile: unknown; employees: unknown }
-
-const catalog = positionsData as Catalog
+const catalog = positionsData as CompanyPositionCatalog
 const companyNames = Object.keys(catalog.companies).sort()
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "")
   || "https://naughty-company-api.kboone801.workers.dev"
+
+type ApiResult = { model: CompanyDashboardModel; profile: unknown; employees: unknown }
+
+function formatNumber(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : value.toLocaleString()
+}
+
+function formatMoney(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : "$" + value.toLocaleString()
+}
 
 function getObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null
-}
-
-function findEmployeeCount(value: unknown): number | null {
-  const root = getObject(value)
-  if (!root) return null
-  for (const key of ["employees", "company_employees", "staff"]) {
-    const candidate = root[key]
-    if (Array.isArray(candidate)) return candidate.length
-    const nested = getObject(candidate)
-    if (nested) {
-      const arrays = Object.values(nested).find(Array.isArray)
-      if (Array.isArray(arrays)) return arrays.length
-    }
-  }
-  for (const nestedValue of Object.values(root)) {
-    if (Array.isArray(nestedValue) && nestedValue.length > 0) return nestedValue.length
-  }
-  return null
 }
 
 function pretty(value: unknown): string {
@@ -61,7 +44,7 @@ export function FloorApp() {
     [search],
   )
   const positions = catalog.companies[selectedCompany] ?? []
-  const employeeCount = result ? findEmployeeCount(result.employees) : null
+  const model = result?.model
 
   async function connectCompany(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -92,7 +75,9 @@ export function FloorApp() {
         const payload = getObject(!profileResponse.ok ? profile : employees)
         throw new Error(typeof payload?.error === "string" ? payload.error : "The API request failed. Check the key, company ID, and access permissions.")
       }
-      setResult({ profile, employees })
+      const normalized = runEngine(profile, employees, catalog)
+      if (!normalized) throw new Error("Torn returned an unexpected company profile. No data was saved.")
+      setResult({ profile, employees, model: normalized })
       setActiveView("overview")
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not connect to the Torn API.")
@@ -104,7 +89,7 @@ export function FloorApp() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="#" onClick={() => setActiveView("overview")}>
+        <a className="brand" href="#" onClick={(event) => { event.preventDefault(); setActiveView("overview") }}>
           <span className="brand-mark">NC</span>
           <span><strong>NAUGHTY</strong><small>COMPANY OPERATIONS</small></span>
         </a>
@@ -116,7 +101,7 @@ export function FloorApp() {
         </nav>
         <div className="sidebar-bottom">
           <div className="connection-indicator"><span className={result ? "status-dot live" : "status-dot"} />{result ? "Torn API connected" : "Waiting for connection"}</div>
-          <div className="sidebar-foot">EARLY ACCESS <span>•</span> BUILD 0.1</div>
+          <div className="sidebar-foot">EARLY ACCESS <span>•</span> BUILD 0.2</div>
         </div>
       </aside>
 
@@ -162,24 +147,31 @@ export function FloorApp() {
                   <button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button>
                 </form>
               </div>
-              <div className="panel guide-panel"><span className="guide-icon">✳</span><h2>Before you connect</h2><ul><li>Use a Torn API key with the access needed for your company.</li><li>Private employee details may only be available to authorized company directors.</li><li>Requests pass through the Cloudflare Worker to Torn's API.</li></ul><div className="guide-note"><strong>Privacy by design</strong><p>Database storage and user accounts are not enabled yet. Avoid using a shared device with your API key.</p></div></div>
+              <div className="panel guide-panel"><span className="guide-icon">✳</span><h2>Before you connect</h2><ul><li>Use a Torn API key with the access needed for your company.</li><li>Private employee stats may only be available to authorized company directors.</li><li>Requests pass through the Cloudflare Worker to Torn's API.</li></ul><div className="guide-note"><strong>Privacy by design</strong><p>Database storage and user accounts are not enabled yet. Avoid using a shared device with your API key.</p></div></div>
             </section>
           ) : (
             <>
               <section className="metrics-grid">
                 <article className="metric-card"><div className="metric-top"><span>COMPANY TYPES</span><span className="metric-icon violet">▦</span></div><div className="metric-value">{companyNames.length}</div><div className="metric-foot"><span className="metric-dot violet-dot" /> In the position catalog</div><div className="metric-spark spark-violet"><i /><i /><i /><i /><i /><i /><i /></div></article>
                 <article className="metric-card"><div className="metric-top"><span>DEFINED POSITIONS</span><span className="metric-icon blue">♙</span></div><div className="metric-value">{Object.values(catalog.companies).reduce((sum, roles) => sum + roles.length, 0)}</div><div className="metric-foot"><span className="metric-dot blue-dot" /> Across all company types</div><div className="metric-spark spark-blue"><i /><i /><i /><i /><i /><i /><i /></div></article>
-                <article className="metric-card"><div className="metric-top"><span>LIVE EMPLOYEES</span><span className="metric-icon green">♧</span></div><div className="metric-value">{employeeCount === null ? "—" : employeeCount}</div><div className="metric-foot"><span className={result ? "metric-dot green-dot" : "metric-dot"} /> {result ? "From Torn API response" : "Connect a company to load"}</div><div className="metric-spark spark-green"><i /><i /><i /><i /><i /><i /><i /></div></article>
-                <article className="metric-card"><div className="metric-top"><span>API STATUS</span><span className="metric-icon amber">⌁</span></div><div className="metric-value metric-status">{result ? "Connected" : "Standby"}</div><div className="metric-foot"><span className={result ? "metric-dot green-dot" : "metric-dot amber-dot"} /> {result ? "Latest request succeeded" : "Awaiting credentials"}</div><div className="metric-orbit">◎</div></article>
+                <article className="metric-card"><div className="metric-top"><span>LIVE EMPLOYEES</span><span className="metric-icon green">♧</span></div><div className="metric-value">{model ? model.employees.length : "—"}</div><div className="metric-foot"><span className={model ? "metric-dot green-dot" : "metric-dot"} /> {model ? "Normalized from Torn API" : "Connect a company to load"}</div><div className="metric-spark spark-green"><i /><i /><i /><i /><i /><i /><i /></div></article>
+                <article className="metric-card"><div className="metric-top"><span>ROLE REQUIREMENTS</span><span className="metric-icon amber">⌁</span></div><div className="metric-value metric-status">{model ? `${model.employeesMeetingRequirements}/${model.matchedPositionCount}` : "—"}</div><div className="metric-foot"><span className={model ? "metric-dot green-dot" : "metric-dot amber-dot"} /> {model ? "Employees meeting listed minimums" : "Awaiting company data"}</div><div className="metric-orbit">◎</div></article>
               </section>
 
               <section className="content-grid">
                 <article className="panel company-panel">
-                  <div className="panel-heading"><div><h2>{result ? "Connected company" : "Your company workspace"}</h2><p>{result ? "Live data received from Torn" : "Live company data appears here after connection"}</p></div><span className={result ? "status-badge success" : "status-badge pending"}><i /> {result ? "LIVE DATA" : "NOT CONNECTED"}</span></div>
-                  {result ? <div className="connected-summary"><div className="company-emblem">NC</div><div className="connected-copy"><h3>Company #{companyId}</h3><p>Profile and employee endpoints responded successfully.</p></div><button className="text-button" onClick={() => setShowRaw((current) => !current)}>{showRaw ? "Hide raw data" : "Inspect response"} ↗</button></div> : <div className="empty-company"><div className="empty-illustration"><div className="empty-ring ring-one" /><div className="empty-ring ring-two" /><div className="empty-center">NC</div><span className="float-star star-one">✳</span><span className="float-star star-two">✦</span></div><h3>Your next move starts here.</h3><p>Connect your Torn company to turn employee and company data into a useful operations view.</p><button className="secondary-button" onClick={() => setActiveView("connect")}>Set up connection <span>→</span></button></div>}
-                  {result && showRaw && <div className="raw-data"><h3>Profile response</h3><pre>{pretty(result.profile)}</pre><h3>Employee response</h3><pre>{pretty(result.employees)}</pre></div>}
+                  <div className="panel-heading"><div><h2>{model ? model.company.name : "Your company workspace"}</h2><p>{model ? `${model.company.typeName} · Company #${model.company.id}` : "Live company data appears here after connection"}</p></div><span className={model ? "status-badge success" : "status-badge pending"}><i /> {model ? "LIVE DATA" : "NOT CONNECTED"}</span></div>
+                  {model ? (
+                    <>
+                      <div className="company-facts"><div><small>COMPANY RATING</small><strong>{formatNumber(model.company.rating)}</strong></div><div><small>EMPLOYEES / CAPACITY</small><strong>{formatNumber(model.company.employeesHired ?? model.employees.length)} / {formatNumber(model.company.employeeCapacity)}</strong></div><div><small>DAILY INCOME</small><strong>{formatMoney(model.company.dailyIncome)}</strong></div><div><small>DIRECTOR</small><strong>{model.company.directorName ?? "Restricted"}</strong></div></div>
+                      <div className="employee-heading"><div><h3>Employees</h3><p>{model.matchedPositionCount} mapped to catalog roles · {model.employeesWithUnknownFit} with restricted stats</p></div><button className="text-button" onClick={() => setShowRaw((current) => !current)}>{showRaw ? "Hide raw data" : "Inspect API"} ↗</button></div>
+                      <div className="table-scroll"><table><thead><tr><th>EMPLOYEE</th><th>POSITION</th><th>WORK STATS</th><th>ROLE FIT</th><th>DAYS</th></tr></thead><tbody>{model.employees.map((employee) => <tr key={employee.id}><td><strong>{employee.name}</strong><div className="muted">#{employee.id}</div></td><td>{employee.positionName}</td><td>{employee.stats ? `MAN ${formatNumber(employee.stats.MAN)} · INT ${formatNumber(employee.stats.INT)} · END ${formatNumber(employee.stats.END)}` : <span className="muted">Restricted</span>}</td><td><span className={`fit-chip ${employee.fit}`}>{employee.fit === "meets" ? "Meets" : employee.fit === "below" ? "Below minimum" : employee.fit === "unknown" ? "Stats hidden" : "Unmapped"}</span></td><td>{formatNumber(employee.daysInCompany)}</td></tr>)}</tbody></table></div>
+                      {model.employees.length === 0 && <div className="empty-state">The API returned no employees for this company.</div>}
+                      {showRaw && <div className="raw-data"><h3>Profile response</h3><pre>{pretty(result?.profile)}</pre><h3>Employee response</h3><pre>{pretty(result?.employees)}</pre></div>}
+                    </>
+                  ) : <div className="empty-company"><div className="empty-illustration"><div className="empty-ring ring-one" /><div className="empty-ring ring-two" /><div className="empty-center">NC</div><span className="float-star star-one">✳</span><span className="float-star star-two">✦</span></div><h3>Your next move starts here.</h3><p>Connect your Torn company to turn employee and company data into a useful operations view.</p><button className="secondary-button" onClick={() => setActiveView("connect")}>Set up connection <span>→</span></button></div>}
                 </article>
-                <article className="panel quick-panel"><div className="panel-heading"><div><h2>Quick access</h2><p>Jump back into your workflow</p></div></div><button className="quick-link" onClick={() => setActiveView("catalog")}><span className="quick-icon violet">▦</span><span><strong>Position catalog</strong><small>Review role and stat requirements</small></span><b>→</b></button><button className="quick-link" onClick={() => setActiveView("connect")}><span className="quick-icon blue">⌁</span><span><strong>Connect Torn API</strong><small>Load company and employee data</small></span><b>→</b></button><div className="api-note"><span>✳</span><div><strong>Built for live data</strong><p>API integration is in place. Database-backed accounts are planned for a later stage.</p></div></div></article>
+                <article className="panel quick-panel"><div className="panel-heading"><div><h2>Quick access</h2><p>Jump back into your workflow</p></div></div><button className="quick-link" onClick={() => setActiveView("catalog")}><span className="quick-icon violet">▦</span><span><strong>Position catalog</strong><small>Review role and stat requirements</small></span><b>→</b></button><button className="quick-link" onClick={() => setActiveView("connect")}><span className="quick-icon blue">⌁</span><span><strong>Connect Torn API</strong><small>Load company and employee data</small></span><b>→</b></button><div className="api-note"><span>✳</span><div><strong>Role fit is permission-aware</strong><p>When Torn hides work stats, the dashboard shows “Stats hidden” instead of treating missing values as zero.</p></div></div></article>
               </section>
             </>
           )}
