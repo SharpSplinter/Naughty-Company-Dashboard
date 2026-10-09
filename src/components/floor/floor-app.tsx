@@ -37,6 +37,7 @@ export function FloorApp() {
   const [apiKey, setApiKey] = useState("")
   const [secondaryCompanyKey, setSecondaryCompanyKey] = useState("")
   const [companyKeySaved, setCompanyKeySaved] = useState(false)
+  const [needsSecondaryKey, setNeedsSecondaryKey] = useState(false)
   const [isDirector, setIsDirector] = useState(false)
   const [result, setResult] = useState<ApiResult | null>(null)
   const [error, setError] = useState("")
@@ -45,6 +46,9 @@ export function FloorApp() {
   const [sessionToken, setSessionToken] = useState("")
   const [authChecking, setAuthChecking] = useState(true)
   const [playerName, setPlayerName] = useState("")
+  const [playerId, setPlayerId] = useState("")
+  const [selectedCompanyId, setSelectedCompanyId] = useState("")
+  const [showCompanySelector, setShowCompanySelector] = useState(false)
   const [keySaved, setKeySaved] = useState(false)
   const [savedCompanies, setSavedCompanies] = useState<SavedCompany[]>([])
   const [rankingCompanies, setRankingCompanies] = useState<RankingCompany[]>([])
@@ -65,20 +69,23 @@ export function FloorApp() {
         if (cancelled) return
         setSessionToken(token)
         setPlayerName(session.player.name)
+        setPlayerId(session.player.id)
         setKeySaved(session.key.saved)
         setIsDirector(session.company?.isDirector ?? false)
         setCompanyKeySaved(session.company?.key?.saved ?? false)
+        setNeedsSecondaryKey(session.company?.needsSecondaryKey ?? !(session.company?.key?.saved ?? false))
         const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${token}` } })
         if (!listResponse.ok) return
         const list = await listResponse.json() as { companies: SavedCompany[] }
         if (cancelled) return
         setSavedCompanies(list.companies || [])
         if (list.companies?.length) {
+          setSelectedCompanyId(list.companies[0].company_id)
           const dataResponse = await fetch(`${API_BASE}/api/me/companies/${list.companies[0].company_id}`, { headers: { Authorization: `Bearer ${token}` } })
           if (!dataResponse.ok || cancelled) return
           const data = await dataResponse.json() as { profile: unknown; employees: unknown }
           const normalized = runEngine(data.profile, data.employees, catalog)
-          if (normalized && !cancelled) setResult({ profile: data.profile, employees: data.employees, model: normalized })
+          if (normalized && !cancelled) { setResult({ profile: data.profile, employees: data.employees, model: normalized }); setSelectedRankingType(normalized.company.typeName) }
         }
       } catch {
         sessionStorage.removeItem("ncd_session")
@@ -103,20 +110,15 @@ export function FloorApp() {
         if (cancelled) return
         const sorted = (payload.companies || []).slice().sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1))
         setRankingCompanies(sorted)
-        let globalRows = sorted
-        if (scope === "global") { setGlobalRankingCompanies(sorted); setRankingCompanies(sorted) }
-        else {
-          try {
-            const globalResponse = await fetch(`${API_BASE}/api/rankings?scope=global`, { headers: { Authorization: `Bearer ${sessionToken}` } })
-            const globalPayload = await globalResponse.json() as { companies?: RankingCompany[] }
-            if (globalResponse.ok && Array.isArray(globalPayload.companies)) {
-              globalRows = globalPayload.companies.slice().sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1))
-              setGlobalRankingCompanies(globalRows)
-            }
-          } catch { /* Keep faction rankings usable if the all-Torn reference cannot load. */ }
+        if (scope === "global") {
+          setGlobalRankingCompanies(sorted)
+          setRankingCompanies(sorted)
+        } else {
+          setRankingCompanies(sorted)
         }
         setRankingsUpdatedAt(payload.generatedAt || "")
-        setSelectedRankingType((current) => current || sorted[0]?.companyType || "")
+        const connectedType = result?.model.company.typeName || savedCompanies[0]?.company_type || sorted[0]?.companyType || ""
+        setSelectedRankingType((current) => current || connectedType)
       } catch (caught) {
         if (!cancelled) setRankingError(caught instanceof Error ? caught.message : "Could not load company rankings.")
       }
@@ -130,7 +132,7 @@ export function FloorApp() {
     [search],
   )
   const positions = catalog.companies[selectedCompany] ?? []
-  const allTornRows = globalRankingCompanies.length ? globalRankingCompanies : activeView === "type-rankings" ? rankingCompanies : []
+  const allTornRows = activeView === "faction-rankings" ? rankingCompanies : globalRankingCompanies.length ? globalRankingCompanies : activeView === "type-rankings" ? rankingCompanies : []
   const model = result?.model
   const currentRankingCompany = model ? allTornRows.find((row) => row.companyId === String(model.company.id)) : undefined
   const companyPeerRows = model ? allTornRows.filter((row) => row.companyType === model.company.typeName) : currentRankingCompany ? allTornRows.filter((row) => row.companyType === currentRankingCompany.companyType) : []
@@ -150,11 +152,6 @@ export function FloorApp() {
     .filter((company) => activeView !== "type-rankings" || !selectedRankingType || company.companyType === selectedRankingType)
     .slice()
     .sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1)), [rankingCompanies, activeView, selectedRankingType])
-  const companyTypeCounts = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const company of allTornRows) counts.set(company.companyType, (counts.get(company.companyType) || 0) + 1)
-    return Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]))
-  }, [allTornRows])
   function placement(company: RankingCompany, dimension: "type" | "stars"): string {
     const target = allTornRows.find((row) => row.companyId === company.companyId)
     if (!target) return "—"
@@ -177,6 +174,7 @@ export function FloorApp() {
       if (!response.ok) throw new Error(payload.error || "Could not delete the saved key.")
       setKeySaved(false)
       setCompanyKeySaved(false)
+      setNeedsSecondaryKey(true)
       setIsDirector(false)
       setApiKey("")
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not delete the saved key.") }
@@ -193,6 +191,8 @@ export function FloorApp() {
       const normalized = runEngine(payload.profile, payload.employees, catalog)
       if (!normalized) throw new Error("The saved company profile could not be normalized.")
       setResult({ profile: payload.profile, employees: payload.employees, model: normalized })
+      setSelectedCompanyId(id)
+      setShowCompanySelector(false)
       setActiveView("overview")
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load saved company data.") }
     finally { setLoading(false) }
@@ -215,15 +215,18 @@ export function FloorApp() {
       sessionStorage.setItem("ncd_session", payload.token)
       setSessionToken(payload.token)
       setPlayerName(payload.player?.name || "Torn member")
+      setPlayerId(payload.player?.id || "")
       setKeySaved(payload.key?.saved ?? true)
       setIsDirector(payload.company?.isDirector ?? false)
       setCompanyKeySaved(payload.company?.key?.saved ?? false)
+      setNeedsSecondaryKey(payload.company?.needsSecondaryKey ?? !(payload.company?.key?.saved ?? false))
       setApiKey("")
       setSecondaryCompanyKey("")
       const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
       if (listResponse.ok) {
         const list = await listResponse.json() as { companies: SavedCompany[] }
         setSavedCompanies(list.companies || [])
+        if (list.companies?.length) setSelectedCompanyId(list.companies[0].company_id)
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not sign in.")
@@ -234,8 +237,12 @@ export function FloorApp() {
     sessionStorage.removeItem("ncd_session")
     setSessionToken("")
     setPlayerName("")
+    setPlayerId("")
+    setSelectedCompanyId("")
+    setShowCompanySelector(false)
     setKeySaved(false)
     setCompanyKeySaved(false)
+    setNeedsSecondaryKey(false)
     setIsDirector(false)
     setSecondaryCompanyKey("")
     setSavedCompanies([])
@@ -257,6 +264,7 @@ export function FloorApp() {
         const keyPayload = await keyResponse.json() as { error?: string; saved?: boolean }
         if (!keyResponse.ok) throw new Error(keyPayload.error || "Could not save the secondary company key.")
         setCompanyKeySaved(true)
+        setNeedsSecondaryKey(false)
         setSecondaryCompanyKey("")
       }
       if (!token) throw new Error("Sign in with a Torn API key first.")
@@ -266,6 +274,9 @@ export function FloorApp() {
       const normalized = runEngine(payload.profile, payload.employees, catalog)
       if (!normalized) throw new Error("Torn returned an unexpected company profile. The response was not added to your saved workspace.")
       setResult({ profile: payload.profile, employees: payload.employees, model: normalized })
+      setSelectedRankingType(normalized.company.typeName)
+      setSelectedCompanyId(String(normalized.company.id))
+      setShowCompanySelector(false)
       setActiveView("overview")
       const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${token}` } })
       if (listResponse.ok) { const list = await listResponse.json() as { companies: SavedCompany[] }; setSavedCompanies(list.companies || []) }
@@ -287,9 +298,7 @@ export function FloorApp() {
           <label htmlFor="login-api-key">Limited-access Torn API key</label>
           <input id="login-api-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your Torn API key" required />
           <p className="login-hint">Your key is sent securely to the dashboard API for validation. It is never stored in this browser's local storage.</p>
-          <label htmlFor="login-company-key">Secondary company key <span className="muted">(only if you are not a company director)</span></label>
-          <input id="login-company-key" type="password" autoComplete="off" spellCheck={false} value={secondaryCompanyKey} onChange={(event) => setSecondaryCompanyKey(event.target.value)} placeholder="Optional: company director key" />
-          <p className="login-hint">If your login key is not a director key, a saved secondary key is reused automatically. You can also enter or replace it here.</p>
+          <p className="login-hint">Your login key will be checked for company access first. A secondary company key is only needed if Torn does not allow company data access with your login key.</p>
           {error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}
           <button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Verifying key…</> : <>Sign in securely <span>→</span></>}</button>
         </form>
@@ -324,7 +333,7 @@ export function FloorApp() {
       <main className="main-area">
         <header className="topbar">
           <div className="breadcrumbs">Workspace <span>/</span> <strong>{activeView === "overview" ? "Overview" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position catalog" : activeView === "type-rankings" ? "Company rankings" : activeView === "faction-rankings" ? "Faction rankings" : "Connect Torn API"}</strong></div>
-          <div className="topbar-right"><span className="environment-pill"><i /> CLOUDFLARE WORKER</span><div className="avatar">NC</div></div>
+          <div className="topbar-right"><span className="environment-pill"><i /> CLOUDFLARE WORKER</span><div className="user-company-switcher"><button className="user-company-trigger" type="button" aria-expanded={showCompanySelector} onClick={() => setShowCompanySelector((open) => !open)}><span className="avatar">{playerName.slice(0, 2).toUpperCase() || "NC"}</span><span className="user-company-label"><strong>{playerName || "Connected user"}</strong><small>Torn ID {playerId || "—"} · {result?.model.company.name || "No company loaded"} · {result?.model.company.typeName || "No company type"}</small></span><span className="switch-chevron">⌄</span></button>{showCompanySelector && <div className="company-switcher-menu"><strong>Choose a company</strong>{savedCompanies.length ? savedCompanies.map((company) => <button key={company.company_id} type="button" className={selectedCompanyId === company.company_id ? "company-switcher-option selected" : "company-switcher-option"} onClick={() => void loadSavedCompany(company.company_id)}><span>{company.company_name || `Company #${company.company_id}`}</span><small>{company.company_type || "Company"} · #{company.company_id}</small></button>) : <p>No saved companies yet. Connect a company key to add one.</p>}</div>}</div></div>
         </header>
 
         <div className="page-content">
@@ -335,9 +344,9 @@ export function FloorApp() {
 
           {activeView === "type-rankings" || activeView === "faction-rankings" ? (
             <section className="panel ranking-panel">
-              <div className="panel-heading ranking-heading"><div><h2>{activeView === "type-rankings" ? "Rank within company type" : "Naughty Souls dashboard leaderboard"}</h2><p>{activeView === "type-rankings" ? "All companies in Torn, grouped by company type. Weekly income alone determines rank." : "Only companies connected by Naughty Souls dashboard users, ordered by weekly income."}</p></div>{activeView === "type-rankings" && <label className="ranking-filter">Company type<select value={selectedRankingType} onChange={(event) => setSelectedRankingType(event.target.value)}><option value="">All types</option>{Array.from(new Set(rankingCompanies.map((company) => company.companyType))).sort().map((type) => <option key={type} value={type}>{type}</option>)}</select></label>}</div>
+              <div className="panel-heading ranking-heading"><div><h2>{activeView === "type-rankings" ? "Rank within company type" : "Naughty Souls dashboard leaderboard"}</h2><p>{activeView === "type-rankings" ? "All companies in Torn, grouped by company type. Weekly income alone determines rank." : "Only companies connected by Naughty Souls dashboard users, ordered by weekly income."}</p></div>{activeView === "type-rankings" && <label className="ranking-filter">Company type<select value={selectedRankingType} onChange={(event) => setSelectedRankingType(event.target.value)}>{Array.from(new Set(rankingCompanies.map((company) => company.companyType))).sort().map((type) => <option key={type} value={type}>{type}</option>)}</select></label>}</div>
               <div className="ranking-meta"><span><i className="status-dot live" /> {rankingCompanies.length.toLocaleString()} {activeView === "type-rankings" ? "companies in Torn snapshot" : "companies from dashboard users"}</span><span>Data refresh: daily at 18:05 UTC · Star ratings update Sundays after 18:00 UTC</span></div>
-              <div className="type-counts"><strong>COMPANIES BY TYPE</strong><div className="type-count-list">{companyTypeCounts.map(([type, count]) => <span key={type} className="type-count-chip">{type}<b>{count.toLocaleString()}</b></span>)}{companyTypeCounts.length === 0 && <span className="muted">Type counts load with the all-Torn snapshot.</span>}</div></div>{rankingError && <div className="error-banner" role="alert">{rankingError}</div>}
+              {rankingError && <div className="error-banner" role="alert">{rankingError}</div>}
               <div className="table-scroll"><table className="ranking-table"><thead><tr><th>RANK</th><th>COMPANY</th>{activeView === "faction-rankings" && <th>DIRECTOR</th>}<th>TYPE</th><th>STARS</th><th>TYPE + STAR PLACE</th><th>TYPE PLACE</th><th>WEEKLY INCOME</th><th>DAILY INCOME</th><th>AVG / DAY</th><th>DATA AS OF (UTC)</th></tr></thead><tbody>{rankingRows.map((company, index) => <tr key={`${company.playerId}-${company.companyId}`}><td><span className={`rank-number $(company.weeklyIncome !== null && rankingRows.findIndex((row) => row.weeklyIncome === company.weeklyIncome) < 3) ? "top-rank" : ""}`}>{company.weeklyIncome === null ? "—" : rankingRows.findIndex((row) => row.weeklyIncome === company.weeklyIncome) + 1}</span></td><td><strong>{company.companyName}</strong><div className="muted">Company #{company.companyId}</div></td>{activeView === "faction-rankings" && <td>{company.directorName}</td>}<td>{company.companyType}</td><td><span className="star-rating">{company.starRating === null ? "—" : `${company.starRating} ★`}</span></td><td>{placement(company, "stars")}</td><td>{placement(company, "type")}</td><td className="income-primary">{formatMoney(company.weeklyIncome)}</td><td>{formatMoney(company.dailyIncome)}</td><td>{formatMoney(company.averageDailyIncome)}</td><td className="muted">{company.fetchedAt ? new Date(company.fetchedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }) : "—"}</td></tr>)}</tbody></table></div>
               {rankingRows.length === 0 && <div className="empty-state">{activeView === "type-rankings" ? "The all-company Torn snapshot is empty or unavailable." : "No Naughty Souls companies have been added by dashboard users yet. A director can connect a company key to add a company."}</div>}
               <div className="ranking-footnote"><strong>How ranking works</strong><p>Rank is determined exclusively by weekly income, highest first. Average daily income is weekly income divided by seven. Company Rankings uses Torn’s all-company snapshot. Faction Rankings only includes companies connected by dashboard users.</p><p>{rankingsUpdatedAt ? `${activeView === "type-rankings" ? "Torn snapshot retrieved" : "Faction leaderboard checked"} ${new Date(rankingsUpdatedAt).toLocaleString("en-GB", { timeZone: "UTC", timeZoneName: "short" })}.` : "Leaderboard refreshes from saved company profiles."} Daily company income data locks at 18:00 UTC; star-rating changes lock on Sundays at 18:00 UTC.</p></div>
@@ -356,7 +365,7 @@ export function FloorApp() {
             </section>
           ) : activeView === "connect" ? (
             <section className="connect-layout">
-              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Connect to Torn</h2><p>Fetch profile and employee data for the company linked to your key</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-key">{isDirector ? "Company key" : "Secondary company key"}</label><input id="company-key" type="password" autoComplete="off" value={secondaryCompanyKey} onChange={(event) => setSecondaryCompanyKey(event.target.value)} placeholder={isDirector ? "Director login key is used automatically" : companyKeySaved ? "Saved secondary key is active; enter to replace" : "Enter a company director key"} /><p className="field-hint"><span>♢</span> {isDirector ? "Your login key is also your primary company key." : companyKeySaved ? "Your encrypted secondary company key is saved and used by default on future logins." : "Your login key is for identity only. If you are not a company director, add a secondary key with company profile and employee access."}</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}<button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>{isDirector ? "Your primary login key is also the company key." : companyKeySaved ? "Your secondary company key is encrypted at rest and used automatically for company refreshes." : "You are signed in, but a secondary company key is needed to refresh company data."}</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <button key={company.company_id} type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}>{company.company_name || `Company #${company.company_id}`} <span>#{company.company_id}</span></button>)}</div>}</div>}</div>
+              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Connect to Torn</h2><p>Fetch profile and employee data for the company linked to your key</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-key">{needsSecondaryKey ? "Secondary company key" : "Company key (optional replacement)"}</label><input id="company-key" type="password" autoComplete="off" value={secondaryCompanyKey} onChange={(event) => setSecondaryCompanyKey(event.target.value)} placeholder={needsSecondaryKey ? "Enter a company key with profile and employee access" : "Login key is active; enter only to replace it"} /><p className="field-hint"><span>♢</span> {needsSecondaryKey ? "The login key did not provide company profile and employee access, so a separate key is needed to refresh company data." : "Your login key is saved as the primary company data key. A secondary key is not required."}</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}<button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>{needsSecondaryKey ? "Your login key does not currently have company access. Add a secondary key to refresh live company data." : "Your login key is the primary company data key."}</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <button key={company.company_id} type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}>{company.company_name || `Company #${company.company_id}`} <span>#{company.company_id}</span></button>)}</div>}</div>}</div>
               <div className="panel guide-panel"><span className="guide-icon">✳</span><h2>Before you connect</h2><ul><li>Use a Torn API key with the access needed for your company.</li><li>Private employee stats may only be available to authorized company directors.</li><li>Requests pass through the Cloudflare Worker to Torn's API.</li></ul><div className="guide-note"><strong>Privacy by design</strong><p>Your player account is identified by Torn. Deleting the saved key does not delete recorded company data.</p></div></div>
             </section>
           ) : (
