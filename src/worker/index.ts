@@ -227,7 +227,7 @@ async function fetchGlobalCompanyRankings(apiKey: string): Promise<{ companies: 
   const companies = records.flatMap((row) => {
     const companyId = numberField(row, "id", "company_id", "companyId", "ID")
     if (!companyId) return []
-    const typeId = numberField(row, "company_type", "companyType", "type", "type_id")
+    const typeId = numberField(row, "company_type_id", "company_type", "companyType", "type_id", "type")
     const weeklyIncome = numberField(row, "weekly_income", "weeklyIncome")
     const dailyIncome = numberField(row, "daily_income", "dailyIncome")
     const rating = numberField(row, "rating", "stars", "star_rating")
@@ -538,8 +538,12 @@ export default {
         try {
           const snapshot = await fetchGlobalCompanyRankings(apiKey)
           const requestedType = (url.searchParams.get("type") ?? "").trim().toLocaleLowerCase()
-          const companies = requestedType ? snapshot.companies.filter((company) => String(company.companyType ?? "").trim().toLocaleLowerCase() === requestedType) : []
-          return jsonResponse({ companies, generatedAt: snapshot.snapshotFetchedAt, source: "Torn API v2 company snapshot", scope: "all-torn", companyType: requestedType || null, incomeDataUpdatesAt: "18:00 UTC daily", starRatingUpdatesAt: "18:00 UTC Sundays" }, 200, origin, { "cache-control": "private, max-age=300" })
+          const requestedTypeIdRaw = url.searchParams.get("typeId")
+          const requestedTypeId = requestedTypeIdRaw && /^\d+$/.test(requestedTypeIdRaw) ? Number(requestedTypeIdRaw) : null
+          const companies = requestedTypeId !== null
+            ? snapshot.companies.filter((company) => Number(company.companyTypeId) === requestedTypeId)
+            : requestedType ? snapshot.companies.filter((company) => String(company.companyType ?? "").trim().toLocaleLowerCase() === requestedType) : []
+          return jsonResponse({ companies, generatedAt: snapshot.snapshotFetchedAt, source: "Torn API v2 company snapshot", scope: "all-torn", companyType: requestedType || null, companyTypeId: requestedTypeId, incomeDataUpdatesAt: "18:00 UTC daily", starRatingUpdatesAt: "18:00 UTC Sundays" }, 200, origin, { "cache-control": "private, max-age=300" })
         } catch (error) { return tornError(error, origin) }
       }
       // Faction view is intentionally private to the signed-in dashboard user.
