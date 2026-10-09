@@ -1,0 +1,6 @@
+name = "naughty-company-api"
+main = "src/worker/index.ts"
+compatibility_date = "2026-10-08"
+
+[observability]
+enabled = true
