@@ -151,6 +151,74 @@ function tornError(error: unknown, origin: string): Response {
   return jsonResponse({ error: error instanceof Error ? error.message : "Unexpected server error." }, status, origin)
 }
 
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = []
+  let row: string[] = [], field = "", quoted = false
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i]
+    if (quoted) {
+      if (char === '"' && text[i + 1] === '"') { field += '"'; i++ }
+      else if (char === '"') quoted = false
+      else field += char
+    } else if (char === '"') quoted = true
+    else if (char === ',') { row.push(field); field = "" }
+    else if (char === '\n') { row.push(field.replace(/\r$/, "")); if (row.some((cell) => cell !== "")) rows.push(row); row = []; field = "" }
+    else field += char
+  }
+  if (field !== "" || row.length) { row.push(field.replace(/\r$/, "")); if (row.some((cell) => cell !== "")) rows.push(row) }
+  return rows
+}
+function normalizedColumn(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]/g, "") }
+function numberField(row: Record<string, string>, ...names: string[]): number | null {
+  for (const name of names) {
+    const value = row[normalizedColumn(name)]
+    if (value !== undefined && value.trim() !== "") {
+      const number = Number(value.replace(/[$,]/g, ""))
+      if (Number.isFinite(number)) return number
+    }
+  }
+  return null
+}
+async function fetchGlobalCompanyRankings(apiKey: string): Promise<{ companies: Record<string, unknown>[]; snapshotFetchedAt: string }> {
+  const headers = { Authorization: `ApiKey ${apiKey}`, Accept: "text/csv, text/plain, application/json" }
+  const response = await fetch("https://api.torn.com/v2/company/snapshot", { headers, signal: AbortSignal.timeout(20000) })
+  const body = await response.text()
+  if (!response.ok || body.trimStart().startsWith("{")) {
+    let message = "Torn could not provide the all-company snapshot."
+    try { const payload = JSON.parse(body); if (isRecord(payload) && isRecord(payload.error)) message = typeof payload.error.error === "string" ? payload.error.error : message } catch { /* CSV response */ }
+    throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : response.status >= 500 ? 502 : 502 })
+  }
+  const csv = parseCsv(body)
+  if (csv.length < 2) throw Object.assign(new Error("Torn returned an empty company snapshot."), { status: 502 })
+  const typeNames = new Map<number, string>()
+  try {
+    const typeResponse = await fetch("https://api.torn.com/v2/torn/companies", { headers, signal: AbortSignal.timeout(10000) })
+    if (typeResponse.ok) {
+      const typePayload: unknown = await typeResponse.json()
+      const root = isRecord(typePayload) && isRecord(typePayload.companies) ? typePayload.companies : isRecord(typePayload) && isRecord(typePayload.company_types) ? typePayload.company_types : typePayload
+      const entries = Array.isArray(root) ? root : isRecord(root) ? Object.values(root) : []
+      for (const entry of entries) {
+        if (!isRecord(entry)) continue
+        const id = entry.id ?? entry.ID ?? entry.company_type
+        const name = entry.name ?? entry.title ?? entry.type_name
+        if ((typeof id === "number" || (typeof id === "string" && /^\d+$/.test(id))) && typeof name === "string") typeNames.set(Number(id), name)
+      }
+    }
+  } catch { /* The snapshot remains useful even if company-type metadata is unavailable. */ }
+  const headersRow = csv[0].map(normalizedColumn)
+  const records = csv.slice(1).map((cells) => Object.fromEntries(headersRow.map((header, index) => [header, cells[index] ?? ""])))
+  const companies = records.flatMap((row) => {
+    const companyId = numberField(row, "id", "company_id", "companyId", "ID")
+    if (!companyId) return []
+    const typeId = numberField(row, "company_type", "companyType", "type", "type_id")
+    const weeklyIncome = numberField(row, "weekly_income", "weeklyIncome")
+    const dailyIncome = numberField(row, "daily_income", "dailyIncome")
+    const rating = numberField(row, "rating", "stars", "star_rating")
+    return [{ companyId: String(companyId), companyName: row.name || row.companyname || `Company #${companyId}`, companyType: row.companytypename || row.typename || (typeId === null ? "Unknown" : typeNames.get(typeId) || `Type #${typeId}`), companyTypeId: typeId, starRating: rating, weeklyIncome, dailyIncome, averageDailyIncome: weeklyIncome === null ? null : weeklyIncome / 7, directorName: "", playerId: "torn-global", fetchedAt: new Date().toISOString() }]
+  }).sort((a, b) => (Number(b.weeklyIncome ?? -1) - Number(a.weeklyIncome ?? -1)))
+  return { companies, snapshotFetchedAt: new Date().toISOString() }
+}
+
 async function refreshRankingProfiles(env: WorkerEnv): Promise<void> {
   if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return
   const db = requireDb(env)
@@ -256,6 +324,14 @@ export default {
     if (url.pathname === "/api/rankings" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (url.searchParams.get("scope") === "global") {
+        const apiKey = await savedKey(env, session.player_id)
+        if (!apiKey) return jsonResponse({ error: "A saved Torn login key is required to load the global company snapshot. Sign in again and save your key." }, 409, origin)
+        try {
+          const snapshot = await fetchGlobalCompanyRankings(apiKey)
+          return jsonResponse({ companies: snapshot.companies, generatedAt: snapshot.snapshotFetchedAt, source: "Torn API v2 company snapshot", scope: "all-torn", incomeDataUpdatesAt: "18:00 UTC daily", starRatingUpdatesAt: "18:00 UTC Sundays" }, 200, origin, { "cache-control": "private, max-age=300" })
+        } catch (error) { return tornError(error, origin) }
+      }
       const rows = await requireDb(env).prepare("SELECT c.player_id, c.company_id, c.company_name, c.company_type, c.profile_json, c.fetched_at, p.player_name FROM companies c JOIN players p ON p.player_id = c.player_id").all()
       const companies = (rows.results ?? []).flatMap((row) => {
         try {
@@ -269,7 +345,7 @@ export default {
           return [{ companyId: String(row.company_id), companyName: String(root.name ?? row.company_name ?? `Company #${row.company_id}`), companyType: String(type.name ?? row.company_type ?? "Unknown"), companyTypeId: type.id ?? null, starRating: rating, weeklyIncome, dailyIncome, averageDailyIncome: weeklyIncome === null ? null : weeklyIncome / 7, directorName: String(row.player_name ?? "Unknown director"), playerId: String(row.player_id), fetchedAt: String(row.fetched_at) }]
         } catch { return [] }
       }).sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1))
-      return jsonResponse({ companies, generatedAt: new Date().toISOString(), incomeDataUpdatesAt: "18:00 UTC daily", starRatingUpdatesAt: "18:00 UTC Sundays" }, 200, origin)
+      return jsonResponse({ companies, generatedAt: new Date().toISOString(), source: "Dashboard-connected Naughty Souls companies", scope: "faction", incomeDataUpdatesAt: "18:00 UTC daily", starRatingUpdatesAt: "18:00 UTC Sundays" }, 200, origin)
     }
     if (url.pathname === "/api/me/companies" && request.method === "GET") {
       const session = await authenticate(request, env)
