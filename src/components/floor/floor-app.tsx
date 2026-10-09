@@ -14,7 +14,7 @@ type SavedCompany = { company_id: string; company_name: string | null; company_t
 type RankingCompany = { companyId: string; companyName: string; companyType: string; companyTypeId: number | string | null; starRating: number | null; weeklyIncome: number | null; dailyIncome: number | null; averageDailyIncome: number | null; directorName: string; playerId: string; fetchedAt: string }
 type FactionDirector = { playerId: string; directorName: string; companyId: string; companyName: string; companyType: string | null; companyTypeId: number | string | null; starRating: number | null; dailyIncome: number | null; weeklyIncome: number | null; fetchedAt: string }
 type WeeklyStarCount = { starRating: number; companyCount: number }
-type CompareHistoryPoint = { day: string; dailyIncome: number | null; weeklyIncome: number | null; dailyProfit: number | null; stockQuantity: number | null; stock: unknown }
+type CompareHistoryPoint = { day: string; dailyIncome: number | null; weeklyIncome: number | null; dailyProfit: number | null; weeklyProfit?: number | null; stockQuantity: number | null; stock: unknown }
 type CompareData = { director: FactionDirector; history: CompareHistoryPoint[]; stockHistoryAvailable: boolean }
 type ChartSeries = { label: string; values: { label: string; value: number | null }[] }
 type SnapshotHistoryPoint = { day: string; period: number; capturedAt: number; dailyIncome: number | null; weeklyIncome: number | null; dailyProfit: number | null; weeklyProfit: number | null; rating: number | null; companyRank: number | null; companyRankTotal: number | null; stockQuantity: number | null; stockValue: number | null; averageEmployeeEfficiency: number | null }
@@ -31,15 +31,18 @@ function importedHistorySeries(companies: SnapshotHistoryCompany[], metric: Snap
 }
 
 function LineChart({ title, series, money = false }: { title: string; series: ChartSeries[]; money?: boolean }) {
+  const [selectedPoint, setSelectedPoint] = useState<{ series: string; label: string; value: number; x: number; y: number } | null>(null)
+  const days = Array.from(new Set(series.flatMap((item) => item.values.map((point) => point.label)))).sort()
   const values = series.flatMap((item) => item.values.map((point) => point.value).filter((value): value is number => value !== null && Number.isFinite(value)))
-  if (!values.length) return <section className="panel chart-panel"><div className="panel-heading"><h2>{title}</h2></div><div className="empty-state">Not enough saved history to draw this graph yet. The chart fills in as daily snapshots are collected.</div></section>
-  const width = 800, height = 230, left = 104, right = 22, top = 20, bottom = 38
+  if (!values.length) return <section className="panel chart-panel"><div className="panel-heading"><h2>{title}</h2></div><div className="empty-state">No recorded values for this company and metric yet.</div></section>
+  const width = 800, height = 250, left = 112, right = 22, top = 24, bottom = 40
   const min = Math.min(...values), max = Math.max(...values), range = max - min || 1
-  const longest = Math.max(2, ...series.map((item) => item.values.length))
-  const x = (index: number) => left + index * (width - left - right) / (longest - 1)
+  const x = (index: number) => left + index * (width - left - right) / Math.max(1, days.length - 1)
   const y = (value: number) => top + (max - value) * (height - top - bottom) / range
-  const label = (value: number) => money ? formatMoney(value) : value.toLocaleString()
-  return <section className="panel chart-panel"><div className="panel-heading"><div><h2>{title}</h2><p>Daily snapshots, UTC</p></div><div className="chart-legend">{series.map((item, index) => <span key={item.label}><i className={`chart-key chart-key-${index % 3}`} />{item.label}</span>)}</div></div><div className="chart-scroll"><svg className="line-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title}>{Array.from({length:4},(_,i)=>{const yy=top+i*(height-top-bottom)/3;return <g key={i}><line x1={left} x2={width-right} y1={yy} y2={yy} className="chart-grid"/><text x={left-8} y={yy+4} textAnchor="end" className="chart-label">{label(max-i*range/3)}</text></g>})}{series.map((item,index)=>{const points=item.values.flatMap((point,i)=>point.value===null?[]:[`${x(i)},${y(point.value)}`]).join(" ");return <g key={item.label}><polyline points={points} className={`chart-line chart-line-${index%3}`}/>{item.values.map((point,i)=>point.value===null?null:<circle key={`${point.label}-${i}`} cx={x(i)} cy={y(point.value)} r="3" className={`chart-point chart-line-${index%3}`} />)}</g>})}<text x={left} y={height-10} className="chart-label">{series.flatMap(s=>s.values)[0]?.label ?? ""}</text><text x={width-right} y={height-10} textAnchor="end" className="chart-label">{series.flatMap(s=>s.values).at(-1)?.label ?? ""}</text></svg></div></section>
+  const label = (value: number) => money ? formatMoney(value) : Math.round(value).toLocaleString()
+  const selectedX = selectedPoint ? Math.max(left + 60, Math.min(width - right - 60, selectedPoint.x)) : 0
+  const selectedY = selectedPoint ? Math.max(top + 12, selectedPoint.y - 16) : 0
+  return <section className="panel chart-panel"><div className="panel-heading"><div><h2>{title}</h2><p>Unified daily timeline · historical and live snapshots · UTC</p></div><div className="chart-legend">{series.map((item, index) => <span key={item.label}><i className={`chart-key chart-key-${index % 3}`} />{item.label}</span>)}</div></div><div className="chart-scroll"><svg className="line-chart" viewBox={`0 0 ${width} ${height}`} role="group" aria-label={title}>{Array.from({length:4},(_,i)=>{const yy=top+i*(height-top-bottom)/3;return <g key={i}><line x1={left} x2={width-right} y1={yy} y2={yy} className="chart-grid"/><text x={left-8} y={yy+4} textAnchor="end" className="chart-label">{label(max-i*range/3)}</text></g>})}{series.map((item,index)=>{const byDay = new Map(item.values.map((point) => [point.label, point.value]));const points = days.flatMap((day,i)=>{const value=byDay.get(day);return value===null||value===undefined?[]:[`${x(i)},${y(value)}`]}).join(" ");return <g key={item.label}><polyline points={points} className={`chart-line chart-line-${index%3}`}/>{days.map((day,i)=>{const value=byDay.get(day);if(value===null||value===undefined)return null;const px=x(i),py=y(value);return <circle key={`${day}-${i}`} cx={px} cy={py} r={selectedPoint?.series===item.label&&selectedPoint.label===day?5:3.5} className={`chart-point chart-line-${index%3}`} role="button" tabIndex={0} aria-label={`${item.label}, ${day}: ${label(value)}`} onClick={()=>setSelectedPoint({series:item.label,label:day,value,x:px,y:py})} onKeyDown={(event)=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();setSelectedPoint({series:item.label,label:day,value,x:px,y:py})}}}><title>{`${item.label} · ${day}: ${label(value)}`}</title></circle>})}</g>})}{selectedPoint && <g className="chart-selected-value" aria-live="polite"><rect x={selectedX-60} y={selectedY-28} width="120" height="44" rx="6"/><text x={selectedX} y={selectedY-11} textAnchor="middle">{selectedPoint.label}</text><text x={selectedX} y={selectedY+5} textAnchor="middle">{label(selectedPoint.value)}</text></g>}<text x={left} y={height-10} className="chart-label">{days[0] ?? ""}</text><text x={width-right} y={height-10} textAnchor="end" className="chart-label">{days.at(-1) ?? ""}</text></svg></div><p className="chart-interaction-hint">Select any point to view its exact date and value.</p></section>
 }
 function stockInventoryValue(stock: unknown): number | null {
   if (!stock || typeof stock !== "object") return null
@@ -49,11 +52,11 @@ function stockInventoryValue(stock: unknown): number | null {
 }
 
 function formatNumber(value: number | null | undefined): string {
-  return value === null || value === undefined ? "—" : value.toLocaleString()
+  return value === null || value === undefined ? "—" : value.toLocaleString(undefined, { maximumFractionDigits: 0 })
 }
 
 function formatMoney(value: number | null | undefined): string {
-  return value === null || value === undefined ? "—" : "$" + value.toLocaleString()
+  return value === null || value === undefined ? "—" : "$" + value.toLocaleString(undefined, { maximumFractionDigits: 0 })
 }
 
 function getObject(value: unknown): Record<string, unknown> | null {
@@ -280,7 +283,16 @@ export function FloorApp() {
           setFactionSyncPending(payload.pending || 0)
           setRankingCompanies(directors.map((director) => ({ companyId: String(director.companyId), companyName: director.companyName, companyType: director.companyType || "Unknown", companyTypeId: director.companyTypeId, starRating: director.starRating, weeklyIncome: director.weeklyIncome, dailyIncome: director.dailyIncome, averageDailyIncome: director.weeklyIncome === null ? null : director.weeklyIncome / 7, directorName: director.directorName, playerId: String(director.playerId), fetchedAt: director.fetchedAt })))
           setRankingsUpdatedAt(payload.generatedAt || "")
-          setSelectedComparePlayerId((current) => current || String(directors.find((director) => String(director.playerId) !== String(playerId))?.playerId || directors[0]?.playerId || ""))
+          const connectedType = result?.model.company.typeName || selectedRankingType || savedCompanies.find((company) => company.company_type)?.company_type || ""
+          const connectedTypeId = companyTypeIdFromProfile(result?.profile) ?? (connectedType.toLocaleLowerCase() === "oil rig" ? 28 : null)
+          if (connectedType || connectedTypeId !== null) {
+            try {
+              const typeQuery = connectedTypeId !== null ? `typeId=${encodeURIComponent(String(connectedTypeId))}` : `type=${encodeURIComponent(connectedType)}`
+              const globalResponse = await fetch(`${API_BASE}/api/rankings?scope=global&${typeQuery}`, { headers: { Authorization: `Bearer ${sessionToken}` } })
+              const globalPayload = await globalResponse.json() as { companies?: RankingCompany[] }
+              if (!cancelled && globalResponse.ok) setGlobalRankingCompanies((globalPayload.companies || []).slice().sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1)))
+            } catch { /* Faction rankings remain usable if the global type leaderboard is unavailable. */ }
+          }
           if (payload.syncing && !hasPolled) { hasPolled = true; pollTimer = window.setTimeout(() => { if (!cancelled) void loadRankings() }, 8000) }
         } catch (caught) { if (!cancelled) setRankingError(caught instanceof Error ? caught.message : "Could not load the faction director directory.") }
         return
@@ -303,18 +315,19 @@ export function FloorApp() {
   }, [activeView, sessionToken, selectedRankingType, result?.model.company.typeName, savedCompanies, playerId])
 
   useEffect(() => {
-    if (!sessionToken || activeView !== "charts" || !selectedComparePlayerId) return
+    if (!sessionToken || activeView !== "charts") return
     let cancelled = false
     async function loadComparison() {
       setCompareError("")
       try {
-        const [peerResponse, ownResponse] = await Promise.all([
-          fetch(`${API_BASE}/api/faction/compare?playerId=${encodeURIComponent(selectedComparePlayerId)}`, { headers: { Authorization: `Bearer ${sessionToken}` } }),
-          fetch(`${API_BASE}/api/faction/compare?playerId=${encodeURIComponent(playerId)}`, { headers: { Authorization: `Bearer ${sessionToken}` } }),
-        ])
-        const peer = await peerResponse.json() as CompareData & { error?: string }
+        const ownResponse = await fetch(`${API_BASE}/api/faction/compare?playerId=${encodeURIComponent(playerId)}`, { headers: { Authorization: `Bearer ${sessionToken}` } })
         const own = await ownResponse.json() as CompareData & { error?: string }
-        if (!peerResponse.ok) throw new Error(peer.error || "Could not load the selected director's history.")
+        let peer: (CompareData & { error?: string }) | null = null
+        if (selectedComparePlayerId) {
+          const peerResponse = await fetch(`${API_BASE}/api/faction/compare?playerId=${encodeURIComponent(selectedComparePlayerId)}`, { headers: { Authorization: `Bearer ${sessionToken}` } })
+          peer = await peerResponse.json() as CompareData & { error?: string }
+          if (!peerResponse.ok) throw new Error(peer.error || "Could not load the selected director's history.")
+        }
         if (!cancelled) { setCompareData(peer); setOwnCompareData(ownResponse.ok ? own : null) }
       } catch (caught) { if (!cancelled) { setCompareError(caught instanceof Error ? caught.message : "Could not load comparison data."); setCompareData(null); setOwnCompareData(null) } }
     }
@@ -336,7 +349,6 @@ export function FloorApp() {
       setFactionDirectors(directors); setWeeklyStarCounts(payload.weeklyStarCounts || []); setWeeklyStarCountsCapturedAt(payload.weeklyStarCountsCapturedAt || ""); setFactionSyncPending(pendingAfter); setRankingsUpdatedAt(payload.generatedAt || "")
       setFactionSyncProgress(pendingAfter > 0 ? `Updated ${directors.length} directors · ${pendingAfter.toLocaleString()} members still queued${checked ? ` · ${checked.toLocaleString()} checked this batch` : ""}.` : `Directory refresh complete · ${directors.length.toLocaleString()} directors confirmed.`)
       setRankingCompanies(directors.map((director) => ({ companyId: String(director.companyId), companyName: director.companyName, companyType: director.companyType || "Unknown", companyTypeId: director.companyTypeId, starRating: director.starRating, weeklyIncome: director.weeklyIncome, dailyIncome: director.dailyIncome, averageDailyIncome: director.weeklyIncome === null ? null : director.weeklyIncome / 7, directorName: director.directorName, playerId: String(director.playerId), fetchedAt: director.fetchedAt })))
-      setSelectedComparePlayerId((current) => current || String(directors[0]?.playerId || ""))
     } catch (caught) { setRankingError(caught instanceof Error ? caught.message : "Could not refresh the faction directory."); setFactionSyncProgress("Refresh failed. Check the error and try again.") }
     finally { setFactionSyncing(false) }
   }
@@ -346,7 +358,7 @@ export function FloorApp() {
     [search],
   )
   const positions = catalog.companies[selectedCompany] ?? []
-  const allTornRows = activeView === "faction-rankings" ? rankingCompanies : globalRankingCompanies.length ? globalRankingCompanies : activeView === "type-rankings" ? rankingCompanies : []
+  const allTornRows = globalRankingCompanies.length ? globalRankingCompanies : rankingCompanies
   const model = result?.model
   const currentRankingCompany = model ? allTornRows.find((row) => row.companyId === String(model.company.id)) : undefined
   const connectedTypeId = companyTypeIdFromProfile(result?.profile) ?? (currentRankingCompany?.companyTypeId == null ? null : Number(currentRankingCompany.companyTypeId))
@@ -365,7 +377,6 @@ export function FloorApp() {
   const efficiency = typeof operatingRatings.efficiency === "number" ? operatingRatings.efficiency : null
   const environment = typeof operatingRatings.environment === "number" ? operatingRatings.environment : null
   const costs = model && result ? financialCosts(result.profile, result.stock, model) : null
-  const dailyProfit = model?.company.dailyIncome == null || !costs ? null : model.company.dailyIncome - costs.dailyCosts
   const utcNow = new Date()
   const periodStart = (kind: "week" | "month") => {
     const boundary = new Date(Date.UTC(utcNow.getUTCFullYear(), utcNow.getUTCMonth(), 1, 18))
@@ -379,14 +390,31 @@ export function FloorApp() {
     if (utcNow < boundary) boundary.setUTCMonth(boundary.getUTCMonth() - 1)
     return boundary
   }
-  const dailySamples = (result?.incomeHistory ?? []).filter((item) => item.dailyIncome !== null && new Date(item.fetchedAt) >= periodStart("week") && new Date(item.fetchedAt) <= utcNow)
-  const dedupedSamples = Array.from(new Map(dailySamples.map((item) => [new Date(new Date(item.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10), item])).values())
-  const weekSamples = dedupedSamples.filter((item) => new Date(item.fetchedAt) >= periodStart("week"))
-  const monthSamples = dedupedSamples.filter((item) => new Date(item.fetchedAt) >= periodStart("month"))
+  const currentChartCompany = snapshotHistory.find((company) => company.companyId === String(model?.company.id ?? result?.model.company.id ?? ""))
+  const dailyProfit = currentChartCompany?.history.at(-1)?.dailyProfit ?? (model?.company.dailyIncome == null || !costs ? null : model.company.dailyIncome - (costs.adBudget ?? 0) - costs.wages)
+  const allDailySamples = (result?.incomeHistory ?? []).filter((item) => item.dailyIncome !== null && new Date(item.fetchedAt) <= utcNow)
+  const dedupedSamples = Array.from(new Map(allDailySamples.map((item) => [new Date(new Date(item.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10), item])).values())
+  const weekStart = periodStart("week")
+  const monthStart = periodStart("month")
+  const weekSamples = dedupedSamples.filter((item) => new Date(item.fetchedAt) >= weekStart)
+  const monthSamples = dedupedSamples.filter((item) => new Date(item.fetchedAt) >= monthStart)
+  const archivedPoints = (currentChartCompany?.history ?? []).filter((point) => point.period <= utcNow.getTime())
+  const archivedWeekPoints = archivedPoints.filter((point) => point.period >= weekStart.getTime())
+  const archivedMonthPoints = archivedPoints.filter((point) => point.period >= monthStart.getTime())
+  const monthIncomeByDay = new Map(archivedMonthPoints.filter((point) => point.dailyIncome !== null).map((point) => [point.day, point.dailyIncome as number]))
+  monthSamples.forEach((item) => monthIncomeByDay.set(new Date(new Date(item.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10), item.dailyIncome as number))
+  const monthlyIncome = monthIncomeByDay.size ? Array.from(monthIncomeByDay.values()).reduce((sum, value) => sum + value, 0) : null
   const weeklyIncome = model?.company.weeklyIncome ?? null
-  const monthlyIncome = monthSamples.length ? monthSamples.reduce((sum, item) => sum + (item.dailyIncome ?? 0), 0) : null
-  const weeklyProfit = weeklyIncome === null || !costs ? null : weeklyIncome - costs.dailyCosts * weekSamples.length
-  const monthlyProfit = monthlyIncome === null || !costs ? null : monthlyIncome - costs.dailyCosts * monthSamples.length
+  const latestReportedWeeklyProfit = archivedWeekPoints.filter((point) => point.weeklyProfit !== null).at(-1)?.weeklyProfit ?? null
+  const archivedMonthProfit = archivedMonthPoints.filter((point) => point.dailyProfit !== null)
+  const operatingDailyCosts = costs ? (costs.adBudget ?? 0) + costs.wages : null
+  const weeklyProfit = latestReportedWeeklyProfit ?? (weeklyIncome === null || operatingDailyCosts === null ? null : weeklyIncome - operatingDailyCosts * Math.max(weekSamples.length, archivedWeekPoints.length))
+  const monthlyProfit = archivedMonthProfit.length
+    ? archivedMonthProfit.reduce((sum, point) => sum + (point.dailyProfit ?? 0), 0)
+    : monthlyIncome === null || operatingDailyCosts === null ? null : monthlyIncome - operatingDailyCosts * Math.max(monthSamples.length, archivedMonthPoints.length)
+  const weekCoverage = new Set([...weekSamples.map((item) => new Date(new Date(item.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10)), ...archivedWeekPoints.map((point) => point.day)]).size
+  const monthCoverage = new Set([...monthSamples.map((item) => new Date(new Date(item.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10)), ...archivedMonthPoints.map((point) => point.day)]).size
+  const expectedReportingDays = (start: Date) => Math.max(1, Math.floor((utcNow.getTime() - start.getTime()) / 86400000) + 1)
   const connectedRankingType = selectedRankingType || model?.company.typeName || ""
   const connectedRankingTypeId = companyTypeIdFromProfile(result?.profile) ?? (connectedRankingType.toLocaleLowerCase() === "oil rig" ? 28 : null)
   const sameCompanyType = (company: RankingCompany) => connectedRankingTypeId !== null
@@ -397,14 +425,47 @@ export function FloorApp() {
     .filter((company) => activeView === "faction-rankings" || activeView === "type-rankings" ? sameCompanyType(company) : true)
     .slice()
     .sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1)), [rankingCompanies, activeView, selectedRankingType, model?.company.typeName, result?.profile, playerId])
+  const chartSeriesFor = (metric: SnapshotMetric): ChartSeries[] => {
+    const ownValues = new Map<string, number | null>()
+    currentChartCompany?.history.forEach((point) => ownValues.set(point.day, point[metric]))
+    ownCompareData?.history.forEach((point) => {
+      let value: number | null = null
+      if (metric === "stockValue") value = stockInventoryValue(point.stock)
+      else if (metric === "rating" || metric === "companyRank") value = null
+      else value = point[metric] ?? null
+      if (value !== null) ownValues.set(point.day, value)
+    })
+    if (metric === "dailyIncome") (result?.incomeHistory ?? []).forEach((point) => {
+      if (point.dailyIncome === null) return
+      const day = new Date(new Date(point.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10)
+      ownValues.set(day, point.dailyIncome)
+    })
+    const series: ChartSeries[] = [{ label: model?.company.name || result?.model.company.name || currentChartCompany?.name || "Selected company", values: Array.from(ownValues, ([label, value]) => ({ label, value })).sort((a, b) => a.label.localeCompare(b.label)) }]
+    if (selectedComparePlayerId && compareData) {
+      const peerValues = compareData.history.map((point) => {
+        let value: number | null = null
+        if (metric === "stockValue") value = stockInventoryValue(point.stock)
+        else if (metric === "rating" || metric === "companyRank") value = null
+        else value = point[metric] ?? null
+        return { label: point.day, value }
+      })
+      series.push({ label: `${compareData.director.companyName} · ${compareData.director.directorName}`, values: peerValues })
+    }
+    return series
+  }
   function placement(company: RankingCompany, dimension: "type" | "stars"): string {
     const target = allTornRows.find((row) => row.companyId === company.companyId)
     if (!target) return "—"
-    const reference = dimension === "type"
-      ? allTornRows.filter((row) => row.companyType === target.companyType)
-      : allTornRows.filter((row) => row.companyType === target.companyType && row.starRating !== null && row.starRating === target.starRating)
+    const reference = allTornRows.filter((row) => {
+      const sameType = target.companyTypeId != null && row.companyTypeId != null
+        ? Number(row.companyTypeId) === Number(target.companyTypeId)
+        : row.companyType.toLocaleLowerCase() === target.companyType.toLocaleLowerCase()
+      return sameType && (dimension !== "stars" || row.starRating !== null)
+    })
     if (!reference.length || (dimension === "stars" && target.starRating === null)) return "—"
-    const rank = reference.filter((row) => (row.weeklyIncome ?? -1) > (target.weeklyIncome ?? -1)).length + 1
+    const rank = dimension === "stars"
+      ? reference.filter((row) => (row.starRating ?? -1) > (target.starRating ?? -1) || ((row.starRating ?? -1) === (target.starRating ?? -1) && (row.weeklyIncome ?? -1) > (target.weeklyIncome ?? -1))).length + 1
+      : reference.filter((row) => (row.weeklyIncome ?? -1) > (target.weeklyIncome ?? -1)).length + 1
     const total = reference.length
     const suffix = total % 100 >= 11 && total % 100 <= 13 ? "th" : total % 10 === 1 ? "st" : total % 10 === 2 ? "nd" : total % 10 === 3 ? "rd" : "th"
     return `${rank}/${total}${suffix}`
@@ -666,7 +727,7 @@ export function FloorApp() {
               <div className="ranking-meta"><span><i className="status-dot live" /> {rankingRows.length.toLocaleString()} {activeView === "type-rankings" ? "companies in your connected company type" : "same-type faction directors"}</span><span>Weekly income period: Sunday 18:00 UTC to Sunday 18:00 UTC · Data refresh: daily at 18:10 UTC · Star ratings lock Sundays at 18:10 UTC</span></div>{activeView === "faction-rankings" && <section className="weekly-star-counts" aria-label="Weekly company counts by star rating"><div><strong>Weekly star-level counts</strong><span>{weeklyStarCountsCapturedAt ? `Locked ${new Date(weeklyStarCountsCapturedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}` : "Counts lock on Sundays at 18:10 UTC"}</span></div>{weeklyStarCounts.length ? [...weeklyStarCounts].sort((a,b)=>a.starRating-b.starRating).map((entry)=><article key={entry.starRating}><small>{entry.starRating} ★</small><strong>{entry.companyCount.toLocaleString()}</strong></article>) : <p>Waiting for the first Sunday 18:10 UTC snapshot.</p>}</section>}{activeView === "faction-rankings" && (factionSyncing || factionSyncProgress) && <div className="faction-sync-status" role="status" aria-live="polite">{factionSyncing && <span className="loading-wheel" aria-hidden="true" />}<span>{factionSyncProgress || "Preparing faction directory refresh…"}</span>{factionSyncing && <div className="sync-progress-track"><i /></div>}</div>}
               {activeView === "type-rankings" && <section className="ranking-self-summary" aria-label="Your company ranking summary"><div className="ranking-self-heading"><div><h3>Your company snapshot</h3><p>{model?.company.name || result?.model.company.name || "Connected company"} · {model?.company.typeName || result?.model.company.typeName || "Company type unavailable"}</p></div><span className="count-chip">{currentRankingCompany ? `Rank #${rankingRows.findIndex((row) => row.companyId === currentRankingCompany.companyId) + 1}` : "Rank unavailable"}</span></div><div className="ranking-self-grid"><article><small>WEEKLY INCOME</small><strong>{formatMoney(currentWeeklyIncome)}</strong></article><article><small>DAILY INCOME</small><strong>{formatMoney(model?.company.dailyIncome ?? currentRankingCompany?.dailyIncome)}</strong></article><article><small>DAILY AVG INCOME</small><strong>{formatMoney(currentRankingCompany?.averageDailyIncome ?? (currentWeeklyIncome === null ? null : currentWeeklyIncome / 7))}</strong></article><article><small>GAP TO NEXT STAR</small><strong>{nextStarGap === null ? "—" : formatMoney(nextStarGap)}</strong><span>{nextStarIncome === null ? "No higher-star benchmark yet" : `Next star benchmark ${formatMoney(nextStarIncome)}/week`}</span></article><article><small>GAP TO PREVIOUS STAR</small><strong>{previousStarGap === null ? "—" : formatMoney(previousStarGap)}</strong><span>{previousStarIncome === null ? "No lower-star benchmark yet" : `Previous star benchmark ${formatMoney(previousStarIncome)}/week`}</span></article></div></section>}
               {rankingError && <div className="error-banner" role="alert">{rankingError}</div>}
-              <div className="table-scroll"><table className="ranking-table"><thead><tr><th>RANK</th><th>COMPANY</th>{activeView === "faction-rankings" && <th className="ranking-hide-mobile">DIRECTOR</th>}{activeView === "faction-rankings" && <th>COMPARE</th>}<th>STARS</th><th>WEEKLY INCOME</th><th className="ranking-hide-mobile">DAILY INCOME</th><th className="ranking-hide-mobile">DATA AS OF (UTC)</th><th className="ranking-hide-mobile">AVG / DAILY</th><th>STAR RANKING</th></tr></thead><tbody>{rankingRows.map((company, index) => <tr key={`${company.playerId}-${company.companyId}`}><td><span className={`rank-number $(company.weeklyIncome !== null && rankingRows.findIndex((row) => row.weeklyIncome === company.weeklyIncome) < 3) ? "top-rank" : ""}`}>{company.weeklyIncome === null ? "—" : rankingRows.findIndex((row) => row.weeklyIncome === company.weeklyIncome) + 1}</span></td><td><strong>{company.companyName}</strong><div className="muted">Company #{company.companyId}</div><div className="company-type-subline">{company.companyType || (company.companyTypeId == null ? "Unknown type" : `Type #${company.companyTypeId}`)}</div></td>{activeView === "faction-rankings" && <td className="ranking-hide-mobile">{company.directorName}</td>}{activeView === "faction-rankings" && <td><button className="text-button compare-row-button" onClick={() => { setSelectedComparePlayerId(company.playerId); setActiveView("charts") }}>Compare ↗</button></td>}<td><span className="star-rating">{company.starRating === null ? "—" : `${company.starRating} ★`}</span></td><td className="income-primary">{formatMoney(company.weeklyIncome)}</td><td className="ranking-hide-mobile">{formatMoney(company.dailyIncome)}</td><td className="muted ranking-hide-mobile">{company.fetchedAt ? new Date(company.fetchedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }) : "—"}</td><td className="ranking-hide-mobile">{formatMoney(company.averageDailyIncome)}</td><td>{placement(company, "stars")}</td></tr>)}</tbody></table></div>
+              <div className="table-scroll"><table className="ranking-table"><thead><tr><th>RANK</th><th>COMPANY</th>{activeView === "faction-rankings" && <th className="ranking-hide-mobile">DIRECTOR</th>}{activeView === "faction-rankings" && <th>COMPARE</th>}<th>STARS</th><th>WEEKLY INCOME</th><th className="ranking-hide-mobile">DAILY INCOME</th><th className="ranking-hide-mobile">DATA AS OF (UTC)</th><th className="ranking-hide-mobile">AVG / DAILY</th><th>STAR RANKING</th></tr></thead><tbody>{rankingRows.map((company, index) => <tr key={`${company.playerId}-${company.companyId}`}><td><span className={`rank-number ${company.weeklyIncome !== null && index < 3 ? "top-rank" : ""}`}>{company.weeklyIncome === null ? "—" : index + 1}</span></td><td><strong>{company.companyName}</strong><div className="muted">Company #{company.companyId}</div><div className="company-type-subline">{company.companyType || (company.companyTypeId == null ? "Unknown type" : `Type #${company.companyTypeId}`)}</div></td>{activeView === "faction-rankings" && <td className="ranking-hide-mobile">{company.directorName}</td>}{activeView === "faction-rankings" && <td><button className="text-button compare-row-button" onClick={() => { setSelectedComparePlayerId(company.playerId); setActiveView("charts") }}>Compare ↗</button></td>}<td><span className="star-rating">{company.starRating === null ? "—" : `${company.starRating} ★`}</span></td><td className="income-primary">{formatMoney(company.weeklyIncome)}</td><td className="ranking-hide-mobile">{formatMoney(company.dailyIncome)}</td><td className="muted ranking-hide-mobile">{company.fetchedAt ? new Date(company.fetchedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }) : "—"}</td><td className="ranking-hide-mobile">{formatMoney(company.averageDailyIncome)}</td><td>{placement(company, "stars")}</td></tr>)}</tbody></table></div>
               {activeView === "faction-rankings" && <section className="faction-all-rankings"><div className="panel-heading ranking-heading"><div><h2>All faction directors, every company type</h2><p>Cross-type comparison of every confirmed faction director, sorted by weekly income.</p></div><span className="count-chip">{factionAllRows.length} directors</span></div><div className="table-scroll"><table className="ranking-table"><thead><tr><th>RANK</th><th>COMPANY</th><th className="ranking-hide-mobile">DIRECTOR</th><th>COMPARE</th><th>STARS</th><th>WEEKLY INCOME</th><th className="ranking-hide-mobile">DAILY INCOME</th><th className="ranking-hide-mobile">DATA AS OF (UTC)</th><th className="ranking-hide-mobile">AVG / DAILY</th><th>STAR RANKING</th></tr></thead><tbody>{factionAllRows.map((company, index) => <tr key={`all-${company.playerId}-${company.companyId}`}><td><span className={`rank-number ${company.weeklyIncome !== null && index < 3 ? "top-rank" : ""}`}>{company.weeklyIncome === null ? "—" : index + 1}</span></td><td><strong>{company.companyName}</strong><div className="muted">Company #{company.companyId}</div><div className="company-type-subline">{company.companyType || (company.companyTypeId == null ? "Unknown type" : `Type #${company.companyTypeId}`)}</div></td><td className="ranking-hide-mobile">{company.directorName}</td><td><button className="text-button compare-row-button" onClick={() => { setSelectedComparePlayerId(company.playerId); setActiveView("charts") }}>Compare ↗</button></td><td><span className="star-rating">{company.starRating === null ? "—" : `${company.starRating} ★`}</span></td><td className="income-primary">{formatMoney(company.weeklyIncome)}</td><td className="ranking-hide-mobile">{formatMoney(company.dailyIncome)}</td><td className="muted ranking-hide-mobile">{company.fetchedAt ? new Date(company.fetchedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }) : "—"}</td><td className="ranking-hide-mobile">{formatMoney(company.averageDailyIncome)}</td><td>{placement(company, "stars")}</td></tr>)}</tbody></table></div>{factionAllRows.length === 0 && <div className="empty-state">No faction directors have been discovered yet. Reload cached faction data to process the next batch of member IDs.</div>}</section>}
               {rankingRows.length === 0 && <div className="empty-state">{activeView === "type-rankings" ? "No companies were returned for your connected company type." : "No faction directors have been discovered yet. Reload cached faction data to process the next batch of member IDs."}</div>}{activeView === "faction-rankings" && factionSyncPending > 0 && <div className="ranking-footnote"><p>{factionSyncPending} faction members are still queued for director checks. Refresh again to process another batch.</p></div>}
               <div className="ranking-footnote"><strong>How ranking works</strong><p>Rank is determined exclusively by weekly income, highest first. Average daily income is weekly income divided by seven. Company Rankings is filtered to your connected company type. Faction Rankings has two tables: the first compares faction directors of the connected company type; the second includes all confirmed faction directors across every company type.</p><p>{rankingsUpdatedAt ? `${activeView === "type-rankings" ? "Torn snapshot retrieved" : "Faction leaderboard checked"} ${new Date(rankingsUpdatedAt).toLocaleString("en-GB", { timeZone: "UTC", timeZoneName: "short" })}.` : "Leaderboard refreshes from saved company profiles."} Weekly income uses Torn’s reported total for the fixed Sunday 18:00 UTC to Sunday 18:00 UTC period, not a rolling sum of daily samples. The leaderboard refreshes daily at 18:10 UTC; star-rating changes lock on Sundays at 18:00 UTC, with the weekly refresh at 18:10 UTC.</p></div>
@@ -674,37 +735,24 @@ export function FloorApp() {
           ) : activeView === "charts" ? (
             <div className="charts-workspace">
               <section className="panel imported-history-panel">
-                <div className="panel-heading"><div><h2>Imported company history</h2><p>Archived daily snapshots for Knotty Oil and Knotty Soles, kept separate from live Torn readings.</p></div><span className="count-chip">{snapshotHistory.reduce((sum, company) => sum + company.history.length, 0)} snapshots</span></div>
-                {snapshotSourceCreatedAt && <p className="snapshot-source-note">Source backup created {new Date(snapshotSourceCreatedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}. All dates shown below are UTC.</p>}
+                <div className="panel-heading"><div><h2>Company history & live charts</h2><p>One continuous timeline for the selected company. Imported snapshots are merged with live readings by reporting date; no other company is shown unless you select a member below.</p></div><span className="count-chip">{currentChartCompany?.history.length ?? 0} imported snapshots</span></div>
+                {snapshotSourceCreatedAt && <p className="snapshot-source-note">Imported backup created {new Date(snapshotSourceCreatedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}. Dates are UTC.</p>}
                 {snapshotHistoryError && <div className="error-banner" role="alert">{snapshotHistoryError}</div>}
-                {snapshotHistoryLoading ? <div className="empty-state">Loading imported history…</div> : snapshotHistory.length ? <>
-                  <div className="snapshot-summary-grid">{snapshotHistory.map((company) => {
-                    const first = company.history[0]
-                    const latest = company.history[company.history.length - 1]
-                    return <article className="snapshot-summary-card" key={company.companyId}>
-                      <div className="snapshot-company-heading"><div><strong>{company.name}</strong><span>Company #{company.companyId} · {company.typeName}</span></div><span className="star-rating">{latest?.rating == null ? "—" : `${latest.rating} ★`}</span></div>
-                      <div className="snapshot-metric-grid"><span><small>DAILY INCOME</small><strong>{formatMoney(latest?.dailyIncome ?? null)}</strong></span><span><small>WEEKLY INCOME</small><strong>{formatMoney(latest?.weeklyIncome ?? null)}</strong></span><span><small>DAILY PROFIT</small><strong>{formatMoney(latest?.dailyProfit ?? null)}</strong></span><span><small>COMPANY RANK</small><strong>{latest?.companyRank == null ? "—" : `#${latest.companyRank}${latest.companyRankTotal == null ? "" : ` / ${latest.companyRankTotal}`}`}</strong></span><span><small>STOCK QUANTITY</small><strong>{latest?.stockQuantity == null ? "—" : formatNumber(latest.stockQuantity)}</strong></span><span><small>AVG. EMPLOYEE EFFICIENCY</small><strong>{latest?.averageEmployeeEfficiency == null ? "—" : `${latest.averageEmployeeEfficiency.toFixed(1)}%`}</strong></span></div>
-                      <p className="snapshot-date-range">{first?.day || "—"} to {latest?.day || "—"} · {company.history.length} daily records</p>
-                    </article>
-                  })}</div>
-                  <LineChart title="Daily income · imported history" money series={importedHistorySeries(snapshotHistory, "dailyIncome")} />
-                  <LineChart title="Weekly income · reported Torn totals" money series={importedHistorySeries(snapshotHistory, "weeklyIncome")} />
-                  <LineChart title="Daily profit · imported history" money series={importedHistorySeries(snapshotHistory, "dailyProfit")} />
-                  <LineChart title="Weekly profit · reported totals" money series={importedHistorySeries(snapshotHistory, "weeklyProfit")} />
-                  <LineChart title="Daily stock quantity" series={importedHistorySeries(snapshotHistory, "stockQuantity")} />
-                  <LineChart title="Stock inventory value" money series={importedHistorySeries(snapshotHistory, "stockValue")} />
-                  <LineChart title="Star-rating history" series={importedHistorySeries(snapshotHistory, "rating")} />
-                  <LineChart title="Company ranking history · lower is better" series={importedHistorySeries(snapshotHistory, "companyRank")} />
-                  <div className="ranking-footnote"><strong>Historical-data notes</strong><p>These are imported backup snapshots, not a replacement for live profile data. Knotty Oil history starts on 19 August 2026; Knotty Soles starts on 25 August 2026. Weekly income and weekly profit use the values recorded in each snapshot and are not recalculated by summing daily values. Missing dates are left blank rather than interpolated.</p></div>
-                </> : <div className="empty-state">{snapshotHistoryError || "No imported history is available."}</div>}
+                {snapshotHistoryLoading ? <div className="empty-state">Loading company history…</div> : <>
+                  {currentChartCompany && <div className="snapshot-summary-grid"><article className="snapshot-summary-card"><div className="snapshot-company-heading"><div><strong>{currentChartCompany.name}</strong><span>Company #{currentChartCompany.companyId} · {currentChartCompany.typeName}</span></div><span className="star-rating">{currentChartCompany.history.at(-1)?.rating == null ? "—" : `${currentChartCompany.history.at(-1)?.rating} ★`}</span></div><div className="snapshot-metric-grid"><span><small>DAILY INCOME</small><strong>{formatMoney(currentChartCompany.history.at(-1)?.dailyIncome ?? model?.company.dailyIncome ?? null)}</strong></span><span><small>WEEKLY INCOME</small><strong>{formatMoney(currentChartCompany.history.at(-1)?.weeklyIncome ?? model?.company.weeklyIncome ?? null)}</strong></span><span><small>DAILY PROFIT</small><strong>{formatMoney(currentChartCompany.history.at(-1)?.dailyProfit ?? null)}</strong></span><span><small>WEEKLY PROFIT</small><strong>{formatMoney(currentChartCompany.history.at(-1)?.weeklyProfit ?? null)}</strong></span><span><small>COMPANY RANK</small><strong>{currentChartCompany.history.at(-1)?.companyRank == null ? "—" : `#${currentChartCompany.history.at(-1)?.companyRank}${currentChartCompany.history.at(-1)?.companyRankTotal == null ? "" : ` / ${currentChartCompany.history.at(-1)?.companyRankTotal}`}`}</strong></span><span><small>STOCK QUANTITY</small><strong>{currentChartCompany.history.at(-1)?.stockQuantity == null ? "—" : formatNumber(currentChartCompany.history.at(-1)?.stockQuantity)}</strong></span></div><p className="snapshot-date-range">{currentChartCompany.history[0]?.day || "—"} to {currentChartCompany.history.at(-1)?.day || "—"} · {currentChartCompany.history.length} imported daily records, plus any newer live samples</p></article></div>}
+                  {!currentChartCompany && <div className="empty-state">No imported archive matches the currently selected company. Live company readings will still appear below when available.</div>}
+                  <LineChart title="Daily company income" money series={chartSeriesFor("dailyIncome")} />
+                  <LineChart title="Weekly company income" money series={chartSeriesFor("weeklyIncome")} />
+                  <LineChart title="Daily company profit" money series={chartSeriesFor("dailyProfit")} />
+                  <LineChart title="Weekly company profit" money series={chartSeriesFor("weeklyProfit")} />
+                  <LineChart title="Daily stock quantity" series={chartSeriesFor("stockQuantity")} />
+                  <LineChart title="Stock inventory value" money series={chartSeriesFor("stockValue")} />
+                  <LineChart title="Star-rating history" series={chartSeriesFor("rating")} />
+                  <LineChart title="Global company ranking · same company type" series={chartSeriesFor("companyRank")} />
+                </>}
               </section>
-              <section className="panel compare-picker"><div className="panel-heading"><div><h2>Choose a faction director</h2><p>Compare your connected company against a confirmed director from the faction roster.</p></div></div><div className="compare-picker-row"><label htmlFor="compare-director">Faction member / director</label><select id="compare-director" value={selectedComparePlayerId} onChange={(event) => setSelectedComparePlayerId(event.target.value)}><option value="">Select a director…</option>{factionDirectors.filter((director) => String(director.playerId) !== String(playerId)).map((director) => <option key={director.playerId} value={director.playerId}>{director.directorName} · {director.companyName} ({director.companyType || "Unknown type"})</option>)}</select><button className="secondary-button" onClick={() => void refreshFactionDirectory()} disabled={factionSyncing}>{factionSyncing ? "Refreshing…" : "Refresh directory"}</button></div>{compareError && <div className="error-banner" role="alert">{compareError}</div>}{compareData && <div className="compare-summary"><div><small>SELECTED DIRECTOR</small><strong>{compareData.director.directorName}</strong></div><div><small>COMPANY</small><strong>{compareData.director.companyName}</strong></div><div><small>TYPE / RATING</small><strong>{compareData.director.companyType || "Unknown"} · {compareData.director.starRating ?? "—"} ★</strong></div><div><small>WEEKLY INCOME</small><strong>{formatMoney(compareData.director.weeklyIncome)}</strong></div></div>}</section>
-              <LineChart title="Daily company income" money series={[{label:"Your company",values:(ownCompareData?.history.length ? ownCompareData.history.map((point)=>({label:point.day,value:point.dailyIncome})) : (result?.incomeHistory || []).map((point)=>({label:new Date(point.fetchedAt).toISOString().slice(0,10),value:point.dailyIncome})))},{label:compareData?.director.directorName || "Selected director",values:(compareData?.history || []).map((point)=>({label:point.day,value:point.dailyIncome}))}]} />
-              <LineChart title="Weekly company income" money series={[{label:"Your company",values:(ownCompareData?.history || []).map((point)=>({label:point.day,value:point.weeklyIncome}))},{label:compareData?.director.directorName || "Selected director",values:(compareData?.history || []).map((point)=>({label:point.day,value:point.weeklyIncome}))}]} />
-              <LineChart title="Daily company profit" money series={[{label:"Your company",values:(ownCompareData?.history || []).map((point)=>({label:point.day,value:point.dailyProfit}))},{label:compareData?.director.directorName || "Selected director",values:(compareData?.history || []).map((point)=>({label:point.day,value:point.dailyProfit}))}]} />
-              <LineChart title="Daily stock quantity" series={[{label:"Your company",values:(ownCompareData?.history || []).map((point)=>({label:point.day,value:point.stockQuantity}))},{label:compareData?.director.directorName || "Selected director",values:(compareData?.history || []).map((point)=>({label:point.day,value:point.stockQuantity}))}]} />
-              <LineChart title="Stock inventory cost value" money series={[{label:"Your company",values:(ownCompareData?.history || []).map((point)=>({label:point.day,value:stockInventoryValue(point.stock)}))},{label:compareData?.director.directorName || "Selected director",values:(compareData?.history || []).map((point)=>({label:point.day,value:stockInventoryValue(point.stock)}))}]} />
-              <div className="ranking-footnote"><strong>Data availability</strong><p>Income and company type/rating come from Torn's public company profile. Torn's current OpenAPI defines company stock for the authenticated company only, not a public company-ID stock endpoint. Stock comparisons therefore appear only where a director has connected an authorized company key and stock snapshots have been collected. Historical graphs build from the time the dashboard begins saving daily snapshots.</p></div>
+              <section className="panel compare-picker"><div className="panel-heading"><div><h2>Optional member comparison</h2><p>Leave this blank to show only your currently selected company. Pick a faction member to add their history to the same charts.</p></div></div><div className="compare-picker-row"><label htmlFor="compare-director">Faction member / director</label><select id="compare-director" value={selectedComparePlayerId} onChange={(event) => setSelectedComparePlayerId(event.target.value)}><option value="">No comparison · selected company only</option>{factionDirectors.filter((director) => String(director.playerId) !== String(playerId)).map((director) => <option key={director.playerId} value={director.playerId}>{director.directorName} · {director.companyName} ({director.companyType || "Unknown type"})</option>)}</select><button className="secondary-button" onClick={() => void refreshFactionDirectory()} disabled={factionSyncing}>{factionSyncing ? "Refreshing…" : "Refresh directory"}</button></div>{compareError && <div className="error-banner" role="alert">{compareError}</div>}{compareData && <div className="compare-summary"><div><small>SELECTED DIRECTOR</small><strong>{compareData.director.directorName}</strong></div><div><small>COMPANY</small><strong>{compareData.director.companyName}</strong></div><div><small>TYPE / RATING</small><strong>{compareData.director.companyType || "Unknown"} · {compareData.director.starRating ?? "—"} ★</strong></div><div><small>WEEKLY INCOME</small><strong>{formatMoney(compareData.director.weeklyIncome)}</strong></div></div>}</section>
+              <div className="ranking-footnote"><strong>Data coverage</strong><p>Historical and live values are joined by reporting date, with live values taking precedence when both sources contain the same day. Missing days are left blank, never interpolated. Weekly profit uses the latest recorded reported weekly-profit total when available; month-to-date totals use recorded daily snapshots and can be partial if a day is missing.</p></div>
             </div>
           ) : activeView === "employees" ? (
             <section className="panel employee-page-panel">
@@ -728,7 +776,7 @@ export function FloorApp() {
               {model ? <>
                 <section className="panel company-panel company-overview-panel"><div className="panel-heading"><div><h2>{model.company.name}</h2><p>{model.company.typeName} · Company #{model.company.id}</p></div><span className="status-badge success"><i /> COMPANY DATA</span></div>
                   <div className="company-facts overview-facts"><div><small>COMPANY TYPE</small><strong>{model.company.typeName}</strong></div><div><small>EMPLOYEES</small><strong>{formatNumber(model.company.employeesHired ?? model.employees.length)} / {formatNumber(model.company.employeeCapacity)}</strong></div><div><small>STAR RATING</small><strong>{currentStar === null ? "—" : `${currentStar} ★`}</strong></div><div><small>DIRECTOR</small><strong>{model.company.directorName ?? "Restricted"}</strong></div></div>
-                  <div className="income-grid"><article><small>DAILY INCOME</small><strong>{formatMoney(model.company.dailyIncome)}</strong><span className="profit-line">Profit {formatMoney(dailyProfit)}</span></article><article><small>WEEKLY INCOME</small><strong>{formatMoney(weeklyIncome)}</strong><span className="profit-line">Profit {formatMoney(weeklyProfit)}</span><span>Sunday 18:00 UTC to Sunday 18:00 UTC</span></article><article><small>MONTH-TO-DATE INCOME</small><strong>{formatMoney(monthlyIncome)}</strong><span className="profit-line">Profit {formatMoney(monthlyProfit)}</span><span>Since the 1st at 18:00 UTC</span></article></div><div className="overview-financial-strip"><article><small>CURRENT AD BUDGET</small><strong>{formatMoney(costs?.adBudget)}</strong><span>Daily advertising spend configured in Torn</span></article><article className="overview-stock-prices"><small>STOCK PRICES SET</small>{stockPriceRows(result?.stock).length ? <div className="stock-price-list">{stockPriceRows(result?.stock).map((item, index) => <div key={`${item.name}-${index}`}><span>{item.name}{item.quantity !== null ? ` · ${formatNumber(item.quantity)} in stock` : ""}</span><strong>{item.price === null ? "Price unavailable" : formatMoney(item.price)}</strong></div>)}</div> : <span>Current stock pricing was not returned by Torn for this company key.</span>}</article></div>{costs && <p className="profit-footnote">Estimated daily costs: {formatMoney(costs.adBudget)} ad budget + {formatMoney(costs.wages)} employee wages + {formatMoney(costs.stockCosts)} identified stock costs.</p>}
+                  <div className="income-grid"><article><small>DAILY INCOME</small><strong>{formatMoney(model.company.dailyIncome)}</strong><span className="profit-line">Profit {formatMoney(dailyProfit)}</span></article><article><small>WEEKLY INCOME</small><strong>{formatMoney(weeklyIncome)}</strong><span className="profit-line">Profit {formatMoney(weeklyProfit)}</span><span>Sunday 18:00 UTC to Sunday 18:00 UTC</span></article><article><small>MONTH-TO-DATE INCOME</small><strong>{formatMoney(monthlyIncome)}</strong><span className="profit-line">Profit {formatMoney(monthlyProfit)}</span><span>Since the 1st at 18:00 UTC</span></article></div><div className="overview-financial-strip"><article><small>CURRENT AD BUDGET</small><strong>{formatMoney(costs?.adBudget)}</strong><span>Daily advertising spend configured in Torn</span></article><article className="overview-stock-prices"><small>STOCK PRICES SET</small>{stockPriceRows(result?.stock).length ? <div className="stock-price-list">{stockPriceRows(result?.stock).map((item, index) => <div key={`${item.name}-${index}`}><span>{item.name}{item.quantity !== null ? ` · ${formatNumber(item.quantity)} in stock` : ""}</span><strong>{item.price === null ? "Price unavailable" : formatMoney(item.price)}</strong></div>)}</div> : <span>Current stock pricing was not returned by Torn for this company key.</span>}</article></div>{costs && <p className="profit-footnote">Estimated daily operating costs: {formatMoney(costs.adBudget)} ad budget + {formatMoney(costs.wages)} employee wages. Inventory value is tracked separately, not treated as a daily expense. Recorded coverage: {weekCoverage}/{expectedReportingDays(weekStart)} reporting days this week and {monthCoverage}/{expectedReportingDays(monthStart)} month-to-date. Weekly profit uses the latest imported reported total when available; month-to-date profit sums captured daily-profit snapshots, so incomplete coverage is shown as partial.</p>}
                   <div className="ratings-section"><div className="section-heading"><div><h3>Operating ratings</h3><p>Current company performance indicators from Torn.</p></div></div><div className="ratings-grid"><div><span>POPULARITY</span><strong>{formatNumber(popularity)}</strong></div><div><span>EFFICIENCY</span><strong>{formatNumber(efficiency)}</strong></div><div><span>ENVIRONMENT</span><strong>{formatNumber(environment)}</strong></div></div></div>
                   <div className="employee-heading overview-actions"><div><h3>Company health scorecard</h3><p>Benchmarked against companies of the same type.</p></div><button className="text-button" onClick={() => setActiveView("type-rankings")}>View rankings ↗</button></div>
                   <div className="health-grid"><div><small>TYPE + STAR PLACE</small><strong>{currentRankingCompany ? placement(currentRankingCompany, "stars") : "—"}</strong><span>Same company type and star level</span></div><div><small>WEEKLY INCOME VS TYPE</small><strong>{currentRankingCompany && currentRankingCompany.weeklyIncome !== null ? formatMoney(currentRankingCompany.weeklyIncome) : formatMoney(currentWeeklyIncome)}</strong><span>{companyPeerRows.length ? `${companyPeerRows.length} same-type companies in snapshot` : "Comparison snapshot unavailable"}</span></div><div><small>GAP TO NEXT STAR</small><strong>{nextStarGap === null ? "—" : formatMoney(nextStarGap)}</strong><span>{nextStarIncome === null ? "No higher-star benchmark available" : `Observed next-level benchmark: ${formatMoney(nextStarIncome)}/week`}</span></div><div><small>GAP TO PREVIOUS STAR</small><strong>{previousStarGap === null ? "—" : formatMoney(previousStarGap)}</strong><span>{previousStarIncome === null ? "No lower-star benchmark available" : `Observed previous-level benchmark: ${formatMoney(previousStarIncome)}/week`}</span></div></div>
