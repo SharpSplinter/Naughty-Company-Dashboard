@@ -103,6 +103,34 @@ try {
     assert.equal(response.stock.stock.length, 1)
   })
 
+  await test("normalizes Torn combined company responses that retain OpenAPI response wrappers", async () => {
+    const client = new TornApiClient({ apiKey: "test", fetcher: async () => new Response(JSON.stringify({
+      profile: { profile: { id: 78, name: "Wrapped Company", type: { id: 28, name: "Oil Rig" } } },
+      employees: { employees: [{ id: 2, name: "Wrapped Employee" }] },
+      stock: { stock: [{ id: 173, name: "Oil (Barrel)" }] },
+    })) })
+    const response = await client.getCompanySelections()
+    assert.equal(response.profile.profile.id, 78)
+    assert.equal(response.employees.employees.length, 1)
+    assert.equal(response.stock.stock.length, 1)
+  })
+
+  await test("uses the OpenAPI faction member, user job-by-ID, and company profile-by-ID endpoints", async () => {
+    const requested = []
+    const client = new TornApiClient({ apiKey: "test", fetcher: async (input) => {
+      requested.push(String(input))
+      return new Response(JSON.stringify({ members: [], job: { position: "Director" }, profile: { id: 99 } }))
+    } })
+    await client.getFactionMembers()
+    await client.getUserJobFor(12345)
+    await client.getCompanyProfileById(96639)
+    assert.deepEqual(requested, [
+      "https://api.torn.com/v2/faction/members",
+      "https://api.torn.com/v2/user/12345/job",
+      "https://api.torn.com/v2/company/96639/profile",
+    ])
+  })
+
   await test("sends the Torn key in Authorization, never in the URL", async () => {
     let requestedUrl = ""
     let authorization = ""
@@ -173,6 +201,7 @@ try {
       const path = url.pathname
       if (path.endsWith("/v2/user/profile")) return new Response(JSON.stringify({ profile: { id: 777, name: "Test Director" } }))
       if (path.endsWith("/v2/user/faction")) return new Response(JSON.stringify({ faction: { id: 8317, name: "Naughty Souls" } }))
+      if (path.endsWith("/v2/user/job")) return new Response(JSON.stringify({ job: { type: "company", id: 77, type_id: 28, name: "Test Company", position: "Director" } }))
       if (path.endsWith("/v2/company/profile")) return new Response(JSON.stringify({ company: { id: 77, name: "Test Company", director: 777 } }))
       if (path.endsWith("/v2/company") && url.searchParams.get("selections") === "employees,stock,profile") {
         combinedCompanyRequest = true

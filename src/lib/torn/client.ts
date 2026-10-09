@@ -96,6 +96,24 @@ export class TornApiClient {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   }
 
+  async getUserJob(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("/user/job")
+  }
+
+  async getFactionMembers(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("/faction/members")
+  }
+
+  async getUserJobFor(playerId: string | number): Promise<Record<string, unknown>> {
+    if (!/^\d+$/.test(String(playerId))) throw new TornApiClientError("Player ID must be numeric.", { status: 400 })
+    return this.request<Record<string, unknown>>(`/user/${playerId}/job`)
+  }
+
+  async getCompanyProfileById(companyId: string | number): Promise<TornCompanyResponse<TornCompanyProfile>> {
+    if (!/^\d+$/.test(String(companyId))) throw new TornApiClientError("Company ID must be numeric.", { status: 400 })
+    return this.request<TornCompanyResponse<TornCompanyProfile>>(`/company/${companyId}/profile`)
+  }
+
   async getCompanyProfile(): Promise<TornCompanyResponse<TornCompanyProfile>> {
     return this.request<TornCompanyResponse<TornCompanyProfile>>("/company/profile")
   }
@@ -109,14 +127,26 @@ export class TornApiClient {
   }
 
   async getCompanySelections(): Promise<{ profile: TornCompanyResponse<TornCompanyProfile>; employees: TornCompanyResponse<TornCompanyEmployees>; stock: Record<string, unknown> }> {
+    // Follow Torn's current OpenAPI /company endpoint and normalize both the
+    // combined-selection shape and the single-selection response wrappers.
     const payload = await this.request<Record<string, unknown>>("/company?selections=employees%2Cstock%2Cprofile")
-    if (!isRecord(payload) || !isRecord(payload.profile) || !Array.isArray(payload.employees) || !Array.isArray(payload.stock)) {
-      throw new TornApiClientError("Torn did not return company profile, employees, and stock in the combined response.", { status: 502 })
+    if (!isRecord(payload) || !isRecord(payload.profile)) {
+      throw new TornApiClientError("Torn did not return a company profile in the combined response.", { status: 502 })
+    }
+    const profilePayload = isRecord(payload.profile.profile) ? payload.profile : { profile: payload.profile }
+    const employeePayload = Array.isArray(payload.employees)
+      ? { employees: payload.employees }
+      : isRecord(payload.employees) && Array.isArray(payload.employees.employees) ? payload.employees : null
+    const stockPayload = Array.isArray(payload.stock)
+      ? { stock: payload.stock }
+      : isRecord(payload.stock) && Array.isArray(payload.stock.stock) ? payload.stock : null
+    if (!employeePayload || !stockPayload) {
+      throw new TornApiClientError("Torn did not return company employees and stock in the combined response.", { status: 502 })
     }
     return {
-      profile: { profile: payload.profile },
-      employees: { employees: payload.employees },
-      stock: { stock: payload.stock },
+      profile: profilePayload as TornCompanyResponse<TornCompanyProfile>,
+      employees: employeePayload as TornCompanyResponse<TornCompanyEmployees>,
+      stock: stockPayload,
     }
   }
 
