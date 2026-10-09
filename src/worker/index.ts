@@ -123,7 +123,9 @@ async function savedCompanyApiKey(env: WorkerEnv, playerId: string, companyId: s
   return row ? decryptKey(env, row.ciphertext, row.iv) : null
 }
 async function companyKeyMeta(env: WorkerEnv, playerId: string): Promise<{ saved: boolean; lastFour?: string; updatedAt?: string }> {
-  const row = await requireDb(env).prepare("SELECT last_four, updated_at FROM company_keys WHERE player_id = ?").bind(playerId).first<{ last_four: string; updated_at: string }>()
+  const legacy = await requireDb(env).prepare("SELECT last_four, updated_at FROM company_keys WHERE player_id = ?").bind(playerId).first<{ last_four: string; updated_at: string }>()
+  const perCompany = await requireDb(env).prepare("SELECT last_four, updated_at FROM company_api_keys WHERE player_id = ? ORDER BY updated_at DESC LIMIT 1").bind(playerId).first<{ last_four: string; updated_at: string }>()
+  const row = perCompany ?? legacy
   return row ? { saved: true, lastFour: row.last_four, updatedAt: row.updated_at } : { saved: false }
 }
 async function validateCompanyKey(apiKey: string): Promise<{ companyId: number; profile: unknown; employees: unknown }> {
