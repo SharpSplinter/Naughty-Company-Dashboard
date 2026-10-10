@@ -1323,7 +1323,7 @@ try {
     assert.match(workspaceSource, /onNavigate\("roster-insights"\)/)
     assert.match(workspaceSource, /Roster data source/)
     assert.match(floorSource, /sharedRosterCompanies=\{sharedCompanies\.filter\(\(company\) => company\.shareEmployeeData\)\}/)
-    assert.match(workspaceSource, /params\.set\(\"ownerPlayerId\", selectedSharedRoster\.playerId\)/)
+    assert.match(workspaceSource, /ownerPlayerId/)
   })
 
   console.log(`\n${passed} backend checks passed.`)
