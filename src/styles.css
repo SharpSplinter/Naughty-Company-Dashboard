@@ -571,3 +571,20 @@ th.numeric-cell {
 
 
 .automation-delivery-settings{padding:18px;display:grid;gap:16px}.automation-delivery-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px;align-items:start}.automation-delivery-settings .automation-form{padding:14px;border:1px solid var(--line);border-radius:10px;background:#0c1222}.automation-checkbox-label{display:flex!important;align-items:center;gap:9px!important;min-height:28px}.automation-checkbox-label input{accent-color:var(--violet);width:15px;height:15px}.automation-time-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.automation-time-row label{min-width:0}.automation-time-row input,.automation-webhook-panel input{width:100%;min-width:0;min-height:38px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#0b1120;color:var(--white);font:inherit}.automation-webhook-panel{display:grid;gap:12px}.automation-webhook-heading h3{margin:0 0 6px;color:var(--white);font-size:13px}.automation-webhook-heading p{margin:0;color:var(--muted);font-size:11px;line-height:1.6}.automation-delivery-history{display:grid;gap:10px}.automation-delivery-history .panel-heading{margin-top:4px}.automation-delivery-history .panel-heading h3{margin:0 0 4px;color:var(--white);font-size:13px}.automation-delivery-history .panel-heading p{margin:0;color:var(--muted);font-size:11px;line-height:1.5}@media(max-width:900px){.automation-delivery-grid{grid-template-columns:1fr}}@media(max-width:640px){.automation-delivery-settings{padding:13px}.automation-time-row{grid-template-columns:1fr}}
+
+
+/* User-controlled dashboard-wide layout preferences. */
+.app-shell.dashboard-width-wide .page-content { max-width: none; width: 100%; }
+.app-shell.dashboard-width-standard .page-content { max-width: 1680px; width: 100%; }
+.app-shell.dashboard-density-compact .page-content { gap: 12px; }
+.app-shell.dashboard-density-compact .panel { padding-top: 13px; padding-bottom: 13px; }
+.app-shell.dashboard-density-compact .page-content .panel-heading { margin-bottom: 10px; }
+.app-shell.dashboard-density-compact .page-content table th,
+.app-shell.dashboard-density-compact .page-content table td { padding-top: 7px; padding-bottom: 7px; }
+.dashboard-preference-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin-top: 14px; }
+.dashboard-preference-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: 10px; background: #0c1222; }
+.dashboard-preference-card > span { display: grid; gap: 5px; }
+.dashboard-preference-card strong { color: var(--white); font-size: 12px; }
+.dashboard-preference-card small { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.dashboard-preference-card select { min-height: 38px; max-width: 48%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #0b1120; color: var(--white); }
+@media(max-width:640px) { .dashboard-preference-grid { grid-template-columns: 1fr; } .dashboard-preference-card { align-items: flex-start; flex-direction: column; } .dashboard-preference-card select { max-width: none; width: 100%; } }

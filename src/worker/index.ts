@@ -1156,14 +1156,19 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
     }
     const body: unknown = await request.json().catch(() => null)
     if (!isRecord(body) || !Array.isArray(body.widgets) || body.widgets.length > 7) return jsonResponse({ error: "Provide a valid dashboard widget layout." }, 400, origin)
+    const rawPreferences = isRecord(body.dashboardPreferences) ? body.dashboardPreferences : {}
+    const dashboardPreferences = {
+      density: rawPreferences.density === "compact" ? "compact" : "comfortable",
+      contentWidth: rawPreferences.contentWidth === "wide" ? "wide" : "standard",
+    }
     const seen = new Set<string>(), widgets: { id: string; visible: boolean; order: number }[] = []
     for (const [index, value] of body.widgets.entries()) {
       if (!isRecord(value) || typeof value.id !== "string" || !allowed.has(value.id) || seen.has(value.id)) return jsonResponse({ error: "The layout contains an unknown or duplicate widget." }, 400, origin)
       seen.add(value.id); widgets.push({ id: value.id, visible: value.visible !== false, order: index })
     }
     const now = new Date().toISOString()
-    await db.prepare("INSERT INTO user_page_data (player_id, page_key, data_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, page_key) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at").bind(session.player_id, key, asJson({ widgets }), now).run()
-    return jsonResponse({ saved: true, layout: { widgets }, updatedAt: now }, 200, origin)
+    await db.prepare("INSERT INTO user_page_data (player_id, page_key, data_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, page_key) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at").bind(session.player_id, key, asJson({ widgets, dashboardPreferences }), now).run()
+    return jsonResponse({ saved: true, layout: { widgets, dashboardPreferences }, updatedAt: now }, 200, origin)
   }
   return jsonResponse({ error: "Insights route not found." }, 404, origin)
 }
