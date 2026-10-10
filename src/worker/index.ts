@@ -1079,9 +1079,12 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
     const checkedAt = new Date().toISOString()
     try {
       const databaseStartedAt = Date.now()
-      const staleBefore = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+      const nowUtc = new Date()
+      const staleBeforeDate = new Date(Date.UTC(nowUtc.getUTCFullYear(), nowUtc.getUTCMonth(), nowUtc.getUTCDate(), 18, 10, 0, 0))
+      if (nowUtc.getTime() < staleBeforeDate.getTime()) staleBeforeDate.setUTCDate(staleBeforeDate.getUTCDate() - 1)
+      const staleBefore = staleBeforeDate.toISOString()
       const [summary, rows] = await Promise.all([
-        db.prepare("WITH connected AS (SELECT company_id AS companyId FROM companies WHERE player_id = ? UNION SELECT company_id AS companyId FROM company_api_keys WHERE player_id = ?), freshness AS (SELECT c.companyId, MAX(s.fetched_at) AS fetchedAt FROM connected c LEFT JOIN company_snapshots s ON s.player_id = ? AND s.company_id = c.companyId GROUP BY c.companyId) SELECT (SELECT COUNT(*) FROM connected) AS companyCount, (SELECT COUNT(*) FROM company_snapshots WHERE player_id = ?) AS snapshotCount, (SELECT MAX(fetched_at) FROM company_snapshots WHERE player_id = ?) AS latestSnapshotAt, (SELECT COUNT(*) FROM freshness WHERE fetchedAt IS NULL OR fetchedAt <= ?) AS staleCompanies").bind(session.player_id, session.player_id, session.player_id, session.player_id, session.player_id, staleBefore).first<Record<string, unknown>>(),
+        db.prepare("WITH connected AS (SELECT company_id AS companyId FROM companies WHERE player_id = ? UNION SELECT company_id AS companyId FROM company_api_keys WHERE player_id = ?), freshness AS (SELECT c.companyId, MAX(s.fetched_at) AS fetchedAt FROM connected c LEFT JOIN company_snapshots s ON s.player_id = ? AND s.company_id = c.companyId GROUP BY c.companyId) SELECT (SELECT COUNT(*) FROM connected) AS companyCount, (SELECT COUNT(*) FROM company_snapshots WHERE player_id = ?) AS snapshotCount, (SELECT MAX(fetched_at) FROM company_snapshots WHERE player_id = ?) AS latestSnapshotAt, (SELECT COUNT(*) FROM freshness WHERE fetchedAt IS NULL OR fetchedAt < ?) AS staleCompanies").bind(session.player_id, session.player_id, session.player_id, session.player_id, session.player_id, staleBefore).first<Record<string, unknown>>(),
         db.prepare("WITH connected AS (SELECT c.company_id AS companyId, c.company_name AS companyName, c.company_type AS companyType FROM companies c WHERE c.player_id = ? UNION ALL SELECT k.company_id AS companyId, k.company_name AS companyName, k.company_type AS companyType FROM company_api_keys k WHERE k.player_id = ? AND NOT EXISTS (SELECT 1 FROM companies c WHERE c.player_id = k.player_id AND c.company_id = k.company_id)), snapshot_stats AS (SELECT company_id AS companyId, MAX(fetched_at) AS fetchedAt, COUNT(*) AS snapshotCount FROM company_snapshots WHERE player_id = ? GROUP BY company_id) SELECT c.companyId, c.companyName, c.companyType, s.fetchedAt, COALESCE(s.snapshotCount, 0) AS snapshotCount FROM connected c LEFT JOIN snapshot_stats s ON s.companyId = c.companyId ORDER BY s.fetchedAt DESC LIMIT 100").bind(session.player_id, session.player_id, session.player_id).all<Record<string, unknown>>(),
       ])
       const databaseLatencyMs = Date.now() - databaseStartedAt
@@ -1090,7 +1093,7 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
         const timestamp = row.fetchedAt == null ? Number.NaN : Date.parse(String(row.fetchedAt))
         const preciseAgeHours = Number.isFinite(timestamp) ? Math.max(0, (now - timestamp) / 3600000) : null
         const ageHours = preciseAgeHours === null ? null : Math.round(preciseAgeHours * 10) / 10
-        return { ...row, ageHours, freshness: preciseAgeHours === null ? "never" : preciseAgeHours >= 24 ? "stale" : preciseAgeHours >= 12 ? "aging" : "fresh" }
+        return { ...row, ageHours, freshness: preciseAgeHours === null ? "never" : timestamp < Date.parse(staleBefore) ? "stale" : "fresh" }
       })
       return jsonResponse({ checkedAt, worker: { status: "ok", checkedAt, latencyMs: Date.now() - probeStartedAt }, database: { status: "ok", latencyMs: databaseLatencyMs }, summary: { companyCount: Number(summary?.companyCount ?? 0), snapshotCount: Number(summary?.snapshotCount ?? 0), latestSnapshotAt: summary?.latestSnapshotAt ?? null, staleCompanies: Number(summary?.staleCompanies ?? 0) }, companies }, 200, origin)
     } catch {

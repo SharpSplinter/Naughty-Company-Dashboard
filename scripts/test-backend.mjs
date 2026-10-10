@@ -498,13 +498,17 @@ try {
     }
   })
 
-  await test("authenticated health reports snapshot-based freshness and complete stale counts", async () => {
-    const now = Date.now()
-    const latest = new Date(now - 60 * 60 * 1000).toISOString()
+  await test("authenticated health uses the daily 18:10 UTC freshness boundary and complete stale counts", async () => {
+    const now = new Date()
+    const boundary = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 18, 10, 0, 0))
+    if (now.getTime() < boundary.getTime()) boundary.setUTCDate(boundary.getUTCDate() - 1)
+    const cutoff = boundary.toISOString()
+    const justBeforeBoundary = new Date(boundary.getTime() - 60 * 1000).toISOString()
+    const latest = now.toISOString()
     const rows = [
       { companyId: "fresh", companyName: "Fresh Co", companyType: "Grocery Store", fetchedAt: latest, snapshotCount: 5 },
-      { companyId: "aging", companyName: "Aging Co", companyType: "Grocery Store", fetchedAt: new Date(now - 12.1 * 60 * 60 * 1000).toISOString(), snapshotCount: 3 },
-      { companyId: "stale", companyName: "Stale Co", companyType: "Grocery Store", fetchedAt: new Date(now - 25 * 60 * 60 * 1000).toISOString(), snapshotCount: 8 },
+      { companyId: "boundary", companyName: "Boundary Co", companyType: "Grocery Store", fetchedAt: cutoff, snapshotCount: 3 },
+      { companyId: "stale", companyName: "Stale Co", companyType: "Grocery Store", fetchedAt: justBeforeBoundary, snapshotCount: 8 },
       { companyId: "never", companyName: "Never Synced Co", companyType: "Grocery Store", fetchedAt: null, snapshotCount: 0 },
     ]
     const queries = []
@@ -519,6 +523,8 @@ try {
           if (normalized.includes("as stalecompanies")) {
             assert.equal(values.length, 6, "summary must bind every owner-scoped query parameter and freshness cutoff")
             assert.ok(normalized.includes("max(s.fetched_at)"), "freshness must use saved snapshots, not the mutable current company row")
+            assert.ok(normalized.includes("fetchedat < ?"), "stale totals must use the exclusive daily boundary")
+            assert.equal(values[5], cutoff, "summary cutoff must be today's 18:10 UTC boundary or the previous day's if it has not occurred yet")
             return { companyCount: 105, snapshotCount: 208, latestSnapshotAt: latest, staleCompanies: 43 }
           }
           return null
@@ -545,9 +551,10 @@ try {
     assert.equal(payload.summary.snapshotCount, 208)
     assert.equal(payload.summary.staleCompanies, 43, "stale count must cover all connected companies, not only the displayed rows")
     assert.equal(payload.companies.find((company) => company.companyId === "fresh").freshness, "fresh")
-    assert.equal(payload.companies.find((company) => company.companyId === "aging").freshness, "aging")
-    assert.equal(payload.companies.find((company) => company.companyId === "stale").freshness, "stale")
+    assert.equal(payload.companies.find((company) => company.companyId === "boundary").freshness, "fresh", "a snapshot exactly at 18:10 UTC is fresh")
+    assert.equal(payload.companies.find((company) => company.companyId === "stale").freshness, "stale", "a snapshot before 18:10 UTC is stale")
     assert.equal(payload.companies.find((company) => company.companyId === "never").freshness, "never")
+    assert.ok(!payload.companies.some((company) => company.freshness === "aging"), "there must be no intermediate aging state")
     assert.ok(queries.filter((sql) => sql.toLowerCase().includes("with connected as")).every((sql) => sql.includes("player_id = ?")), "all company and snapshot queries must be owner-scoped")
     assert.doesNotMatch(JSON.stringify(payload), /ciphertext|api.?key|secret|session.?token/i)
   })
