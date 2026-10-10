@@ -657,7 +657,7 @@ async function deliverAutomationWebhook(env: WorkerEnv, ownerPlayerId: string, a
     let statusCode: number | undefined
     let detail = ""
     try {
-      const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", "user-agent": "Naughty-Company-Dashboard/1.0" }, body: JSON.stringify({ source: "Naughty Company Dashboard", event: "automation.alert", alert }), signal: controller.signal })
+      const response = await fetch(endpoint, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", "user-agent": "Naughty-Company-Dashboard/1.0" }, body: JSON.stringify({ source: "Naughty Company Dashboard", event: "automation.alert", alert }), signal: controller.signal })
       statusCode = response.status
       if (!response.ok) detail = `Webhook endpoint returned HTTP ${response.status}.`
       else detail = "Webhook delivered successfully."

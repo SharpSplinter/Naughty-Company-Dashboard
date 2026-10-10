@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { createRequire } from "node:module"
@@ -85,6 +85,11 @@ try {
     assert.equal(normalizeWebhookUrl("https://192.168.1.10/alert"), null)
     assert.equal(normalizeWebhookUrl("https://user:secret@hooks.example.com/alert"), null)
     assert.equal(normalizeWebhookUrl("https://[::1]/alert"), null)
+  })
+
+  await test("webhook delivery never follows redirects to unvalidated destinations", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    assert.match(workerSource, /fetch\(endpoint, \{ method: "POST", redirect: "manual"/)
   })
 
   await test("normalizes company profile and employee role fit", () => {
