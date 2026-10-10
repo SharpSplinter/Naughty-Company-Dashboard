@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { CompanyDashboardModel } from "../../lib/company/types"
 import { LineChart } from "./chart-utils"
 import type { ChartSeries } from "./chart-utils"
@@ -61,10 +61,12 @@ export function InsightsWorkspace({ view, apiBase, sessionToken, isAdmin, demoMo
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [layoutLoaded, setLayoutLoaded] = useState(false)
+  const trendRequestId = useRef(0)
+  const rosterRequestId = useRef(0)
 
   const loadHealth = useCallback(async () => { if (!sessionToken || demoMode) return; const payload = await api<Health>(apiBase, sessionToken, "/api/me/health"); setHealth(payload) }, [apiBase, sessionToken, demoMode])
-  const loadTrends = useCallback(async () => { if (!sessionToken || demoMode || !companyId) { setTrends(null); return }; const payload = await api<Trends>(apiBase, sessionToken, `/api/me/companies/${encodeURIComponent(companyId)}/history?days=${trendDays}`); setTrends(payload) }, [apiBase, sessionToken, demoMode, companyId, trendDays])
-  const loadRoster = useCallback(async () => { if (!sessionToken || demoMode) return; const payload = await api<Roster>(apiBase, sessionToken, `/api/me/member-insights${companyId ? `?companyId=${encodeURIComponent(companyId)}` : ""}`); setRoster(payload) }, [apiBase, sessionToken, demoMode, companyId])
+  const loadTrends = useCallback(async () => { const requestId = ++trendRequestId.current; if (!sessionToken || demoMode || !companyId) { setTrends(null); return }; setTrends(null); const payload = await api<Trends>(apiBase, sessionToken, `/api/me/companies/${encodeURIComponent(companyId)}/history?days=${trendDays}`); if (requestId === trendRequestId.current) setTrends(payload) }, [apiBase, sessionToken, demoMode, companyId, trendDays])
+  const loadRoster = useCallback(async () => { const requestId = ++rosterRequestId.current; if (!sessionToken || demoMode) { setRoster(null); return }; setRoster(null); const payload = await api<Roster>(apiBase, sessionToken, `/api/me/member-insights${companyId ? `?companyId=${encodeURIComponent(companyId)}` : ""}`); if (requestId === rosterRequestId.current) setRoster(payload) }, [apiBase, sessionToken, demoMode, companyId])
   const loadLayout = useCallback(async () => { if (!sessionToken || demoMode) { setLayoutLoaded(true); return }; try { const payload = await api<{ layout: Layout | null }>(apiBase, sessionToken, "/api/me/dashboard-layout"); const saved = payload.layout?.widgets; if (Array.isArray(saved) && saved.length) { const map = new Map(saved.map((item) => [item.id, item])); setWidgets(DEFAULT_WIDGETS.map((item) => map.get(item.id) ?? item).sort((a, b) => a.order - b.order).map((item, order) => ({ ...item, order }))) } } catch { /* Keep a usable default layout when a legacy Worker has not deployed this route yet. */ } finally { setLayoutLoaded(true) } }, [apiBase, sessionToken, demoMode])
 
   useEffect(() => {
@@ -84,7 +86,7 @@ export function InsightsWorkspace({ view, apiBase, sessionToken, isAdmin, demoMo
       if (!cancelled) { const failed = results.find((result) => result.status === "rejected") as PromiseRejectedResult | undefined; if (failed) setError(failed.reason instanceof Error ? failed.reason.message : "Some insights could not be loaded."); setLoading(false) }
     }
     void load()
-    return () => { cancelled = true }
+    return () => { cancelled = true; trendRequestId.current += 1; rosterRequestId.current += 1 }
   }, [view, apiBase, sessionToken, demoMode, isAdmin, companyId, trendDays, memberActivityDays, loadHealth, loadTrends, loadRoster, loadLayout])
 
   const dailySeries: ChartSeries[] = useMemo(() => [{ label: trends?.company.companyName || model?.company.name || "Selected company", values: (trends?.history || []).map((point) => ({ label: point.day, value: point.dailyIncome })) }], [trends, model])
