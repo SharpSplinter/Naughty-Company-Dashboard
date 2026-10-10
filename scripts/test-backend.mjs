@@ -982,6 +982,41 @@ try {
     assert.match(source, /DELETE FROM sessions WHERE player_id = \?/)
   })
 
+  await test("company-key deletion validates the company ID and keeps access scoped to the signed-in player", async () => {
+    const db = { prepare(sql) { let values = []; return { bind(...args) { values = args; return this }, async first() { const query = sql.toLowerCase(); if (query.includes("from sessions s join players p")) return { player_id: "777", player_name: "Key Tester" }; if (query.includes("from dashboard_member_status") || query.includes("from admin_settings")) return null; if (query.includes("from company_api_keys where player_id = ? and company_id = ?")) { assert.deepEqual(values, ["777", "123"]); return null } return null }, async run() { return { success: true, meta: { changes: 0 } } } } } }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer company-key-session" }
+    const invalid = await worker.fetch(new Request("https://worker.test/api/auth/company-key?companyId=not-a-number", { method: "DELETE", headers }), { DB: db })
+    assert.equal(invalid.status, 400)
+    const missing = await worker.fetch(new Request("https://worker.test/api/auth/company-key?companyId=123", { method: "DELETE", headers }), { DB: db })
+    assert.equal(missing.status, 404)
+  })
+
+  await test("company-key deletion removes only the selected credential and retains company history", async () => {
+    const secret = "test-encryption-secret-that-is-long-enough"
+    const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret))
+    const cryptoKey = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt"])
+    const iv = crypto.getRandomValues(new Uint8Array(12))
+    const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, cryptoKey, new TextEncoder().encode("secondary-company-key"))
+    const toBase64 = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes)))
+    const encrypted = { ciphertext: toBase64(cipher), iv: toBase64(iv) }
+    const writes = []
+    const db = { prepare(sql) { let values = []; return { bind(...args) { values = args; return this }, async first() { const query = sql.toLowerCase(); if (query.includes("from sessions s join players p")) return { player_id: "777", player_name: "Key Tester" }; if (query.includes("from dashboard_member_status") || query.includes("from admin_settings")) return null; if (query.includes("select ciphertext, iv from company_api_keys where player_id = ? and company_id = ?")) return values[1] === "123" ? encrypted : null; if (query.includes("select company_id from company_api_keys where player_id = ? and company_id != ? limit 1")) return { company_id: "456" }; if (query.includes("select last_four, updated_at from company_api_keys where player_id = ? order by updated_at desc limit 1")) return { last_four: "9876", updated_at: "2026-10-10T00:00:00.000Z" }; return null }, async run() { writes.push({ sql, values }); return { success: true, meta: { changes: 1 } } } } } }
+    const response = await worker.fetch(new Request("https://worker.test/api/auth/company-key?companyId=123", { method: "DELETE", headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer company-key-session" } }), { DB: db, KEY_ENCRYPTION_SECRET: secret })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { deleted: true, companyId: "123", companyDataRetained: true, companyKeySaved: true })
+    assert.equal(writes.length, 1)
+    assert.match(writes[0].sql, /DELETE FROM company_api_keys WHERE player_id = \? AND company_id = \?/)
+    assert.deepEqual(writes[0].values, ["777", "123"])
+    assert.equal(writes.some((write) => /DELETE FROM (companies|company_snapshots|company_financials)/i.test(write.sql)), false)
+  })
+
+  await test("connection settings expose per-company key removal without deleting company records", () => {
+    const source = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
+    assert.match(source, /deleteSavedCompanyKey/)
+    assert.match(source, /Remove key/)
+    assert.match(source, /\/api\/auth\/company-key\?companyId=/)
+  })
+
   console.log(`\n${passed} backend checks passed.`)
 } finally {
   rmSync(temp, { recursive: true, force: true })

@@ -24,7 +24,7 @@ Set `VITE_API_BASE_URL` to the deployed API Worker origin if it differs from the
 
 Members sign in with a limited-access Torn API key. The Worker validates faction membership, encrypts saved API credentials at rest, and issues a random bearer session token whose SHA-256 hash is stored in D1. The browser stores the session token locally; the Torn API key itself is not written to browser storage. Sessions expire after 30 days, and sign-out revokes the current server-side session. Account security controls also support revoking every active session for the signed-in player.
 
-Use the minimum Torn permissions needed, avoid signing in on shared devices, and never share API keys or session tokens. CORS is browser hygiene, not an authentication boundary. Deleting saved credentials does not delete recorded company history.
+Use the minimum Torn permissions needed, avoid signing in on shared devices, and never share API keys or session tokens. CORS is browser hygiene, not an authentication boundary. Deleting saved credentials does not delete recorded company history. Members can remove an individual company key from connection settings without deleting that company’s saved history; a connection that also serves as the login key must be replaced before it can be disconnected.
 
 ## Intelligence and automation
 
