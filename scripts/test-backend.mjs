@@ -46,7 +46,7 @@ try {
   const { TornApiClient, TornApiClientError } = require(join(temp, "lib/torn/client.js"))
   const worker = require(join(temp, "worker/index.js")).default
   const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
-  const { evaluateIncomeDrop, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } = require(join(temp, "lib/automation/rules.js"))
+  const { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isWithinQuietHours, normalizeWebhookUrl, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } = require(join(temp, "lib/automation/rules.js"))
 
   let passed = 0
   async function test(name, fn) {
@@ -54,6 +54,38 @@ try {
     passed += 1
     console.log("PASS", name)
   }
+
+  await test("evaluates income increase thresholds without dividing by zero", () => {
+    assert.deepEqual(evaluateIncomeIncrease(100, 120, 15), { changePercent: 20 })
+    assert.equal(evaluateIncomeIncrease(100, 105, 10), null)
+    assert.equal(evaluateIncomeIncrease(0, 100, 10), null)
+  })
+
+  await test("evaluates percentage drops and roster changes symmetrically", () => {
+    assert.deepEqual(evaluatePercentageDrop(100, 80, 15), { changePercent: -20 })
+    assert.equal(evaluatePercentageDrop(100, 90, 15), null)
+    assert.deepEqual(evaluateRosterChange(10, 8, 15), { changePercent: -20 })
+    assert.deepEqual(evaluateRosterChange(0, 2, 15), { changePercent: 100 })
+    assert.equal(evaluateRosterChange(10, 10, 15), null)
+  })
+
+  await test("handles quiet hours that cross midnight and all-day quiet windows", () => {
+    assert.equal(isWithinQuietHours(23 * 60, "22:00", "08:00"), true)
+    assert.equal(isWithinQuietHours(7 * 60, "22:00", "08:00"), true)
+    assert.equal(isWithinQuietHours(12 * 60, "22:00", "08:00"), false)
+    assert.equal(isWithinQuietHours(300, "08:00", "08:00"), true)
+    assert.equal(isWithinQuietHours(300, "bad", "08:00"), false)
+  })
+
+  await test("accepts only public HTTPS webhook destinations", () => {
+    assert.equal(normalizeWebhookUrl("https://hooks.example.com/alert"), "https://hooks.example.com/alert")
+    assert.equal(normalizeWebhookUrl("http://hooks.example.com/alert"), null)
+    assert.equal(normalizeWebhookUrl("https://localhost/alert"), null)
+    assert.equal(normalizeWebhookUrl("https://127.0.0.1/alert"), null)
+    assert.equal(normalizeWebhookUrl("https://192.168.1.10/alert"), null)
+    assert.equal(normalizeWebhookUrl("https://user:secret@hooks.example.com/alert"), null)
+    assert.equal(normalizeWebhookUrl("https://[::1]/alert"), null)
+  })
 
   await test("normalizes company profile and employee role fit", () => {
     const catalog = { companies: { "Test Shop": [
@@ -437,10 +469,14 @@ try {
   await test("Worker health endpoint applies dashboard CORS", async () => {
     const response = await worker.fetch(new Request("https://worker.test/health", {
       headers: { Origin: "https://naughty-company-dashboard.pages.dev" },
-    }), {})
+    }), { DB: { prepare() { return { bind() { return this }, async first() { return { ok: 1 } }, async all() { return { results: [] } }, async run() { return { success: true } } } } } })
     assert.equal(response.status, 200)
     assert.equal(response.headers.get("access-control-allow-origin"), "https://naughty-company-dashboard.pages.dev")
-    assert.deepEqual(await response.json(), { ok: true, service: "naughty-company-api" })
+    const payload = await response.json()
+    assert.equal(payload.ok, true)
+    assert.equal(payload.service, "naughty-company-api")
+    assert.equal(payload.database, "ok")
+    assert.ok(payload.checkedAt)
   })
 
   await test("Worker rejects untrusted browser origins", async () => {

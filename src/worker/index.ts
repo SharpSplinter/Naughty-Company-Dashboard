@@ -1,5 +1,5 @@
 import { TornApiClient, TornApiClientError } from "../lib/torn/client"
-import { evaluateIncomeDrop, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } from "../lib/automation/rules"
+import { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isSnapshotStale, normalizeWebhookUrl, normalizeAlertThreshold, normalizeCooldownHours } from "../lib/automation/rules"
 
 type D1Result<T = Record<string, unknown>> = { results?: T[]; success?: boolean; meta?: { changes?: number } }
 type D1Statement = { bind(...values: (string | number | null)[]): D1Statement; first<T = Record<string, unknown>>(): Promise<T | null>; all<T = Record<string, unknown>>(): Promise<D1Result<T>>; run(): Promise<D1Result> }
@@ -520,7 +520,7 @@ function parseStoredJson(value: unknown): unknown {
   try { return JSON.parse(String(value)) as unknown } catch { return null }
 }
 
-type AlertRuleType = "income_drop" | "stale_data" | "refresh_failure"
+type AlertRuleType = "income_drop" | "stale_data" | "refresh_failure" | "income_increase" | "rating_drop" | "roster_change"
 type AlertRuleRow = { rule_id: string; owner_player_id: string; company_id: string | null; rule_type: AlertRuleType; enabled: number; threshold_percent: number; cooldown_hours: number; stale_after_hours: number; last_triggered_at: string | null; last_evaluated_at: string | null; created_at: string; updated_at: string }
 type AlertEventInput = { severity: "info" | "warning" | "critical"; title: string; message: string; companyId?: string | null; previousValue?: number | null; currentValue?: number | null; changePercent?: number | null; sourceSnapshotAt?: string | null; dedupeSuffix: string }
 
@@ -530,7 +530,7 @@ async function ensureAutomationSchema(env: WorkerEnv): Promise<void> {
     rule_id TEXT PRIMARY KEY,
     owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
     company_id TEXT,
-    rule_type TEXT NOT NULL CHECK (rule_type IN ('income_drop', 'stale_data', 'refresh_failure')),
+    rule_type TEXT NOT NULL CHECK (rule_type IN ('income_drop', 'stale_data', 'refresh_failure', 'income_increase', 'rating_drop', 'roster_change')),
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     threshold_percent REAL NOT NULL DEFAULT 15,
     cooldown_hours INTEGER NOT NULL DEFAULT 24,
@@ -569,6 +569,38 @@ async function ensureAutomationSchema(env: WorkerEnv): Promise<void> {
     alerts_created INTEGER NOT NULL DEFAULT 0,
     error_summary TEXT
   )`).run()
+  await db.prepare(`CREATE TABLE IF NOT EXISTS automation_preferences (
+    owner_player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
+    browser_notifications_enabled INTEGER NOT NULL DEFAULT 0 CHECK (browser_notifications_enabled IN (0, 1)),
+    quiet_hours_enabled INTEGER NOT NULL DEFAULT 0 CHECK (quiet_hours_enabled IN (0, 1)),
+    quiet_hours_start TEXT NOT NULL DEFAULT '22:00',
+    quiet_hours_end TEXT NOT NULL DEFAULT '08:00',
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    minimum_severity TEXT NOT NULL DEFAULT 'info' CHECK (minimum_severity IN ('info', 'warning', 'critical')),
+    digest_mode TEXT NOT NULL DEFAULT 'instant' CHECK (digest_mode IN ('instant', 'daily', 'off')),
+    updated_at TEXT NOT NULL
+  )`).run()
+  await db.prepare(`CREATE TABLE IF NOT EXISTS automation_webhooks (
+    owner_player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
+    ciphertext TEXT NOT NULL,
+    iv TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_delivered_at TEXT,
+    last_error TEXT
+  )`).run()
+  await db.prepare(`CREATE TABLE IF NOT EXISTS automation_delivery_log (
+    delivery_id TEXT PRIMARY KEY,
+    owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL REFERENCES alert_events(event_id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('delivered', 'failed')),
+    status_code INTEGER,
+    detail TEXT,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT
+  )`).run()
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_automation_delivery_owner_created ON automation_delivery_log(owner_player_id, created_at DESC)").run()
   await db.prepare("CREATE INDEX IF NOT EXISTS idx_alert_rules_owner_enabled ON alert_rules(owner_player_id, enabled, rule_type)").run()
   await db.prepare("CREATE INDEX IF NOT EXISTS idx_alert_events_owner_status_created ON alert_events(owner_player_id, status, created_at)").run()
   await db.prepare("CREATE INDEX IF NOT EXISTS idx_automation_runs_started ON automation_runs(started_at DESC)").run()
@@ -582,6 +614,65 @@ function dailyIncomeFromProfile(payload: unknown): number | null {
   if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value)
   return null
 }
+
+function ratingFromProfile(payload: unknown): number | null {
+  const root = companyProfileRoot(payload)
+  const value = root.rating ?? (isRecord(root.company) ? root.company.rating : undefined)
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value)
+  return null
+}
+
+function employeesFromPayload(payload: unknown): Record<string, unknown>[] {
+  if (Array.isArray(payload)) return payload.filter(isRecord)
+  if (!isRecord(payload)) return []
+  const nested = Array.isArray(payload.employees) ? payload.employees : isRecord(payload.employees) && Array.isArray(payload.employees.employees) ? payload.employees.employees : null
+  return nested ? nested.filter(isRecord) : []
+}
+
+function rosterCount(payload: unknown): number { return employeesFromPayload(payload).length }
+
+function numericField(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value)
+  return null
+}
+
+type WebhookAlert = { eventId: string; ruleId: string; ruleType: string; severity: "info" | "warning" | "critical"; title: string; message: string; companyId?: string | null; createdAt: string }
+
+function severityRank(value: unknown): number { return value === "critical" ? 3 : value === "warning" ? 2 : 1 }
+
+async function deliverAutomationWebhook(env: WorkerEnv, ownerPlayerId: string, alert: WebhookAlert): Promise<{ attempted: boolean; delivered: boolean; statusCode?: number; detail?: string }> {
+  const db = requireDb(env)
+  try {
+    const [hook, preferences] = await Promise.all([
+      db.prepare("SELECT ciphertext, iv FROM automation_webhooks WHERE owner_player_id = ? AND enabled = 1").bind(ownerPlayerId).first<{ ciphertext: string; iv: string }>(),
+      db.prepare("SELECT minimum_severity AS minimumSeverity FROM automation_preferences WHERE owner_player_id = ?").bind(ownerPlayerId).first<{ minimumSeverity: string }>(),
+    ])
+    if (!hook) return { attempted: false, delivered: false, detail: "No webhook is configured." }
+    if (preferences?.minimumSeverity && severityRank(alert.severity) < severityRank(preferences.minimumSeverity)) return { attempted: false, delivered: false, detail: "Alert is below the configured minimum severity." }
+    const endpoint = await decryptKey(env, hook.ciphertext, hook.iv)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 5000)
+    let statusCode: number | undefined
+    let detail = ""
+    try {
+      const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", "user-agent": "Naughty-Company-Dashboard/1.0" }, body: JSON.stringify({ source: "Naughty Company Dashboard", event: "automation.alert", alert }), signal: controller.signal })
+      statusCode = response.status
+      if (!response.ok) detail = `Webhook endpoint returned HTTP ${response.status}.`
+      else detail = "Webhook delivered successfully."
+    } catch (error) { detail = error instanceof Error && error.name === "AbortError" ? "Webhook request timed out after 5 seconds." : "Webhook request failed. Check the endpoint and try again." }
+    finally { clearTimeout(timeout) }
+    const now = new Date().toISOString(), delivered = statusCode !== undefined && statusCode >= 200 && statusCode < 300
+    await db.prepare("INSERT INTO automation_delivery_log (delivery_id, owner_player_id, event_id, status, status_code, detail, created_at, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), ownerPlayerId, alert.eventId, delivered ? "delivered" : "failed", statusCode ?? null, detail, now, delivered ? now : null).run()
+    await db.prepare("UPDATE automation_webhooks SET last_delivered_at = CASE WHEN ? = 1 THEN ? ELSE last_delivered_at END, last_error = ?, updated_at = ? WHERE owner_player_id = ?").bind(Number(delivered), now, delivered ? null : detail, now, ownerPlayerId).run()
+    return { attempted: true, delivered, statusCode, detail }
+  } catch {
+    return { attempted: true, delivered: false, detail: "Webhook delivery could not be completed. Check the configured endpoint and encryption settings." }
+  }
+}
+
+function validateWebhookUrl(value: unknown): string | null { return normalizeWebhookUrl(value) }
 
 async function createAlertEvent(env: WorkerEnv, rule: AlertRuleRow, input: AlertEventInput): Promise<boolean> {
   const db = requireDb(env)
@@ -603,7 +694,7 @@ async function evaluateAutomationForCompany(env: WorkerEnv, playerId: string, co
   const ruleResult = await db.prepare("SELECT * FROM alert_rules WHERE owner_player_id = ? AND enabled = 1 AND (company_id IS NULL OR company_id = ?)").bind(playerId, companyId).all<AlertRuleRow>()
   const rules = ruleResult.results ?? []
   if (!rules.length) return
-  const snapshots = await db.prepare("SELECT profile_json AS profileJson, fetched_at AS fetchedAt FROM company_snapshots WHERE player_id = ? AND company_id = ? ORDER BY fetched_at DESC, snapshot_id DESC LIMIT 2").bind(playerId, companyId).all<{ profileJson: string; fetchedAt: string }>()
+  const snapshots = await db.prepare("SELECT profile_json AS profileJson, employees_json AS employeesJson, fetched_at AS fetchedAt FROM company_snapshots WHERE player_id = ? AND company_id = ? ORDER BY fetched_at DESC, snapshot_id DESC LIMIT 2").bind(playerId, companyId).all<{ profileJson: string; employeesJson: string; fetchedAt: string }>()
   const rows = snapshots.results ?? []
   const current = rows[0]
   const previous = rows[1]
@@ -619,6 +710,37 @@ async function evaluateAutomationForCompany(env: WorkerEnv, playerId: string, co
           message: `Daily income fell ${Math.abs(drop.changePercent).toFixed(1)}% since the previous successful company refresh.`,
           companyId, previousValue: previousIncome, currentValue: currentIncome, changePercent: drop.changePercent,
           sourceSnapshotAt: current.fetchedAt, dedupeSuffix: `income:${current.fetchedAt}`,
+        })
+      }
+      if (rule.rule_type === "income_increase" && current && previous && currentIncome !== null && previousIncome !== null && previousIncome > 0) {
+        const rise = evaluateIncomeIncrease(previousIncome, currentIncome, rule.threshold_percent)
+        if (rise) await createAlertEvent(env, rule, {
+          severity: "info", title: "Daily income increased",
+          message: `Daily income increased ${rise.changePercent.toFixed(1)}% since the previous successful company refresh.`,
+          companyId, previousValue: previousIncome, currentValue: currentIncome, changePercent: rise.changePercent,
+          sourceSnapshotAt: current.fetchedAt, dedupeSuffix: `income-rise:${current.fetchedAt}`,
+        })
+      }
+      if (rule.rule_type === "rating_drop" && current && previous) {
+        const before = ratingFromProfile(parseStoredJson(previous.profileJson)), after = ratingFromProfile(parseStoredJson(current.profileJson))
+        if (before !== null && after !== null && before > 0) {
+          const drop = evaluatePercentageDrop(before, after, rule.threshold_percent)
+          if (drop) await createAlertEvent(env, rule, {
+            severity: "warning", title: "Company rating dropped",
+            message: `Company rating decreased ${Math.abs(drop.changePercent).toFixed(1)}% between successful snapshots.`,
+            companyId, previousValue: before, currentValue: after, changePercent: drop.changePercent,
+            sourceSnapshotAt: current.fetchedAt, dedupeSuffix: `rating:${current.fetchedAt}`,
+          })
+        }
+      }
+      if (rule.rule_type === "roster_change" && current && previous) {
+        const before = rosterCount(parseStoredJson(previous.employeesJson)), after = rosterCount(parseStoredJson(current.employeesJson))
+        const change = evaluateRosterChange(before, after, rule.threshold_percent)
+        if (change) await createAlertEvent(env, rule, {
+          severity: after < before ? "warning" : "info", title: after < before ? "Employee roster contracted" : "Employee roster grew",
+          message: `Roster size changed from ${before} to ${after} employees (${change.changePercent > 0 ? "+" : ""}${change.changePercent.toFixed(1)}%) between successful snapshots.`,
+          companyId, previousValue: before, currentValue: after, changePercent: change.changePercent,
+          sourceSnapshotAt: current.fetchedAt, dedupeSuffix: `roster:${current.fetchedAt}`,
         })
       }
       await db.prepare("UPDATE alert_rules SET last_evaluated_at = ? WHERE rule_id = ? AND owner_player_id = ?").bind(now, rule.rule_id, playerId).run()
@@ -821,11 +943,63 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
   const url = new URL(request.url)
   const rulesPath = url.pathname === "/api/me/alert-rules" || url.pathname.startsWith("/api/me/alert-rules/")
   const alertsPath = url.pathname === "/api/me/alerts" || url.pathname.startsWith("/api/me/alerts/")
-  if (!rulesPath && !alertsPath) return null
+  const preferencesPath = url.pathname === "/api/me/automation-preferences"
+  const webhookPath = url.pathname === "/api/me/automation-webhook"
+  const deliveriesPath = url.pathname === "/api/me/automation-webhook/deliveries"
+  const retryMatch = url.pathname.match(/^\/api\/me\/automation-webhook\/retry\/([a-f0-9-]{36})$/i)
+  if (!rulesPath && !alertsPath && !preferencesPath && !webhookPath && !deliveriesPath && !retryMatch) return null
   const session = await authenticate(request, env)
   if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
   await ensureAutomationSchema(env)
   const db = requireDb(env)
+  if (preferencesPath && request.method === "GET") {
+    const now = new Date().toISOString()
+    await db.prepare("INSERT OR IGNORE INTO automation_preferences (owner_player_id, updated_at) VALUES (?, ?)").bind(session.player_id, now).run()
+    const preferences = await db.prepare("SELECT browser_notifications_enabled AS browserNotificationsEnabled, quiet_hours_enabled AS quietHoursEnabled, quiet_hours_start AS quietHoursStart, quiet_hours_end AS quietHoursEnd, timezone, minimum_severity AS minimumSeverity, digest_mode AS digestMode, updated_at AS updatedAt FROM automation_preferences WHERE owner_player_id = ?").bind(session.player_id).first<Record<string, unknown>>()
+    return jsonResponse({ preferences: preferences ?? { browserNotificationsEnabled: 0, quietHoursEnabled: 0, quietHoursStart: "22:00", quietHoursEnd: "08:00", timezone: "UTC", minimumSeverity: "info", digestMode: "instant" } }, 200, origin)
+  }
+  if (webhookPath && request.method === "GET") {
+    const row = await db.prepare("SELECT enabled, created_at AS createdAt, updated_at AS updatedAt, last_delivered_at AS lastDeliveredAt, last_error AS lastError FROM automation_webhooks WHERE owner_player_id = ?").bind(session.player_id).first<Record<string, unknown>>()
+    return jsonResponse({ configured: Boolean(row), webhook: row ? { enabled: Boolean(row.enabled), createdAt: row.createdAt, updatedAt: row.updatedAt, lastDeliveredAt: row.lastDeliveredAt, lastError: row.lastError } : null }, 200, origin)
+  }
+  if (webhookPath && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    const endpoint = isRecord(body) ? validateWebhookUrl(body.url) : null
+    if (!endpoint) return jsonResponse({ error: "Use a public HTTPS webhook URL without credentials, local hostnames, or private IP addresses." }, 400, origin)
+    let encrypted: { ciphertext: string; iv: string }
+    try { encrypted = await encryptKey(env, endpoint) } catch { return jsonResponse({ error: "Webhook encryption is not configured on this Worker." }, 503, origin) }
+    const now = new Date().toISOString()
+    await db.prepare("INSERT INTO automation_webhooks (owner_player_id, ciphertext, iv, enabled, created_at, updated_at, last_delivered_at, last_error) VALUES (?, ?, ?, 1, ?, ?, NULL, NULL) ON CONFLICT(owner_player_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, enabled = 1, updated_at = excluded.updated_at, last_error = NULL").bind(session.player_id, encrypted.ciphertext, encrypted.iv, now, now).run()
+    return jsonResponse({ configured: true, saved: true, updatedAt: now }, 200, origin)
+  }
+  if (webhookPath && request.method === "DELETE") {
+    await db.prepare("DELETE FROM automation_webhooks WHERE owner_player_id = ?").bind(session.player_id).run()
+    return jsonResponse({ configured: false, deleted: true }, 200, origin)
+  }
+  if (deliveriesPath && request.method === "GET") {
+    const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit") || 20) || 20))
+    const rows = await db.prepare("SELECT delivery_id AS deliveryId, event_id AS eventId, status, status_code AS statusCode, detail, created_at AS createdAt, delivered_at AS deliveredAt FROM automation_delivery_log WHERE owner_player_id = ? ORDER BY created_at DESC LIMIT ?").bind(session.player_id, limit).all<Record<string, unknown>>()
+    return jsonResponse({ deliveries: rows.results ?? [] }, 200, origin)
+  }
+  if (retryMatch && request.method === "POST") {
+    const event = await db.prepare("SELECT event_id AS eventId, rule_id AS ruleId, rule_type AS ruleType, severity, title, message, company_id AS companyId, created_at AS createdAt FROM alert_events WHERE event_id = ? AND owner_player_id = ?").bind(retryMatch[1], session.player_id).first<WebhookAlert>()
+    if (!event) return jsonResponse({ error: "Alert not found." }, 404, origin)
+    const result = await deliverAutomationWebhook(env, session.player_id, event)
+    return jsonResponse({ delivery: result }, result.attempted && !result.delivered ? 502 : 200, origin)
+  }
+  if (preferencesPath && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    if (!isRecord(body)) return jsonResponse({ error: "Provide automation notification preferences." }, 400, origin)
+    const existing = await db.prepare("SELECT * FROM automation_preferences WHERE owner_player_id = ?").bind(session.player_id).first<Record<string, unknown>>()
+    const validTime = (value: unknown, fallback: string) => typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value) ? value : fallback
+    const validZone = (value: unknown, fallback: string) => { if (typeof value !== "string" || value.length > 80) return fallback; try { new Intl.DateTimeFormat("en", { timeZone: value }); return value } catch { return fallback } }
+    const severity = ["info", "warning", "critical"].includes(String(body.minimumSeverity)) ? String(body.minimumSeverity) : String(existing?.minimum_severity ?? "info")
+    const digest = ["instant", "daily", "off"].includes(String(body.digestMode)) ? String(body.digestMode) : String(existing?.digest_mode ?? "instant")
+    const prefs = { browserNotificationsEnabled: Number(typeof body.browserNotificationsEnabled === "boolean" ? body.browserNotificationsEnabled : Boolean(existing?.browser_notifications_enabled)), quietHoursEnabled: Number(typeof body.quietHoursEnabled === "boolean" ? body.quietHoursEnabled : Boolean(existing?.quiet_hours_enabled)), quietHoursStart: validTime(body.quietHoursStart, String(existing?.quiet_hours_start ?? "22:00")), quietHoursEnd: validTime(body.quietHoursEnd, String(existing?.quiet_hours_end ?? "08:00")), timezone: validZone(body.timezone, String(existing?.timezone ?? "UTC")), minimumSeverity: severity, digestMode: digest }
+    const now = new Date().toISOString()
+    await db.prepare("INSERT INTO automation_preferences (owner_player_id, browser_notifications_enabled, quiet_hours_enabled, quiet_hours_start, quiet_hours_end, timezone, minimum_severity, digest_mode, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner_player_id) DO UPDATE SET browser_notifications_enabled = excluded.browser_notifications_enabled, quiet_hours_enabled = excluded.quiet_hours_enabled, quiet_hours_start = excluded.quiet_hours_start, quiet_hours_end = excluded.quiet_hours_end, timezone = excluded.timezone, minimum_severity = excluded.minimum_severity, digest_mode = excluded.digest_mode, updated_at = excluded.updated_at").bind(session.player_id, prefs.browserNotificationsEnabled, prefs.quietHoursEnabled, prefs.quietHoursStart, prefs.quietHoursEnd, prefs.timezone, prefs.minimumSeverity, prefs.digestMode, now).run()
+    return jsonResponse({ preferences: { ...prefs, updatedAt: now }, saved: true }, 200, origin)
+  }
   if (url.pathname === "/api/me/alert-rules" && request.method === "GET") {
     const rows = await db.prepare("SELECT r.rule_id AS ruleId, r.company_id AS companyId, r.rule_type AS ruleType, r.enabled AS enabled, r.threshold_percent AS thresholdPercent, r.cooldown_hours AS cooldownHours, r.stale_after_hours AS staleAfterHours, r.last_triggered_at AS lastTriggeredAt, r.last_evaluated_at AS lastEvaluatedAt, r.created_at AS createdAt, c.company_name AS companyName FROM alert_rules r LEFT JOIN companies c ON c.player_id = r.owner_player_id AND c.company_id = r.company_id WHERE r.owner_player_id = ? ORDER BY r.created_at DESC LIMIT 100").bind(session.player_id).all<Record<string, unknown>>()
     return jsonResponse({ rules: rows.results ?? [] }, 200, origin)
@@ -833,7 +1007,7 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
   if (url.pathname === "/api/me/alert-rules" && request.method === "POST") {
     const body: unknown = await request.json().catch(() => null)
     const type = isRecord(body) && typeof body.ruleType === "string" ? body.ruleType : ""
-    if (!["income_drop", "stale_data", "refresh_failure"].includes(type)) return jsonResponse({ error: "Choose a supported alert type." }, 400, origin)
+    if (!["income_drop", "stale_data", "refresh_failure", "income_increase", "rating_drop", "roster_change"].includes(type)) return jsonResponse({ error: "Choose a supported alert type." }, 400, origin)
     const rawCompanyId = isRecord(body) ? body.companyId : null
     const companyId = rawCompanyId == null || rawCompanyId === "" ? null : positiveId(rawCompanyId)
     if (rawCompanyId != null && rawCompanyId !== "" && !companyId) return jsonResponse({ error: "Choose a valid company." }, 400, origin)
@@ -889,6 +1063,108 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
   return jsonResponse({ error: "Automation route not found." }, 404, origin)
 }
 
+async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origin: string): Promise<Response | null> {
+  const url = new URL(request.url)
+  const healthPath = url.pathname === "/api/me/health"
+  const historyMatch = url.pathname.match(/^\/api\/me\/companies\/(\d+)\/history$/)
+  const rosterPath = url.pathname === "/api/me/member-insights"
+  const layoutPath = url.pathname === "/api/me/dashboard-layout"
+  if (!healthPath && !historyMatch && !rosterPath && !layoutPath) return null
+  const session = await authenticate(request, env)
+  if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+  const db = requireDb(env)
+
+  if (healthPath && request.method === "GET") {
+    const checkedAt = new Date().toISOString()
+    try {
+      const [summary, rows] = await Promise.all([
+        db.prepare("SELECT (SELECT COUNT(*) FROM (SELECT company_id FROM companies WHERE player_id = ? UNION SELECT company_id FROM company_api_keys WHERE player_id = ?)) AS companyCount, (SELECT COUNT(*) FROM company_snapshots WHERE player_id = ?) AS snapshotCount, (SELECT MAX(fetched_at) FROM company_snapshots WHERE player_id = ?) AS latestSnapshotAt").bind(session.player_id, session.player_id, session.player_id, session.player_id).first<Record<string, unknown>>(),
+        db.prepare("SELECT c.company_id AS companyId, c.company_name AS companyName, c.company_type AS companyType, c.fetched_at AS fetchedAt, (SELECT COUNT(*) FROM company_snapshots s WHERE s.player_id = c.player_id AND s.company_id = c.company_id) AS snapshotCount FROM companies c WHERE c.player_id = ? UNION ALL SELECT k.company_id AS companyId, k.company_name AS companyName, k.company_type AS companyType, NULL AS fetchedAt, 0 AS snapshotCount FROM company_api_keys k WHERE k.player_id = ? AND NOT EXISTS (SELECT 1 FROM companies c WHERE c.player_id = k.player_id AND c.company_id = k.company_id) ORDER BY fetchedAt DESC LIMIT 100").bind(session.player_id, session.player_id).all<Record<string, unknown>>(),
+      ])
+      const companies = (rows.results ?? []).map((row) => {
+        const ageHours = row.fetchedAt && Number.isFinite(Date.parse(String(row.fetchedAt))) ? Math.max(0, Math.round((Date.now() - Date.parse(String(row.fetchedAt))) / 360000) / 10) : null
+        return { ...row, ageHours, freshness: ageHours === null ? "never" : ageHours >= 24 ? "stale" : ageHours >= 12 ? "aging" : "fresh" }
+      })
+      return jsonResponse({ checkedAt, worker: { status: "ok", checkedAt }, database: { status: "ok" }, summary: { companyCount: Number(summary?.companyCount ?? 0), snapshotCount: Number(summary?.snapshotCount ?? 0), latestSnapshotAt: summary?.latestSnapshotAt ?? null, staleCompanies: companies.filter((company) => company.freshness === "stale" || company.freshness === "never").length }, companies }, 200, origin)
+    } catch {
+      return jsonResponse({ checkedAt, worker: { status: "ok", checkedAt }, database: { status: "error" }, summary: { companyCount: 0, snapshotCount: 0, latestSnapshotAt: null, staleCompanies: 0 }, companies: [], error: "The health check could not query dashboard storage." }, 200, origin)
+    }
+  }
+
+  if (historyMatch && request.method === "GET") {
+    const companyId = historyMatch[1]
+    const owned = await db.prepare("SELECT company_id AS companyId, company_name AS companyName, company_type AS companyType FROM companies WHERE player_id = ? AND company_id = ? LIMIT 1").bind(session.player_id, companyId).first<Record<string, unknown>>()
+      ?? await db.prepare("SELECT company_id AS companyId, company_name AS companyName, company_type AS companyType FROM company_api_keys WHERE player_id = ? AND company_id = ? LIMIT 1").bind(session.player_id, companyId).first<Record<string, unknown>>()
+    if (!owned) return jsonResponse({ error: "That company is not connected to your account." }, 404, origin)
+    const requested = url.searchParams.get("days") || "90"
+    const range = ["7", "30", "90", "365", "all"].includes(requested) ? requested : "90"
+    const cutoff = range === "all" ? null : new Date(Date.now() - Number(range) * DAY * 1000).toISOString()
+    const cutoffSql = cutoff ? " AND fetched_at >= ?" : ""
+    const historyQuery = db.prepare(`SELECT snapshotId, profileJson, employeesJson, fetchedAt FROM (SELECT snapshot_id AS snapshotId, profile_json AS profileJson, employees_json AS employeesJson, fetched_at AS fetchedAt, ROW_NUMBER() OVER (PARTITION BY substr(fetched_at, 1, 10) ORDER BY fetched_at DESC, snapshot_id DESC) AS dayRank FROM company_snapshots WHERE player_id = ? AND company_id = ?${cutoffSql}) WHERE dayRank = 1 ORDER BY fetchedAt ASC LIMIT 2000`)
+    const raw = await (cutoff ? historyQuery.bind(session.player_id, companyId, cutoff) : historyQuery.bind(session.player_id, companyId)).all<Record<string, unknown>>()
+    const byDay = new Map<string, Record<string, unknown>>()
+    for (const row of raw.results ?? []) {
+      const profile = parseStoredJson(row.profileJson)
+      const employees = parseStoredJson(row.employeesJson)
+      const root = companyProfileRoot(profile)
+      const income = isRecord(root.income) ? root.income : {}
+      const day = String(row.fetchedAt ?? "").slice(0, 10)
+      if (!day) continue
+      byDay.set(day, { day, fetchedAt: row.fetchedAt, snapshotId: row.snapshotId, dailyIncome: dailyIncomeFromProfile(profile), weeklyIncome: numericField(income.weekly), rating: ratingFromProfile(profile), employeeCount: rosterCount(employees), employeeCapacity: isRecord(root.employees) ? numericField(root.employees.capacity) : null })
+    }
+    const history = Array.from(byDay.values()).sort((a, b) => String(a.day).localeCompare(String(b.day)))
+    const first = history[0] ?? null, latest = history.at(-1) ?? null
+    const delta = (key: string) => first && latest && typeof first[key] === "number" && typeof latest[key] === "number" ? Number(latest[key]) - Number(first[key]) : null
+    const percent = (key: string) => first && latest && typeof first[key] === "number" && typeof latest[key] === "number" && Number(first[key]) !== 0 ? Math.round((Number(latest[key]) - Number(first[key])) / Number(first[key]) * 1000) / 10 : null
+    return jsonResponse({ company: owned, range, history, summary: { snapshotCount: history.length, firstSnapshotAt: first?.fetchedAt ?? null, latestSnapshotAt: latest?.fetchedAt ?? null, dailyIncomeChange: delta("dailyIncome"), dailyIncomeChangePercent: percent("dailyIncome"), weeklyIncomeChange: delta("weeklyIncome"), ratingChange: delta("rating"), employeeCountChange: delta("employeeCount") } }, 200, origin)
+  }
+
+  if (rosterPath && request.method === "GET") {
+    const requestedCompany = url.searchParams.get("companyId") || ""
+    const company = requestedCompany
+      ? await db.prepare("SELECT company_id AS companyId, company_name AS companyName, company_type AS companyType, profile_json AS profileJson, employees_json AS employeesJson, fetched_at AS fetchedAt FROM companies WHERE player_id = ? AND company_id = ? LIMIT 1").bind(session.player_id, requestedCompany).first<Record<string, unknown>>()
+      : await db.prepare("SELECT company_id AS companyId, company_name AS companyName, company_type AS companyType, profile_json AS profileJson, employees_json AS employeesJson, fetched_at AS fetchedAt FROM companies WHERE player_id = ? ORDER BY fetched_at DESC LIMIT 1").bind(session.player_id).first<Record<string, unknown>>()
+    if (!company) return jsonResponse({ company: null, roster: [], summary: null, message: "Connect a company to see roster insights." }, 200, origin)
+    const profile = parseStoredJson(company.profileJson), rawEmployees = employeesFromPayload(parseStoredJson(company.employeesJson))
+    const root = companyProfileRoot(profile), profileEmployees = isRecord(root.employees) ? root.employees : {}
+    const roster = rawEmployees.map((employee) => {
+      const position = isRecord(employee.position) ? employee.position : {}
+      const stats = isRecord(employee.stats) ? employee.stats : {}
+      const effectiveness = isRecord(employee.effectiveness) ? employee.effectiveness : {}
+      const status = isRecord(employee.status) ? employee.status : {}
+      const lastAction = isRecord(employee.last_action) ? employee.last_action : {}
+      return { id: String(employee.id ?? ""), name: typeof employee.name === "string" ? employee.name : "Unknown employee", position: typeof position.name === "string" ? position.name : "Unknown position", daysInCompany: numericField(employee.days_in_company), manualLabor: numericField(stats.manual_labor), intelligence: numericField(stats.intelligence), endurance: numericField(stats.endurance), wage: numericField(employee.wage), effectiveness: numericField(effectiveness.total), status: typeof status.description === "string" ? status.description : typeof status.state === "string" ? status.state : null, lastAction: typeof lastAction.relative === "string" ? lastAction.relative : typeof lastAction.status === "string" ? lastAction.status : null }
+    }).sort((a, b) => a.position.localeCompare(b.position) || a.name.localeCompare(b.name))
+    const average = (key: "manualLabor" | "intelligence" | "endurance" | "effectiveness") => { const values = roster.map((item) => item[key]).filter((value): value is number => typeof value === "number" && Number.isFinite(value)); return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null }
+    const wages = roster.map((item) => item.wage).filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+    const snapshots = await db.prepare("SELECT COUNT(*) AS count, MIN(fetched_at) AS firstAt, MAX(fetched_at) AS latestAt FROM company_snapshots WHERE player_id = ? AND company_id = ?").bind(session.player_id, String(company.companyId)).first<Record<string, unknown>>()
+    const positions = new Map<string, number>(); for (const employee of roster) positions.set(employee.position, (positions.get(employee.position) ?? 0) + 1)
+    return jsonResponse({ company: { companyId: company.companyId, companyName: company.companyName, companyType: company.companyType, fetchedAt: company.fetchedAt, employeesHired: numericField(profileEmployees.hired), employeeCapacity: numericField(profileEmployees.capacity) }, roster, summary: { rosterCount: roster.length, employeeCapacity: numericField(profileEmployees.capacity), averageManualLabor: average("manualLabor"), averageIntelligence: average("intelligence"), averageEndurance: average("endurance"), averageEffectiveness: average("effectiveness"), knownStatsCount: roster.filter((item) => item.manualLabor !== null && item.intelligence !== null && item.endurance !== null).length, knownWageCount: wages.length, totalKnownWages: wages.reduce((sum, value) => sum + value, 0), positions: Array.from(positions, ([position, count]) => ({ position, count })).sort((a, b) => b.count - a.count || a.position.localeCompare(b.position)), snapshotCount: Number(snapshots?.count ?? 0), firstSnapshotAt: snapshots?.firstAt ?? null, latestSnapshotAt: snapshots?.latestAt ?? null } }, 200, origin)
+  }
+
+  if (layoutPath && (request.method === "GET" || request.method === "POST")) {
+    await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
+    const key = "dashboard-layout"
+    const allowed = new Set(["company-health", "income-performance", "roster-overview", "recent-trends", "automation-status", "alerts", "rankings"])
+    if (request.method === "GET") {
+      const row = await db.prepare("SELECT data_json AS dataJson, updated_at AS updatedAt FROM user_page_data WHERE player_id = ? AND page_key = ?").bind(session.player_id, key).first<Record<string, unknown>>()
+      let layout: unknown = null; try { layout = row?.dataJson ? JSON.parse(String(row.dataJson)) : null } catch { layout = null }
+      return jsonResponse({ layout, updatedAt: row?.updatedAt ?? null }, 200, origin)
+    }
+    const body: unknown = await request.json().catch(() => null)
+    if (!isRecord(body) || !Array.isArray(body.widgets) || body.widgets.length > 7) return jsonResponse({ error: "Provide a valid dashboard widget layout." }, 400, origin)
+    const seen = new Set<string>(), widgets: { id: string; visible: boolean; order: number }[] = []
+    for (const [index, value] of body.widgets.entries()) {
+      if (!isRecord(value) || typeof value.id !== "string" || !allowed.has(value.id) || seen.has(value.id)) return jsonResponse({ error: "The layout contains an unknown or duplicate widget." }, 400, origin)
+      seen.add(value.id); widgets.push({ id: value.id, visible: value.visible !== false, order: index })
+    }
+    const now = new Date().toISOString()
+    await db.prepare("INSERT INTO user_page_data (player_id, page_key, data_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, page_key) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at").bind(session.player_id, key, asJson({ widgets }), now).run()
+    return jsonResponse({ saved: true, layout: { widgets }, updatedAt: now }, 200, origin)
+  }
+  return jsonResponse({ error: "Insights route not found." }, 404, origin)
+}
+
 async function handleAdminRequest(request: Request, env: WorkerEnv, origin: string, ctx?: { waitUntil(promise: Promise<unknown>): void }): Promise<Response | null> {
   const url = new URL(request.url)
   if (!url.pathname.startsWith("/api/admin")) return null
@@ -903,6 +1179,15 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
   await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
   const memberMatch = url.pathname.match(/^\/api\/admin\/members\/(\d+)(?:\/(status|connection-test|connection-repair))?$/)
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 50) || 50))
+  if (url.pathname === "/api/admin/member-activity" && request.method === "GET") {
+    const daysRaw = Number(url.searchParams.get("days") || 30), days = [7, 30, 90, 365].includes(daysRaw) ? daysRaw : 30
+    const cutoff = new Date(Date.now() - days * DAY * 1000).toISOString()
+    const [summary, recent] = await Promise.all([
+      db.prepare("SELECT COUNT(*) AS totalMembers, SUM(CASE WHEN updated_at >= ? THEN 1 ELSE 0 END) AS activeMembers, SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS newMembers, SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM companies c WHERE c.player_id = players.player_id) AND NOT EXISTS (SELECT 1 FROM company_api_keys k WHERE k.player_id = players.player_id) THEN 1 ELSE 0 END) AS withoutCompany FROM players").bind(cutoff, cutoff).first<Record<string, unknown>>(),
+      db.prepare("SELECT p.player_id AS playerId, p.player_name AS playerName, p.created_at AS createdAt, p.updated_at AS lastActiveAt, (SELECT COUNT(*) FROM company_snapshots s WHERE s.player_id = p.player_id) AS snapshotCount, (SELECT MAX(c.fetched_at) FROM companies c WHERE c.player_id = p.player_id) AS latestCompanyAt FROM players p ORDER BY p.updated_at DESC LIMIT 50").all<Record<string, unknown>>(),
+    ])
+    return jsonResponse({ rangeDays: days, summary: { totalMembers: Number(summary?.totalMembers ?? 0), activeMembers: Number(summary?.activeMembers ?? 0), newMembers: Number(summary?.newMembers ?? 0), withoutCompany: Number(summary?.withoutCompany ?? 0) }, members: recent.results ?? [], generatedAt: new Date().toISOString() }, 200, origin)
+  }
   if (url.pathname === "/api/admin/automation/runs" && request.method === "GET") {
     await ensureAutomationSchema(env)
     const requestedRange = url.searchParams.get("days") || "30"
@@ -1125,7 +1410,13 @@ export default {
     if (adminResponse) return adminResponse
     const automationResponse = await handleAutomationRequest(request, env, origin)
     if (automationResponse) return automationResponse
-    if (url.pathname === "/health" && request.method === "GET") return jsonResponse({ ok: true, service: "naughty-company-api" }, 200, origin)
+    const insightsResponse = await handleUserInsightsRequest(request, env, origin)
+    if (insightsResponse) return insightsResponse
+    if (url.pathname === "/health" && request.method === "GET") {
+      const checkedAt = new Date().toISOString()
+      try { await requireDb(env).prepare("SELECT 1 AS ok").first<{ ok: number }>(); return jsonResponse({ ok: true, service: "naughty-company-api", database: "ok", checkedAt }, 200, origin) }
+      catch { return jsonResponse({ ok: false, service: "naughty-company-api", database: "error", checkedAt }, 503, origin) }
+    }
     if (url.pathname === "/api/auth/sign-in" && request.method === "POST") {
       try {
         const body: unknown = await request.json().catch(() => null)
@@ -1418,7 +1709,7 @@ export default {
       await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
       await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
       const parseStored = (value: unknown): unknown => { try { return JSON.parse(String(value)) as unknown } catch { return null } }
-      const allowedPages = new Set(["company", "employees", "charts", "rankings", "references", "settings"])
+      const allowedPages = new Set(["company", "employees", "charts", "rankings", "references", "settings", "dashboard-layout"])
       const upsertPageData = async (pageKey: string, value: unknown) => {
         const now = new Date().toISOString()
         await db.prepare("INSERT INTO user_page_data (player_id, page_key, data_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, page_key) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at").bind(session.player_id, pageKey, asJson(value), now).run()
