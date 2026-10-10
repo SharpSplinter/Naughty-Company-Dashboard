@@ -148,13 +148,15 @@
 .sharing-privacy-note{margin:0;color:var(--muted);font-size:10px;line-height:1.5}
 @media(max-width:700px){.sharing-recipient-header{display:none}.sharing-recipient-row{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:12px}.sharing-recipient-name{grid-column:1/-1;padding-bottom:7px;border-bottom:1px solid #202b42}.recipient-toggle{align-items:flex-start;flex-direction:column;gap:6px;font-size:9px}.sharing-recipient-heading{align-items:stretch;flex-direction:column}}
 
-/* Global wrapping: keep dashboard tables readable without horizontal scrolling. */
+/* Keep words and values intact. Let narrow screens scroll wide tables instead of crushing columns. */
 body, #root, .app-shell, .main-area, .page-content, .panel, .panel-heading,
 .panel-heading > div, .company-facts > div, .health-grid > div,
 .income-grid article, .ratings-grid > div, .employee-summary-strip > span,
 .metric-card, .content-grid > *, .connect-layout > * {
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: none;
 }
 body, #root, .app-shell, .main-area { max-width: 100%; }
 .page-content, .panel, .catalog-panel, .company-panel, .ranking-panel,
@@ -163,36 +165,40 @@ body, #root, .app-shell, .main-area { max-width: 100%; }
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  overflow: visible !important;
-  overscroll-behavior-x: auto;
+  overflow-x: auto !important;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
 }
 .table-scroll table, table.ranking-table, table.shared-employee-table {
-  width: 100%;
-  min-width: 0 !important;
-  max-width: 100%;
-  table-layout: fixed;
-  white-space: normal !important;
+  width: max-content;
+  min-width: 100% !important;
+  max-width: none;
+  table-layout: auto;
+  white-space: nowrap !important;
 }
 .table-scroll th, .table-scroll td, .ranking-table th, .ranking-table td {
-  min-width: 0;
-  white-space: normal !important;
-  overflow-wrap: anywhere;
+  white-space: nowrap !important;
+  overflow-wrap: normal;
   word-break: normal;
-  hyphens: auto;
+  hyphens: none;
   line-height: 1.45;
 }
-.table-scroll th, .ranking-table th {
-  vertical-align: bottom;
-  overflow-wrap: anywhere;
-}
+.table-scroll th, .ranking-table th { vertical-align: bottom; }
 .table-scroll td strong, .table-scroll td span, .ranking-table td strong,
 .ranking-table td span, .table-scroll a, .table-scroll button {
-  max-width: 100%;
-  overflow-wrap: anywhere;
-  white-space: normal;
+  max-width: none;
+  overflow-wrap: normal;
+  white-space: nowrap;
 }
-.ranking-table { min-width: 0 !important; }
-.shared-employee-table { min-width: 0 !important; }
+.metric-value, .company-facts strong, .executive-stat-row strong,
+.period-comparison-grid strong, .stat-chip, .special-chip, .fit-chip,
+.money, [data-money], .currency-value, .income-value, .profit-value, .wage-value {
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+.ranking-table, .shared-employee-table { min-width: 100% !important; }
 @media (min-width: 1151px) {
   .health-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
@@ -576,11 +582,35 @@ th.numeric-cell {
 /* User-controlled dashboard-wide layout preferences. */
 .app-shell.dashboard-width-wide .page-content { max-width: none; width: 100%; }
 .app-shell.dashboard-width-standard .page-content { max-width: 1680px; width: 100%; }
-.app-shell.dashboard-density-compact .page-content { gap: 12px; }
-.app-shell.dashboard-density-compact .panel { padding-top: 13px; padding-bottom: 13px; }
-.app-shell.dashboard-density-compact .page-content .panel-heading { margin-bottom: 10px; }
+.app-shell.dashboard-density-compact .page-content { gap: 12px; padding-top: 20px; padding-bottom: 14px; }
+.app-shell.dashboard-density-compact .page-content > * { margin-bottom: 12px; }
+.app-shell.dashboard-density-compact .panel,
+.app-shell.dashboard-density-compact .catalog-panel,
+.app-shell.dashboard-density-compact .company-panel,
+.app-shell.dashboard-density-compact .ranking-panel,
+.app-shell.dashboard-density-compact .employee-page-panel,
+.app-shell.dashboard-density-compact .chart-panel,
+.app-shell.dashboard-density-compact .insights-table-panel,
+.app-shell.dashboard-density-compact .insights-note,
+.app-shell.dashboard-density-compact .period-comparison,
+.app-shell.dashboard-density-compact .roster-insights-panel,
+.app-shell.dashboard-density-compact .dashboard-layout-editor,
+.app-shell.dashboard-density-compact .executive-widget { padding: 12px; }
+.app-shell.dashboard-density-compact .metric-card { min-height: 118px; padding: 12px 13px 10px; }
+.app-shell.dashboard-density-compact .metrics-grid,
+.app-shell.dashboard-density-compact .content-grid,
+.app-shell.dashboard-density-compact .company-grid,
+.app-shell.dashboard-density-compact .company-facts,
+.app-shell.dashboard-density-compact .insights-chart-grid,
+.app-shell.dashboard-density-compact .executive-grid { gap: 9px; }
+.app-shell.dashboard-density-compact .page-content .panel-heading { margin-bottom: 8px; }
 .app-shell.dashboard-density-compact .page-content table th,
-.app-shell.dashboard-density-compact .page-content table td { padding-top: 7px; padding-bottom: 7px; }
+.app-shell.dashboard-density-compact .page-content table td { padding: 6px 8px; }
+.app-shell.dashboard-density-compact .company-facts { margin-top: 14px; margin-bottom: 14px; }
+.app-shell.dashboard-density-compact .company-facts > div { padding: 9px; }
+.app-shell.dashboard-density-compact .company-card { padding: 8px; }
+.app-shell.dashboard-density-compact .quick-link { padding: 10px 0; }
+.app-shell.dashboard-density-compact .page-content .panel-heading h2 { margin-bottom: 4px; }
 .dashboard-preference-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin-top: 14px; }
 .dashboard-preference-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: 10px; background: #0c1222; }
 .dashboard-preference-card > span { display: grid; gap: 5px; }
