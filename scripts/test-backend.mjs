@@ -14,6 +14,7 @@ const sourceFiles = [
   "src/lib/torn/client.ts",
   "src/lib/torn/types.ts",
   "src/worker/index.ts",
+  "src/components/floor/ranking-utils.ts",
 ].map((file) => resolve(root, file))
 
 try {
@@ -43,6 +44,7 @@ try {
   const { runEngine } = require(join(temp, "lib/company/engine.js"))
   const { TornApiClient, TornApiClientError } = require(join(temp, "lib/torn/client.js"))
   const worker = require(join(temp, "worker/index.js")).default
+  const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
 
   let passed = 0
   async function test(name, fn) {
@@ -424,6 +426,77 @@ try {
     } finally {
       globalThis.fetch = originalFetch
     }
+  })
+
+  await test("uses sequential company ranks when weekly income is tied", () => {
+    const companies = [
+      { companyId: "10", companyType: "Oil Rig", companyTypeId: 28, starRating: 10, weeklyIncome: 500 },
+      { companyId: "11", companyType: "Oil Rig", companyTypeId: 28, starRating: 10, weeklyIncome: 500 },
+      { companyId: "12", companyType: "Oil Rig", companyTypeId: 28, starRating: 9, weeklyIncome: 400 },
+    ]
+    assert.equal(placement(companies[0], "type", companies), "1/3")
+    assert.equal(placement(companies[1], "type", companies), "2/3")
+    assert.equal(placement(companies[2], "type", companies), "3/3")
+  })
+
+  await test("exports a personal master backup without API keys or session tokens", async () => {
+    const db = {
+      prepare(sql) {
+        return {
+          bind() { return this },
+          async run() { return { success: true, meta: { changes: 1 } } },
+          async first() {
+            if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "777", player_name: "Backup Tester" }
+            return null
+          },
+          async all() { return { results: [] } },
+        }
+      },
+    }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/data-backup", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer test-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const backup = await response.json()
+    assert.equal(backup.format, "naughty-company-dashboard-backup")
+    assert.equal(backup.player.id, "777")
+    assert.ok(backup.pages.company)
+    assert.ok(backup.pages.employees)
+    assert.ok(backup.pages.charts)
+    assert.ok(backup.pages.settings)
+    assert.deepEqual(backup.storage.companies, [])
+    assert.deepEqual(backup.excluded, ["Torn API keys and session tokens are intentionally never exported."])
+    assert.equal(JSON.stringify(backup).includes("ciphertext"), false)
+  })
+
+  await test("imports the established company history JSON format into the signed-in account", async () => {
+    const saved = new Map()
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async run() {
+            if (sql.toLowerCase().includes("insert into user_page_data")) saved.set(`${values[0]}:${values[1]}`, JSON.parse(values[2]))
+            return { success: true, meta: { changes: 1 } }
+          },
+          async first() {
+            if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "777", player_name: "Backup Tester" }
+            return null
+          },
+          async all() { return { results: [] } },
+        }
+      },
+    }
+    const history = { sourceSnapshotCreatedAt: "2026-10-01T18:00:00Z", companies: [{ companyId: "96639", name: "Knotty Oil", typeName: "Oil Rig", typeId: 28, history: [{ day: "2026-10-01", period: 1790877600000, dailyIncome: 1200000, rating: 10, companyRank: 34 }] }] }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/data-backup", {
+      method: "POST",
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer test-session", "Content-Type": "application/json" },
+      body: JSON.stringify({ pageKey: "charts", data: history }),
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).imported, true)
+    assert.deepEqual(saved.get("777:charts"), history)
   })
 
   console.log(`\n${passed} backend checks passed.`)

@@ -692,6 +692,149 @@ export default {
       })
       return jsonResponse({ director, history, stockHistoryAvailable: mayShareStock && history.some((row) => row.stock !== null), generatedAt: new Date().toISOString() }, 200, origin)
     }
+    if (url.pathname === "/api/me/data-backup" && (request.method === "GET" || request.method === "POST")) {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const db = requireDb(env)
+      await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
+      const parseStored = (value: unknown): unknown => { try { return JSON.parse(String(value)) as unknown } catch { return null } }
+      const allowedPages = new Set(["company", "employees", "charts", "rankings", "references", "settings"])
+      const upsertPageData = async (pageKey: string, value: unknown) => {
+        const now = new Date().toISOString()
+        await db.prepare("INSERT INTO user_page_data (player_id, page_key, data_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, page_key) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at").bind(session.player_id, pageKey, asJson(value), now).run()
+      }
+      const restoreCompanies = async (value: unknown) => {
+        if (!Array.isArray(value)) return
+        for (const item of value.slice(0, 100)) {
+          if (!isRecord(item)) continue
+          const companyId = positiveId(item.companyId ?? item.company_id)
+          if (!companyId) continue
+          const existing = await db.prepare("SELECT company_name AS companyName, company_type AS companyType, profile_json AS profileJson, employees_json AS employeesJson, fetched_at AS fetchedAt FROM companies WHERE player_id = ? AND company_id = ?").bind(session.player_id, companyId).first<Record<string, unknown>>()
+          const profile = item.profile !== undefined ? item.profile : existing ? parseStored(existing.profileJson) : null
+          const employees = item.employees !== undefined ? item.employees : existing ? parseStored(existing.employeesJson) : []
+          if (profile === null) continue
+          const profileRoot = companyProfileRoot(profile)
+          const companyName = typeof item.companyName === "string" ? item.companyName : typeof profileRoot.name === "string" ? profileRoot.name : String(existing?.companyName ?? `Company #${companyId}`)
+          const companyType = typeof item.companyType === "string" ? item.companyType : isRecord(profileRoot.type) && typeof profileRoot.type.name === "string" ? profileRoot.type.name : existing?.companyType == null ? null : String(existing.companyType)
+          const fetchedAt = typeof item.fetchedAt === "string" && !Number.isNaN(Date.parse(item.fetchedAt)) ? item.fetchedAt : String(existing?.fetchedAt ?? new Date().toISOString())
+          await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, employees_json = excluded.employees_json, fetched_at = excluded.fetched_at").bind(session.player_id, companyId, companyName, companyType, asJson(profile), asJson(employees), fetchedAt).run()
+        }
+      }
+      const restoreFinancials = async (value: unknown) => {
+        if (!Array.isArray(value)) return
+        for (const item of value.slice(0, 100)) {
+          if (!isRecord(item)) continue
+          const companyId = positiveId(item.companyId ?? item.company_id)
+          if (!companyId || item.stock === undefined) continue
+          const fetchedAt = typeof item.fetchedAt === "string" && !Number.isNaN(Date.parse(item.fetchedAt)) ? item.fetchedAt : new Date().toISOString()
+          await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(session.player_id, companyId, asJson(item.stock), fetchedAt).run()
+        }
+      }
+      const restoreSharing = async (value: unknown) => {
+        if (!Array.isArray(value)) return
+        await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
+        for (const item of value.slice(0, 1000)) {
+          if (!isRecord(item)) continue
+          const recipientId = positiveId(item.recipientId ?? item.recipient_id ?? item.playerId)
+          if (!recipientId || recipientId === session.player_id) continue
+          const target = await db.prepare("SELECT player_id FROM players WHERE player_id = ?").bind(recipientId).first<{ player_id: string }>()
+          if (!target) continue
+          await db.prepare("INSERT INTO company_sharing_recipients (owner_player_id, recipient_player_id, share_financial_data, share_employee_data, share_trend_data, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(owner_player_id, recipient_player_id) DO UPDATE SET share_financial_data = excluded.share_financial_data, share_employee_data = excluded.share_employee_data, share_trend_data = excluded.share_trend_data, updated_at = excluded.updated_at").bind(session.player_id, recipientId, Number(item.shareFinancialData === true || item.share_financial_data === 1), Number(item.shareEmployeeData === true || item.share_employee_data === 1), Number(item.shareTrendData === true || item.share_trend_data === 1), new Date().toISOString()).run()
+        }
+      }
+      if (request.method === "GET") {
+        const [companyRows, financialRows, snapshotRows, directorSnapshotRows, pageRows, sharingRows] = await Promise.all([
+          db.prepare("SELECT company_id AS companyId, company_name AS companyName, company_type AS companyType, profile_json AS profileJson, employees_json AS employeesJson, fetched_at AS fetchedAt FROM companies WHERE player_id = ? ORDER BY fetched_at DESC").bind(session.player_id).all<Record<string, unknown>>(),
+          db.prepare("SELECT company_id AS companyId, stock_json AS stockJson, fetched_at AS fetchedAt FROM company_financials WHERE player_id = ? ORDER BY fetched_at DESC").bind(session.player_id).all<Record<string, unknown>>(),
+          db.prepare("SELECT company_id AS companyId, profile_json AS profileJson, employees_json AS employeesJson, fetched_at AS fetchedAt FROM company_snapshots WHERE player_id = ? ORDER BY fetched_at ASC").bind(session.player_id).all<Record<string, unknown>>(),
+          db.prepare("SELECT company_id AS companyId, snapshot_day AS snapshotDay, profile_json AS profileJson, stock_json AS stockJson, fetched_at AS fetchedAt FROM faction_director_snapshots WHERE player_id = ? ORDER BY snapshot_day ASC").bind(session.player_id).all<Record<string, unknown>>(),
+          db.prepare("SELECT page_key AS pageKey, data_json AS dataJson, updated_at AS updatedAt FROM user_page_data WHERE player_id = ?").bind(session.player_id).all<Record<string, unknown>>(),
+          db.prepare("SELECT recipient_player_id AS recipientId, share_financial_data AS shareFinancialData, share_employee_data AS shareEmployeeData, share_trend_data AS shareTrendData, updated_at AS updatedAt FROM company_sharing_recipients WHERE owner_player_id = ? ORDER BY recipient_player_id").bind(session.player_id).all<Record<string, unknown>>(),
+        ])
+        const companies = (companyRows.results ?? []).map((row) => ({ companyId: String(row.companyId), companyName: row.companyName == null ? null : String(row.companyName), companyType: row.companyType == null ? null : String(row.companyType), profile: parseStored(row.profileJson), employees: parseStored(row.employeesJson), fetchedAt: String(row.fetchedAt ?? "") }))
+        const financials = (financialRows.results ?? []).map((row) => ({ companyId: String(row.companyId), stock: parseStored(row.stockJson), fetchedAt: String(row.fetchedAt ?? "") }))
+        const companySnapshots = (snapshotRows.results ?? []).map((row) => ({ companyId: String(row.companyId), profile: parseStored(row.profileJson), employees: parseStored(row.employeesJson), fetchedAt: String(row.fetchedAt ?? "") }))
+        const directorSnapshots = (directorSnapshotRows.results ?? []).map((row) => ({ playerId: session.player_id, companyId: String(row.companyId), snapshotDay: String(row.snapshotDay), profile: parseStored(row.profileJson), stock: parseStored(row.stockJson), fetchedAt: String(row.fetchedAt ?? "") }))
+        const pageData = (pageRows.results ?? []).map((row) => ({ pageKey: String(row.pageKey), data: parseStored(row.dataJson), updatedAt: String(row.updatedAt ?? "") }))
+        const sharingPreferences = (sharingRows.results ?? []).map((row) => ({ recipientId: String(row.recipientId), shareFinancialData: row.shareFinancialData === 1, shareEmployeeData: row.shareEmployeeData === 1, shareTrendData: row.shareTrendData === 1, updatedAt: String(row.updatedAt ?? "") }))
+        const charts = pageData.find((row) => row.pageKey === "charts")?.data ?? null
+        const rankings = pageData.find((row) => row.pageKey === "rankings")?.data ?? {}
+        const references = pageData.find((row) => row.pageKey === "references")?.data ?? {}
+        const settings = pageData.find((row) => row.pageKey === "settings")?.data ?? {}
+        const backup = {
+          format: "naughty-company-dashboard-backup", version: 1, exportedAt: new Date().toISOString(), player: { id: session.player_id, name: session.player_name },
+          pages: {
+            company: { companies }, employees: { companies }, charts: { history: charts, companySnapshots, directorSnapshots },
+            rankings, references, settings: { sharingPreferences, preferences: settings },
+          },
+          storage: { companies, financials, companySnapshots, directorSnapshots, pageData, sharingPreferences },
+          excluded: ["Torn API keys and session tokens are intentionally never exported."],
+        }
+        return jsonResponse(backup, 200, origin, { "cache-control": "no-store" })
+      }
+      const rawBody = await request.text()
+      if (rawBody.length > 10_000_000) return jsonResponse({ error: "The JSON backup is too large. Keep imports under 10 MB." }, 413, origin)
+      let parsed: unknown
+      try { parsed = JSON.parse(rawBody) as unknown } catch { return jsonResponse({ error: "Upload a valid JSON file." }, 400, origin) }
+      if (!isRecord(parsed)) return jsonResponse({ error: "The JSON backup must contain an object at its root." }, 400, origin)
+      const master = parsed.format === "naughty-company-dashboard-backup" && parsed.version === 1
+      const pageKey = master ? "master" : typeof parsed.pageKey === "string" ? parsed.pageKey : typeof parsed.page === "string" ? parsed.page : "charts"
+      if (!master && pageKey !== "master" && !allowedPages.has(pageKey)) return jsonResponse({ error: "Unknown dashboard page in this JSON backup." }, 400, origin)
+      if (master) {
+        const owner = isRecord(parsed.player) ? String(parsed.player.id ?? "") : ""
+        if (!owner || owner !== session.player_id) return jsonResponse({ error: "This master backup belongs to a different dashboard account or has no account owner. Sign in to the matching account before restoring it." }, 403, origin)
+        const storage = isRecord(parsed.storage) ? parsed.storage : {}
+        const pages = isRecord(parsed.pages) ? parsed.pages : {}
+        const chartPage = isRecord(pages.charts) ? pages.charts : {}
+        const chartHistory = chartPage.history
+        await restoreCompanies(storage.companies)
+        await restoreFinancials(storage.financials)
+        if (Array.isArray(storage.companySnapshots)) {
+          for (const item of storage.companySnapshots.slice(0, 10000)) {
+            if (!isRecord(item)) continue
+            const companyId = positiveId(item.companyId)
+            if (!companyId || item.profile === undefined) continue
+            const fetchedAt = typeof item.fetchedAt === "string" && !Number.isNaN(Date.parse(item.fetchedAt)) ? item.fetchedAt : new Date().toISOString()
+            const exists = await db.prepare("SELECT snapshot_id FROM company_snapshots WHERE player_id = ? AND company_id = ? AND fetched_at = ? LIMIT 1").bind(session.player_id, companyId, fetchedAt).first<{ snapshot_id: number }>()
+            if (!exists) await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(session.player_id, companyId, asJson(item.profile), asJson(item.employees ?? []), fetchedAt).run()
+          }
+        }
+        if (Array.isArray(storage.directorSnapshots)) {
+          for (const item of storage.directorSnapshots.slice(0, 10000)) {
+            if (!isRecord(item) || (item.playerId != null && String(item.playerId) !== session.player_id)) continue
+            const companyId = positiveId(item.companyId)
+            const day = typeof item.snapshotDay === "string" && /^\d{4}-\d{2}-\d{2}$/.test(item.snapshotDay) ? item.snapshotDay : null
+            if (!companyId || !day || item.profile === undefined) continue
+            const fetchedAt = typeof item.fetchedAt === "string" && !Number.isNaN(Date.parse(item.fetchedAt)) ? item.fetchedAt : new Date().toISOString()
+            await db.prepare("INSERT OR IGNORE INTO faction_director_snapshots (player_id, company_id, snapshot_day, profile_json, stock_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?)").bind(session.player_id, companyId, day, asJson(item.profile), item.stock === undefined ? null : asJson(item.stock), fetchedAt).run()
+          }
+        }
+        const pageData = Array.isArray(storage.pageData) ? storage.pageData : []
+        for (const item of pageData.slice(0, 20)) if (isRecord(item) && typeof item.pageKey === "string" && allowedPages.has(item.pageKey)) await upsertPageData(item.pageKey, item.data)
+        for (const key of ["rankings", "references", "settings"] as const) if (pages[key] !== undefined) await upsertPageData(key, pages[key])
+        if (chartHistory !== undefined && chartHistory !== null) await upsertPageData("charts", chartHistory)
+        const settingsPage = isRecord(pages.settings) ? pages.settings : {}
+        await restoreSharing(storage.sharingPreferences ?? settingsPage.sharingPreferences)
+        await restoreSharing(settingsPage.sharingPreferences)
+        return jsonResponse({ imported: true, scope: "master", companies: Array.isArray(storage.companies) ? storage.companies.length : 0, message: "Your personal dashboard records were restored. API keys and sessions were left untouched." }, 200, origin)
+      }
+      const data = isRecord(parsed.data) ? parsed.data : parsed
+      if (pageKey === "charts") {
+        const companies = isRecord(data) && Array.isArray(data.companies) ? data.companies : null
+        if (!companies || !companies.every((company) => isRecord(company) && (typeof company.companyId === "string" || typeof company.companyId === "number") && Array.isArray(company.history))) return jsonResponse({ error: "Chart imports must use the earlier history JSON format with a companies array and a history array for each company." }, 400, origin)
+        await upsertPageData("charts", data)
+      } else if (pageKey === "company" || pageKey === "employees") {
+        if (!isRecord(data) || !Array.isArray(data.companies)) return jsonResponse({ error: "This page import must be a dashboard page JSON export containing a companies array." }, 400, origin)
+        await restoreCompanies(data.companies)
+      } else if (pageKey === "settings") {
+        if (!isRecord(data)) return jsonResponse({ error: "Settings import must be a JSON object." }, 400, origin)
+        if (Array.isArray(data.sharingPreferences)) await restoreSharing(data.sharingPreferences)
+        await upsertPageData("settings", data)
+      } else {
+        await upsertPageData(pageKey, data)
+      }
+      return jsonResponse({ imported: true, page: pageKey, message: `Imported ${pageKey} JSON data.` }, 200, origin)
+    }
     if (url.pathname === "/api/me/companies" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
