@@ -77,6 +77,15 @@ try {
     assert.equal(isWithinQuietHours(300, "bad", "08:00"), false)
   })
 
+  await test("automatic alert delivery honors preferences and scheduled digests", () => {
+    const source = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    assert.match(source, /await deliverAutomationWebhook\(env, rule\.owner_player_id/)
+    assert.match(source, /digest_mode = 'daily'/)
+    assert.match(source, /deliverDailyAutomationDigests\(env\)/)
+    assert.match(source, /isWithinQuietHours\(preferences\)/)
+    assert.match(source, /ignoreDigestMode: true, ignoreQuietHours: true/)
+  })
+
   await test("accepts only public HTTPS webhook destinations", () => {
     assert.equal(normalizeWebhookUrl("https://hooks.example.com/alert"), "https://hooks.example.com/alert")
     assert.equal(normalizeWebhookUrl("http://hooks.example.com/alert"), null)
