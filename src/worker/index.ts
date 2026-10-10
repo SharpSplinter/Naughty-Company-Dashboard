@@ -1143,7 +1143,7 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
       const effectiveness = isRecord(employee.effectiveness) ? employee.effectiveness : {}
       const status = isRecord(employee.status) ? employee.status : {}
       const lastAction = isRecord(employee.last_action) ? employee.last_action : {}
-      return { id: String(employee.id ?? ""), name: typeof employee.name === "string" ? employee.name : "Unknown employee", position: typeof position.name === "string" ? position.name : "Unknown position", daysInCompany: numericField(employee.days_in_company), manualLabor: numericField(stats.manual_labor), intelligence: numericField(stats.intelligence), endurance: numericField(stats.endurance), wage: numericField(employee.wage), effectiveness: numericField(effectiveness.total), status: typeof status.description === "string" ? status.description : typeof status.state === "string" ? status.state : null, lastAction: typeof lastAction.relative === "string" ? lastAction.relative : typeof lastAction.status === "string" ? lastAction.status : null }
+      return { id: String(employee.id ?? ""), name: typeof employee.name === "string" ? employee.name : "Unknown employee", position: typeof position.name === "string" ? position.name : "Unknown position", daysInCompany: numericField(employee.days_in_company), manualLabor: numericField(stats.manual_labor), intelligence: numericField(stats.intelligence), endurance: numericField(stats.endurance), wage: numericField(employee.wage), effectiveness: numericField(effectiveness.total), addictionEffectiveness: numericField(effectiveness.addiction), inactivityEffectiveness: numericField(effectiveness.inactivity), status: typeof status.description === "string" ? status.description : typeof status.state === "string" ? status.state : null, lastAction: typeof lastAction.relative === "string" ? lastAction.relative : typeof lastAction.status === "string" ? lastAction.status : null }
     }).sort((a, b) => a.position.localeCompare(b.position) || a.name.localeCompare(b.name))
     const average = (key: "manualLabor" | "intelligence" | "endurance" | "effectiveness") => { const values = roster.map((item) => item[key]).filter((value): value is number => typeof value === "number" && Number.isFinite(value)); return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null }
     const wages = roster.map((item) => item.wage).filter((value): value is number => typeof value === "number" && Number.isFinite(value))
@@ -1155,14 +1155,14 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
   if (layoutPath && (request.method === "GET" || request.method === "POST")) {
     await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
     const key = "dashboard-layout"
-    const allowed = new Set(["company-health", "income-performance", "roster-overview", "recent-trends", "automation-status", "alerts", "rankings"])
+    const allowed = new Set(["company-health", "income-performance", "roster-overview", "recent-trends", "actionable-insights", "automation-status", "alerts", "rankings"])
     if (request.method === "GET") {
       const row = await db.prepare("SELECT data_json AS dataJson, updated_at AS updatedAt FROM user_page_data WHERE player_id = ? AND page_key = ?").bind(session.player_id, key).first<Record<string, unknown>>()
       let layout: unknown = null; try { layout = row?.dataJson ? JSON.parse(String(row.dataJson)) : null } catch { layout = null }
       return jsonResponse({ layout, updatedAt: row?.updatedAt ?? null }, 200, origin)
     }
     const body: unknown = await request.json().catch(() => null)
-    if (!isRecord(body) || !Array.isArray(body.widgets) || body.widgets.length > 7) return jsonResponse({ error: "Provide a valid dashboard widget layout." }, 400, origin)
+    if (!isRecord(body) || !Array.isArray(body.widgets) || body.widgets.length > 8) return jsonResponse({ error: "Provide a valid dashboard widget layout." }, 400, origin)
     const rawPreferences = isRecord(body.dashboardPreferences) ? body.dashboardPreferences : {}
     const dashboardPreferences = {
       density: rawPreferences.density === "compact" ? "compact" : "comfortable",
