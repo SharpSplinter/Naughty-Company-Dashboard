@@ -669,3 +669,24 @@ th.numeric-cell {
  .app-shell:not(.sidebar-collapsed) .sidebar-mobile-close { display: grid; position: absolute; top: 18px; right: 12px; width: 34px; height: 34px; place-items: center; border: 1px solid #29324b; border-radius: 8px; background: #11182b; color: #dce2f5; font-size: 22px; }
  .topbar { gap: 8px; } .topbar-leading { gap: 8px; } .sidebar-toggle { width: 34px; height: 34px; flex-basis: 34px; }
 }
+
+
+/* Employee addiction + inactivity risk indicators. */
+.page-content table tr.employee-effectiveness-risk-red > td { background: rgba(239, 68, 68, 0.17) !important; border-top-color: rgba(248, 113, 113, 0.48); border-bottom-color: rgba(248, 113, 113, 0.48); }
+.page-content table tr.employee-effectiveness-risk-red > td:first-child { box-shadow: inset 3px 0 0 #ef4444; }
+.page-content table tr.employee-effectiveness-risk-yellow > td { background: rgba(234, 179, 8, 0.14) !important; border-top-color: rgba(250, 204, 21, 0.42); border-bottom-color: rgba(250, 204, 21, 0.42); }
+.page-content table tr.employee-effectiveness-risk-yellow > td:first-child { box-shadow: inset 3px 0 0 #eab308; }
+.employee-risk-overview { margin: 14px 0 18px; padding: 16px; border: 1px solid #303a53; border-radius: 10px; background: linear-gradient(135deg, rgba(239,68,68,.055), rgba(234,179,8,.045)); }
+.employee-risk-overview-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.employee-risk-overview-heading h3 { margin:0 0 5px; font:600 13px 'Space Grotesk'; }
+.employee-risk-overview-heading p { margin:0; color:#8995b1; font-size:10px; line-height:1.5; }
+.employee-risk-overview-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); gap:8px; margin-bottom:10px; }
+.employee-risk-overview-item { min-width:0; padding:11px 12px; border-radius:7px; border:1px solid #303a53; background:#0d1426; }
+.employee-risk-overview-item.employee-risk-red { border-color:rgba(248,113,113,.55); box-shadow:inset 3px 0 0 #ef4444; }
+.employee-risk-overview-item.employee-risk-yellow { border-color:rgba(250,204,21,.5); box-shadow:inset 3px 0 0 #eab308; }
+.employee-risk-name { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:9px; }
+.employee-risk-name strong { color:#f0f2ff; font-size:11px; overflow-wrap:anywhere; }
+.employee-risk-name span { flex-shrink:0; color:#fca5a5; font-size:8px; font-weight:700; letter-spacing:.04em; }
+.employee-risk-yellow .employee-risk-name span { color:#fde047; }
+.employee-risk-values { display:flex; flex-wrap:wrap; gap:8px 16px; color:#9aa6c1; font-size:10px; }
+.employee-risk-values strong { color:#f0f2ff; margin-left:4px; font-variant-numeric:tabular-nums; }
