@@ -25,3 +25,10 @@ All `/api/me/*` routes require an active dashboard session and filter data by it
 ## Migrations and deployment
 
 Apply `migrations/auth/0007_automation_delivery_and_rules.sql` after the Automation Center migration. The Pages preview validates the frontend bundle, but the Worker and D1 migration must be deployed separately according to the project's Cloudflare deployment process before production API calls can use these endpoints.
+
+
+## Performance & Staffing Insights
+
+The Performance & Staffing Insights workspace adds explainable, non-forecasting review prompts from saved history and current roster data. Income anomaly checks require at least four recorded days in each of two adjacent 7-day windows and a material average drop; single-point income outliers are compared against the median of recent reporting points. Rating and roster changes are checked against dated snapshots. Staffing prompts use only available employee effectiveness, mapped role requirements, capacity, and stat-coverage information. Missing values are not treated as zero, and unused capacity is not interpreted as an automatic hiring recommendation.
+
+Findings are review prompts, not predictions or automatic personnel decisions. Users can mark findings open, monitoring, resolved, or dismissed. This status tracking is saved in browser local storage per selected company and browser, not synced across devices. The Executive Overview includes a customizable Actionable Insights widget. Existing Automation Center rules provide configurable thresholds and deduplicated scheduled alerts for income drops, rating changes, roster changes, and stale data; the new insights workspace links to those controls rather than creating a second alert engine. No income forecasting is included.

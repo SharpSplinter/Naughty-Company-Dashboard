@@ -694,3 +694,12 @@ th.numeric-cell {
 .employee-risk-yellow .employee-risk-last-seen-dot { background:#facc15; box-shadow:0 0 0 2px rgba(250,204,21,.12); }
 .employee-risk-values { display:flex; flex-wrap:wrap; gap:8px 16px; color:#9aa6c1; font-size:10px; }
 .employee-risk-values strong { color:#f0f2ff; margin-left:4px; font-variant-numeric:tabular-nums; }
+
+
+/* Performance anomalies and explainable staffing follow-through */
+.performance-finding-list { display: grid; gap: 12px; }
+.performance-finding { border: 1px solid var(--border, #d9dce3); border-radius: 12px; padding: 16px; background: var(--panel, transparent); }
+.performance-finding h3 { margin: 12px 0 8px; font-size: 1rem; }
+.performance-finding p { margin: 8px 0; line-height: 1.5; }
+.performance-finding-top, .performance-finding-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.performance-finding-actions { margin-top: 12px; }
