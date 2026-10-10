@@ -43,6 +43,7 @@ export type NormalizedEmployee = {
   daysInCompany: number | null
   status: string | null
   lastAction: string | null
+  lastActionTimestamp: number | null
   stats: Record<StatCode, number> | null
   workStatsEffectiveness: number | null
   inactivityEffectiveness: number | null

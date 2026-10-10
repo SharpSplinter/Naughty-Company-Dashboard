@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { createRequire } from "node:module"
@@ -46,7 +46,7 @@ try {
   const { TornApiClient, TornApiClientError } = require(join(temp, "lib/torn/client.js"))
   const worker = require(join(temp, "worker/index.js")).default
   const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
-  const { evaluateIncomeDrop, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } = require(join(temp, "lib/automation/rules.js"))
+  const { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isWithinQuietHours, normalizeWebhookUrl, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } = require(join(temp, "lib/automation/rules.js"))
 
   let passed = 0
   async function test(name, fn) {
@@ -54,6 +54,43 @@ try {
     passed += 1
     console.log("PASS", name)
   }
+
+  await test("evaluates income increase thresholds without dividing by zero", () => {
+    assert.deepEqual(evaluateIncomeIncrease(100, 120, 15), { changePercent: 20 })
+    assert.equal(evaluateIncomeIncrease(100, 105, 10), null)
+    assert.equal(evaluateIncomeIncrease(0, 100, 10), null)
+  })
+
+  await test("evaluates percentage drops and roster changes symmetrically", () => {
+    assert.deepEqual(evaluatePercentageDrop(100, 80, 15), { changePercent: -20 })
+    assert.equal(evaluatePercentageDrop(100, 90, 15), null)
+    assert.deepEqual(evaluateRosterChange(10, 8, 15), { changePercent: -20 })
+    assert.deepEqual(evaluateRosterChange(0, 2, 15), { changePercent: 100 })
+    assert.equal(evaluateRosterChange(10, 10, 15), null)
+  })
+
+  await test("handles quiet hours that cross midnight and all-day quiet windows", () => {
+    assert.equal(isWithinQuietHours(23 * 60, "22:00", "08:00"), true)
+    assert.equal(isWithinQuietHours(7 * 60, "22:00", "08:00"), true)
+    assert.equal(isWithinQuietHours(12 * 60, "22:00", "08:00"), false)
+    assert.equal(isWithinQuietHours(300, "08:00", "08:00"), true)
+    assert.equal(isWithinQuietHours(300, "bad", "08:00"), false)
+  })
+
+  await test("accepts only public HTTPS webhook destinations", () => {
+    assert.equal(normalizeWebhookUrl("https://hooks.example.com/alert"), "https://hooks.example.com/alert")
+    assert.equal(normalizeWebhookUrl("http://hooks.example.com/alert"), null)
+    assert.equal(normalizeWebhookUrl("https://localhost/alert"), null)
+    assert.equal(normalizeWebhookUrl("https://127.0.0.1/alert"), null)
+    assert.equal(normalizeWebhookUrl("https://192.168.1.10/alert"), null)
+    assert.equal(normalizeWebhookUrl("https://user:secret@hooks.example.com/alert"), null)
+    assert.equal(normalizeWebhookUrl("https://[::1]/alert"), null)
+  })
+
+  await test("webhook delivery never follows redirects to unvalidated destinations", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    assert.match(workerSource, /fetch\(endpoint, \{ method: "POST", redirect: "manual"/)
+  })
 
   await test("normalizes company profile and employee role fit", () => {
     const catalog = { companies: { "Test Shop": [
@@ -437,10 +474,122 @@ try {
   await test("Worker health endpoint applies dashboard CORS", async () => {
     const response = await worker.fetch(new Request("https://worker.test/health", {
       headers: { Origin: "https://naughty-company-dashboard.pages.dev" },
-    }), {})
+    }), { DB: { prepare() { return { bind() { return this }, async first() { return { ok: 1 } }, async all() { return { results: [] } }, async run() { return { success: true } } } } } })
     assert.equal(response.status, 200)
     assert.equal(response.headers.get("access-control-allow-origin"), "https://naughty-company-dashboard.pages.dev")
-    assert.deepEqual(await response.json(), { ok: true, service: "naughty-company-api" })
+    const payload = await response.json()
+    assert.equal(payload.ok, true)
+    assert.equal(payload.service, "naughty-company-api")
+    assert.equal(payload.database, "ok")
+    assert.ok(payload.checkedAt)
+  })
+
+  await test("company intelligence routes are registered and require authentication", async () => {
+    const paths = [
+      "/api/me/health",
+      "/api/me/companies/96639/history?days=30",
+      "/api/me/member-insights",
+      "/api/me/dashboard-layout",
+    ]
+    for (const path of paths) {
+      const response = await worker.fetch(new Request(`https://worker.test${path}`), {})
+      assert.equal(response.status, 401, `${path} should be registered and require a session`)
+      assert.doesNotMatch((await response.text()), /Route not found/i, `${path} must not fall through to the generic router`)
+    }
+  })
+
+  await test("authenticated health uses the daily 18:10 UTC freshness boundary and complete stale counts", async () => {
+    const now = new Date()
+    const boundary = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 18, 10, 0, 0))
+    if (now.getTime() < boundary.getTime()) boundary.setUTCDate(boundary.getUTCDate() - 1)
+    const cutoff = boundary.toISOString()
+    const justBeforeBoundary = new Date(boundary.getTime() - 60 * 1000).toISOString()
+    const latest = now.toISOString()
+    const rows = [
+      { companyId: "fresh", companyName: "Fresh Co", companyType: "Grocery Store", fetchedAt: latest, snapshotCount: 5 },
+      { companyId: "boundary", companyName: "Boundary Co", companyType: "Grocery Store", fetchedAt: cutoff, snapshotCount: 3 },
+      { companyId: "stale", companyName: "Stale Co", companyType: "Grocery Store", fetchedAt: justBeforeBoundary, snapshotCount: 8 },
+      { companyId: "never", companyName: "Never Synced Co", companyType: "Grocery Store", fetchedAt: null, snapshotCount: 0 },
+    ]
+    const queries = []
+    const db = { prepare(sql) {
+      queries.push(sql)
+      const normalized = sql.toLowerCase()
+      let values = []
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          if (normalized.includes("from sessions s join players p")) return { player_id: "777", player_name: "Health Tester" }
+          if (normalized.includes("as stalecompanies")) {
+            assert.equal(values.length, 6, "summary must bind every owner-scoped query parameter and freshness cutoff")
+            assert.ok(normalized.includes("max(s.fetched_at)"), "freshness must use saved snapshots, not the mutable current company row")
+            assert.ok(normalized.includes("fetchedat < ?"), "stale totals must use the exclusive daily boundary")
+            assert.equal(values[5], cutoff, "summary cutoff must be today's 18:10 UTC boundary or the previous day's if it has not occurred yet")
+            return { companyCount: 105, snapshotCount: 208, latestSnapshotAt: latest, staleCompanies: 43 }
+          }
+          return null
+        },
+        async all() {
+          if (normalized.includes("snapshot_stats as")) {
+            assert.equal(values.length, 3)
+            assert.ok(normalized.includes("where player_id = ?"))
+            return { results: rows }
+          }
+          return { results: [] }
+        },
+        async run() { return { success: true } },
+      }
+    } }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/health", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer health-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.worker.status, "ok")
+    assert.equal(payload.database.status, "ok")
+    assert.equal(payload.summary.companyCount, 105)
+    assert.equal(payload.summary.snapshotCount, 208)
+    assert.equal(payload.summary.staleCompanies, 43, "stale count must cover all connected companies, not only the displayed rows")
+    assert.equal(payload.companies.find((company) => company.companyId === "fresh").freshness, "fresh")
+    assert.equal(payload.companies.find((company) => company.companyId === "boundary").freshness, "fresh", "a snapshot exactly at 18:10 UTC is fresh")
+    assert.equal(payload.companies.find((company) => company.companyId === "stale").freshness, "stale", "a snapshot before 18:10 UTC is stale")
+    assert.equal(payload.companies.find((company) => company.companyId === "never").freshness, "never")
+    assert.ok(!payload.companies.some((company) => company.freshness === "aging"), "there must be no intermediate aging state")
+    assert.ok(queries.filter((sql) => sql.toLowerCase().includes("with connected as")).every((sql) => sql.includes("player_id = ?")), "all company and snapshot queries must be owner-scoped")
+    assert.doesNotMatch(JSON.stringify(payload), /ciphertext|api.?key|secret|session.?token/i)
+  })
+
+  await test("authenticated health returns a safe storage error when the database probe fails", async () => {
+    const db = { prepare(sql) { const normalized = sql.toLowerCase(); return {
+      bind() { return this },
+      async first() {
+        if (normalized.includes("from sessions s join players p")) return { player_id: "777", player_name: "Health Tester" }
+        if (normalized.includes("as stalecompanies")) throw new Error("private database diagnostic")
+        return null
+      },
+      async all() { return { results: [] } },
+      async run() { return { success: true } },
+    } } }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/health", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer health-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200, "the authenticated payload must let the UI render component health states")
+    const payload = await response.json()
+    assert.equal(payload.worker.status, "ok")
+    assert.equal(payload.database.status, "error")
+    assert.equal(payload.error, "The health check could not query dashboard storage.")
+    assert.doesNotMatch(JSON.stringify(payload), /private database diagnostic/)
+  })
+
+  await test("public health returns service unavailable when D1 is unreachable", async () => {
+    const response = await worker.fetch(new Request("https://worker.test/health", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev" },
+    }), { DB: { prepare() { return { async first() { throw new Error("private database diagnostic") } } } } })
+    assert.equal(response.status, 503)
+    const payload = await response.json()
+    assert.equal(payload.ok, false)
+    assert.equal(payload.database, "error")
+    assert.doesNotMatch(JSON.stringify(payload), /private database diagnostic/)
   })
 
   await test("Worker rejects untrusted browser origins", async () => {

@@ -135,6 +135,7 @@ function normalizeEmployee(
     daysInCompany: finiteNumber(employee.days_in_company),
     status: normalizeStatus(employee.status),
     lastAction: normalizeLastAction(lastAction),
+    lastActionTimestamp: finiteNumber(lastAction.timestamp),
     stats,
     workStatsEffectiveness,
     inactivityEffectiveness,
