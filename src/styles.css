@@ -614,7 +614,7 @@ th.numeric-cell {
 /* Compact mode: wrap complete header words onto multiple lines to avoid excess column width. */
 .app-shell.dashboard-density-compact .page-content table th {
   white-space: normal !important;
-  overflow-wrap: normal;
+  overflow-wrap: anywhere;
   word-break: normal;
   hyphens: manual;
   line-height: 1.25;
@@ -623,8 +623,10 @@ th.numeric-cell {
 }
 .app-shell.dashboard-density-compact .page-content table th * {
   white-space: normal !important;
-  overflow-wrap: normal;
+  overflow-wrap: anywhere;
   word-break: normal;
+  min-width: 0;
+  max-width: 100%;
 }
 .app-shell.dashboard-density-compact .company-facts { margin-top: 14px; margin-bottom: 14px; }
 .app-shell.dashboard-density-compact .company-facts > div { padding: 9px; }
