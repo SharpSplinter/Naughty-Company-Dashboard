@@ -1069,7 +1069,8 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
   const historyMatch = url.pathname.match(/^\/api\/me\/companies\/(\d+)\/history$/)
   const rosterPath = url.pathname === "/api/me/member-insights"
   const layoutPath = url.pathname === "/api/me/dashboard-layout"
-  if (!healthPath && !historyMatch && !rosterPath && !layoutPath) return null
+  const insightStatesPath = url.pathname === "/api/me/insight-states"
+  if (!healthPath && !historyMatch && !rosterPath && !layoutPath && !insightStatesPath) return null
   const session = await authenticate(request, env)
   if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
   const db = requireDb(env)
@@ -1150,6 +1151,35 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
     const snapshots = await db.prepare("SELECT COUNT(*) AS count, MIN(fetched_at) AS firstAt, MAX(fetched_at) AS latestAt FROM company_snapshots WHERE player_id = ? AND company_id = ?").bind(session.player_id, String(company.companyId)).first<Record<string, unknown>>()
     const positions = new Map<string, number>(); for (const employee of roster) positions.set(employee.position, (positions.get(employee.position) ?? 0) + 1)
     return jsonResponse({ company: { companyId: company.companyId, companyName: company.companyName, companyType: company.companyType, fetchedAt: company.fetchedAt, employeesHired: numericField(profileEmployees.hired), employeeCapacity: numericField(profileEmployees.capacity) }, roster, summary: { rosterCount: roster.length, employeeCapacity: numericField(profileEmployees.capacity), averageManualLabor: average("manualLabor"), averageIntelligence: average("intelligence"), averageEndurance: average("endurance"), averageEffectiveness: average("effectiveness"), knownStatsCount: roster.filter((item) => item.manualLabor !== null && item.intelligence !== null && item.endurance !== null).length, knownWageCount: wages.length, totalKnownWages: wages.reduce((sum, value) => sum + value, 0), positions: Array.from(positions, ([position, count]) => ({ position, count })).sort((a, b) => b.count - a.count || a.position.localeCompare(b.position)), snapshotCount: Number(snapshots?.count ?? 0), firstSnapshotAt: snapshots?.firstAt ?? null, latestSnapshotAt: snapshots?.latestAt ?? null } }, 200, origin)
+  }
+
+  if (insightStatesPath && (request.method === "GET" || request.method === "POST")) {
+    const companyId = positiveId(url.searchParams.get("companyId"))
+    if (!companyId) return jsonResponse({ error: "Provide a valid connected company ID." }, 400, origin)
+    const owned = await db.prepare("SELECT company_id AS companyId FROM companies WHERE player_id = ? AND company_id = ? LIMIT 1").bind(session.player_id, companyId).first<Record<string, unknown>>()
+      ?? await db.prepare("SELECT company_id AS companyId FROM company_api_keys WHERE player_id = ? AND company_id = ? LIMIT 1").bind(session.player_id, companyId).first<Record<string, unknown>>()
+    if (!owned) return jsonResponse({ error: "That company is not connected to your account." }, 404, origin)
+    await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
+    const key = `insight-states:${companyId}`
+    if (request.method === "GET") {
+      const row = await db.prepare("SELECT data_json AS dataJson, updated_at AS updatedAt FROM user_page_data WHERE player_id = ? AND page_key = ?").bind(session.player_id, key).first<Record<string, unknown>>()
+      let states: unknown = {}; try { states = row?.dataJson ? JSON.parse(String(row.dataJson)) : {} } catch { states = {} }
+      return jsonResponse({ states: isRecord(states) ? states : {}, updatedAt: row?.updatedAt ?? null }, 200, origin, { "cache-control": "no-store" })
+    }
+    const body: unknown = await request.json().catch(() => null)
+    if (!isRecord(body) || !isRecord(body.states)) return jsonResponse({ error: "Provide a valid insight state object." }, 400, origin)
+    const entries = Object.entries(body.states)
+    if (entries.length > 100) return jsonResponse({ error: "Too many insight states. Limit is 100 per company." }, 400, origin)
+    const states: Record<string, { status: string; updatedAt: string }> = {}
+    const allowedStatuses = new Set(["open", "monitoring", "resolved", "dismissed"])
+    for (const [id, value] of entries) {
+      if (!id || id.length > 500 || !isRecord(value) || typeof value.status !== "string" || !allowedStatuses.has(value.status)) return jsonResponse({ error: "An insight state has an invalid ID or status." }, 400, origin)
+      const updatedAt = typeof value.updatedAt === "string" && !Number.isNaN(Date.parse(value.updatedAt)) ? value.updatedAt : new Date().toISOString()
+      states[id] = { status: value.status, updatedAt }
+    }
+    const now = new Date().toISOString()
+    await db.prepare("INSERT INTO user_page_data (player_id, page_key, data_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, page_key) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at").bind(session.player_id, key, asJson(states), now).run()
+    return jsonResponse({ saved: true, states, updatedAt: now }, 200, origin, { "cache-control": "no-store" })
   }
 
   if (layoutPath && (request.method === "GET" || request.method === "POST")) {
