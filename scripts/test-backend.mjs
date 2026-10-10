@@ -167,6 +167,11 @@ try {
     const originalFetch = globalThis.fetch
     const apiKeys = new Map()
     const companyKeys = new Map()
+    const companyApiKeys = new Map()
+    const companies = new Map()
+    const companySnapshots = new Map()
+    const companyFinancials = new Map()
+    const directorCache = new Map([["777", { is_director: 1 }]])
     const players = new Map()
     const sessions = new Map()
     const db = {
@@ -179,12 +184,19 @@ try {
             if (lower.includes("insert into players")) players.set(String(values[0]), { player_id: String(values[0]), player_name: values[1] })
             if (lower.includes("insert into api_keys")) apiKeys.set(String(values[0]), { last_four: values[3], updated_at: values[5], ciphertext: values[1], iv: values[2] })
             if (lower.includes("insert into company_keys")) companyKeys.set(String(values[0]), { last_four: values[3], updated_at: values[5], ciphertext: values[1], iv: values[2] })
+            if (lower.includes("insert into company_api_keys")) companyApiKeys.set(`${values[0]}:${values[1]}`, { player_id: String(values[0]), company_id: String(values[1]), last_four: values[4], company_name: values[5], company_type: values[6], updated_at: values[8], ciphertext: values[2], iv: values[3] })
+            if (lower.includes("insert into companies")) companies.set(`${values[0]}:${values[1]}`, { player_id: String(values[0]), company_id: String(values[1]), company_name: values[2], company_type: values[3], profile_json: values[4], employees_json: values[5], fetched_at: values[6] })
+            if (lower.includes("insert into company_snapshots")) companySnapshots.set(`${values[0]}:${values[1]}`, { player_id: String(values[0]), company_id: String(values[1]), profile_json: values[2], employees_json: values[3], fetched_at: values[4] })
+            if (lower.includes("insert into company_financials")) companyFinancials.set(`${values[0]}:${values[1]}`, { player_id: String(values[0]), company_id: String(values[1]), stock_json: values[2], fetched_at: values[3] })
             if (lower.includes("insert into sessions")) sessions.set(String(values[0]), { token_hash: String(values[0]), player_id: String(values[1]), expires_at: Number(values[2]) })
             return { success: true }
           },
           async first() {
             const lower = sql.toLowerCase()
             if (lower.includes("from company_keys")) return companyKeys.get(String(values[0])) ?? null
+            if (lower.includes("from company_api_keys")) return [...companyApiKeys.values()].filter((row) => row.player_id === String(values[0])).sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))[0] ?? null
+            if (lower.includes("from faction_member_cache")) return directorCache.get(String(values[0])) ?? null
+            if (lower.includes("from companies")) return companies.get(`${values[0]}:${values[1]}`) ?? null
             if (lower.includes("from api_keys")) return apiKeys.get(String(values[0])) ?? null
             if (lower.includes("from sessions s join players p")) {
               const savedSession = sessions.get(String(values[0]))
@@ -198,6 +210,9 @@ try {
       },
     }
     let combinedCompanyRequest = false
+    let combinedRequests = 0
+    let combinedFailureObserved = false
+    let fallbackProfileUsed = false
     let tornRequestCount = 0
     globalThis.fetch = async (input) => {
       tornRequestCount += 1
@@ -206,8 +221,18 @@ try {
       if (path.endsWith("/v2/user/profile")) return new Response(JSON.stringify({ profile: { id: 777, name: "Test Director" } }))
       if (path.endsWith("/v2/user/faction")) return new Response(JSON.stringify({ faction: { id: 8317, name: "Naughty Souls" } }))
       if (path.endsWith("/v2/user/job")) return new Response(JSON.stringify({ job: { type: "company", id: 77, type_id: 28, name: "Test Company", position: "Director" } }))
-      if (path.endsWith("/v2/company/profile")) return new Response(JSON.stringify({ company: { id: 77, name: "Test Company", director: 777 } }))
+      if (path.endsWith("/v2/company/profile")) {
+        fallbackProfileUsed = true
+        return new Response(JSON.stringify({ company: { id: 77, name: "Test Company", type: { id: 28, name: "Oil Rig" }, director: 777 } }))
+      }
+      if (path.endsWith("/v2/company/employees")) return new Response(JSON.stringify({ employees: [] }))
+      if (path.endsWith("/v2/company/stock")) return new Response(JSON.stringify({ stock: [] }))
       if (path.endsWith("/v2/company") && url.searchParams.get("selections") === "employees,stock,profile") {
+        combinedRequests += 1
+        if (combinedRequests === 2) {
+          combinedFailureObserved = true
+          return new Response(JSON.stringify({ error: { code: 16, error: "Not granted" } }), { status: 403 })
+        }
         combinedCompanyRequest = true
         return new Response(JSON.stringify({ employees: [], stock: [], profile: { id: 77, name: "Test Company", type: { id: 28, name: "Oil Rig" }, director: { id: 777, name: "Test Director" } } }))
       }
@@ -225,20 +250,28 @@ try {
       assert.equal(payload.company.key.saved, true)
       assert.equal(payload.company.key.lastFour, "7777")
       assert.equal(combinedCompanyRequest, true)
+      assert.equal(combinedFailureObserved, true)
+      assert.equal(fallbackProfileUsed, true)
       assert.equal(companyKeys.get("777").last_four, apiKeys.get("777").last_four)
+      assert.equal([...companyApiKeys.values()][0].last_four, apiKeys.get("777").last_four)
+      assert.equal(companies.get("777:77").company_name, "Test Company")
+      assert.equal(companySnapshots.has("777:77"), true)
 
-      // Session restoration is cache-only and must not repair keys by polling Torn.
+      // A returning director with a saved login credential is auto-connected if the primary company record is missing.
       companyKeys.clear()
+      companyApiKeys.clear()
       const requestsBeforeRestore = tornRequestCount
       const restored = await worker.fetch(new Request("https://worker.test/api/auth/session", {
         headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: `Bearer ${payload.token}` },
       }), { DB: db, KEY_ENCRYPTION_SECRET: "test-secret-0123456789-abcdefghijklmnopqrstuvwxyz" })
       assert.equal(restored.status, 200)
       const restoredPayload = await restored.json()
-      assert.equal(restoredPayload.company.isDirector, false)
-      assert.equal(restoredPayload.company.key.saved, false)
-      assert.equal(companyKeys.has("777"), false)
-      assert.equal(tornRequestCount, requestsBeforeRestore)
+      assert.equal(restoredPayload.company.isDirector, true)
+      assert.equal(restoredPayload.company.key.saved, true)
+      assert.equal(companyKeys.has("777"), true)
+      assert.equal(companyApiKeys.has("777:77"), true)
+      assert.equal(companies.has("777:77"), true)
+      assert.ok(tornRequestCount > requestsBeforeRestore)
     } finally {
       globalThis.fetch = originalFetch
     }
