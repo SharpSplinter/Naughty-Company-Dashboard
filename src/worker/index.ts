@@ -905,8 +905,37 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 50) || 50))
   if (url.pathname === "/api/admin/automation/runs" && request.method === "GET") {
     await ensureAutomationSchema(env)
-    const rows = await db.prepare("SELECT run_id AS runId, trigger_name AS triggerName, status, started_at AS startedAt, finished_at AS finishedAt, companies_checked AS companiesChecked, companies_failed AS companiesFailed, alerts_created AS alertsCreated, error_summary AS errorSummary FROM automation_runs ORDER BY started_at DESC LIMIT ?").bind(limit).all<Record<string, unknown>>()
-    return jsonResponse({ runs: rows.results ?? [] }, 200, origin)
+    const requestedRange = url.searchParams.get("days") || "30"
+    const range = ["7", "30", "90", "365", "all"].includes(requestedRange) ? requestedRange : "30"
+    const cutoff = range === "all" ? null : new Date(Date.now() - Number(range) * DAY * 1000).toISOString()
+    const where = cutoff ? "WHERE started_at >= ?" : ""
+    const runQuery = db.prepare(`SELECT run_id AS runId, trigger_name AS triggerName, status, started_at AS startedAt, finished_at AS finishedAt, companies_checked AS companiesChecked, companies_failed AS companiesFailed, alerts_created AS alertsCreated, error_summary AS errorSummary FROM automation_runs ${where} ORDER BY started_at DESC LIMIT ?`)
+    const summaryQuery = db.prepare(`SELECT COUNT(*) AS totalRuns, SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeededRuns, SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failedRuns, SUM(CASE WHEN status = 'partial' THEN 1 ELSE 0 END) AS partialRuns, SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS runningRuns, SUM(CASE WHEN status IN ('succeeded', 'failed', 'partial') THEN 1 ELSE 0 END) AS completedRuns, AVG(CASE WHEN finished_at IS NOT NULL THEN CASE WHEN julianday(finished_at) >= julianday(started_at) THEN (julianday(finished_at) - julianday(started_at)) * 86400 ELSE 0 END END) AS avgDurationSeconds, SUM(companies_failed) AS companiesFailed, SUM(alerts_created) AS alertsCreated, MAX(started_at) AS latestRunAt FROM automation_runs ${where}`)
+    const failuresWhere = cutoff ? "WHERE started_at >= ? AND status IN ('failed', 'partial') AND error_summary IS NOT NULL AND TRIM(error_summary) <> ''" : "WHERE status IN ('failed', 'partial') AND error_summary IS NOT NULL AND TRIM(error_summary) <> ''"
+    const failuresQuery = db.prepare(`SELECT error_summary AS errorSummary, COUNT(*) AS occurrences FROM automation_runs ${failuresWhere} GROUP BY error_summary ORDER BY occurrences DESC, MAX(started_at) DESC LIMIT 3`)
+    const [rows, rawSummary, failureRows] = await Promise.all([
+      cutoff ? runQuery.bind(cutoff, limit).all<Record<string, unknown>>() : runQuery.bind(limit).all<Record<string, unknown>>(),
+      cutoff ? summaryQuery.bind(cutoff).first<Record<string, unknown>>() : summaryQuery.first<Record<string, unknown>>(),
+      cutoff ? failuresQuery.bind(cutoff).all<Record<string, unknown>>() : failuresQuery.all<Record<string, unknown>>(),
+    ])
+    const summary = rawSummary ?? {}
+    const completedRuns = Number(summary.completedRuns ?? 0)
+    const succeededRuns = Number(summary.succeededRuns ?? 0)
+    const insights = {
+      totalRuns: Number(summary.totalRuns ?? 0),
+      succeededRuns,
+      failedRuns: Number(summary.failedRuns ?? 0),
+      partialRuns: Number(summary.partialRuns ?? 0),
+      runningRuns: Number(summary.runningRuns ?? 0),
+      completedRuns,
+      successRate: completedRuns > 0 ? Math.round((succeededRuns / completedRuns) * 1000) / 10 : null,
+      avgDurationSeconds: summary.avgDurationSeconds == null ? null : Math.round(Number(summary.avgDurationSeconds)),
+      companiesFailed: Number(summary.companiesFailed ?? 0),
+      alertsCreated: Number(summary.alertsCreated ?? 0),
+      latestRunAt: summary.latestRunAt ?? null,
+      recurringFailures: failureRows.results ?? [],
+    }
+    return jsonResponse({ runs: rows.results ?? [], insights, range }, 200, origin)
   }
   if (url.pathname === "/api/admin/overview" && request.method === "GET") {
     const metrics = await db.prepare("SELECT (SELECT COUNT(*) FROM players) AS members, (SELECT COUNT(*) FROM companies) AS companies, (SELECT COUNT(*) FROM company_api_keys) AS companyKeys, (SELECT COUNT(*) FROM company_snapshots) AS companySnapshots, (SELECT COUNT(*) FROM faction_director_snapshots) AS directorSnapshots, (SELECT COUNT(*) FROM dashboard_member_status WHERE disabled_at IS NOT NULL) AS disabledMembers, (SELECT COUNT(*) FROM admin_jobs WHERE status IN ('queued','running')) AS activeJobs, (SELECT COUNT(*) FROM admin_jobs WHERE status = 'failed') AS failedJobs, (SELECT MAX(fetched_at) FROM companies) AS latestCompanyRefresh").first<Record<string, unknown>>()

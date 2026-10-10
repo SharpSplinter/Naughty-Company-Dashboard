@@ -475,6 +475,43 @@ try {
     assert.match((await response.json()).error, /administrator access/i)
   })
 
+  await test("admin automation insights aggregate runs for the selected time window", async () => {
+    const prepared = []
+    const db = { prepare(sql) {
+      prepared.push(sql)
+      let values = []
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          const normalized = sql.toLowerCase()
+          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter" }
+          if (normalized.includes("count(*) as totalruns")) return { totalRuns: 4, succeededRuns: 2, failedRuns: 1, partialRuns: 1, runningRuns: 0, completedRuns: 4, avgDurationSeconds: 65.2, companiesFailed: 3, alertsCreated: 5, latestRunAt: "2026-10-10T18:00:00.000Z" }
+          return null
+        },
+        async all() {
+          const normalized = sql.toLowerCase()
+          if (normalized.includes("group by error_summary")) return { results: [{ errorSummary: "Torn API timeout", occurrences: 2 }] }
+          if (normalized.includes("select run_id as runid")) return { results: [{ runId: "run-1", triggerName: "scheduled", status: "failed", startedAt: "2026-10-10T18:00:00.000Z", finishedAt: "2026-10-10T18:01:00.000Z", companiesChecked: 3, companiesFailed: 2, alertsCreated: 1, errorSummary: "Torn API timeout" }] }
+          return { results: [] }
+        },
+        async run() { return { success: true, meta: { changes: 1 } } },
+      }
+    } }
+    const response = await worker.fetch(new Request("https://worker.test/api/admin/automation/runs?days=7&limit=100", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer admin-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.range, "7")
+    assert.equal(payload.insights.totalRuns, 4)
+    assert.equal(payload.insights.successRate, 50)
+    assert.equal(payload.insights.avgDurationSeconds, 65)
+    assert.equal(payload.insights.companiesFailed, 3)
+    assert.equal(payload.insights.recurringFailures[0].occurrences, 2)
+    assert.equal(payload.runs[0].runId, "run-1")
+    assert.ok(prepared.some((sql) => sql.includes("WHERE started_at >= ?")))
+  })
+
   await test("admin settings reject malformed multi-setting updates before writing any setting", async () => {
     const writes = []
     const db = { prepare(sql) { let values = []; return {

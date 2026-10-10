@@ -5,6 +5,9 @@ type AdminSettings = { maintenanceMode: boolean; manualRefreshEnabled: boolean; 
 type AdminMember = { playerId: string; playerName: string; createdAt?: string | null; updatedAt?: string | null; companyId: string | null; companyName: string | null; companyType: string | null; companyTypeId?: number | string | null; disabled: boolean; disabledAt?: string | null; disableReason?: string | null; loginKeySaved: boolean; companyKeyCount: number; snapshotCount: number }
 type AdminJob = { jobId: string; jobType: string; targetPlayerId?: string | null; targetCompanyId?: string | null; status: string; createdAt: string; startedAt?: string | null; finishedAt?: string | null; errorMessage?: string | null; result?: unknown }
 type AutomationRun = { runId: string; triggerName: string; status: string; startedAt: string; finishedAt?: string | null; companiesChecked: number; companiesFailed: number; alertsCreated: number; errorSummary?: string | null }
+type AutomationRange = "7" | "30" | "90" | "365" | "all"
+type AutomationStatusFilter = "all" | "succeeded" | "partial" | "failed" | "running"
+type AutomationInsights = { totalRuns: number; succeededRuns: number; failedRuns: number; partialRuns: number; runningRuns: number; completedRuns: number; successRate: number | null; avgDurationSeconds: number | null; companiesFailed: number; alertsCreated: number; latestRunAt?: string | null; recurringFailures: Array<{ errorSummary: string; occurrences: number }> }
 type AuditEvent = { id: number; actorPlayerId: string; actorPlayerName: string; action: string; targetType?: string | null; targetId?: string | null; outcome: string; summary: string; createdAt: string; details?: unknown }
 type MemberDetail = { member: AdminMember & { disabledAt?: string | null }; connections: { companies: Array<{ companyId: string; companyName?: string | null; companyType?: string | null; lastFour?: string; keyUpdatedAt?: string; fetchedAt?: string | null }>; loginKeySaved: boolean; legacyCompanyKeySaved: boolean }; history: { companySnapshots: number; directorSnapshots: number; pageRecords: number; financialRecords: number } }
 
@@ -44,6 +47,20 @@ function prettyDate(value?: string | null) {
 
 function prettyStatus(value: string) { return value.replaceAll("-", " ").replaceAll(".", " · ") }
 
+function formatDuration(seconds?: number | null) {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—"
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+}
+
+function runDuration(run: AutomationRun) {
+  if (!run.finishedAt) return run.status === "running" ? "In progress" : "—"
+  const started = Date.parse(run.startedAt)
+  const finished = Date.parse(run.finishedAt)
+  return Number.isFinite(started) && Number.isFinite(finished) ? formatDuration(Math.max(0, (finished - started) / 1000)) : "—"
+}
+
 export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Props) {
   const [tab, setTab] = useState<AdminTab>("overview")
   const [actionsArmed, setActionsArmed] = useState(false)
@@ -59,6 +76,9 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   const [memberDetail, setMemberDetail] = useState<MemberDetail | null>(null)
   const [jobs, setJobs] = useState<AdminJob[]>([])
   const [automationRuns, setAutomationRuns] = useState<AutomationRun[]>([])
+  const [automationInsights, setAutomationInsights] = useState<AutomationInsights | null>(null)
+  const [automationRange, setAutomationRange] = useState<AutomationRange>("30")
+  const [automationStatusFilter, setAutomationStatusFilter] = useState<AutomationStatusFilter>("all")
   const [settings, setSettings] = useState<AdminSettings>({ maintenanceMode: false, manualRefreshEnabled: true, historyImportEnabled: true })
   const [settingsDirty, setSettingsDirty] = useState(false)
   const [historySummary, setHistorySummary] = useState<Record<string, unknown> | null>(null)
@@ -73,20 +93,18 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
     setLoading(true)
     setError("")
     try {
-      const [o, m, j, s, h, a, r] = await Promise.all([
+      const [o, m, j, s, h, a] = await Promise.all([
         adminFetch<{ metrics: Record<string, unknown>; recentActivity?: AuditEvent[] }>(apiBase, sessionToken, "/api/admin/overview"),
         adminFetch<{ members: AdminMember[]; total: number }>(apiBase, sessionToken, "/api/admin/members?limit=50"),
         adminFetch<{ jobs: AdminJob[] }>(apiBase, sessionToken, "/api/admin/jobs?limit=30"),
         adminFetch<{ settings: AdminSettings }>(apiBase, sessionToken, "/api/admin/settings"),
         adminFetch<{ stats: Record<string, unknown>; latestCompanySnapshot?: string | null }>(apiBase, sessionToken, "/api/admin/history/summary"),
         adminFetch<{ events: AuditEvent[] }>(apiBase, sessionToken, "/api/admin/audit?limit=50"),
-        adminFetch<{ runs: AutomationRun[] }>(apiBase, sessionToken, "/api/admin/automation/runs?limit=20").catch(() => ({ runs: [] as AutomationRun[] })),
       ])
       setOverview(o)
       setMembers(m.members || [])
       setMemberTotal(m.total || 0)
       setJobs(j.jobs || [])
-      setAutomationRuns(r.runs || [])
       setSettings(s.settings || { maintenanceMode: false, manualRefreshEnabled: true, historyImportEnabled: true })
       setSettingsDirty(false)
       setHistorySummary(h)
@@ -107,14 +125,18 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
 
   const loadJobs = useCallback(async () => {
     try {
-      const [payload, runs] = await Promise.all([
-        adminFetch<{ jobs: AdminJob[] }>(apiBase, sessionToken, "/api/admin/jobs?limit=30"),
-        adminFetch<{ runs: AutomationRun[] }>(apiBase, sessionToken, "/api/admin/automation/runs?limit=20").catch(() => ({ runs: [] as AutomationRun[] })),
-      ])
+      const payload = await adminFetch<{ jobs: AdminJob[] }>(apiBase, sessionToken, "/api/admin/jobs?limit=30")
       setJobs(payload.jobs || [])
-      setAutomationRuns(runs.runs || [])
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load job status.") }
   }, [apiBase, sessionToken])
+
+  const loadAutomationRuns = useCallback(async () => {
+    try {
+      const payload = await adminFetch<{ runs: AutomationRun[]; insights: AutomationInsights }>(apiBase, sessionToken, `/api/admin/automation/runs?limit=100&days=${automationRange}`)
+      setAutomationRuns(payload.runs || [])
+      setAutomationInsights(payload.insights || null)
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load automation insights.") }
+  }, [apiBase, sessionToken, automationRange])
 
   const loadMembers = useCallback(async (query: string) => {
     setError("")
@@ -130,6 +152,7 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   }, [apiBase, sessionToken, selectedMemberId])
 
   useEffect(() => { void refreshAll() }, [refreshAll])
+  useEffect(() => { if (tab === "operations") void loadAutomationRuns() }, [tab, loadAutomationRuns])
   useEffect(() => {
     if (!selectedMemberId || !members.some((m) => m.playerId === selectedMemberId)) return
     void loadMemberDetail(selectedMemberId)
@@ -246,6 +269,7 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
 
   const metrics = (overview?.metrics || {}) as Record<string, unknown>
   const historyStats = (historySummary?.stats || {}) as Record<string, unknown>
+  const filteredAutomationRuns = useMemo(() => automationStatusFilter === "all" ? automationRuns : automationRuns.filter((run) => run.status === automationStatusFilter), [automationRuns, automationStatusFilter])
   const tabItems: Array<{ key: AdminTab; label: string; icon: string }> = [
     { key: "overview", label: "Overview", icon: "◫" }, { key: "members", label: "Members", icon: "♙" },
     { key: "operations", label: "Operations", icon: "↻" }, { key: "history", label: "History & Backups", icon: "▤" },
@@ -285,7 +309,19 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
       <div className="admin-section-heading"><div><h2>Refresh and maintenance jobs</h2><p>Jobs are tracked in D1, prevent equivalent concurrent requests, and report final outcomes.</p></div><button type="button" className="secondary-button" onClick={() => void loadJobs()}>Refresh job list ↻</button></div>
       <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Manual refresh</h3><p>Global refresh updates ranking profiles, one faction-directory batch, and the global ranking cache.</p></div><span className={settings.manualRefreshEnabled ? "admin-status good" : "admin-status danger"}>{settings.manualRefreshEnabled ? "Enabled by policy" : "Disabled by policy"}</span></div><button className="primary-button" type="button" disabled={!actionsArmed || !settings.manualRefreshEnabled} onClick={() => void queueJob("global-refresh")}>Queue global refresh ↻</button><p className="field-hint">Company-specific refresh is available from a member's detail panel. Work is performed server-side and does not depend on the browser remaining open.</p></section>
       <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Job history</h3><p>Most recent tracked jobs and failures.</p></div><span className="count-chip">{jobs.length} jobs</span></div>{jobs.length ? <div className="table-scroll"><table className="admin-table"><thead><tr><th>JOB</th><th>TARGET</th><th>STATUS</th><th>CREATED</th><th>RESULT / ERROR</th></tr></thead><tbody>{jobs.map((job) => <tr key={job.jobId}><td><strong>{prettyStatus(job.jobType)}</strong><small>{job.jobId}</small></td><td>{job.targetPlayerId ? `#${job.targetPlayerId}` : "Global"}{job.targetCompanyId ? <small>Company #{job.targetCompanyId}</small> : null}</td><td><span className={`admin-status ${job.status === "completed" ? "good" : job.status === "failed" ? "danger" : "warning"}`}>{job.status}</span></td><td>{prettyDate(job.createdAt)}</td><td>{job.errorMessage || (job.result && typeof job.result === "object" ? JSON.stringify(job.result) : job.status === "completed" ? "Completed" : "Waiting for result")}</td></tr>)}</tbody></table></div> : <div className="empty-state">No administrative jobs have been queued yet.</div>}</section>
-      <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Scheduled automation runs</h3><p>Daily refresh, company-check outcomes, and alert evaluation history.</p></div><span className="count-chip">{automationRuns.length} runs</span></div>{automationRuns.length ? <div className="table-scroll"><table className="admin-table"><thead><tr><th>STARTED</th><th>TRIGGER</th><th>STATUS</th><th>COMPANIES</th><th>ALERTS</th><th>SUMMARY</th></tr></thead><tbody>{automationRuns.map((run) => <tr key={run.runId}><td>{prettyDate(run.startedAt)}</td><td>{prettyStatus(run.triggerName)}</td><td><span className={`admin-status ${run.status === "succeeded" ? "good" : run.status === "failed" ? "danger" : "warning"}`}>{run.status}</span></td><td>{run.companiesChecked} checked<small>{run.companiesFailed} failed</small></td><td>{run.alertsCreated}</td><td>{run.errorSummary || (run.finishedAt ? "Completed" : "Run in progress")}</td></tr>)}</tbody></table></div> : <div className="empty-state">No scheduled runs have been recorded yet.</div>}</section>
+      <section className="panel admin-subpanel admin-automation-insights">
+        <div className="panel-heading"><div><h3>Automation Insights</h3><p>Execution reliability, runtime, and recurring failure patterns for scheduled Worker runs.</p></div><div className="admin-insight-controls"><label>Time window<select value={automationRange} onChange={(event) => setAutomationRange(event.target.value as AutomationRange)}><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last 12 months</option><option value="all">All time</option></select></label><label>Run status<select value={automationStatusFilter} onChange={(event) => setAutomationStatusFilter(event.target.value as AutomationStatusFilter)}><option value="all">All outcomes</option><option value="succeeded">Succeeded</option><option value="partial">Partial</option><option value="failed">Failed</option><option value="running">Running</option></select></label><button type="button" className="secondary-button" onClick={() => void loadAutomationRuns()}>Refresh insights ↻</button></div></div>
+        <div className="admin-metric-grid admin-automation-metrics">
+          <article className="admin-metric-card"><small>Success rate</small><strong>{automationInsights?.successRate == null ? "—" : `${automationInsights.successRate}%`}</strong><span className="admin-insight-footnote">Completed runs only</span></article>
+          <article className="admin-metric-card"><small>Completed runs</small><strong>{automationInsights ? Number(automationInsights.completedRuns).toLocaleString() : "—"}</strong><span className="admin-insight-footnote">{automationInsights?.runningRuns ? `${automationInsights.runningRuns} currently running` : "Finished executions"}</span></article>
+          <article className="admin-metric-card"><small>Failed / partial</small><strong className={(automationInsights?.failedRuns || automationInsights?.partialRuns) ? "admin-insight-warning" : ""}>{automationInsights ? (automationInsights.failedRuns + automationInsights.partialRuns).toLocaleString() : "—"}</strong><span className="admin-insight-footnote">{automationInsights ? `${automationInsights.failedRuns} failed · ${automationInsights.partialRuns} partial` : "Run outcomes"}</span></article>
+          <article className="admin-metric-card"><small>Average duration</small><strong>{formatDuration(automationInsights?.avgDurationSeconds)}</strong><span className="admin-insight-footnote">Finished runs with timing data</span></article>
+          <article className="admin-metric-card"><small>Company failures</small><strong>{automationInsights ? Number(automationInsights.companiesFailed).toLocaleString() : "—"}</strong><span className="admin-insight-footnote">Across the selected window</span></article>
+          <article className="admin-metric-card"><small>Alerts generated</small><strong>{automationInsights ? Number(automationInsights.alertsCreated).toLocaleString() : "—"}</strong><span className="admin-insight-footnote">Alerts emitted by automation</span></article>
+        </div>
+        <div className="admin-insight-failures"><div className="admin-insight-subheading"><h4>Failure patterns</h4><p>Most common recorded error summaries in this time window.</p></div>{automationInsights?.recurringFailures?.length ? <div className="admin-failure-list">{automationInsights.recurringFailures.map((failure) => <article className="admin-failure-item" key={failure.errorSummary}><span className="admin-failure-count">{failure.occurrences}×</span><p>{failure.errorSummary}</p></article>)}</div> : <p className="admin-insight-empty">No recorded failure summaries for this time window.</p>}</div>
+      </section>
+      <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Scheduled automation runs</h3><p>Daily refresh, company-check outcomes, and alert evaluation history.</p></div><span className="count-chip">{filteredAutomationRuns.length} shown · {Number(automationInsights?.totalRuns ?? automationRuns.length).toLocaleString()} total</span></div>{filteredAutomationRuns.length ? <div className="table-scroll"><table className="admin-table"><thead><tr><th>STARTED</th><th>TRIGGER</th><th>STATUS</th><th>DURATION</th><th>COMPANIES</th><th>ALERTS</th><th>SUMMARY</th></tr></thead><tbody>{filteredAutomationRuns.map((run) => <tr key={run.runId}><td>{prettyDate(run.startedAt)}</td><td>{prettyStatus(run.triggerName)}</td><td><span className={`admin-status ${run.status === "succeeded" ? "good" : run.status === "failed" ? "danger" : "warning"}`}>{run.status}</span></td><td>{runDuration(run)}</td><td>{run.companiesChecked} checked<small>{run.companiesFailed} failed</small></td><td>{run.alertsCreated}</td><td>{run.errorSummary || (run.finishedAt ? "Completed" : "Run in progress")}</td></tr>)}</tbody></table></div> : <div className="empty-state">{automationRuns.length ? "No runs match this status filter." : "No scheduled runs have been recorded for this time window yet."}</div>}{Number(automationInsights?.totalRuns ?? 0) > automationRuns.length && <p className="field-hint">Showing the latest {automationRuns.length} runs. Summary metrics include every run in the selected time window.</p>}</section>
     </div>}
 
     {tab === "history" && <div className="admin-section-stack">
