@@ -68,10 +68,12 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
   const [deliveries, setDeliveries] = useState<WebhookDelivery[]>([])
   const seenEventIds = useRef(new Set<string>())
   const initialEventsLoaded = useRef(false)
+  const loadRequestId = useRef(0)
 
   useEffect(() => { if (!companyId && selectedCompanyId) setCompanyId(selectedCompanyId) }, [companyId, selectedCompanyId])
 
   const load = useCallback(async () => {
+    const requestId = ++loadRequestId.current
     if (!sessionToken || demoMode) { setRules([]); setEvents([]); setUnreadCount(0); setLatestRun(null); return }
     setLoading(true)
     setError("")
@@ -80,6 +82,7 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
         automationFetch<{ rules: AlertRule[] }>(apiBase, sessionToken, "/api/me/alert-rules"),
         automationFetch<{ events: AlertEvent[]; unreadCount: number; latestRun: AutomationRun }>(apiBase, sessionToken, "/api/me/alerts?limit=50"),
       ])
+      if (requestId !== loadRequestId.current) return
       setRules(rulePayload.rules || [])
       setEvents(alertPayload.events || [])
       if (!initialEventsLoaded.current) { for (const event of alertPayload.events || []) seenEventIds.current.add(event.eventId); initialEventsLoaded.current = true }
@@ -91,10 +94,12 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
         automationFetch<{ configured: boolean }>(apiBase, sessionToken, "/api/me/automation-webhook"),
         automationFetch<{ deliveries: WebhookDelivery[] }>(apiBase, sessionToken, "/api/me/automation-webhook/deliveries?limit=10"),
       ])
+      if (requestId !== loadRequestId.current) return
       if (prefsResult.status === "fulfilled") { const raw = prefsResult.value.preferences; setPreferences({ browserNotificationsEnabled: Boolean(raw.browserNotificationsEnabled), quietHoursEnabled: Boolean(raw.quietHoursEnabled), quietHoursStart: String(raw.quietHoursStart || "22:00"), quietHoursEnd: String(raw.quietHoursEnd || "08:00"), timezone: String(raw.timezone || "UTC"), minimumSeverity: ["info", "warning", "critical"].includes(String(raw.minimumSeverity)) ? raw.minimumSeverity as AutomationPreferences["minimumSeverity"] : "info", digestMode: raw.digestMode === "off" ? "off" : "instant" }) }
       if (hookResult.status === "fulfilled") setWebhookConfigured(hookResult.value.configured === true)
       if (deliveryResult.status === "fulfilled") setDeliveries(deliveryResult.value.deliveries || [])
     } catch (caught) {
+      if (requestId !== loadRequestId.current) return
       const message = caught instanceof Error ? caught.message : "Could not load automation data."
       const status = caught && typeof caught === "object" && "status" in caught ? Number((caught as { status?: unknown }).status) : 0
       if (status === 404 || message.includes("(404)")) {
@@ -102,7 +107,7 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
         setError("The Automation Center API is not deployed to this environment yet. Deploy the updated Worker and D1 migration before alerts can load.")
       } else setError(message)
     }
-    finally { setLoading(false) }
+    finally { if (requestId === loadRequestId.current) setLoading(false) }
   }, [apiBase, sessionToken, demoMode])
 
   useEffect(() => { void load() }, [load])
@@ -222,7 +227,7 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
       const hour = Number(parts.find((part) => part.type === "hour")?.value || 0), minute = Number(parts.find((part) => part.type === "minute")?.value || 0)
       const current = hour * 60 + minute, start = Number(prefs.quietHoursStart.slice(0, 2)) * 60 + Number(prefs.quietHoursStart.slice(3)), end = Number(prefs.quietHoursEnd.slice(0, 2)) * 60 + Number(prefs.quietHoursEnd.slice(3))
       return start === end ? true : start < end ? current >= start && current < end : current >= start || current < end
-    } catch { return false }
+    } catch { return true }
   }
 
   useEffect(() => {
