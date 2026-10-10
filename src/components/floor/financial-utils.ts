@@ -47,3 +47,32 @@ export function financialCosts(profile: unknown, stock: unknown, normalized: Com
   return { adBudget, wages, stockCosts, hasStockCosts, dailyCosts: (adBudget ?? 0) + wages + (hasStockCosts ? stockCosts : 0) }
 }
 
+
+export function formatNumber(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : value.toLocaleString(undefined, { maximumFractionDigits: 0 })
+}
+
+export function formatMoney(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : "$" + value.toLocaleString(undefined, { maximumFractionDigits: 0 })
+}
+
+export function getObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+export function pretty(value: unknown): string {
+  return JSON.stringify(value, null, 2) ?? "No data returned."
+}
+export function companyTypeIdFromProfile(profile: unknown): number | null {
+  let root = getObject(profile)
+  for (let depth = 0; root && depth < 4; depth++) {
+    const nested = getObject(root.company) ?? getObject(root.profile)
+    if (!nested) break
+    root = nested
+  }
+  const type = getObject(root?.type)
+  const value = type?.id ?? root?.company_type_id ?? root?.type_id
+  return typeof value === "number" && Number.isFinite(value) ? value : typeof value === "string" && /^\d+$/.test(value) ? Number(value) : null
+}
