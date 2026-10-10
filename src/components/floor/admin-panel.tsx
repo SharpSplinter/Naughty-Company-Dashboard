@@ -4,6 +4,7 @@ type AdminTab = "overview" | "members" | "operations" | "history" | "settings" |
 type AdminSettings = { maintenanceMode: boolean; manualRefreshEnabled: boolean; historyImportEnabled: boolean }
 type AdminMember = { playerId: string; playerName: string; createdAt?: string | null; updatedAt?: string | null; companyId: string | null; companyName: string | null; companyType: string | null; companyTypeId?: number | string | null; disabled: boolean; disabledAt?: string | null; disableReason?: string | null; loginKeySaved: boolean; companyKeyCount: number; snapshotCount: number }
 type AdminJob = { jobId: string; jobType: string; targetPlayerId?: string | null; targetCompanyId?: string | null; status: string; createdAt: string; startedAt?: string | null; finishedAt?: string | null; errorMessage?: string | null; result?: unknown }
+type AutomationRun = { runId: string; triggerName: string; status: string; startedAt: string; finishedAt?: string | null; companiesChecked: number; companiesFailed: number; alertsCreated: number; errorSummary?: string | null }
 type AuditEvent = { id: number; actorPlayerId: string; actorPlayerName: string; action: string; targetType?: string | null; targetId?: string | null; outcome: string; summary: string; createdAt: string; details?: unknown }
 type MemberDetail = { member: AdminMember & { disabledAt?: string | null }; connections: { companies: Array<{ companyId: string; companyName?: string | null; companyType?: string | null; lastFour?: string; keyUpdatedAt?: string; fetchedAt?: string | null }>; loginKeySaved: boolean; legacyCompanyKeySaved: boolean }; history: { companySnapshots: number; directorSnapshots: number; pageRecords: number; financialRecords: number } }
 
@@ -57,6 +58,7 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   const [selectedMemberId, setSelectedMemberId] = useState("")
   const [memberDetail, setMemberDetail] = useState<MemberDetail | null>(null)
   const [jobs, setJobs] = useState<AdminJob[]>([])
+  const [automationRuns, setAutomationRuns] = useState<AutomationRun[]>([])
   const [settings, setSettings] = useState<AdminSettings>({ maintenanceMode: false, manualRefreshEnabled: true, historyImportEnabled: true })
   const [settingsDirty, setSettingsDirty] = useState(false)
   const [historySummary, setHistorySummary] = useState<Record<string, unknown> | null>(null)
@@ -71,18 +73,20 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
     setLoading(true)
     setError("")
     try {
-      const [o, m, j, s, h, a] = await Promise.all([
+      const [o, m, j, s, h, a, r] = await Promise.all([
         adminFetch<{ metrics: Record<string, unknown>; recentActivity?: AuditEvent[] }>(apiBase, sessionToken, "/api/admin/overview"),
         adminFetch<{ members: AdminMember[]; total: number }>(apiBase, sessionToken, "/api/admin/members?limit=50"),
         adminFetch<{ jobs: AdminJob[] }>(apiBase, sessionToken, "/api/admin/jobs?limit=30"),
         adminFetch<{ settings: AdminSettings }>(apiBase, sessionToken, "/api/admin/settings"),
         adminFetch<{ stats: Record<string, unknown>; latestCompanySnapshot?: string | null }>(apiBase, sessionToken, "/api/admin/history/summary"),
         adminFetch<{ events: AuditEvent[] }>(apiBase, sessionToken, "/api/admin/audit?limit=50"),
+        adminFetch<{ runs: AutomationRun[] }>(apiBase, sessionToken, "/api/admin/automation/runs?limit=20"),
       ])
       setOverview(o)
       setMembers(m.members || [])
       setMemberTotal(m.total || 0)
       setJobs(j.jobs || [])
+      setAutomationRuns(r.runs || [])
       setSettings(s.settings || { maintenanceMode: false, manualRefreshEnabled: true, historyImportEnabled: true })
       setSettingsDirty(false)
       setHistorySummary(h)
@@ -102,8 +106,14 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   }, [apiBase, sessionToken])
 
   const loadJobs = useCallback(async () => {
-    try { const payload = await adminFetch<{ jobs: AdminJob[] }>(apiBase, sessionToken, "/api/admin/jobs?limit=30"); setJobs(payload.jobs || []) }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load job status.") }
+    try {
+      const [payload, runs] = await Promise.all([
+        adminFetch<{ jobs: AdminJob[] }>(apiBase, sessionToken, "/api/admin/jobs?limit=30"),
+        adminFetch<{ runs: AutomationRun[] }>(apiBase, sessionToken, "/api/admin/automation/runs?limit=20"),
+      ])
+      setJobs(payload.jobs || [])
+      setAutomationRuns(runs.runs || [])
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load job status.") }
   }, [apiBase, sessionToken])
 
   const loadMembers = useCallback(async (query: string) => {
@@ -275,6 +285,7 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
       <div className="admin-section-heading"><div><h2>Refresh and maintenance jobs</h2><p>Jobs are tracked in D1, prevent equivalent concurrent requests, and report final outcomes.</p></div><button type="button" className="secondary-button" onClick={() => void loadJobs()}>Refresh job list ↻</button></div>
       <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Manual refresh</h3><p>Global refresh updates ranking profiles, one faction-directory batch, and the global ranking cache.</p></div><span className={settings.manualRefreshEnabled ? "admin-status good" : "admin-status danger"}>{settings.manualRefreshEnabled ? "Enabled by policy" : "Disabled by policy"}</span></div><button className="primary-button" type="button" disabled={!actionsArmed || !settings.manualRefreshEnabled} onClick={() => void queueJob("global-refresh")}>Queue global refresh ↻</button><p className="field-hint">Company-specific refresh is available from a member's detail panel. Work is performed server-side and does not depend on the browser remaining open.</p></section>
       <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Job history</h3><p>Most recent tracked jobs and failures.</p></div><span className="count-chip">{jobs.length} jobs</span></div>{jobs.length ? <div className="table-scroll"><table className="admin-table"><thead><tr><th>JOB</th><th>TARGET</th><th>STATUS</th><th>CREATED</th><th>RESULT / ERROR</th></tr></thead><tbody>{jobs.map((job) => <tr key={job.jobId}><td><strong>{prettyStatus(job.jobType)}</strong><small>{job.jobId}</small></td><td>{job.targetPlayerId ? `#${job.targetPlayerId}` : "Global"}{job.targetCompanyId ? <small>Company #{job.targetCompanyId}</small> : null}</td><td><span className={`admin-status ${job.status === "completed" ? "good" : job.status === "failed" ? "danger" : "warning"}`}>{job.status}</span></td><td>{prettyDate(job.createdAt)}</td><td>{job.errorMessage || (job.result && typeof job.result === "object" ? JSON.stringify(job.result) : job.status === "completed" ? "Completed" : "Waiting for result")}</td></tr>)}</tbody></table></div> : <div className="empty-state">No administrative jobs have been queued yet.</div>}</section>
+      <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Scheduled automation runs</h3><p>Daily refresh, company-check outcomes, and alert evaluation history.</p></div><span className="count-chip">{automationRuns.length} runs</span></div>{automationRuns.length ? <div className="table-scroll"><table className="admin-table"><thead><tr><th>STARTED</th><th>TRIGGER</th><th>STATUS</th><th>COMPANIES</th><th>ALERTS</th><th>SUMMARY</th></tr></thead><tbody>{automationRuns.map((run) => <tr key={run.runId}><td>{prettyDate(run.startedAt)}</td><td>{prettyStatus(run.triggerName)}</td><td><span className={`admin-status ${run.status === "succeeded" ? "good" : run.status === "failed" ? "danger" : "warning"}`}>{run.status}</span></td><td>{run.companiesChecked} checked<small>{run.companiesFailed} failed</small></td><td>{run.alertsCreated}</td><td>{run.errorSummary || (run.finishedAt ? "Completed" : "Run in progress")}</td></tr>)}</tbody></table></div> : <div className="empty-state">No scheduled runs have been recorded yet.</div>}</section>
     </div>}
 
     {tab === "history" && <div className="admin-section-stack">
