@@ -1204,6 +1204,76 @@ try {
     assert.ok(queries.every((query) => !/FROM companies(?!.*WHERE player_id = \\?)/i.test(query.sql) || query.normalized.includes("where player_id = ?")), "roster queries must be owner-scoped")
   })
 
+  await test("roster insights honor employee sharing and hide history unless trend sharing is enabled", async () => {
+    const queries = []
+    const sharedCompany = {
+      playerId: "888", companyId: "123", companyName: "Shared Roster Co", companyType: "Oil Rig", fetchedAt: "2026-10-10T18:10:00.000Z", shareTrendData: 0,
+      profileJson: JSON.stringify({ company: { id: 123, name: "Shared Roster Co", type: { name: "Oil Rig" }, employees: { hired: 1, capacity: 4 } } }),
+      employeesJson: JSON.stringify({ employees: [{ id: 9, name: "Shared Employee", position: { name: "Manager" }, stats: { manual_labor: 90, intelligence: 80, endurance: 70 }, wage: 1500, effectiveness: { total: 88 } }] }),
+    }
+    let historyRead = false
+    const db = { prepare(sql) {
+      const normalized = sql.toLowerCase()
+      let values = []
+      queries.push({ normalized, get values() { return values } })
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          if (normalized.includes("from sessions s join players p")) return { player_id: "777", player_name: "Shared Recipient" }
+          if (normalized.includes("from companies where player_id = ? and company_id = ? limit 1")) return null
+          if (normalized.includes("join company_sharing_recipients") && normalized.includes("share_employee_data = 1")) { assert.deepEqual(values, ["777", "123"]); return sharedCompany }
+          if (normalized.includes("select count(*) as count, min(fetched_at) as firstat")) { historyRead = true; return { count: 9, firstAt: "2026-01-01T00:00:00.000Z", latestAt: sharedCompany.fetchedAt } }
+          return null
+        },
+        async all() { return { results: [] } },
+        async run() { return { success: true } },
+      }
+    } }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/member-insights?companyId=123", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer roster-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.company.companyName, "Shared Roster Co")
+    assert.deepEqual(payload.roster.map((employee) => employee.name), ["Shared Employee"])
+    assert.equal(payload.summary.rosterCount, 1)
+    assert.equal(payload.summary.snapshotCount, 0, "employee permission alone must not reveal historical snapshot coverage")
+    assert.equal(payload.summary.firstSnapshotAt, null)
+    assert.equal(payload.summary.latestSnapshotAt, null)
+    assert.equal(historyRead, false, "historical snapshot metadata must not be queried without trend sharing")
+    assert.ok(queries.some((query) => query.normalized.includes("join company_sharing_recipients") && query.normalized.includes("share_employee_data = 1")))
+  })
+
+  await test("roster insights do not disclose a shared company's employees without employee-data permission", async () => {
+    let rosterRead = false
+    const db = { prepare(sql) {
+      const normalized = sql.toLowerCase()
+      let values = []
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          if (normalized.includes("from sessions s join players p")) return { player_id: "777", player_name: "Shared Recipient" }
+          if (normalized.includes("from companies where player_id = ? and company_id = ? limit 1")) return null
+          if (normalized.includes("join company_sharing_recipients")) { rosterRead = true; assert.deepEqual(values, ["777", "123"]); return null }
+          if (normalized.includes("select count(*) as count, min(fetched_at) as firstat")) throw new Error("must not read snapshot metadata for an unshared roster")
+          return null
+        },
+        async all() { return { results: [] } },
+        async run() { return { success: true } },
+      }
+    } }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/member-insights?companyId=123", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer roster-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.company, null)
+    assert.deepEqual(payload.roster, [])
+    assert.equal(payload.summary, null)
+    assert.match(payload.message, /not been shared/i)
+    assert.equal(rosterRead, true, "the Worker should verify sharing permissions before returning any roster details")
+  })
+
   await test("Executive Overview and layout customization are not listed as administrator-only views", () => {
     const floorSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
     const workspaceSource = readFileSync(join(root, "src/components/floor/insights-workspace.tsx"), "utf8")
