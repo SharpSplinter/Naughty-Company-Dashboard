@@ -1537,6 +1537,29 @@ export default {
         return jsonResponse({ saved: true, companyId: validated.companyId, companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}`, companyType: typeof type.name === "string" ? type.name : null }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
+    if (url.pathname === "/api/auth/company-key" && request.method === "DELETE") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const companyId = url.searchParams.get("companyId") ?? ""
+      if (!/^\d{1,12}$/.test(companyId) || !Number.isSafeInteger(Number(companyId)) || Number(companyId) <= 0) return jsonResponse({ error: "A valid company ID is required." }, 400, origin)
+      const db = requireDb(env)
+      const companyKey = await savedCompanyApiKey(env, session.player_id, companyId)
+      if (!companyKey) return jsonResponse({ error: "No saved API key exists for this company." }, 404, origin)
+      const loginKey = await savedKey(env, session.player_id)
+      if (loginKey && loginKey === companyKey) return jsonResponse({ error: "This company connection uses your login key. Replace your login key first if you want to disconnect this company." }, 409, origin)
+      const otherCompany = await db.prepare("SELECT company_id FROM company_api_keys WHERE player_id = ? AND company_id != ? LIMIT 1").bind(session.player_id, companyId).first<{ company_id: string }>()
+      if (!otherCompany && loginKey) {
+        try {
+          const loginCompany = await validateCompanyKey(loginKey)
+          if (String(loginCompany.companyId) === companyId) return jsonResponse({ error: "Your saved login key also connects to this company. Replace your login key first if you want to disconnect it." }, 409, origin)
+        } catch { /* A login key without company access cannot recreate this connection. */ }
+      }
+      const legacyKey = await savedCompanyKey(env, session.player_id)
+      if (legacyKey === companyKey) await db.prepare("DELETE FROM company_keys WHERE player_id = ?").bind(session.player_id).run()
+      await db.prepare("DELETE FROM company_api_keys WHERE player_id = ? AND company_id = ?").bind(session.player_id, companyId).run()
+      const keyMeta = await companyKeyMeta(env, session.player_id)
+      return jsonResponse({ deleted: true, companyId, companyDataRetained: true, companyKeySaved: keyMeta.saved }, 200, origin)
+    }
     if (url.pathname === "/api/auth/key" && request.method === "DELETE") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
@@ -1902,10 +1925,10 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       const rows = await requireDb(env).prepare("SELECT company_id, company_name, company_type, fetched_at FROM companies WHERE player_id = ? ORDER BY fetched_at DESC").bind(session.player_id).all<Record<string, unknown>>()
-      const keys = await requireDb(env).prepare("SELECT company_id, company_name, company_type, updated_at FROM company_api_keys WHERE player_id = ? ORDER BY updated_at DESC").bind(session.player_id).all<Record<string, unknown>>()
+      const keys = await requireDb(env).prepare("SELECT company_id, company_name, company_type, last_four, updated_at FROM company_api_keys WHERE player_id = ? ORDER BY updated_at DESC").bind(session.player_id).all<Record<string, unknown>>()
       const merged = new Map<string, Record<string, unknown>>()
       for (const row of rows.results ?? []) merged.set(String(row.company_id), row)
-      for (const row of keys.results ?? []) { const id = String(row.company_id); const current = merged.get(id); merged.set(id, { company_id: id, company_name: current?.company_name ?? row.company_name, company_type: current?.company_type ?? row.company_type, fetched_at: current?.fetched_at ?? row.updated_at, has_api_key: true }) }
+      for (const row of keys.results ?? []) { const id = String(row.company_id); const current = merged.get(id); merged.set(id, { company_id: id, company_name: current?.company_name ?? row.company_name, company_type: current?.company_type ?? row.company_type, fetched_at: current?.fetched_at ?? row.updated_at, has_api_key: true, key_last_four: row.last_four, key_updated_at: row.updated_at }) }
       return jsonResponse({ companies: Array.from(merged.values()).sort((a, b) => String(b.fetched_at ?? "").localeCompare(String(a.fetched_at ?? ""))) }, 200, origin)
     }
     const savedMatch = url.pathname.match(/^\/api\/me\/companies\/(\d+)$/)

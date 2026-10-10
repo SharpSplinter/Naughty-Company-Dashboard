@@ -31,7 +31,7 @@ The Worker maps Torn API error codes into stable HTTP statuses, including rate l
 
 Members authenticate with their own limited-access Torn API key. The Worker validates faction membership, encrypts saved Torn credentials at rest, and issues random bearer session tokens while storing only SHA-256 hashes in D1. The browser stores the session token locally; raw Torn keys are not stored in browser storage. Sessions expire after 30 days.
 
-The regular sign-out action revokes the current server-side session. An authenticated all-devices action revokes every active session for that player. Deleting saved credentials preserves company history. CORS restrictions are useful browser hygiene but are not a replacement for authentication.
+The regular sign-out action revokes the current server-side session. An authenticated all-devices action revokes every active session for that player. Members can also remove a single saved company key without deleting its company history; removing a key that is also required as the login key is blocked until the login key is replaced. Deleting all saved credentials preserves company history. CORS restrictions are useful browser hygiene but are not a replacement for authentication.
 
 ## Local development
 

@@ -45,7 +45,7 @@ const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.repl
 
 type IncomeSnapshot = { fetchedAt: string; dailyIncome: number | null }
 type ApiResult = { model: CompanyDashboardModel; profile: unknown; employees: unknown; stock?: unknown; incomeHistory?: IncomeSnapshot[] }
-type SavedCompany = { company_id: string; company_name: string | null; company_type: string | null; fetched_at: string; has_api_key?: boolean }
+type SavedCompany = { company_id: string; company_name: string | null; company_type: string | null; fetched_at: string; has_api_key?: boolean; key_last_four?: string | null; key_updated_at?: string | null }
 type RankingCompany = { companyId: string; companyName: string; companyType: string; companyTypeId: number | string | null; starRating: number | null; weeklyIncome: number | null; dailyIncome: number | null; averageDailyIncome: number | null; directorName: string; playerId: string; fetchedAt: string }
 type FactionDirector = { playerId: string; directorName: string; companyId: string; companyName: string; companyType: string | null; companyTypeId: number | string | null; starRating: number | null; dailyIncome: number | null; weeklyIncome: number | null; fetchedAt: string }
 type WeeklyStarCount = { starRating: number; companyCount: number }
@@ -90,6 +90,7 @@ export function FloorApp() {
   const [showRaw, setShowRaw] = useState(false)
   const [sessionToken, setSessionToken] = useState("")
   const [sessionActionBusy, setSessionActionBusy] = useState(false)
+  const [companyKeyActionBusy, setCompanyKeyActionBusy] = useState("")
   const [authChecking, setAuthChecking] = useState(true)
   const [demoMode, setDemoMode] = useState(false)
   const [playerName, setPlayerName] = useState("")
@@ -619,6 +620,25 @@ export function FloorApp() {
   }
 
 
+  async function deleteSavedCompanyKey(company: SavedCompany) {
+    if (!sessionToken || !company.has_api_key || companyKeyActionBusy) return
+    const name = company.company_name || `Company #${company.company_id}`
+    if (!window.confirm(`Remove the saved API key for ${name}? Its saved company history will be retained.`)) return
+    setCompanyKeyActionBusy(company.company_id)
+    setError("")
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/company-key?companyId=${encodeURIComponent(company.company_id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${sessionToken}` } })
+      const payload = await response.json() as { error?: string; companyKeySaved?: boolean }
+      if (!response.ok) throw new Error(payload.error || "Could not remove this company key.")
+      setSavedCompanies((current) => current.map((item) => item.company_id === company.company_id ? { ...item, has_api_key: false, key_last_four: null, key_updated_at: null } : item))
+      setCompanyKeySaved(payload.companyKeySaved ?? false)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not remove this company key.")
+    } finally {
+      setCompanyKeyActionBusy("")
+    }
+  }
+
   async function deleteSavedKey() {
     if (!sessionToken || !window.confirm("Permanently delete your saved login and company keys? Your player profile and saved company data will remain.")) return
     setError("")
@@ -874,7 +894,7 @@ export function FloorApp() {
           {isAdmin && <div className="nav-group admin-nav-group"><div className="side-label">ADMINISTRATION</div><button type="button" className={activeView === "admin" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("admin")}><span aria-hidden="true">♜</span><span className="nav-label">Administration</span><em>ADMIN</em></button></div>}
         </nav>
         <div className="sidebar-bottom">
-          <div className="connection-indicator"><span className={result ? "status-dot live" : "status-dot"} />{demoMode ? "Demo workspace · sample data" : keySaved ? `Signed in${playerName ? ` as ${playerName}` : ""}` : "Player signed in · key deleted"}</div><button className="signout-button" onClick={demoMode ? exitDemo : signOut}>{demoMode ? "Exit demo" : "Sign out"}</button>
+          <div className="connection-indicator"><span className={result ? "status-dot live" : "status-dot"} />{demoMode ? "Demo workspace · sample data" : keySaved ? `Signed in${playerName ? ` as ${playerName}` : ""}` : "Player signed in · key deleted"}</div><button className="signout-button" onClick={demoMode ? exitDemo : () => signOut()}>{demoMode ? "Exit demo" : "Sign out"}</button>
           <div className="sidebar-foot">EARLY ACCESS <span>•</span> BUILD 0.2</div>
         </div>
       </aside>
@@ -976,7 +996,7 @@ export function FloorApp() {
             </section>
           ) : activeView === "connect" ? (
             <div className="settings-workspace"><NotificationSettingsPanel apiBase={API_BASE} sessionToken={sessionToken} demoMode={demoMode} /><section className="connect-layout">
-              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Torn API & company connections</h2><p>Manage your player login and authorized company keys for companies you direct.</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-key">{needsSecondaryKey ? "First company API key" : "Add another company API key"}</label><input id="company-key" type="password" autoComplete="off" value={secondaryCompanyKey} onChange={(event) => setSecondaryCompanyKey(event.target.value)} placeholder={demoMode ? "Disabled in demo mode" : "Paste an authorized API key for a company you are permitted to manage"} disabled={demoMode} /><p className="field-hint"><span>♥</span> "Each key is validated for company profile and employee access, then saved against that company. Only add keys you have permission to use."</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}{demoMode && <p className="demo-caption">This tutorial workspace is read-only. Exit demo to connect real Torn data.</p>}<button className="primary-button form-submit" disabled={loading || demoMode}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>"Company keys are encrypted and stored separately, so adding another company does not replace your other saved company keys."</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <button key={company.company_id} type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}>{company.company_name || `Company #${company.company_id}`} <span>#{company.company_id}</span></button>)}</div>}</div>}{sessionToken && <div className="key-store-panel"><div><strong>Account security</strong><p>Sign out of all active dashboard sessions while keeping saved keys and company history.</p></div><button className="text-button danger-text" type="button" disabled={sessionActionBusy || demoMode} onClick={() => void signOutEverywhere()}>{sessionActionBusy ? "Revoking sessions…" : "Sign out all devices"}</button></div>}</div>
+              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Torn API & company connections</h2><p>Manage your player login and authorized company keys for companies you direct.</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-key">{needsSecondaryKey ? "First company API key" : "Add another company API key"}</label><input id="company-key" type="password" autoComplete="off" value={secondaryCompanyKey} onChange={(event) => setSecondaryCompanyKey(event.target.value)} placeholder={demoMode ? "Disabled in demo mode" : "Paste an authorized API key for a company you are permitted to manage"} disabled={demoMode} /><p className="field-hint"><span>♥</span> "Each key is validated for company profile and employee access, then saved against that company. Only add keys you have permission to use."</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}{demoMode && <p className="demo-caption">This tutorial workspace is read-only. Exit demo to connect real Torn data.</p>}<button className="primary-button form-submit" disabled={loading || demoMode}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>"Company keys are encrypted and stored separately, so adding another company does not replace your other saved company keys."</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <div key={company.company_id} className="saved-company-row"><button type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}><span className="saved-company-title">{company.company_name || `Company #${company.company_id}`}</span><span>#{company.company_id}</span></button>{company.has_api_key && <button type="button" className="text-button danger-text saved-company-remove" disabled={companyKeyActionBusy !== ""} onClick={() => void deleteSavedCompanyKey(company)}>{companyKeyActionBusy === company.company_id ? "Removing…" : "Remove key"}</button>}</div>)}</div>}</div>}{sessionToken && <div className="key-store-panel"><div><strong>Account security</strong><p>Sign out of all active dashboard sessions while keeping saved keys and company history.</p></div><button className="text-button danger-text" type="button" disabled={sessionActionBusy || demoMode} onClick={() => void signOutEverywhere()}>{sessionActionBusy ? "Revoking sessions…" : "Sign out all devices"}</button></div>}</div>
               <div className="panel guide-panel"><span className="guide-icon">✓</span><h2>Before you connect</h2><ul><li>Use a Torn API key with the access needed for your company.</li><li>Private employee stats may only be available to authorized company directors.</li><li>Requests pass through the Cloudflare Worker to Torn's API.</li></ul><div className="guide-note"><strong>Privacy by design</strong><p>Your player account is identified by Torn. Deleting the saved key does not delete recorded company data.</p></div></div>
             </section></div>
           ) : (

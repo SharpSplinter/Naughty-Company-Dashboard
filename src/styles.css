@@ -10,6 +10,10 @@
 .key-store-panel p { margin: 6px 0 0; color: var(--muted, #778094); font-size: 12px; line-height: 1.55; }
 .danger-text { color: #b54747; }
 .saved-company-list { display: grid; gap: 8px; margin-top: 4px; }
+.saved-company-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.saved-company-row .saved-company-link { flex: 1; min-width: 0; }
+.saved-company-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.saved-company-remove { flex: 0 0 auto; white-space: nowrap; }
 .saved-company-link { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border, #e6e8ef); border-radius: 10px; background: transparent; text-align: left; color: inherit; cursor: pointer; }
 .saved-company-link:hover { border-color: var(--accent, #8b78e6); }
 .saved-company-link span { color: var(--muted, #778094); font-size: 11px; }
