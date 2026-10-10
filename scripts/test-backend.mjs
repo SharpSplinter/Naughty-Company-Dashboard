@@ -1244,6 +1244,39 @@ try {
     assert.ok(queries.some((query) => query.normalized.includes("join company_sharing_recipients") && query.normalized.includes("share_employee_data = 1")))
   })
 
+  await test("roster insights resolve an explicitly selected shared owner when company IDs overlap", async () => {
+    const queries = []
+    const db = { prepare(sql) {
+      const normalized = sql.toLowerCase()
+      let values = []
+      queries.push({ normalized, get values() { return values } })
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          if (normalized.includes("from sessions s join players p")) return { player_id: "777", player_name: "Recipient" }
+          if (normalized.includes("from companies where player_id = ? and company_id = ? limit 1")) throw new Error("explicit shared selection must not fall back to the recipient's own company")
+          if (normalized.includes("join company_sharing_recipients") && normalized.includes("s.owner_player_id = ?") && normalized.includes("share_employee_data = 1")) {
+            assert.deepEqual(values, ["777", "888", "123"])
+            return { playerId: "888", companyId: "123", companyName: "Selected Shared Co", companyType: "Oil Rig", fetchedAt: "2026-10-10T18:10:00.000Z", shareTrendData: 0,
+              profileJson: JSON.stringify({ company: { id: 123, name: "Selected Shared Co", type: { name: "Oil Rig" }, employees: { hired: 1, capacity: 3 } } }),
+              employeesJson: JSON.stringify({ employees: [{ id: 1, name: "Correct Owner Employee", position: { name: "Manager" }, stats: { manual_labor: 50, intelligence: 60, endurance: 70 }, wage: 1000 }] }) }
+          }
+          return null
+        },
+        async all() { return { results: [] } },
+        async run() { return { success: true } },
+      }
+    } }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/member-insights?companyId=123&ownerPlayerId=888", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer roster-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.company.companyName, "Selected Shared Co")
+    assert.deepEqual(payload.roster.map((employee) => employee.name), ["Correct Owner Employee"])
+    assert.ok(queries.some((query) => query.normalized.includes("s.owner_player_id = ?") && query.normalized.includes("s.recipient_player_id = ?")))
+  })
+
   await test("roster insights do not disclose a shared company's employees without employee-data permission", async () => {
     let rosterRead = false
     const db = { prepare(sql) {
@@ -1288,6 +1321,9 @@ try {
     assert.match(workspaceSource, /Dashboard-wide appearance/)
     assert.match(workspaceSource, /Executive Overview widgets/)
     assert.match(workspaceSource, /onNavigate\("roster-insights"\)/)
+    assert.match(workspaceSource, /Roster data source/)
+    assert.match(floorSource, /sharedRosterCompanies=\{sharedCompanies\.filter\(\(company\) => company\.shareEmployeeData\)\}/)
+    assert.match(workspaceSource, /ownerPlayerId/)
   })
 
   console.log(`\n${passed} backend checks passed.`)
