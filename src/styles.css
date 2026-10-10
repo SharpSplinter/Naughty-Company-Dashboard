@@ -243,3 +243,32 @@ body, #root, .app-shell, .main-area { max-width: 100%; }
   .ranking-company-cell > strong { font-size: 9px; }
   .ranking-company-meta { font-size: 7px; }
 }
+
+/* Keep numeric values intact while allowing descriptive text to wrap. */
+.numeric-value,
+.rank-number,
+.star-rating,
+.income-primary,
+.ranking-stack > span,
+.count-chip,
+.company-facts strong,
+.income-grid article > strong,
+.overview-financial-strip article > strong,
+.employee-summary-strip strong,
+.ranking-self-grid article > strong,
+.health-grid strong,
+.stock-price-list strong,
+.profit-line,
+td.numeric-cell,
+th.numeric-cell {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
+  hyphens: none;
+  font-variant-numeric: tabular-nums;
+}
+.ranking-stack > span { flex-wrap: nowrap; }
+.ranking-stack > span small { white-space: nowrap; }
+.ranking-table td:first-child,
+.ranking-table td:nth-child(3),
+.ranking-table td:nth-child(4) { white-space: nowrap; }
