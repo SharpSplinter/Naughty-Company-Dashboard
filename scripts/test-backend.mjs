@@ -891,6 +891,66 @@ try {
     assert.ok(writes.some((item) => item.sql.includes("INSERT INTO user_page_data") && item.values[0] === "777"))
   })
 
+  await test("persists insight statuses per signed-in owner and connected company", async () => {
+    const writes = []
+    const saved = new Map()
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            const query = sql.toLowerCase()
+            if (query.includes("from sessions s join players p")) return { player_id: "777", player_name: "Member" }
+            if (query.includes("from admin_settings")) return null
+            if (query.includes("from dashboard_member_status")) return null
+            if (query.includes("from companies where player_id = ? and company_id = ?")) { assert.deepEqual(values, ["777", "123"]); return { companyId: "123" } }
+            if (query.includes("from company_api_keys where player_id = ? and company_id = ?")) return null
+            if (query.includes("from user_page_data where player_id = ? and page_key = ?")) { assert.deepEqual(values, ["777", "insight-states:123"]); const row = saved.get(values[1]); return row ? { dataJson: JSON.stringify(row), updatedAt: "2026-10-10T00:00:00.000Z" } : null }
+            return null
+          },
+          async all() { return { results: [] } },
+          async run() { writes.push({ sql, values }); if (sql.includes("INSERT INTO user_page_data")) saved.set(values[1], JSON.parse(values[2])); return { success: true, meta: { changes: 1 } } },
+        }
+      },
+    }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session", "Content-Type": "application/json" }
+    const post = await worker.fetch(new Request("https://worker.test/api/me/insight-states?companyId=123", { method: "POST", headers, body: JSON.stringify({ states: { "income-drop-2026-10-10": { status: "monitoring", updatedAt: "2026-10-10T00:00:00.000Z" } } }) }), { DB: db })
+    assert.equal(post.status, 200)
+    assert.equal((await post.json()).states["income-drop-2026-10-10"].status, "monitoring")
+    assert.ok(writes.some((item) => item.sql.includes("INSERT INTO user_page_data") && item.values[0] === "777" && item.values[1] === "insight-states:123"))
+    const get = await worker.fetch(new Request("https://worker.test/api/me/insight-states?companyId=123", { headers }), { DB: db })
+    assert.equal(get.status, 200)
+    assert.equal((await get.json()).states["income-drop-2026-10-10"].status, "monitoring")
+  })
+
+  await test("insight statuses reject invalid values and unowned company IDs", async () => {
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            const query = sql.toLowerCase()
+            if (query.includes("from sessions s join players p")) return { player_id: "777", player_name: "Member" }
+            if (query.includes("from admin_settings")) return null
+            if (query.includes("from dashboard_member_status")) return null
+            if (query.includes("from companies where player_id = ? and company_id = ?")) return null
+            if (query.includes("from company_api_keys where player_id = ? and company_id = ?")) return null
+            return null
+          },
+          async all() { return { results: [] } },
+          async run() { return { success: true, meta: { changes: 1 } } },
+        }
+      },
+    }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session", "Content-Type": "application/json" }
+    const unowned = await worker.fetch(new Request("https://worker.test/api/me/insight-states?companyId=123", { method: "POST", headers, body: JSON.stringify({ states: {} }) }), { DB: db })
+    assert.equal(unowned.status, 404)
+    const invalid = await worker.fetch(new Request("https://worker.test/api/me/insight-states?companyId=123", { method: "POST", headers, body: JSON.stringify({ states: { x: { status: "delete-everything" } } }) }), { DB: { prepare(sql) { return { bind() { return this }, async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "777", player_name: "Member" }; if (sql.toLowerCase().includes("from companies where player_id = ? and company_id = ?")) return { companyId: "123" }; return null }, async run() { return { success: true } } } } } })
+    assert.equal(invalid.status, 400)
+  })
+
   await test("alert acknowledgment cannot access another owner's event", async () => {
     const db = {
       prepare(sql) {
