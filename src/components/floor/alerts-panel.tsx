@@ -43,6 +43,7 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
   const [cooldownHours, setCooldownHours] = useState(24)
   const [staleAfterHours, setStaleAfterHours] = useState(30)
   const [loading, setLoading] = useState(false)
+  const [backendAvailable, setBackendAvailable] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
@@ -62,7 +63,14 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
       setEvents(alertPayload.events || [])
       setUnreadCount(alertPayload.unreadCount || 0)
       setLatestRun(alertPayload.latestRun || null)
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load automation data.") }
+      setBackendAvailable(true)
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "Could not load automation data."
+      if (message.includes("(404)")) {
+        setBackendAvailable(false)
+        setError("The Automation Center backend is not deployed to this preview yet. The interface is available, but the Worker routes and D1 migration must be deployed before alerts can run.")
+      } else setError(message)
+    }
     finally { setLoading(false) }
   }, [apiBase, sessionToken, demoMode])
 
@@ -70,7 +78,7 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
 
   async function createRule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!sessionToken || demoMode || saving) return
+    if (!sessionToken || demoMode || saving || !backendAvailable) return
     setSaving(true); setError(""); setNotice("")
     try {
       await automationFetch(apiBase, sessionToken, "/api/me/alert-rules", { method: "POST", body: JSON.stringify({ ruleType, companyId: companyId || null, thresholdPercent, cooldownHours, staleAfterHours }) })
@@ -128,7 +136,7 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
           {ruleType === "income_drop" && <label>Trigger when daily income drops<select value={thresholdPercent} onChange={(event) => setThresholdPercent(Number(event.target.value))}><option value={5}>5% or more</option><option value={10}>10% or more</option><option value={15}>15% or more</option><option value={20}>20% or more</option><option value={30}>30% or more</option><option value={50}>50% or more</option></select></label>}
           {ruleType === "stale_data" && <label>Mark data stale after<select value={staleAfterHours} onChange={(event) => setStaleAfterHours(Number(event.target.value))}><option value={24}>24 hours</option><option value={30}>30 hours</option><option value={36}>36 hours</option><option value={48}>48 hours</option><option value={72}>72 hours</option></select></label>}
           <label>Repeat alert cooldown<select value={cooldownHours} onChange={(event) => setCooldownHours(Number(event.target.value))}><option value={1}>1 hour</option><option value={6}>6 hours</option><option value={24}>24 hours</option><option value={72}>3 days</option><option value={168}>7 days</option></select></label>
-          <button className="primary-button" type="submit" disabled={saving || loading}>{saving ? "Saving rule…" : "Create alert rule →"}</button>
+          <button className="primary-button" type="submit" disabled={saving || loading || !backendAvailable}>{!backendAvailable ? "Backend deployment pending" : saving ? "Saving rule…" : "Create alert rule →"}</button>
         </form>
       </section>
       <section className="panel automation-rules-list">

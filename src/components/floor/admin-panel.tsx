@@ -80,7 +80,7 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
         adminFetch<{ settings: AdminSettings }>(apiBase, sessionToken, "/api/admin/settings"),
         adminFetch<{ stats: Record<string, unknown>; latestCompanySnapshot?: string | null }>(apiBase, sessionToken, "/api/admin/history/summary"),
         adminFetch<{ events: AuditEvent[] }>(apiBase, sessionToken, "/api/admin/audit?limit=50"),
-        adminFetch<{ runs: AutomationRun[] }>(apiBase, sessionToken, "/api/admin/automation/runs?limit=20"),
+        adminFetch<{ runs: AutomationRun[] }>(apiBase, sessionToken, "/api/admin/automation/runs?limit=20").catch(() => ({ runs: [] as AutomationRun[] })),
       ])
       setOverview(o)
       setMembers(m.members || [])
@@ -109,7 +109,7 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
     try {
       const [payload, runs] = await Promise.all([
         adminFetch<{ jobs: AdminJob[] }>(apiBase, sessionToken, "/api/admin/jobs?limit=30"),
-        adminFetch<{ runs: AutomationRun[] }>(apiBase, sessionToken, "/api/admin/automation/runs?limit=20"),
+        adminFetch<{ runs: AutomationRun[] }>(apiBase, sessionToken, "/api/admin/automation/runs?limit=20").catch(() => ({ runs: [] as AutomationRun[] })),
       ])
       setJobs(payload.jobs || [])
       setAutomationRuns(runs.runs || [])
