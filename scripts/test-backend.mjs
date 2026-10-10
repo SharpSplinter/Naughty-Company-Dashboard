@@ -891,6 +891,74 @@ try {
     assert.ok(writes.some((item) => item.sql.includes("INSERT INTO user_page_data") && item.values[0] === "777"))
   })
 
+  await test("personal dashboard layout GET is scoped to the authenticated member", async () => {
+    const savedLayout = { widgets: [{ id: "alerts", visible: false, order: 0 }], dashboardPreferences: { density: "compact", contentWidth: "wide" } }
+    const reads = []
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            const query = sql.toLowerCase()
+            if (query.includes("from sessions s join players p")) return { player_id: "777", player_name: "Member" }
+            if (query.includes("from admin_settings")) return null
+            if (query.includes("from dashboard_member_status")) return null
+            if (query.includes("from user_page_data where player_id = ? and page_key = ?")) {
+              reads.push({ sql, values })
+              return { dataJson: JSON.stringify(savedLayout), updatedAt: "2026-10-10T00:00:00.000Z" }
+            }
+            return null
+          },
+          async all() { return { results: [] } },
+          async run() { return { success: true, meta: { changes: 1 } } },
+        }
+      },
+    }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/dashboard-layout", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.deepEqual(payload.layout, savedLayout)
+    assert.equal(reads.length, 1)
+    assert.deepEqual(reads[0].values, ["777", "dashboard-layout"])
+  })
+
+  await test("personal dashboard layout rejects unknown and duplicate widgets without persisting", async () => {
+    const writes = []
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            const query = sql.toLowerCase()
+            if (query.includes("from sessions s join players p")) return { player_id: "777", player_name: "Member" }
+            if (query.includes("from admin_settings")) return null
+            if (query.includes("from dashboard_member_status")) return null
+            return null
+          },
+          async all() { return { results: [] } },
+          async run() { writes.push({ sql, values }); return { success: true, meta: { changes: 1 } } },
+        }
+      },
+    }
+    const invalidLayouts = [
+      [{ id: "not-a-widget", visible: true }],
+      [{ id: "alerts", visible: true }, { id: "alerts", visible: false }],
+    ]
+    for (const widgets of invalidLayouts) {
+      const response = await worker.fetch(new Request("https://worker.test/api/me/dashboard-layout", {
+        method: "POST", headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session", "Content-Type": "application/json" },
+        body: JSON.stringify({ widgets }),
+      }), { DB: db })
+      assert.equal(response.status, 400)
+      assert.match((await response.json()).error, /unknown or duplicate widget/i)
+    }
+    assert.equal(writes.some((item) => item.sql.includes("INSERT INTO user_page_data")), false)
+  })
+
   await test("persists insight statuses per signed-in owner and connected company", async () => {
     const writes = []
     const saved = new Map()
