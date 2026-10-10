@@ -498,6 +498,93 @@ try {
     }
   })
 
+  await test("authenticated health reports snapshot-based freshness and complete stale counts", async () => {
+    const now = Date.now()
+    const latest = new Date(now - 60 * 60 * 1000).toISOString()
+    const rows = [
+      { companyId: "fresh", companyName: "Fresh Co", companyType: "Grocery Store", fetchedAt: latest, snapshotCount: 5 },
+      { companyId: "aging", companyName: "Aging Co", companyType: "Grocery Store", fetchedAt: new Date(now - 12.1 * 60 * 60 * 1000).toISOString(), snapshotCount: 3 },
+      { companyId: "stale", companyName: "Stale Co", companyType: "Grocery Store", fetchedAt: new Date(now - 25 * 60 * 60 * 1000).toISOString(), snapshotCount: 8 },
+      { companyId: "never", companyName: "Never Synced Co", companyType: "Grocery Store", fetchedAt: null, snapshotCount: 0 },
+    ]
+    const queries = []
+    const db = { prepare(sql) {
+      queries.push(sql)
+      const normalized = sql.toLowerCase()
+      let values = []
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          if (normalized.includes("from sessions s join players p")) return { player_id: "777", player_name: "Health Tester" }
+          if (normalized.includes("as stalecompanies")) {
+            assert.equal(values.length, 6, "summary must bind every owner-scoped query parameter and freshness cutoff")
+            assert.ok(normalized.includes("max(s.fetched_at)"), "freshness must use saved snapshots, not the mutable current company row")
+            return { companyCount: 105, snapshotCount: 208, latestSnapshotAt: latest, staleCompanies: 43 }
+          }
+          return null
+        },
+        async all() {
+          if (normalized.includes("snapshot_stats as")) {
+            assert.equal(values.length, 3)
+            assert.ok(normalized.includes("where player_id = ?"))
+            return { results: rows }
+          }
+          return { results: [] }
+        },
+        async run() { return { success: true } },
+      }
+    } }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/health", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer health-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.worker.status, "ok")
+    assert.equal(payload.database.status, "ok")
+    assert.equal(payload.summary.companyCount, 105)
+    assert.equal(payload.summary.snapshotCount, 208)
+    assert.equal(payload.summary.staleCompanies, 43, "stale count must cover all connected companies, not only the displayed rows")
+    assert.equal(payload.companies.find((company) => company.companyId === "fresh").freshness, "fresh")
+    assert.equal(payload.companies.find((company) => company.companyId === "aging").freshness, "aging")
+    assert.equal(payload.companies.find((company) => company.companyId === "stale").freshness, "stale")
+    assert.equal(payload.companies.find((company) => company.companyId === "never").freshness, "never")
+    assert.ok(queries.filter((sql) => sql.toLowerCase().includes("with connected as")).every((sql) => sql.includes("player_id = ?")), "all company and snapshot queries must be owner-scoped")
+    assert.doesNotMatch(JSON.stringify(payload), /ciphertext|api.?key|secret|session.?token/i)
+  })
+
+  await test("authenticated health returns a safe storage error when the database probe fails", async () => {
+    const db = { prepare(sql) { const normalized = sql.toLowerCase(); return {
+      bind() { return this },
+      async first() {
+        if (normalized.includes("from sessions s join players p")) return { player_id: "777", player_name: "Health Tester" }
+        if (normalized.includes("as stalecompanies")) throw new Error("private database diagnostic")
+        return null
+      },
+      async all() { return { results: [] } },
+      async run() { return { success: true } },
+    } } }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/health", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer health-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200, "the authenticated payload must let the UI render component health states")
+    const payload = await response.json()
+    assert.equal(payload.worker.status, "ok")
+    assert.equal(payload.database.status, "error")
+    assert.equal(payload.error, "The health check could not query dashboard storage.")
+    assert.doesNotMatch(JSON.stringify(payload), /private database diagnostic/)
+  })
+
+  await test("public health returns service unavailable when D1 is unreachable", async () => {
+    const response = await worker.fetch(new Request("https://worker.test/health", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev" },
+    }), { DB: { prepare() { return { async first() { throw new Error("private database diagnostic") } } } } })
+    assert.equal(response.status, 503)
+    const payload = await response.json()
+    assert.equal(payload.ok, false)
+    assert.equal(payload.database, "error")
+    assert.doesNotMatch(JSON.stringify(payload), /private database diagnostic/)
+  })
+
   await test("Worker rejects untrusted browser origins", async () => {
     const response = await worker.fetch(new Request("https://worker.test/health", {
       headers: { Origin: "https://untrusted.example" },

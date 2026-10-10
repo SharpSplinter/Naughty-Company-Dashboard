@@ -4,7 +4,7 @@ The dashboard includes five connected intelligence views in addition to Company 
 
 ## API Health & Data Freshness
 
-`GET /api/me/health` probes the authenticated user's D1-backed dashboard data and reports Worker/database status, snapshot coverage, and per-company freshness. Freshness is measured from the last successful saved company record: under 12 hours is fresh, 12 to 24 hours is aging, and 24 hours or more is stale. This is a data-freshness signal, not a guarantee that Torn's upstream API is currently reachable. `/health` also performs a database connectivity probe without exposing account-specific data.
+`GET /api/me/health` probes the authenticated user's D1-backed dashboard data and reports Worker/database status, snapshot coverage, and per-company freshness. Freshness is measured from the latest successful saved `company_snapshots` record for each connected company: under 12 hours is fresh, 12 to under 24 hours is aging, and 24 hours or more is stale. A connected company without a saved snapshot is `never` synced and counts as stale for the summary. Freshness boundaries use the unrounded elapsed time. Summary counts cover every connected company; the detailed table shows at most the 100 most recently refreshed companies and discloses when the list is truncated. Database probe failures are returned as a safe, explicit health state without leaking internal diagnostics. This is a dashboard Worker/database and saved-data health signal, not a guarantee that Torn's upstream API is currently reachable. `/health` also performs a database connectivity probe without exposing account-specific data and returns HTTP 503 when D1 is unavailable.
 
 ## Historical Trends and Comparisons
 
