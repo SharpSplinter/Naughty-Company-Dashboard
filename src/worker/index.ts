@@ -642,15 +642,29 @@ type WebhookAlert = { eventId: string; ruleId: string; ruleType: string; severit
 
 function severityRank(value: unknown): number { return value === "critical" ? 3 : value === "warning" ? 2 : 1 }
 
-async function deliverAutomationWebhook(env: WorkerEnv, ownerPlayerId: string, alert: WebhookAlert): Promise<{ attempted: boolean; delivered: boolean; statusCode?: number; detail?: string }> {
+function isWithinQuietHours(preferences: { quietHoursEnabled?: number; quietHoursStart?: string; quietHoursEnd?: string; timezone?: string } | null, at = new Date()): boolean {
+  if (!preferences?.quietHoursEnabled) return false
+  const timezone = typeof preferences.timezone === "string" && preferences.timezone ? preferences.timezone : "UTC"
+  let parts: Record<string, string> = {}
+  try { parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone: timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(at).map((part) => [part.type, part.value])) }
+  catch { return false }
+  const now = Number(parts.hour) * 60 + Number(parts.minute)
+  const parse = (value: unknown, fallback: string) => { const match = /^(\d{2}):(\d{2})$/.exec(typeof value === "string" ? value : fallback); return match ? Number(match[1]) * 60 + Number(match[2]) : Number(fallback.slice(0, 2)) * 60 + Number(fallback.slice(3)) }
+  const start = parse(preferences.quietHoursStart, "22:00"), end = parse(preferences.quietHoursEnd, "08:00")
+  return start === end ? true : start < end ? now >= start && now < end : now >= start || now < end
+}
+
+async function deliverAutomationWebhook(env: WorkerEnv, ownerPlayerId: string, alert: WebhookAlert, options: { ignoreDigestMode?: boolean; ignoreQuietHours?: boolean } = {}): Promise<{ attempted: boolean; delivered: boolean; statusCode?: number; detail?: string }> {
   const db = requireDb(env)
   try {
     const [hook, preferences] = await Promise.all([
       db.prepare("SELECT ciphertext, iv FROM automation_webhooks WHERE owner_player_id = ? AND enabled = 1").bind(ownerPlayerId).first<{ ciphertext: string; iv: string }>(),
-      db.prepare("SELECT minimum_severity AS minimumSeverity FROM automation_preferences WHERE owner_player_id = ?").bind(ownerPlayerId).first<{ minimumSeverity: string }>(),
+      db.prepare("SELECT minimum_severity AS minimumSeverity, digest_mode AS digestMode, quiet_hours_enabled AS quietHoursEnabled, quiet_hours_start AS quietHoursStart, quiet_hours_end AS quietHoursEnd, timezone FROM automation_preferences WHERE owner_player_id = ?").bind(ownerPlayerId).first<{ minimumSeverity: string; digestMode: string; quietHoursEnabled: number; quietHoursStart: string; quietHoursEnd: string; timezone: string }>(),
     ])
     if (!hook) return { attempted: false, delivered: false, detail: "No webhook is configured." }
     if (preferences?.minimumSeverity && severityRank(alert.severity) < severityRank(preferences.minimumSeverity)) return { attempted: false, delivered: false, detail: "Alert is below the configured minimum severity." }
+    if (!options.ignoreDigestMode && preferences?.digestMode !== undefined && preferences.digestMode !== "instant") return { attempted: false, delivered: false, detail: preferences.digestMode === "off" ? "Webhook delivery is disabled by notification preferences." : "Alert is queued for daily digest delivery." }
+    if (!options.ignoreQuietHours && isWithinQuietHours(preferences)) return { attempted: false, delivered: false, detail: "Alert is within configured quiet hours." }
     const endpoint = await decryptKey(env, hook.ciphertext, hook.iv)
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 5000)
@@ -667,8 +681,20 @@ async function deliverAutomationWebhook(env: WorkerEnv, ownerPlayerId: string, a
     await db.prepare("INSERT INTO automation_delivery_log (delivery_id, owner_player_id, event_id, status, status_code, detail, created_at, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), ownerPlayerId, alert.eventId, delivered ? "delivered" : "failed", statusCode ?? null, detail, now, delivered ? now : null).run()
     await db.prepare("UPDATE automation_webhooks SET last_delivered_at = CASE WHEN ? = 1 THEN ? ELSE last_delivered_at END, last_error = ?, updated_at = ? WHERE owner_player_id = ?").bind(Number(delivered), now, delivered ? null : detail, now, ownerPlayerId).run()
     return { attempted: true, delivered, statusCode, detail }
-  } catch {
-    return { attempted: true, delivered: false, detail: "Webhook delivery could not be completed. Check the configured endpoint and encryption settings." }
+  } catch { return { attempted: true, delivered: false, detail: "Webhook delivery could not be completed. Check the configured endpoint and encryption settings." } }
+}
+
+async function deliverDailyAutomationDigests(env: WorkerEnv, now = new Date()): Promise<void> {
+  const db = requireDb(env)
+  const cutoff = new Date(now.getTime() - DAY * 1000).toISOString()
+  const owners = await db.prepare("SELECT owner_player_id AS ownerPlayerId, timezone, quiet_hours_enabled AS quietHoursEnabled, quiet_hours_start AS quietHoursStart, quiet_hours_end AS quietHoursEnd FROM automation_preferences WHERE digest_mode = 'daily'").all<{ ownerPlayerId: string; timezone: string; quietHoursEnabled: number; quietHoursStart: string; quietHoursEnd: string }>()
+  for (const owner of owners.results ?? []) {
+    if (isWithinQuietHours(owner, now)) continue
+    const events = await db.prepare("SELECT e.event_id AS eventId, e.rule_id AS ruleId, e.rule_type AS ruleType, e.severity, e.title, e.message, e.company_id AS companyId, e.created_at AS createdAt FROM alert_events e WHERE e.owner_player_id = ? AND e.created_at <= ? AND NOT EXISTS (SELECT 1 FROM automation_delivery_log d WHERE d.owner_player_id = e.owner_player_id AND d.event_id = e.event_id AND d.status = 'delivered') ORDER BY e.created_at ASC LIMIT 50").bind(owner.ownerPlayerId, cutoff).all<WebhookAlert>()
+    for (const event of events.results ?? []) {
+      if (severityRank(event.severity) < 1) continue
+      await deliverAutomationWebhook(env, owner.ownerPlayerId, event, { ignoreDigestMode: true, ignoreQuietHours: true })
+    }
   }
 }
 
@@ -681,10 +707,15 @@ async function createAlertEvent(env: WorkerEnv, rule: AlertRuleRow, input: Alert
   const cooldownHours = normalizeCooldownHours(rule.cooldown_hours)
   if (Number.isFinite(lastTriggered) && Date.now() - lastTriggered < cooldownHours * 3600000) return false
   const dedupeKey = `${rule.rule_id}:${input.dedupeSuffix}`
+  const eventId = crypto.randomUUID()
+  const companyId = input.companyId ?? rule.company_id
   const result = await db.prepare("INSERT OR IGNORE INTO alert_events (event_id, owner_player_id, rule_id, company_id, rule_type, severity, title, message, previous_value, current_value, change_percent, source_snapshot_at, status, dedupe_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?)")
-    .bind(crypto.randomUUID(), rule.owner_player_id, rule.rule_id, input.companyId ?? rule.company_id, rule.rule_type, input.severity, input.title.slice(0, 120), input.message.slice(0, 500), input.previousValue ?? null, input.currentValue ?? null, input.changePercent ?? null, input.sourceSnapshotAt ?? null, dedupeKey, now).run()
+    .bind(eventId, rule.owner_player_id, rule.rule_id, companyId, rule.rule_type, input.severity, input.title.slice(0, 120), input.message.slice(0, 500), input.previousValue ?? null, input.currentValue ?? null, input.changePercent ?? null, input.sourceSnapshotAt ?? null, dedupeKey, now).run()
   const inserted = (result.meta?.changes ?? 0) > 0
-  if (inserted) await db.prepare("UPDATE alert_rules SET last_triggered_at = ?, updated_at = ? WHERE rule_id = ? AND owner_player_id = ?").bind(now, now, rule.rule_id, rule.owner_player_id).run()
+  if (inserted) {
+    await db.prepare("UPDATE alert_rules SET last_triggered_at = ?, updated_at = ? WHERE rule_id = ? AND owner_player_id = ?").bind(now, now, rule.rule_id, rule.owner_player_id).run()
+    await deliverAutomationWebhook(env, rule.owner_player_id, { eventId, ruleId: rule.rule_id, ruleType: rule.rule_type, severity: input.severity, title: input.title.slice(0, 120), message: input.message.slice(0, 500), companyId, createdAt: now }).catch(() => undefined)
+  }
   return inserted
 }
 
@@ -802,6 +833,7 @@ async function runScheduledAutomation(controller: { scheduledTime: number; cron:
   if (isWeeklyLock) tasks.push(captureWeeklyFactionStarCounts(env, startedAt))
   const results = await Promise.allSettled(tasks)
   await evaluateStaleDataRules(env).catch(() => undefined)
+  await deliverDailyAutomationDigests(env).catch(() => undefined)
   const refresh = results[0]
   const refreshSummary = refresh.status === "fulfilled" ? refresh.value as { companiesChecked?: number; companiesFailed?: number } : { companiesChecked: 0, companiesFailed: 0 }
   const failures = results.filter((item) => item.status === "rejected").map((item) => item.status === "rejected" ? (item.reason instanceof Error ? item.reason.message : "A scheduled task failed.") : "")
