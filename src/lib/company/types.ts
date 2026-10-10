@@ -43,8 +43,12 @@ export type NormalizedEmployee = {
   daysInCompany: number | null
   status: string | null
   lastAction: string | null
+  lastActionTimestamp: number | null
   stats: Record<StatCode, number> | null
-  effectiveness: number | null
+  workStatsEffectiveness: number | null
+  inactivityEffectiveness: number | null
+  addictionEffectiveness: number | null
+  totalPositionEffectiveness: number | null
   wage: number | null
   requirement: PositionRequirement | null
   fit: "meets" | "below" | "unknown" | "unmapped"

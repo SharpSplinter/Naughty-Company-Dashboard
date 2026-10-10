@@ -122,6 +122,10 @@ function normalizeEmployee(
 
   const effectiveness = record(employee.effectiveness)
   const lastAction = record(employee.last_action)
+  const workStatsEffectiveness = finiteNumber(effectiveness.working_stats ?? effectiveness.work_stats ?? effectiveness.workStats)
+  const inactivityEffectiveness = finiteNumber(effectiveness.inactivity ?? effectiveness.inactive ?? effectiveness.settled_in ?? effectiveness.settledIn)
+  const addictionEffectiveness = finiteNumber(effectiveness.addiction)
+  const totalPositionEffectiveness = finiteNumber(effectiveness.total)
 
   return {
     id,
@@ -131,8 +135,12 @@ function normalizeEmployee(
     daysInCompany: finiteNumber(employee.days_in_company),
     status: normalizeStatus(employee.status),
     lastAction: normalizeLastAction(lastAction),
+    lastActionTimestamp: finiteNumber(lastAction.timestamp),
     stats,
-    effectiveness: finiteNumber(effectiveness.total),
+    workStatsEffectiveness,
+    inactivityEffectiveness,
+    addictionEffectiveness,
+    totalPositionEffectiveness,
     wage: finiteNumber(employee.wage),
     requirement,
     fit,
