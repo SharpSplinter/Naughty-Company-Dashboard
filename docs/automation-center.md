@@ -1,6 +1,6 @@
 # Automation Center
 
-The Automation Center adds private in-app alerts and visibility into scheduled Worker runs.
+The Automation Center is available to every authenticated dashboard user for their own companies, adding private in-app alerts and visibility into scheduled Worker runs. Account-level run analytics and administrative controls remain restricted to administrators.
 
 ## Rule templates
 
