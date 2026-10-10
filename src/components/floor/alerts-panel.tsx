@@ -35,6 +35,11 @@ function ruleDescription(type: AlertRuleType) {
 export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyId, demoMode, onNavigateCharts }: Props) {
   const [rules, setRules] = useState<AlertRule[]>([])
   const [events, setEvents] = useState<AlertEvent[]>([])
+  const [alertSearch, setAlertSearch] = useState("")
+  const [alertStatusFilter, setAlertStatusFilter] = useState<"all" | "unread" | "acknowledged">("all")
+  const [alertTypeFilter, setAlertTypeFilter] = useState<"all" | AlertRuleType>("all")
+  const [alertSeverityFilter, setAlertSeverityFilter] = useState<"all" | AlertEvent["severity"]>("all")
+  const [alertCompanyFilter, setAlertCompanyFilter] = useState("all")
   const [unreadCount, setUnreadCount] = useState(0)
   const [latestRun, setLatestRun] = useState<AutomationRun>(null)
   const [ruleType, setRuleType] = useState<AlertRuleType>("income_drop")
@@ -81,6 +86,18 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
   }, [apiBase, sessionToken, demoMode])
 
   useEffect(() => { void load() }, [load])
+
+  const filteredEvents = events.filter((event) => {
+    const query = alertSearch.trim().toLocaleLowerCase()
+    const matchesSearch = !query || [event.title, event.message, event.companyName || "", ruleLabel(event.ruleType)].some((value) => value.toLocaleLowerCase().includes(query))
+    return matchesSearch
+      && (alertStatusFilter === "all" || event.status === alertStatusFilter)
+      && (alertTypeFilter === "all" || event.ruleType === alertTypeFilter)
+      && (alertSeverityFilter === "all" || event.severity === alertSeverityFilter)
+      && (alertCompanyFilter === "all" || String(event.companyId || "") === alertCompanyFilter)
+  })
+  const hasAlertFilters = Boolean(alertSearch.trim()) || alertStatusFilter !== "all" || alertTypeFilter !== "all" || alertSeverityFilter !== "all" || alertCompanyFilter !== "all"
+  function clearAlertFilters() { setAlertSearch(""); setAlertStatusFilter("all"); setAlertTypeFilter("all"); setAlertSeverityFilter("all"); setAlertCompanyFilter("all") }
 
   async function createRule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -191,8 +208,16 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
       </section>
     </div>
     <section className="panel automation-inbox">
-      <div className="panel-heading"><div><h2>Alert inbox</h2><p>Recent changes and system warnings for your connected companies.</p></div><span className="count-chip">{unreadCount} unread</span></div>
-      {loading && !events.length ? <div className="empty-state">Loading alerts…</div> : events.length ? <div className="automation-event-list">{events.map((event) => <article className={`automation-event-card ${event.status === "acknowledged" ? "acknowledged" : ""}`} key={event.eventId}><div className={`automation-event-severity ${event.severity}`}>{event.severity === "critical" ? "!" : event.severity === "warning" ? "▲" : "i"}</div><div className="automation-event-content"><div className="automation-event-meta"><span>{ruleLabel(event.ruleType)}</span><span>{prettyDate(event.createdAt)}</span></div><h3>{event.title}</h3><p>{event.message}</p>{event.companyName && <small>{event.companyName}</small>}{event.changePercent != null && <div className="automation-event-values"><span>Previous {Number(event.previousValue ?? 0).toLocaleString()}</span><span>Current {Number(event.currentValue ?? 0).toLocaleString()}</span><strong>{event.changePercent.toFixed(1)}%</strong></div>}{event.sourceSnapshotAt && <small>Snapshot: {prettyDate(event.sourceSnapshotAt)}</small>}</div><div className="automation-event-actions">{event.status === "unread" ? <button className="secondary-button" type="button" onClick={() => void acknowledge(event)}>Acknowledge</button> : <span className="automation-acknowledged">Acknowledged</span>}{event.ruleType === "income_drop" && <button className="text-button" type="button" onClick={onNavigateCharts}>Open trends ↗</button>}</div></article>)}</div> : <div className="empty-state">No alerts yet. When a rule detects a meaningful change, it will appear here.</div>}
+      <div className="panel-heading"><div><h2>Alert inbox</h2><p>Search and narrow recent alerts by company, rule, severity, or acknowledgement.</p></div><span className="count-chip">{unreadCount} unread</span></div>
+      <div className="automation-alert-filters">
+        <label className="automation-alert-search"><span>Search alerts</span><input type="search" value={alertSearch} onChange={(event) => setAlertSearch(event.target.value)} placeholder="Search title, message, or company…" aria-label="Search alert title, message, or company" /></label>
+        <label><span>Company</span><select value={alertCompanyFilter} onChange={(event) => setAlertCompanyFilter(event.target.value)}><option value="all">All companies</option>{companies.filter((company) => events.some((item) => String(item.companyId || "") === company.company_id)).map((company) => <option key={company.company_id} value={company.company_id}>{company.company_name || `Company #${company.company_id}`}</option>)}{events.filter((item) => item.companyId && !companies.some((company) => company.company_id === item.companyId)).map((event) => <option key={event.companyId} value={String(event.companyId)}> {event.companyName || `Company #${event.companyId}`} </option>).filter((option, index, list) => list.findIndex((item) => item.key === option.key) === index)}</select></label>
+        <label><span>Status</span><select value={alertStatusFilter} onChange={(event) => setAlertStatusFilter(event.target.value as typeof alertStatusFilter)}><option value="all">All statuses</option><option value="unread">Unread</option><option value="acknowledged">Acknowledged</option></select></label>
+        <label><span>Alert type</span><select value={alertTypeFilter} onChange={(event) => setAlertTypeFilter(event.target.value as typeof alertTypeFilter)}><option value="all">All types</option><option value="income_drop">Income drop</option><option value="stale_data">Stale data</option><option value="refresh_failure">Refresh failure</option></select></label>
+        <label><span>Severity</span><select value={alertSeverityFilter} onChange={(event) => setAlertSeverityFilter(event.target.value as typeof alertSeverityFilter)}><option value="all">All severity</option><option value="critical">Critical</option><option value="warning">Warning</option><option value="info">Info</option></select></label>
+        <div className="automation-alert-filter-summary"><span>{hasAlertFilters ? `${filteredEvents.length} of ${events.length} alerts` : `${events.length} recent alerts`}</span>{hasAlertFilters && <button className="text-button" type="button" onClick={clearAlertFilters}>Clear filters</button>}</div>
+      </div>
+      {loading && !events.length ? <div className="empty-state">Loading alerts…</div> : events.length ? filteredEvents.length ? <div className="automation-event-list">{filteredEvents.map((event) => <article className={`automation-event-card ${event.status === "acknowledged" ? "acknowledged" : ""}`} key={event.eventId}><div className={`automation-event-severity ${event.severity}`}>{event.severity === "critical" ? "!" : event.severity === "warning" ? "▲" : "i"}</div><div className="automation-event-content"><div className="automation-event-meta"><span>{ruleLabel(event.ruleType)}</span><span>{prettyDate(event.createdAt)}</span></div><h3>{event.title}</h3><p>{event.message}</p>{event.companyName && <small>{event.companyName}</small>}{event.changePercent != null && <div className="automation-event-values"><span>Previous {Number(event.previousValue ?? 0).toLocaleString()}</span><span>Current {Number(event.currentValue ?? 0).toLocaleString()}</span><strong>{event.changePercent.toFixed(1)}%</strong></div>}{event.sourceSnapshotAt && <small>Snapshot: {prettyDate(event.sourceSnapshotAt)}</small>}</div><div className="automation-event-actions">{event.status === "unread" ? <button className="secondary-button" type="button" onClick={() => void acknowledge(event)}>Acknowledge</button> : <span className="automation-acknowledged">Acknowledged</span>}{event.ruleType === "income_drop" && <button className="text-button" type="button" onClick={onNavigateCharts}>Open trends ↗</button>}</div></article>)}</div> : <div className="empty-state">No alerts match these filters. Try a different search or clear the filters.</div> : <div className="empty-state">No alerts yet. When a rule detects a meaningful change, it will appear here.</div>}
     </section>
   </div>
 }
