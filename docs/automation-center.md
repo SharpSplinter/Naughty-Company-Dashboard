@@ -33,3 +33,6 @@ Users can edit an existing alert rule in place: income-drop thresholds, stale-da
 The administrator Operations panel includes Automation Insights: success rate (excluding in-progress runs), completed/failed/partial counts, average runtime, company failures, alerts created, time-window and status filters, per-run duration, and the most frequent recorded failure summaries. Summary aggregates cover the entire selected time window even though the visible run list is capped at 100 entries.
 
 Notifications are in-app only in this release. External delivery, quiet hours, and additional metric types remain later stages.
+
+
+The alert inbox supports client-side search across alert titles, messages, and company names, plus filters for company, acknowledgement status, rule type, and severity. Filtering applies to the latest alert batch loaded for the signed-in account; the unread total remains account-wide.
