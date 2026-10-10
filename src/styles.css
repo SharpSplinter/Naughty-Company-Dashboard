@@ -611,6 +611,21 @@ th.numeric-cell {
 .app-shell.dashboard-density-compact .page-content .panel-heading { margin-bottom: 8px; }
 .app-shell.dashboard-density-compact .page-content table th,
 .app-shell.dashboard-density-compact .page-content table td { padding: 6px 8px; }
+/* Compact mode: wrap complete header words onto multiple lines to avoid excess column width. */
+.app-shell.dashboard-density-compact .page-content table th {
+  white-space: normal !important;
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: manual;
+  line-height: 1.25;
+  vertical-align: bottom;
+  max-width: 12ch;
+}
+.app-shell.dashboard-density-compact .page-content table th * {
+  white-space: normal !important;
+  overflow-wrap: normal;
+  word-break: normal;
+}
 .app-shell.dashboard-density-compact .company-facts { margin-top: 14px; margin-bottom: 14px; }
 .app-shell.dashboard-density-compact .company-facts > div { padding: 9px; }
 .app-shell.dashboard-density-compact .company-card { padding: 8px; }
