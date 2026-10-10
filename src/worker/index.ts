@@ -765,7 +765,7 @@ export default {
         const backup = {
           format: "naughty-company-dashboard-backup", version: 1, exportedAt: new Date().toISOString(), player: { id: session.player_id, name: session.player_name },
           pages: {
-            company: { companies }, employees: { companies }, charts: { history: charts, companySnapshots, directorSnapshots },
+            company: { companies, financials }, employees: { companies }, charts: { history: charts, companySnapshots, directorSnapshots },
             rankings, references, settings: { sharingPreferences, preferences: settings },
           },
           storage: { companies, financials, companySnapshots, directorSnapshots, pageData, sharingPreferences },
@@ -827,6 +827,7 @@ export default {
       } else if (pageKey === "company" || pageKey === "employees") {
         if (!isRecord(data) || !Array.isArray(data.companies)) return jsonResponse({ error: "This page import must be a dashboard page JSON export containing a companies array." }, 400, origin)
         await restoreCompanies(data.companies)
+        if (pageKey === "company") await restoreFinancials(data.financials)
       } else if (pageKey === "settings") {
         if (!isRecord(data)) return jsonResponse({ error: "Settings import must be a JSON object." }, 400, origin)
         if (Array.isArray(data.sharingPreferences)) await restoreSharing(data.sharingPreferences)
