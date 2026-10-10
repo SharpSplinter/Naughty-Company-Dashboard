@@ -1017,6 +1017,136 @@ try {
     assert.match(source, /\/api\/auth\/company-key\?companyId=/)
   })
 
+  await test("historical company trends are owner-scoped, ordered, and summarize period changes", async () => {
+    const queries = []
+    const db = { prepare(sql) {
+      const normalized = sql.toLowerCase()
+      let values = []
+      queries.push({ sql, normalized, get values() { return values } })
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          if (normalized.includes("from sessions s join players p")) return { player_id: "777", player_name: "History Tester" }
+          if (normalized.includes("from companies where player_id = ? and company_id = ? limit 1")) {
+            assert.deepEqual(values, ["777", "123"])
+            return { companyId: "123", companyName: "History Co", companyType: "Oil Rig" }
+          }
+          return null
+        },
+        async all() {
+          if (normalized.includes("row_number() over (partition by substr(fetched_at, 1, 10)")) {
+            assert.deepEqual(values.slice(0, 2), ["777", "123"], "history queries must filter by authenticated owner and selected company")
+            assert.equal(values.length, 3, "a selected range must bind its cutoff")
+            return { results: [
+              { snapshotId: "old", fetchedAt: "2026-10-08T18:10:00.000Z", profileJson: JSON.stringify({ company: { id: 123, income: { daily: 100, weekly: 700 }, rating: 3 } }), employeesJson: JSON.stringify({ employees: [{ id: 1 }] }) },
+              { snapshotId: "latest", fetchedAt: "2026-10-10T18:10:00.000Z", profileJson: JSON.stringify({ company: { id: 123, income: { daily: 150, weekly: 1050 }, rating: 4 } }), employeesJson: JSON.stringify({ employees: [{ id: 1 }, { id: 2 }] }) },
+            ] }
+          }
+          return { results: [] }
+        },
+        async run() { return { success: true } },
+      }
+    } }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/companies/123/history?days=30", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer history-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.company.companyName, "History Co")
+    assert.equal(payload.range, "30")
+    assert.deepEqual(payload.history.map((point) => point.day), ["2026-10-08", "2026-10-10"])
+    assert.equal(payload.history[1].dailyIncome, 150)
+    assert.equal(payload.history[1].employeeCount, 2)
+    assert.equal(payload.summary.snapshotCount, 2)
+    assert.equal(payload.summary.dailyIncomeChange, 50)
+    assert.equal(payload.summary.dailyIncomeChangePercent, 50)
+    assert.equal(payload.summary.weeklyIncomeChange, 350)
+    assert.equal(payload.summary.ratingChange, 1)
+    assert.equal(payload.summary.employeeCountChange, 1)
+    assert.ok(queries.some((query) => query.normalized.includes("where player_id = ? and company_id = ?")))
+  })
+
+  await test("historical company trends refuse to disclose an unowned company", async () => {
+    let historyRead = false
+    const db = { prepare(sql) {
+      const normalized = sql.toLowerCase()
+      let values = []
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          if (normalized.includes("from sessions s join players p")) return { player_id: "777", player_name: "History Tester" }
+          if (normalized.includes("from companies where player_id = ? and company_id = ? limit 1")) { assert.deepEqual(values, ["777", "999"]); return null }
+          return null
+        },
+        async all() { if (normalized.includes("row_number() over")) historyRead = true; return { results: [] } },
+        async run() { return { success: true } },
+      }
+    } }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/companies/999/history?days=30", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer history-session" },
+    }), { DB: db })
+    assert.equal(response.status, 404)
+    assert.match((await response.json()).error, /not connected to your account/i)
+    assert.equal(historyRead, false, "history must not be queried before company ownership is confirmed")
+  })
+
+  await test("roster insights calculate known employee averages and use only the selected owner's company", async () => {
+    const queries = []
+    const company = {
+      companyId: "123", companyName: "Roster Co", companyType: "Oil Rig", fetchedAt: "2026-10-10T18:10:00.000Z",
+      profileJson: JSON.stringify({ company: { id: 123, name: "Roster Co", type: { name: "Oil Rig" }, employees: { hired: 2, capacity: 5 } } }),
+      employeesJson: JSON.stringify({ employees: [
+        { id: 2, name: "Zoe", position: { name: "Sales" }, days_in_company: 15, stats: { manual_labor: 100, intelligence: 80, endurance: 60 }, wage: 1200, effectiveness: { total: 80, addiction: -2, inactivity: -3 }, status: { description: "Active" }, last_action: { relative: "1 day ago" } },
+        { id: 1, name: "Amy", position: { name: "Manager" }, days_in_company: 30, stats: { manual_labor: 200, intelligence: 100, endurance: 100 }, wage: 2000, effectiveness: { total: 90, addiction: -1, inactivity: -2 }, status: { description: "Active" }, last_action: { relative: "Online" } },
+      ] }),
+    }
+    const db = { prepare(sql) {
+      const normalized = sql.toLowerCase()
+      let values = []
+      queries.push({ sql, normalized })
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          if (normalized.includes("from sessions s join players p")) return { player_id: "777", player_name: "Roster Tester" }
+          if (normalized.includes("from companies where player_id = ? and company_id = ? limit 1")) { assert.deepEqual(values, ["777", "123"]); return company }
+          if (normalized.includes("select count(*) as count, min(fetched_at) as firstat")) { assert.deepEqual(values, ["777", "123"]); return { count: 4, firstAt: "2026-10-01T18:10:00.000Z", latestAt: company.fetchedAt } }
+          return null
+        },
+        async all() { return { results: [] } },
+        async run() { return { success: true } },
+      }
+    } }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/member-insights?companyId=123", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer roster-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.company.companyName, "Roster Co")
+    assert.equal(payload.company.employeeCapacity, 5)
+    assert.deepEqual(payload.roster.map((employee) => employee.name), ["Amy", "Zoe"], "roster should sort by position and then employee name")
+    assert.equal(payload.summary.rosterCount, 2)
+    assert.equal(payload.summary.averageManualLabor, 150)
+    assert.equal(payload.summary.averageIntelligence, 90)
+    assert.equal(payload.summary.averageEndurance, 80)
+    assert.equal(payload.summary.averageEffectiveness, 85)
+    assert.equal(payload.summary.knownStatsCount, 2)
+    assert.equal(payload.summary.knownWageCount, 2)
+    assert.equal(payload.summary.totalKnownWages, 3200)
+    assert.equal(payload.summary.snapshotCount, 4)
+    assert.ok(queries.every((query) => !/FROM companies(?!.*WHERE player_id = \\?)/i.test(query.sql) || query.normalized.includes("where player_id = ?")), "roster queries must be owner-scoped")
+  })
+
+  await test("Executive Overview and layout customization are not listed as administrator-only views", () => {
+    const floorSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
+    const workspaceSource = readFileSync(join(root, "src/components/floor/insights-workspace.tsx"), "utf8")
+    assert.match(floorSource, /const adminOnlyViews = \["admin", "dashboard-members", "member-insights"\]/)
+    assert.doesNotMatch(floorSource, /const adminOnlyViews = \[[^\]]*(?:executive|layout)/)
+    assert.match(floorSource, /activeView === "executive" && !demoMode/)
+    assert.match(floorSource, /activeView === "layout" \?/)
+    assert.match(workspaceSource, /Dashboard-wide appearance/)
+    assert.match(workspaceSource, /Executive Overview widgets/)
+  })
+
   console.log(`\n${passed} backend checks passed.`)
 } finally {
   rmSync(temp, { recursive: true, force: true })
