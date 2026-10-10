@@ -516,6 +516,26 @@ export default {
       if (token && env.DB) await requireDb(env).prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256(token)).run()
       return jsonResponse({ signedOut: true }, 200, origin)
     }
+    if (url.pathname === "/api/dashboard-members" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const rows = await requireDb(env).prepare("SELECT p.player_id AS playerId, p.player_name AS playerName, (SELECT c.company_name FROM companies c WHERE c.player_id = p.player_id ORDER BY c.fetched_at DESC LIMIT 1) AS companyName, (SELECT c.company_type FROM companies c WHERE c.player_id = p.player_id ORDER BY c.fetched_at DESC LIMIT 1) AS companyType, (SELECT c.profile_json FROM companies c WHERE c.player_id = p.player_id ORDER BY c.fetched_at DESC LIMIT 1) AS profileJson, (SELECT f.company_type_id FROM faction_member_cache f WHERE f.player_id = p.player_id AND f.is_director = 1 ORDER BY f.updated_at DESC LIMIT 1) AS cachedCompanyTypeId, (SELECT f.company_name FROM faction_member_cache f WHERE f.player_id = p.player_id AND f.is_director = 1 ORDER BY f.updated_at DESC LIMIT 1) AS cachedCompanyName, (SELECT f.company_type FROM faction_member_cache f WHERE f.player_id = p.player_id AND f.is_director = 1 ORDER BY f.updated_at DESC LIMIT 1) AS cachedCompanyType FROM players p ORDER BY p.player_name COLLATE NOCASE").all<Record<string, unknown>>()
+      const members = (rows.results ?? []).map((row) => {
+        let profile: unknown = null
+        try { profile = typeof row.profileJson === "string" ? JSON.parse(row.profileJson) : row.profileJson } catch { profile = null }
+        const root = isRecord(profile) && isRecord(profile.company) ? profile.company : isRecord(profile) && isRecord(profile.profile) ? profile.profile : isRecord(profile) ? profile : {}
+        const type = isRecord(root.type) ? root.type : {}
+        const typeId = type.id ?? root.company_type_id ?? root.type_id ?? row.cachedCompanyTypeId ?? null
+        return {
+          playerId: String(row.playerId),
+          playerName: String(row.playerName ?? "Dashboard member"),
+          companyName: row.companyName == null ? (row.cachedCompanyName == null ? null : String(row.cachedCompanyName)) : String(row.companyName),
+          companyType: row.companyType == null ? (row.cachedCompanyType == null ? null : String(row.cachedCompanyType)) : String(row.companyType),
+          companyTypeId: typeof typeId === "number" || typeof typeId === "string" ? typeId : null,
+        }
+      })
+      return jsonResponse({ members, updatedAt: new Date().toISOString() }, 200, origin)
+    }
     if (url.pathname === "/api/me/data-sharing" && (request.method === "GET" || request.method === "POST")) {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
