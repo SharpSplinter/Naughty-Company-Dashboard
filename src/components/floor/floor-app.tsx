@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import positionsData from "../../lib/company/positions.json"
 import { runEngine } from "../../lib/company/engine"
 import type { CompanyDashboardModel, CompanyPositionCatalog } from "../../lib/company/types"
-import { buildChartSeriesFor, importedHistorySeries, LineChart, stockInventoryValue } from "./chart-utils"
+import { buildChartSeriesFor, LineChart } from "./chart-utils"
 import type { ChartSeries, SnapshotHistoryCompany, SnapshotMetric } from "./chart-utils"
 import { createDemoData } from "./demo-data"
 import { placement } from "./ranking-utils"
@@ -10,6 +10,17 @@ import { companyTypeIdFromProfile, financialCosts, formatMoney, formatNumber, ge
 
 const catalog = positionsData as CompanyPositionCatalog
 const companyNames = Object.keys(catalog.companies).sort()
+const dashboardViews = ["overview", "employees", "catalog", "connect", "type-rankings", "faction-rankings", "charts", "data-transfer"] as const
+type DashboardView = typeof dashboardViews[number]
+type TransferPageKey = "company" | "employees" | "charts" | "rankings" | "references" | "settings" | "master"
+const transferPages: { key: TransferPageKey; title: string; description: string }[] = [
+  { key: "company", title: "Company Details", description: "Saved company profiles, income, and financial context." },
+  { key: "employees", title: "Employees", description: "Employee records, work stats, positions, effectiveness, and wages." },
+  { key: "charts", title: "Trends & Charts", description: "Import or export the legacy company history JSON archive." },
+  { key: "rankings", title: "Rankings", description: "Your saved ranking-page data and comparison context." },
+  { key: "references", title: "References", description: "Position catalog and role requirement reference data." },
+  { key: "settings", title: "Settings", description: "Recipient-specific sharing preferences and dashboard settings." },
+]
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "")
   || "https://naughty-company-api.kboone801.workers.dev"
 
@@ -30,7 +41,15 @@ type SharedCompany = { playerId: string; directorName: string; companyId: string
 
 
 export function FloorApp() {
-  const [activeView, setActiveView] = useState<"overview" | "employees" | "catalog" | "connect" | "type-rankings" | "faction-rankings" | "charts">("overview")
+  const [activeView, setActiveView] = useState<DashboardView>(() => {
+    try { const saved = sessionStorage.getItem("ncd_active_view"); if (saved && dashboardViews.includes(saved as DashboardView)) return saved as DashboardView } catch { /* Storage may be disabled. */ }
+    return "overview"
+  })
+  const [openNavGroups, setOpenNavGroups] = useState<Record<string, boolean>>({ company: true, rankings: true, references: true, settings: true })
+  const importInputs = useRef<Record<string, HTMLInputElement | null>>({})
+  const [transferBusy, setTransferBusy] = useState(false)
+  const [transferError, setTransferError] = useState("")
+  const [transferNotice, setTransferNotice] = useState("")
   const [search, setSearch] = useState("")
   const [selectedCompany, setSelectedCompany] = useState(companyNames[0] ?? "")
   const [apiKey, setApiKey] = useState("")
@@ -79,6 +98,10 @@ export function FloorApp() {
   const [employeeComparePlayerId, setEmployeeComparePlayerId] = useState("")
 
   useEffect(() => {
+    try { sessionStorage.setItem("ncd_active_view", activeView) } catch { /* Storage may be disabled. */ }
+  }, [activeView])
+
+  useEffect(() => {
     let cancelled = false
     async function loadImportedHistory() {
       try {
@@ -86,8 +109,18 @@ export function FloorApp() {
         if (!response.ok) throw new Error("Could not load the imported company history file.")
         const payload = await response.json() as { sourceSnapshotCreatedAt?: string; companies?: SnapshotHistoryCompany[] }
         if (!cancelled) {
-          setSnapshotHistory(payload.companies || [])
-          setSnapshotSourceCreatedAt(payload.sourceSnapshotCreatedAt || "")
+          setSnapshotHistory((current) => {
+            const merged = new Map<string, SnapshotHistoryCompany>()
+            for (const company of [...current, ...(payload.companies || [])]) {
+              const key = String(company.companyId), previous = merged.get(key)
+              if (!previous) { merged.set(key, company); continue }
+              const points = new Map(previous.history.map((point) => [point.day, point]))
+              for (const point of company.history) points.set(point.day, { ...points.get(point.day), ...point })
+              merged.set(key, { ...previous, ...company, history: Array.from(points.values()).sort((a, b) => a.period - b.period) })
+            }
+            return Array.from(merged.values())
+          })
+          setSnapshotSourceCreatedAt((current) => current || payload.sourceSnapshotCreatedAt || "")
         }
       } catch (caught) {
         if (!cancelled) setSnapshotHistoryError(caught instanceof Error ? caught.message : "Could not load imported company history.")
@@ -242,6 +275,35 @@ export function FloorApp() {
   }, [sessionToken, demoMode])
 
   useEffect(() => {
+    if (!sessionToken || demoMode) return
+    let cancelled = false
+    async function restorePersonalHistory() {
+      try {
+        const response = await fetch(`${API_BASE}/api/me/data-backup`, { headers: { Authorization: `Bearer ${sessionToken}` } })
+        if (!response.ok) return
+        const backup = await response.json() as { pages?: { charts?: { history?: { sourceSnapshotCreatedAt?: string; companies?: SnapshotHistoryCompany[] } | null } } }
+        const archive = backup.pages?.charts?.history
+        if (!archive || !Array.isArray(archive.companies) || !archive.companies.length || cancelled) return
+        setSnapshotHistory((current) => {
+          const merged = new Map<string, SnapshotHistoryCompany>()
+          for (const company of [...current, ...archive.companies!]) {
+            const key = String(company.companyId)
+            const previous = merged.get(key)
+            if (!previous) { merged.set(key, company); continue }
+            const points = new Map(previous.history.map((point) => [point.day, point]))
+            for (const point of company.history) points.set(point.day, { ...points.get(point.day), ...point })
+            merged.set(key, { ...previous, ...company, history: Array.from(points.values()).sort((a, b) => a.period - b.period) })
+          }
+          return Array.from(merged.values())
+        })
+        if (archive.sourceSnapshotCreatedAt) setSnapshotSourceCreatedAt(archive.sourceSnapshotCreatedAt)
+      } catch { /* A backup endpoint being temporarily unavailable should not block the dashboard. */ }
+    }
+    void restorePersonalHistory()
+    return () => { cancelled = true }
+  }, [sessionToken, demoMode])
+
+  useEffect(() => {
     if (!sessionToken || activeView !== "charts") return
     let cancelled = false
     async function loadComparison() {
@@ -392,14 +454,95 @@ export function FloorApp() {
     .filter((company) => activeView === "faction-rankings" || activeView === "type-rankings" ? sameCompanyType(company) : true)
     .slice()
     .sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1)), [activeView, globalRankingCompanies, factionRankingCompanies, connectedTypeId, connectedTypeName])
-  const rankByIncome = (company: RankingCompany, rows: RankingCompany[]) => company.weeklyIncome === null
-    ? null
-    : rows.filter((row) => row.weeklyIncome !== null && row.weeklyIncome > company.weeklyIncome!).length + 1
+  const rankByIncome = (company: RankingCompany, rows: RankingCompany[]) => {
+    if (company.weeklyIncome === null) return null
+    const ordered = rows.slice().sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1))
+    const exactIndex = ordered.findIndex((row) => String(row.companyId) === String(company.companyId))
+    return exactIndex >= 0 ? exactIndex + 1 : ordered.filter((row) => row.weeklyIncome !== null && row.weeklyIncome > company.weeklyIncome!).length + 1
+  }
   const displayRank = (company: RankingCompany) => activeView === "faction-rankings"
     ? rankByIncome(company, factionAllRows)
     : rankByIncome(company, companyPeerRows)
-  const chartSeriesFor = (metric: SnapshotMetric): ChartSeries[] => buildChartSeriesFor(metric, currentChartCompany, ownCompareData, result, model, selectedComparePlayerId, compareData)
+  const currentGlobalCompanyRank = currentRankingCompany ? rankByIncome(currentRankingCompany, companyPeerRows) : null
+  const chartSeriesFor = (metric: SnapshotMetric): ChartSeries[] => buildChartSeriesFor(metric, currentChartCompany, ownCompareData, result, model, selectedComparePlayerId, compareData, currentGlobalCompanyRank, currentStar)
+  const activePageTitle = activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : "Settings"
+  const activePageGroup = activeView === "overview" || activeView === "employees" ? "Company" : activeView === "type-rankings" || activeView === "faction-rankings" ? "Rankings" : activeView === "catalog" ? "References" : activeView === "connect" || activeView === "data-transfer" ? "Settings" : "Workspace"
+  const currentStockRows = stockPriceRows(result?.stock)
+  const totalStockValueRows = currentStockRows.filter((item) => item.quantity !== null && item.price !== null)
+  const totalStockValue = totalStockValueRows.reduce((sum, item) => sum + Math.max(0, item.quantity ?? 0) * Math.max(0, item.price ?? 0), 0)
+  const hasTotalStockValue = totalStockValueRows.length > 0
 
+  function downloadJson(filename: string, value: unknown) {
+    const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement("a")
+    anchor.href = url; anchor.download = filename; document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url)
+  }
+
+  async function exportPageJson(pageKey: TransferPageKey) {
+    if (!sessionToken || demoMode || transferBusy) return
+    setTransferBusy(true); setTransferError(""); setTransferNotice("")
+    try {
+      const response = await fetch(`${API_BASE}/api/me/data-backup`, { headers: { Authorization: `Bearer ${sessionToken}` } })
+      const backup = await response.json() as Record<string, any>
+      if (!response.ok) throw new Error(backup.error || "Could not export your saved dashboard data.")
+      const pages = backup.pages && typeof backup.pages === "object" ? backup.pages as Record<string, any> : {}
+      pages.charts = { ...(pages.charts || {}), history: { sourceSnapshotCreatedAt: snapshotSourceCreatedAt || backup.exportedAt, companies: snapshotHistory } }
+      pages.references = { ...(pages.references || {}), catalog: catalog.companies }
+      pages.rankings = { ...(pages.rankings || {}), factionDirectors, globalRankingCompanies, weeklyStarCounts, weeklyStarCountsCapturedAt, rankingsUpdatedAt }
+      pages.settings = { ...(pages.settings || {}), selectedCompanyId, isDirector }
+      if (pageKey === "master") {
+        backup.pages = pages
+        downloadJson(`naughty-company-master-backup-${new Date().toISOString().slice(0, 10)}.json`, backup)
+      } else if (pageKey === "charts") {
+        // Keep the established import format: { sourceSnapshotCreatedAt, companies: [...] }.
+        downloadJson(`company-history-${new Date().toISOString().slice(0, 10)}.json`, pages.charts.history)
+      } else {
+        downloadJson(`naughty-company-${pageKey}-${new Date().toISOString().slice(0, 10)}.json`, { format: "naughty-company-dashboard-page", version: 1, page: pageKey, exportedAt: new Date().toISOString(), player: backup.player, data: pages[pageKey] ?? {} })
+      }
+      setTransferNotice(pageKey === "master" ? "Full personal dashboard backup exported. API keys and session tokens are excluded." : `${transferPages.find((page) => page.key === pageKey)?.title || "Page"} JSON exported.`)
+    } catch (caught) { setTransferError(caught instanceof Error ? caught.message : "Could not export dashboard data.") }
+    finally { setTransferBusy(false) }
+  }
+
+  async function importPageJson(pageKey: TransferPageKey, file: File | undefined) {
+    if (!file || !sessionToken || demoMode || transferBusy) return
+    setTransferBusy(true); setTransferError(""); setTransferNotice("")
+    try {
+      const parsed = JSON.parse(await file.text()) as Record<string, any>
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Upload a JSON object, not a list or plain text file.")
+      const isMaster = parsed.format === "naughty-company-dashboard-backup" && parsed.version === 1
+      const isLegacyHistory = Array.isArray(parsed.companies) && parsed.companies.every((company: unknown) => !!company && typeof company === "object" && Array.isArray((company as Record<string, unknown>).history))
+      if (isMaster && pageKey !== "master") throw new Error("That is a Master backup. Use the Master Import button to restore it.")
+      if (!isMaster && pageKey === "master") throw new Error("Master Import requires a full Master backup JSON exported from this dashboard.")
+      if (isLegacyHistory && pageKey !== "charts") throw new Error("Your earlier history JSON belongs in the Trends & Charts import row.")
+      if (!isMaster && !isLegacyHistory && parsed.page !== pageKey) throw new Error(`This JSON is for ${String(parsed.page || "another page")}. Choose the matching Import button.`)
+      const requestBody = isMaster ? parsed : { pageKey, data: isLegacyHistory ? parsed : parsed.data }
+      const response = await fetch(`${API_BASE}/api/me/data-backup`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${sessionToken}` }, body: JSON.stringify(requestBody) })
+      const payload = await response.json() as { error?: string; message?: string; imported?: boolean }
+      if (!response.ok) throw new Error(payload.error || "Could not import this JSON file.")
+      if (!isMaster && pageKey === "charts") {
+        const history = isLegacyHistory ? parsed : parsed.data
+        setSnapshotHistory((current) => {
+          const merged = new Map<string, SnapshotHistoryCompany>()
+          for (const company of [...current, ...(history.companies as SnapshotHistoryCompany[])]) {
+            const key = String(company.companyId), previous = merged.get(key)
+            if (!previous) { merged.set(key, company); continue }
+            const points = new Map(previous.history.map((point) => [point.day, point]))
+            for (const point of company.history) points.set(point.day, { ...points.get(point.day), ...point })
+            merged.set(key, { ...previous, ...company, history: Array.from(points.values()).sort((a, b) => a.period - b.period) })
+          }
+          return Array.from(merged.values())
+        })
+        if (history.sourceSnapshotCreatedAt) setSnapshotSourceCreatedAt(history.sourceSnapshotCreatedAt)
+        setTransferNotice(payload.message || "History imported and merged with your existing timeline.")
+      } else {
+        setTransferNotice(payload.message || "JSON imported successfully. Reloading saved records…")
+        window.setTimeout(() => window.location.reload(), 650)
+      }
+    } catch (caught) { setTransferError(caught instanceof Error ? caught.message : "Could not import dashboard data.") }
+    finally { setTransferBusy(false) }
+  }
 
 
   async function deleteSavedKey() {
@@ -625,13 +768,11 @@ export function FloorApp() {
         </a>
         <div className="side-label">WORKSPACE</div>
         <nav className="nav-list" aria-label="Main navigation">
-          <button className={activeView === "overview" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("overview")}><span aria-hidden="true">◫</span><span className="nav-label">Overview</span></button>
-          <button className={activeView === "employees" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("employees")}><span aria-hidden="true">♙</span><span className="nav-label">Employees</span></button>
-          <button className={activeView === "catalog" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("catalog")}><span aria-hidden="true">▦</span><span className="nav-label">Position catalog</span> <em>{companyNames.length}</em></button>
-          <button className={activeView === "type-rankings" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("type-rankings")}><span aria-hidden="true">↗</span><span className="nav-label">Company rankings</span></button>
-          <button className={activeView === "faction-rankings" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("faction-rankings")}><span aria-hidden="true">♜</span><span className="nav-label">Faction rankings</span></button>
-          <button className={activeView === "charts" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("charts")}><span aria-hidden="true">⌁</span><span className="nav-label">Compare graphs</span></button>
-          <button className={activeView === "connect" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("connect")}><span aria-hidden="true">↔</span><span className="nav-label">Connect Torn API</span></button>
+          <button className={activeView === "charts" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("charts")}><span aria-hidden="true">⌁</span><span className="nav-label">Trends & Charts</span></button>
+          <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.company} onClick={() => setOpenNavGroups((groups) => ({ ...groups, company: !groups.company }))}><span>Company</span><b>{openNavGroups.company ? "⌄" : "›"}</b></button>{openNavGroups.company && <div className="nav-subitems"><button className={activeView === "overview" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("overview")}><span aria-hidden="true">◫</span><span className="nav-label">Company Details</span></button><button className={activeView === "employees" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("employees")}><span aria-hidden="true">♙</span><span className="nav-label">Employees</span></button></div>}</div>
+          <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.rankings} onClick={() => setOpenNavGroups((groups) => ({ ...groups, rankings: !groups.rankings }))}><span>Rankings</span><b>{openNavGroups.rankings ? "⌄" : "›"}</b></button>{openNavGroups.rankings && <div className="nav-subitems"><button className={activeView === "type-rankings" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("type-rankings")}><span aria-hidden="true">↗</span><span className="nav-label">Company Rankings</span></button><button className={activeView === "faction-rankings" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("faction-rankings")}><span aria-hidden="true">♜</span><span className="nav-label">Faction Rankings</span></button></div>}</div>
+          <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.references} onClick={() => setOpenNavGroups((groups) => ({ ...groups, references: !groups.references }))}><span>References</span><b>{openNavGroups.references ? "⌄" : "›"}</b></button>{openNavGroups.references && <div className="nav-subitems"><button className={activeView === "catalog" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("catalog")}><span aria-hidden="true">▦</span><span className="nav-label">Position Catalog</span><em>{companyNames.length}</em></button></div>}</div>
+          <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.settings} onClick={() => setOpenNavGroups((groups) => ({ ...groups, settings: !groups.settings }))}><span>Settings</span><b>{openNavGroups.settings ? "⌄" : "›"}</b></button>{openNavGroups.settings && <div className="nav-subitems"><button className={activeView === "connect" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("connect")}><span aria-hidden="true">⚙</span><span className="nav-label">Settings</span></button><button className={activeView === "data-transfer" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("data-transfer")}><span aria-hidden="true">⇅</span><span className="nav-label">Import / Export</span></button></div>}</div>
         </nav>
         <div className="sidebar-bottom">
           <div className="connection-indicator"><span className={result ? "status-dot live" : "status-dot"} />{demoMode ? "Demo workspace · sample data" : keySaved ? `Signed in${playerName ? ` as ${playerName}` : ""}` : "Player signed in · key deleted"}</div><button className="signout-button" onClick={demoMode ? exitDemo : signOut}>{demoMode ? "Exit demo" : "Sign out"}</button>
@@ -642,14 +783,13 @@ export function FloorApp() {
       <main className="main-area">
         {demoMode && <div className="demo-banner"><strong>DEMO MODE</strong><span>All player, company, employee and income data below is fictional. Live Torn connections are disabled.</span><button type="button" onClick={exitDemo}>Exit demo ×</button></div>}
         <header className="topbar">
-          <div className="breadcrumbs">Workspace <span>/</span> <strong>{activeView === "overview" ? "Overview" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position catalog" : activeView === "type-rankings" ? "Company rankings" : activeView === "faction-rankings" ? "Faction rankings" : activeView === "charts" ? "Compare graphs" : "Connect Torn API"}</strong></div>
-          <div className="topbar-right"><span className="environment-pill"><i /> {demoMode ? "DEMO DATA" : "CLOUDFLARE WORKER"}</span><div className="user-company-switcher"><button className="user-company-trigger" type="button" aria-expanded={showCompanySelector} onClick={() => setShowCompanySelector((open) => !open)}><span className="avatar">{playerName.slice(0, 2).toUpperCase() || "NC"}</span><span className="user-company-label"><strong>{playerName || "Connected user"}</strong><small>Torn ID {playerId || "—"} · {result?.model.company.name || "No company loaded"} · {result?.model.company.typeName || "No company type"}</small></span><span className="switch-chevron">⌄</span></button>{showCompanySelector && <div className="company-switcher-menu"><strong>Choose a company</strong>{savedCompanies.length ? savedCompanies.map((company) => <button key={company.company_id} type="button" className={selectedCompanyId === company.company_id ? "company-switcher-option selected" : "company-switcher-option"} onClick={() => void loadSavedCompany(company.company_id)}><span>{company.company_name || `Company #${company.company_id}`}</span><small>{company.company_type || "Company"} · #{company.company_id}</small></button>) : <p>No saved companies yet. Connect a company key to add one.</p>}</div>}</div></div>
+          <div className="breadcrumbs">Workspace <span>/</span> {activePageGroup} <span>/</span> <strong>{activePageTitle}</strong></div>
+          <div className="topbar-right"><span className="environment-pill"><i /> {demoMode ? "DEMO DATA" : "CLOUDFLARE WORKER"}</span><div className="user-company-switcher"><button className="user-company-trigger" type="button" aria-expanded={showCompanySelector} onClick={() => setShowCompanySelector((open) => !open)}><span className="avatar">{playerName.slice(0, 2).toUpperCase() || "NC"}</span><span className="user-company-label"><strong>{playerName || "Connected user"}</strong><small>Torn ID {playerId || "—"} · {result?.model.company.name || "No company loaded"} · {result?.model.company.typeName || "No company type"}</small></span><span className="switch-chevron">⌄</span></button>{showCompanySelector && <div className="company-switcher-menu"><div className="company-switcher-menu-heading"><strong>Choose a company</strong><button type="button" className="company-connect-plus" onClick={() => { setShowCompanySelector(false); setActiveView("connect") }} aria-label="Connect company" title="Connect company">＋</button></div>{savedCompanies.length ? savedCompanies.map((company) => <button key={company.company_id} type="button" className={selectedCompanyId === company.company_id ? "company-switcher-option selected" : "company-switcher-option"} onClick={() => void loadSavedCompany(company.company_id)}><span>{company.company_name || `Company #${company.company_id}`}</span><small>{company.company_type || "Company"} · #{company.company_id}</small></button>) : <p>No saved companies yet. Connect a company key to add one.</p>}</div>}</div></div>
         </header>
 
         <div className="page-content">
           <section className="welcome-row">
-            <div><div className="eyebrow"><span className="eyebrow-line" /> COMPANY INTELLIGENCE</div><h1>{activeView === "overview" ? "Company overview" : activeView === "employees" ? "Employee operations" : activeView === "catalog" ? "Position catalog" : activeView === "type-rankings" ? "Company type rankings" : activeView === "faction-rankings" ? "Faction company rankings" : activeView === "charts" ? "Trends & charts" : "Connect your company"}</h1><p className="subtitle">{activeView === "overview" ? "A focused view of company performance, income, and star-level progress." : activeView === "employees" ? "Employee details, role fit, and position projections in one dedicated workspace." : activeView === "catalog" ? "Explore role requirements across the Torn company ecosystem." : activeView === "type-rankings" ? "Compare companies within the same Torn company type, ranked by weekly income." : activeView === "faction-rankings" ? "See all confirmed faction directors, including members who do not use this dashboard." : activeView === "charts" ? "Track daily income, profit, stock levels, and historical company performance." : "Pull live company data through your secure API connection."}</p></div>
-            <button className="primary-button" onClick={() => setActiveView("connect")}><span>＋</span> Connect company</button>
+            <div><div className="eyebrow"><span className="eyebrow-line" /> COMPANY INTELLIGENCE</div><h1>{activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : "Settings"}</h1><p className="subtitle">{activeView === "overview" ? "A focused view of company performance, income, and star-level progress." : activeView === "employees" ? "Employee details, role fit, and position projections in one dedicated workspace." : activeView === "catalog" ? "Explore role requirements across the Torn company ecosystem." : activeView === "type-rankings" ? "Compare companies within the same Torn company type, ranked by weekly income." : activeView === "faction-rankings" ? "See all confirmed faction directors, including members who do not use this dashboard." : activeView === "charts" ? "Track daily income, profit, stock levels, and historical company performance." : activeView === "data-transfer" ? "Import legacy company history or export page-by-page JSON backups of your saved dashboard data." : "Manage your Torn API connection and saved company keys."}</p></div>
           </section>
 
           {activeView === "type-rankings" || activeView === "faction-rankings" ? (
@@ -661,7 +801,7 @@ export function FloorApp() {
               <div className="table-scroll"><table className="ranking-table ranking-compact-table"><thead><tr><th className="ranking-rank-col">RANK</th><th className="ranking-company-col">{activeView === "faction-rankings" ? "COMPANY / DIRECTOR" : "COMPANY"}</th><th>STARS</th><th>WEEKLY INCOME</th><th className="ranking-hide-mobile">DAILY / AVG</th><th className="ranking-hide-mobile">DATA AS OF (UTC)</th><th>{activeView === "faction-rankings" ? <span className="ranking-header-stack"><span>STAR RANKING</span><span>GLOBAL COMPANY TYPE RANKING</span></span> : "STAR RANKING"}</th></tr></thead><tbody>{rankingRows.map((company) => <tr key={`${company.playerId}-${company.companyId}`}><td><span className={`rank-number ${displayRank(company) !== null && displayRank(company)! <= 3 ? "top-rank" : ""}`} title={activeView === "faction-rankings" ? "Rank among all confirmed faction directors by weekly income" : "Rank among all companies of this type by weekly income"}>{displayRank(company) ?? "—"}</span></td><td className="ranking-company-cell"><strong>{company.companyName}</strong>{activeView === "faction-rankings" && <div className="ranking-director">{company.directorName}</div>}<div className="ranking-company-meta"><span>#{company.companyId} · {company.companyType || (company.companyTypeId == null ? "Unknown type" : `Type #${company.companyTypeId}`)}</span>{activeView === "faction-rankings" && <button className="text-button compare-row-button" onClick={() => { setSelectedComparePlayerId(company.playerId); setActiveView("charts") }}>Compare ↗</button>}</div></td><td><span className="star-rating">{company.starRating === null ? "—" : `${company.starRating} ★`}</span></td><td className="income-primary">{formatMoney(company.weeklyIncome)}</td><td className="ranking-hide-mobile"><div className="ranking-stack ranking-metrics-stack"><span><small>DAILY</small>{formatMoney(company.dailyIncome)}</span><span><small>AVG</small>{formatMoney(company.averageDailyIncome)}</span></div></td><td className="muted ranking-hide-mobile">{company.fetchedAt ? new Date(company.fetchedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }) : "—"}</td><td>{activeView === "faction-rankings" ? <div className="ranking-stack" title="Rank among companies with the same type and star level, followed by rank among all companies of the same type"><span><small>STAR</small>{placement(company, "stars", globalRankingCompanies)}</span><span><small>TYPE</small>{placement(company, "type", globalRankingCompanies)}</span></div> : placement(company, "stars", globalRankingCompanies)}</td></tr>)}</tbody></table></div>
               {activeView === "faction-rankings" && <section className="faction-all-rankings"><div className="panel-heading ranking-heading"><div><h2>All faction directors, every company type</h2><p>Cross-type comparison of every confirmed faction director, sorted by weekly income.</p></div><span className="count-chip">{factionAllRows.length} directors</span></div><div className="table-scroll"><table className="ranking-table ranking-compact-table"><thead><tr><th className="ranking-rank-col">RANK</th><th className="ranking-company-col">COMPANY / DIRECTOR</th><th>STARS</th><th>WEEKLY INCOME</th><th className="ranking-hide-mobile">DAILY / AVG</th><th className="ranking-hide-mobile">DATA AS OF (UTC)</th><th><span className="ranking-header-stack"><span>STAR RANKING</span><span>GLOBAL COMPANY TYPE RANKING</span></span></th></tr></thead><tbody>{factionAllRows.map((company) => <tr key={`all-${company.playerId}-${company.companyId}`}><td><span className={`rank-number ${rankByIncome(company, factionAllRows) !== null && rankByIncome(company, factionAllRows)! <= 3 ? "top-rank" : ""}`} title="Rank among all confirmed faction directors by weekly income">{rankByIncome(company, factionAllRows) ?? "—"}</span></td><td className="ranking-company-cell"><strong>{company.companyName}</strong><div className="ranking-director">{company.directorName}</div><div className="ranking-company-meta"><span>#{company.companyId} · {company.companyType || (company.companyTypeId == null ? "Unknown type" : `Type #${company.companyTypeId}`)}</span><button className="text-button compare-row-button" onClick={() => { setSelectedComparePlayerId(company.playerId); setActiveView("charts") }}>Compare ↗</button></div></td><td><span className="star-rating">{company.starRating === null ? "—" : `${company.starRating} ★`}</span></td><td className="income-primary">{formatMoney(company.weeklyIncome)}</td><td className="ranking-hide-mobile"><div className="ranking-stack ranking-metrics-stack"><span><small>DAILY</small>{formatMoney(company.dailyIncome)}</span><span><small>AVG</small>{formatMoney(company.averageDailyIncome)}</span></div></td><td className="muted ranking-hide-mobile">{company.fetchedAt ? new Date(company.fetchedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }) : "—"}</td><td><div className="ranking-stack" title="Rank among companies with the same type and star level, followed by rank among all companies of the same type"><span><small>STAR</small>{placement(company, "stars", globalRankingCompanies)}</span><span><small>TYPE</small>{placement(company, "type", globalRankingCompanies)}</span></div></td></tr>)}</tbody></table></div>{factionAllRows.length === 0 && <div className="empty-state">No faction directors have been discovered yet. Open Charts and use Refresh directory to process the next batch of member IDs.</div>}</section>}
               {rankingRows.length === 0 && <div className="empty-state">{activeView === "type-rankings" ? "No companies were returned for your connected company type." : "No faction directors have been discovered yet. Open Charts and use Refresh directory to process the next batch of member IDs."}</div>}{activeView === "faction-rankings" && factionSyncPending > 0 && <div className="ranking-footnote"><p>{factionSyncPending} faction members are still queued for director checks. Open Charts and refresh the directory again to process another batch.</p></div>}
-              <div className="ranking-footnote"><strong>How ranking works</strong><p>Rank is determined exclusively by weekly income, highest first. Average daily income is weekly income divided by seven. Company Rankings is filtered to your connected company type. Faction Rankings has two tables: the first compares faction directors of the connected company type; the second includes all confirmed faction directors across every company type.</p><p>{rankingsUpdatedAt ? `${activeView === "type-rankings" ? "Torn snapshot retrieved" : "Faction leaderboard checked"} ${new Date(rankingsUpdatedAt).toLocaleString("en-GB", { timeZone: "UTC", timeZoneName: "short" })}.` : "Leaderboard refreshes from saved company profiles."} Weekly income uses Torn’s reported total for the fixed Sunday 18:00 UTC to Sunday 18:00 UTC period, not a rolling sum of daily samples. The leaderboard refreshes daily at 18:10 UTC; star-rating changes lock on Sundays at 18:00 UTC, with the weekly refresh at 18:10 UTC.</p></div>
+              <div className="ranking-footnote"><strong>How ranking works</strong><p>Rank is determined exclusively by weekly income, highest first; tied incomes receive sequential places in the stable income-sorted list. Average daily income is weekly income divided by seven. Company Rankings is filtered to your connected company type. Faction Rankings has two tables: the first compares faction directors of the connected company type; the second includes all confirmed faction directors across every company type.</p><p>{rankingsUpdatedAt ? `${activeView === "type-rankings" ? "Torn snapshot retrieved" : "Faction leaderboard checked"} ${new Date(rankingsUpdatedAt).toLocaleString("en-GB", { timeZone: "UTC", timeZoneName: "short" })}.` : "Leaderboard refreshes from saved company profiles."} Weekly income uses Torn’s reported total for the fixed Sunday 18:00 UTC to Sunday 18:00 UTC period, not a rolling sum of daily samples. The leaderboard refreshes daily at 18:10 UTC; star-rating changes lock on Sundays at 18:00 UTC, with the weekly refresh at 18:10 UTC.</p></div>
             </section>
           ) : activeView === "charts" ? (
             <div className="charts-workspace">
@@ -687,9 +827,8 @@ export function FloorApp() {
                   <LineChart title="Daily company profit" money series={chartSeriesFor("dailyProfit")} />
                   <LineChart title="Weekly company profit" money series={chartSeriesFor("weeklyProfit")} />
                   <LineChart title="Daily stock quantity" series={chartSeriesFor("stockQuantity")} />
-                  <LineChart title="Stock inventory value" money series={chartSeriesFor("stockValue")} />
-                  <LineChart title="Star-rating history" series={chartSeriesFor("rating")} />
-                  <LineChart title="Global company ranking · same company type" series={chartSeriesFor("companyRank")} />
+                  <LineChart title="Star-rating history" invertY series={chartSeriesFor("rating")} />
+                  <LineChart title="Global company ranking · same company type" invertY series={chartSeriesFor("companyRank")} />
                 </>}
               </section>
               <div className="ranking-footnote"><strong>Data coverage</strong><p>Historical and live values are joined by reporting date, with live values taking precedence when both sources contain the same day. Missing days are left blank, never interpolated. Weekly profit uses the latest recorded reported weekly-profit total when available; month-to-date totals use recorded daily snapshots and can be partial if a day is missing.</p></div>
@@ -709,9 +848,19 @@ export function FloorApp() {
               {filteredCompanies.length === 0 && <div className="empty-state">No company types match that search.</div>}
               <div className="role-detail"><div className="role-title"><div><span className="eyebrow">SELECTED COMPANY</span><h3>{selectedCompany}</h3></div><span className="count-chip">{positions.length} positions</span></div><div className="table-scroll"><table><thead><tr><th>ROLE</th><th>PRIMARY STAT</th><th>PRIMARY MIN.</th><th>SECONDARY STAT</th><th>SECONDARY MIN.</th><th>SPECIALTY</th></tr></thead><tbody>{positions.map((position, index) => <tr key={position.rank + index}><td><strong>{position.rank}</strong></td><td><span className="stat-chip">{position.primary}</span></td><td>{position.primaryMin.toLocaleString()}</td><td><span className="stat-chip">{position.secondary}</span></td><td>{position.secondaryMin.toLocaleString()}</td><td>{position.special ? <span className="special-chip">{position.special}</span> : <span className="muted">None</span>}</td></tr>)}</tbody></table></div></div>
             </section>
+          ) : activeView === "data-transfer" ? (
+            <section className="panel data-transfer-panel">
+              <div className="panel-heading"><div><h2>JSON data portability</h2><p>Export each page separately or create a full personal backup. Your Torn API keys and active sessions are never included in backups.</p></div><span className="count-chip">JSON only</span></div>
+              {!sessionToken || demoMode ? <div className="empty-state">Sign in to your dashboard account to import or export your saved records. Demo data is not written to your account.</div> : <>
+                <div className="transfer-master-row"><div><strong>Master Import / Export</strong><p>Full backup of your own saved company profiles, employee data, stock records, snapshots, chart history, and sharing preferences.</p></div><div className="transfer-actions"><button className="secondary-button" type="button" disabled={transferBusy} onClick={() => void exportPageJson("master")}>Export full backup ↓</button><button className="primary-button" type="button" disabled={transferBusy} onClick={() => importInputs.current.master?.click()}>Import full backup ↑</button><input ref={(element) => { importInputs.current.master = element }} className="transfer-file-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; void importPageJson("master", file) }} /></div></div>
+                <div className="transfer-page-list">{transferPages.map((page) => <article className="transfer-page-row" key={page.key}><div><strong>{page.title}</strong><p>{page.description}</p></div><div className="transfer-actions"><button className="secondary-button" type="button" disabled={transferBusy} onClick={() => void exportPageJson(page.key)}>Export JSON ↓</button><button className="text-button" type="button" disabled={transferBusy} onClick={() => importInputs.current[page.key]?.click()}>Import JSON ↑</button><input ref={(element) => { importInputs.current[page.key] = element }} className="transfer-file-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; void importPageJson(page.key, file) }} /></div></article>)}</div>
+                <div className="transfer-format-note"><strong>Import formats</strong><p>Trends & Charts accepts your earlier history JSON format (<code>sourceSnapshotCreatedAt</code> and <code>companies</code> with daily <code>history</code> records). Other page imports accept matching page exports, and Master Import accepts a full Master backup. Imported history is merged by company and reporting day rather than replacing unrelated records.</p></div>
+              </>}
+              {transferBusy && <div className="transfer-status" role="status" aria-live="polite"><span className="loading-wheel" /> Processing JSON…</div>}{transferError && <div className="error-banner" role="alert">{transferError}</div>}{transferNotice && <div className="transfer-success" role="status" aria-live="polite">{transferNotice}</div>}
+            </section>
           ) : activeView === "connect" ? (
             <section className="connect-layout">
-              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Connect to Torn</h2><p>Add an authorized key for each company you manage, including companies where you are the appointed director</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-key">{needsSecondaryKey ? "First company API key" : "Add another company API key"}</label><input id="company-key" type="password" autoComplete="off" value={secondaryCompanyKey} onChange={(event) => setSecondaryCompanyKey(event.target.value)} placeholder={demoMode ? "Disabled in demo mode" : "Paste an authorized API key for a company you are permitted to manage"} disabled={demoMode} /><p className="field-hint"><span>♥</span> "Each key is validated for company profile and employee access, then saved against that company. Only add keys you have permission to use."</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}{demoMode && <p className="demo-caption">This tutorial workspace is read-only. Exit demo to connect real Torn data.</p>}<button className="primary-button form-submit" disabled={loading || demoMode}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>"Company keys are encrypted and stored separately, so adding another company does not replace your other saved company keys."</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <button key={company.company_id} type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}>{company.company_name || `Company #${company.company_id}`} <span>#{company.company_id}</span></button>)}</div>}</div>}</div>
+              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Torn API & company connections</h2><p>Manage your player login and authorized company keys for companies you direct.</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-key">{needsSecondaryKey ? "First company API key" : "Add another company API key"}</label><input id="company-key" type="password" autoComplete="off" value={secondaryCompanyKey} onChange={(event) => setSecondaryCompanyKey(event.target.value)} placeholder={demoMode ? "Disabled in demo mode" : "Paste an authorized API key for a company you are permitted to manage"} disabled={demoMode} /><p className="field-hint"><span>♥</span> "Each key is validated for company profile and employee access, then saved against that company. Only add keys you have permission to use."</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}{demoMode && <p className="demo-caption">This tutorial workspace is read-only. Exit demo to connect real Torn data.</p>}<button className="primary-button form-submit" disabled={loading || demoMode}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>"Company keys are encrypted and stored separately, so adding another company does not replace your other saved company keys."</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <button key={company.company_id} type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}>{company.company_name || `Company #${company.company_id}`} <span>#{company.company_id}</span></button>)}</div>}</div>}</div>
               <div className="panel guide-panel"><span className="guide-icon">✓</span><h2>Before you connect</h2><ul><li>Use a Torn API key with the access needed for your company.</li><li>Private employee stats may only be available to authorized company directors.</li><li>Requests pass through the Cloudflare Worker to Torn's API.</li></ul><div className="guide-note"><strong>Privacy by design</strong><p>Your player account is identified by Torn. Deleting the saved key does not delete recorded company data.</p></div></div>
             </section>
           ) : (
@@ -719,13 +868,13 @@ export function FloorApp() {
               {model ? <>
                 <section className="panel company-panel company-overview-panel"><div className="panel-heading"><div><h2>{model.company.name}</h2><p>{model.company.typeName} · Company #{model.company.id}</p></div><span className="status-badge success"><i /> COMPANY DATA</span></div>
                   <div className="company-facts overview-facts"><div><small>COMPANY TYPE</small><strong>{model.company.typeName}</strong></div><div><small>EMPLOYEES</small><strong>{formatNumber(model.company.employeesHired ?? model.employees.length)} / {formatNumber(model.company.employeeCapacity)}</strong></div><div><small>STAR RATING</small><strong>{currentStar === null ? "—" : `${currentStar} ★`}</strong></div><div><small>DIRECTOR</small><strong>{model.company.directorName ?? "Restricted"}</strong></div></div>
-                  <div className="income-grid"><article><small>DAILY INCOME</small><strong>{formatMoney(model.company.dailyIncome)}</strong><span className="profit-line">Profit {formatMoney(dailyProfit)}</span></article><article><small>WEEKLY INCOME</small><strong>{formatMoney(weeklyIncome)}</strong><span className="profit-line">Profit {formatMoney(weeklyProfit)}</span><span>Sunday 18:00 UTC to Sunday 18:00 UTC</span></article><article><small>MONTH-TO-DATE INCOME</small><strong>{formatMoney(monthlyIncome)}</strong><span className="profit-line">Profit {formatMoney(monthlyProfit)}</span><span>Since the 1st at 18:00 UTC</span></article></div><div className="overview-financial-strip"><article><small>CURRENT AD BUDGET</small><strong>{formatMoney(costs?.adBudget)}</strong><span>Daily advertising spend configured in Torn</span></article><article className="overview-stock-prices"><small>STOCK PRICES SET</small>{stockPriceRows(result?.stock).length ? <div className="stock-price-list">{stockPriceRows(result?.stock).map((item, index) => <div key={`${item.name}-${index}`}><span>{item.name}{item.quantity !== null ? ` · ${formatNumber(item.quantity)} in stock` : ""}</span><strong>{item.price === null ? "Price unavailable" : formatMoney(item.price)}</strong></div>)}</div> : <span>Current stock pricing was not returned by Torn for this company key.</span>}</article></div>{costs && <p className="profit-footnote">Estimated daily operating costs: {formatMoney(costs.adBudget)} ad budget + {formatMoney(costs.wages)} employee wages{costs.hasStockCosts ? <> + {formatMoney(costs.stockCosts)} stock costs</> : null} = <strong className="numeric-value">{formatMoney(costs.dailyCosts)}</strong> total. Stock costs are included when the company has stock with recorded cost data. Recorded coverage: {weekCoverage}/{expectedReportingDays(weekStart)} reporting days this week and {monthCoverage}/{expectedReportingDays(monthStart)} month-to-date. Weekly profit uses the latest imported reported total when available; month-to-date profit sums captured daily-profit snapshots, so incomplete coverage is shown as partial.</p>}
+                  <div className="income-grid"><article><small>DAILY INCOME</small><strong>{formatMoney(model.company.dailyIncome)}</strong><span className="profit-line">Profit {formatMoney(dailyProfit)}</span></article><article><small>WEEKLY INCOME</small><strong>{formatMoney(weeklyIncome)}</strong><span className="profit-line">Profit {formatMoney(weeklyProfit)}</span><span>Sunday 18:00 UTC to Sunday 18:00 UTC</span></article><article><small>MONTH-TO-DATE INCOME</small><strong>{formatMoney(monthlyIncome)}</strong><span className="profit-line">Profit {formatMoney(monthlyProfit)}</span><span>Since the 1st at 18:00 UTC</span></article></div><div className="overview-financial-strip"><article><small>CURRENT AD BUDGET</small><strong>{formatMoney(costs?.adBudget)}</strong><span>Daily advertising spend configured in Torn</span></article><article className="overview-stock-prices"><small>STOCK</small>{currentStockRows.length ? <><div className="stock-price-list stock-inventory-table"><div className="stock-inventory-header"><span>STOCK NAME</span><span>CURRENT QTY</span><span>SET PRICE</span><span>CURRENT VALUE</span></div>{currentStockRows.map((item, index) => <div className="stock-inventory-row" key={`${item.name}-${index}`}><span>{item.name}</span><strong>{item.quantity === null ? "—" : formatNumber(item.quantity)}</strong><strong>{item.price === null ? "—" : formatMoney(item.price)}</strong><strong>{item.quantity === null || item.price === null ? "—" : formatMoney(Math.max(0, item.quantity) * Math.max(0, item.price))}</strong></div>)}<div className="stock-value-total"><span>TOTAL STOCK VALUE</span><strong>{hasTotalStockValue ? formatMoney(totalStockValue) : "—"}</strong></div></div></> : <span>Current stock details were not returned by Torn for this company key.</span>}</article></div>{costs && <p className="profit-footnote">Estimated daily operating costs: {formatMoney(costs.adBudget)} ad budget + {formatMoney(costs.wages)} employee wages{costs.hasStockCosts ? <> + {formatMoney(costs.stockCosts)} stock costs</> : null} = <strong className="numeric-value">{formatMoney(costs.dailyCosts)}</strong> total. Stock costs are included when the company has stock with recorded cost data. Recorded coverage: {weekCoverage}/{expectedReportingDays(weekStart)} reporting days this week and {monthCoverage}/{expectedReportingDays(monthStart)} month-to-date. Weekly profit uses the latest imported reported total when available; month-to-date profit sums captured daily-profit snapshots, so incomplete coverage is shown as partial.</p>}
                   <div className="ratings-section"><div className="section-heading"><div><h3>Operating ratings</h3><p>Current company performance indicators from Torn.</p></div></div><div className="ratings-grid"><div><span>POPULARITY</span><strong>{formatNumber(popularity)}</strong></div><div><span>EFFICIENCY</span><strong>{formatNumber(efficiency)}</strong></div><div><span>ENVIRONMENT</span><strong>{formatNumber(environment)}</strong></div></div></div>
                   <div className="employee-heading overview-actions"><div><h3>Company health scorecard</h3><p>Benchmarked against companies of the same type.</p></div><button className="text-button" onClick={() => setActiveView("type-rankings")}>View rankings ↗</button></div>
                   <div className="health-grid"><div><small>COMPANY RANK</small><strong>{currentRankingCompany ? placement(currentRankingCompany, "type", globalRankingCompanies) : "—"}</strong><span>Rank among all companies of this type</span></div><div><small>STAR RANK</small><strong>{currentRankingCompany ? placement(currentRankingCompany, "stars", globalRankingCompanies) : "—"}</strong><span>Rank among companies of the same type and star level</span></div><div><small>WEEKLY INCOME VS TYPE</small><strong>{currentRankingCompany && currentRankingCompany.weeklyIncome !== null ? formatMoney(currentRankingCompany.weeklyIncome) : formatMoney(currentWeeklyIncome)}</strong><span>{companyPeerRows.length ? `${companyPeerRows.length} same-type companies in snapshot` : "Comparison snapshot unavailable"}</span></div><div><small>GAP TO NEXT STAR</small><strong>{nextStarGap === null ? "—" : formatMoney(nextStarGap)}</strong><span>{nextStarIncome === null ? "No higher-star benchmark available" : `Observed next-level benchmark: ${formatMoney(nextStarIncome)}/week`}</span></div><div><small>GAP TO PREVIOUS STAR</small><strong>{previousStarGap === null ? "—" : formatMoney(previousStarGap)}</strong><span>{previousStarIncome === null ? "No lower-star benchmark available" : `Observed previous-level benchmark: ${formatMoney(previousStarIncome)}/week`}</span></div></div>
                   <div className="overview-bottom-actions"><button className="secondary-button" onClick={() => setActiveView("employees")}>Open employee details <span>→</span></button><button className="text-button" onClick={() => setShowRaw((current) => !current)}>{showRaw ? "Hide raw API data" : "Inspect API data"}</button></div>{showRaw && <div className="raw-data"><h3>Profile response</h3><pre>{pretty(result?.profile)}</pre></div>}
                 </section>
-              </> : <section className="panel company-panel"><div className="empty-company"><div className="empty-illustration"><div className="empty-ring ring-one" /><div className="empty-ring ring-two" /><div className="empty-center">NC</div><span className="float-star star-one">✓</span><span className="float-star star-two">✦</span></div><h3>Your company workspace is ready.</h3><p>Connect your Torn company to see its details, income, operating ratings, and competitive health scorecard.</p><button className="secondary-button" onClick={() => setActiveView("connect")}>Connect company <span>→</span></button></div></section>}
+              </> : <section className="panel company-panel"><div className="empty-company"><div className="empty-illustration"><div className="empty-ring ring-one" /><div className="empty-ring ring-two" /><div className="empty-center">NC</div><span className="float-star star-one">✓</span><span className="float-star star-two">✦</span></div><h3>Your company workspace is ready.</h3><p>Connect your Torn company to see its details, income, operating ratings, and competitive health scorecard.</p><p className="empty-company-connect-hint">Use the ＋ button in the company selector above to connect a company.</p></div></section>}
               <section className="content-grid overview-quick-grid"><article className="panel quick-panel"><div className="panel-heading"><div><h2>Company tools</h2><p>Open a focused workspace when you need more detail.</p></div></div><button className="quick-link" onClick={() => setActiveView("employees")}><span className="quick-icon violet">♙</span><span><strong>Employee operations</strong><small>Role fit, work stats, wages, and requirement gaps</small></span><b>→</b></button><button className="quick-link" onClick={() => setActiveView("catalog")}><span className="quick-icon blue">▦</span><span><strong>Position catalog</strong><small>Reference role requirements by company type</small></span><b>→</b></button></article></section>
             </>
           )}

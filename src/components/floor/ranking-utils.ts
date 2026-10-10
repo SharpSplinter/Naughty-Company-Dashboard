@@ -13,6 +13,7 @@ export function placement(company: RankableCompany, dimension: "type" | "stars",
       return sameType && sameStar && row.weeklyIncome !== null
     })
     if (!reference.length) return "—"
-    const rank = reference.filter((row) => row.weeklyIncome !== null && row.weeklyIncome > target.weeklyIncome!).length + 1
-    return `${rank}/${reference.length}`
+    const ordered = reference.slice().sort((a, b) => (b.weeklyIncome ?? -1) - (a.weeklyIncome ?? -1))
+    const rank = ordered.findIndex((row) => row.companyId === target.companyId) + 1
+    return `${rank > 0 ? rank : reference.filter((row) => row.weeklyIncome !== null && row.weeklyIncome > target.weeklyIncome!).length + 1}/${reference.length}`
 }

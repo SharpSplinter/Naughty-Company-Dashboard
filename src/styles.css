@@ -289,3 +289,50 @@ th.numeric-cell {
 .ranking-table td:first-child,
 .ranking-table td:nth-child(3),
 .ranking-table td:nth-child(4) { white-space: nowrap; }
+
+/* Grouped master-page navigation */
+.nav-list{gap:5px;overflow-y:auto;min-height:0;padding-right:2px}
+.nav-group{display:grid;gap:3px}
+.nav-group-trigger{display:flex;align-items:center;justify-content:space-between;width:100%;padding:10px 11px;border:1px solid transparent;border-radius:8px;background:transparent;color:#d3d9ec;text-align:left;font-size:11px;font-weight:700;letter-spacing:.045em}
+.nav-group-trigger:hover,.nav-group-trigger[aria-expanded="true"]{background:#151c30;border-color:#252f49}
+.nav-group-trigger b{color:#8f9bbb;font-size:14px;font-weight:500}
+.nav-subitems{display:grid;gap:3px;padding-left:7px}
+.nav-item.nav-subitem{padding:9px 8px;gap:8px;font-size:11px}
+.nav-item.nav-subitem>span:first-child{font-size:14px;width:16px;flex-basis:16px}
+.nav-item.nav-subitem .nav-label{font-size:11px;white-space:normal}
+.company-switcher-menu-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 3px 8px}
+.company-switcher-menu-heading>strong{margin:0}
+.company-connect-plus{display:grid;place-items:center;width:28px;height:28px;border:1px solid #8273e855;border-radius:8px;background:#8772ff18;color:#c7bcff;font-size:19px;line-height:1}
+.company-connect-plus:hover{background:#8772ff30;border-color:#a397ff}
+.empty-company-connect-hint{margin:0;color:var(--muted);font-size:10px;line-height:1.6}
+
+/* Four-column stock inventory with a computed total value */
+.stock-inventory-table{overflow-x:auto;gap:0}
+.stock-inventory-header,.stock-inventory-row{display:grid;grid-template-columns:minmax(110px,1.4fr) minmax(70px,.75fr) minmax(90px,.9fr) minmax(100px,1fr);align-items:center;gap:10px;min-width:560px}
+.stock-inventory-header{padding:0 0 8px;border-bottom:1px solid #303a54;color:#7785a5;font-size:8px;font-weight:700;letter-spacing:.06em}
+.stock-inventory-row{padding:9px 0;border-bottom:1px solid #202a41}
+.stock-inventory-row>span{color:#b6c1da;font-size:10px;overflow-wrap:anywhere}
+.stock-inventory-row>strong{color:#f0f2ff;font:600 11px 'Space Grotesk';white-space:nowrap}
+.stock-value-total{display:flex;justify-content:space-between;align-items:center;gap:12px;min-width:560px;padding-top:11px}
+.stock-value-total>span{color:#8f9bbb;font-size:9px;font-weight:700;letter-spacing:.08em}
+.stock-value-total>strong{color:#65dfbd;font:700 14px 'Space Grotesk';white-space:nowrap}
+
+/* Page-by-page JSON import/export */
+.data-transfer-panel{display:grid;gap:16px}
+.transfer-master-row,.transfer-page-row{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:15px 0;border-bottom:1px solid #252f49}
+.transfer-master-row{padding:16px;border:1px solid #3b3b69;border-radius:10px;background:linear-gradient(135deg,#8772ff12,#0d1426)}
+.transfer-master-row>div:first-child,.transfer-page-row>div:first-child{min-width:0}
+.transfer-master-row strong,.transfer-page-row strong{display:block;color:#e9edfb;font-size:12px}
+.transfer-master-row p,.transfer-page-row p,.transfer-format-note p{margin:6px 0 0;color:#8996b3;font-size:10px;line-height:1.6}
+.transfer-page-list{display:grid}
+.transfer-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap;flex-shrink:0}
+.transfer-actions .primary-button,.transfer-actions .secondary-button{font-size:10px;padding:9px 11px}
+.transfer-actions .text-button{padding:8px 2px}
+.transfer-file-input{display:none}
+.transfer-format-note{padding:14px;border:1px solid #29344e;border-radius:8px;background:#0c1324}
+.transfer-format-note strong{color:#d9def1;font-size:11px}
+.transfer-format-note code{color:#c5bcff;font-size:9px}
+.transfer-status{display:flex;align-items:center;color:#aeb8d1;font-size:10px}
+.transfer-success{padding:11px 13px;border:1px solid #4fd5ae35;border-radius:7px;background:#4fd5ae0b;color:#8de5c9;font-size:10px;line-height:1.55}
+@media(max-width:800px){.transfer-master-row,.transfer-page-row{align-items:flex-start;flex-direction:column;gap:12px}.transfer-actions{justify-content:flex-start;width:100%}.transfer-actions .primary-button,.transfer-actions .secondary-button{white-space:normal}.nav-list{padding-bottom:10px}}
+@media(max-width:480px){.nav-group-trigger{padding:9px 7px;font-size:10px}.nav-subitems{padding-left:3px}.nav-item.nav-subitem{padding:8px 5px;gap:5px}.nav-item.nav-subitem .nav-label{font-size:10px}.transfer-actions{gap:7px}.transfer-actions .primary-button,.transfer-actions .secondary-button{font-size:9px;padding:8px}.company-switcher-menu{width:min(300px,calc(100vw - 185px))}}
