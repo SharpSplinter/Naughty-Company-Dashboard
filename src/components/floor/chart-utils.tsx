@@ -37,3 +37,45 @@ export function stockInventoryValue(stock: unknown): number | null {
 function formatMoney(value: number | null | undefined): string {
   return value === null || value === undefined ? "—" : "$" + value.toLocaleString(undefined, { maximumFractionDigits: 0 })
 }
+
+type CompareHistoryPoint = { day: string; dailyIncome: number | null; weeklyIncome: number | null; dailyProfit: number | null; weeklyProfit?: number | null; stockQuantity: number | null; stock: unknown }
+type CompareData = { director: { companyName: string; directorName: string; dailyIncome: number | null; weeklyIncome: number | null }; history: CompareHistoryPoint[] }
+type ChartResult = { model?: { company: { name: string } }; incomeHistory?: { fetchedAt: string; dailyIncome: number | null }[] } | null
+type ChartModel = { company: { name: string; dailyIncome: number | null; weeklyIncome: number | null } }
+
+export function buildChartSeriesFor(metric: SnapshotMetric, currentChartCompany: SnapshotHistoryCompany | undefined, ownCompareData: CompareData | null, result: ChartResult | null, model: ChartModel | undefined, selectedComparePlayerId: string, compareData: CompareData | null): ChartSeries[] {
+    const ownValues = new Map<string, number | null>()
+    currentChartCompany?.history.forEach((point) => ownValues.set(point.day, point[metric]))
+    ownCompareData?.history.forEach((point) => {
+      let value: number | null = null
+      if (metric === "stockValue") value = stockInventoryValue(point.stock)
+      else if (metric === "rating" || metric === "companyRank") value = null
+      else value = point[metric] ?? null
+      if (value !== null) ownValues.set(point.day, value)
+    })
+    if (metric === "dailyIncome") (result?.incomeHistory ?? []).forEach((point) => {
+      if (point.dailyIncome === null) return
+      const day = new Date(new Date(point.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10)
+      ownValues.set(day, point.dailyIncome)
+    })
+    if ((metric === "dailyIncome" || metric === "weeklyIncome") && model) {
+      const currentValue = metric === "dailyIncome" ? model.company.dailyIncome : model.company.weeklyIncome
+      if (currentValue !== null) ownValues.set(new Date(Date.now() - 18 * 3600000).toISOString().slice(0, 10), currentValue)
+    }
+    const series: ChartSeries[] = [{ label: model?.company.name || result?.model?.company.name || currentChartCompany?.name || "Selected company", values: Array.from(ownValues, ([label, value]) => ({ label, value })).sort((a, b) => a.label.localeCompare(b.label)) }]
+    if (selectedComparePlayerId && compareData) {
+      const peerByDay = new Map<string, number | null>(compareData.history.map((point) => {
+        let value: number | null = null
+        if (metric === "stockValue") value = stockInventoryValue(point.stock)
+        else if (metric === "rating" || metric === "companyRank") value = null
+        else value = point[metric] ?? null
+        return [point.day, value]
+      }))
+      if (metric === "dailyIncome" || metric === "weeklyIncome") {
+        const currentIncome = metric === "dailyIncome" ? compareData.director.dailyIncome : compareData.director.weeklyIncome
+        if (currentIncome !== null && currentIncome !== undefined) peerByDay.set(new Date(Date.now() - 18 * 3600000).toISOString().slice(0, 10), currentIncome)
+      }
+      series.push({ label: `${compareData.director.companyName} · ${compareData.director.directorName}`, values: Array.from(peerByDay, ([label, value]) => ({ label, value })).sort((a, b) => a.label.localeCompare(b.label)) })
+    }
+    return series
+}
