@@ -185,3 +185,61 @@ body, #root, .app-shell, .main-area { max-width: 100%; }
 @media (max-width: 480px) {
   .health-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Compact rankings: combine related metrics and keep every value legible. */
+.ranking-compact-table th,
+.ranking-compact-table td {
+  padding: 9px 8px;
+  vertical-align: middle;
+  line-height: 1.3;
+}
+.ranking-compact-table th {
+  font-size: 8px;
+  letter-spacing: .045em;
+  line-height: 1.25;
+}
+.ranking-compact-table .ranking-rank-col,
+.ranking-compact-table th:nth-child(1),
+.ranking-compact-table td:nth-child(1) { width: 5%; }
+.ranking-compact-table .ranking-company-col,
+.ranking-compact-table th:nth-child(2),
+.ranking-compact-table td:nth-child(2) { width: 31%; }
+.ranking-compact-table th:nth-child(3),
+.ranking-compact-table td:nth-child(3) { width: 8%; }
+.ranking-compact-table th:nth-child(4),
+.ranking-compact-table td:nth-child(4) { width: 14%; }
+.ranking-compact-table th:nth-child(5),
+.ranking-compact-table td:nth-child(5) { width: 13%; }
+.ranking-compact-table th:nth-child(6),
+.ranking-compact-table td:nth-child(6) { width: 14%; }
+.ranking-compact-table th:nth-child(7),
+.ranking-compact-table td:nth-child(7) { width: 15%; }
+.ranking-header-stack,
+.ranking-header-stack > span { display: grid; gap: 4px; }
+.ranking-header-stack > span + span { padding-top: 4px; border-top: 1px solid #303a54; color: #9babc9; }
+.ranking-stack { display: grid; gap: 5px; min-width: 0; }
+.ranking-stack > span { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-variant-numeric: tabular-nums; }
+.ranking-stack > span + span { padding-top: 4px; border-top: 1px solid #273149; }
+.ranking-stack small { flex: 0 0 auto; color: #8794b2; font-size: 7px; font-weight: 700; letter-spacing: .045em; }
+.ranking-metrics-stack { gap: 4px; }
+.ranking-metrics-stack > span { gap: 5px; }
+.ranking-metrics-stack small { min-width: 31px; }
+.ranking-company-cell > strong { display: block; color: #e8ebfa; font-size: 10px; line-height: 1.3; }
+.ranking-director { margin-top: 3px; color: #9da9c4; font-size: 9px; line-height: 1.3; }
+.ranking-company-meta { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 3px 7px; margin-top: 4px; color: #8794b2; font-size: 8px; line-height: 1.35; }
+.ranking-company-meta > span { min-width: 0; }
+.ranking-company-meta .compare-row-button { flex: 0 0 auto; padding: 1px 0; font-size: 8px; }
+@media (max-width: 760px) {
+  .ranking-compact-table th,
+  .ranking-compact-table td { padding: 7px 5px; font-size: 9px; }
+  .ranking-compact-table th:nth-child(1), .ranking-compact-table td:nth-child(1) { width: 8%; }
+  .ranking-compact-table th:nth-child(2), .ranking-compact-table td:nth-child(2) { width: 39%; }
+  .ranking-compact-table th:nth-child(3), .ranking-compact-table td:nth-child(3) { width: 11%; }
+  .ranking-compact-table th:nth-child(4), .ranking-compact-table td:nth-child(4) { width: 20%; }
+  .ranking-compact-table th:nth-child(7), .ranking-compact-table td:nth-child(7) { width: 22%; }
+  .ranking-stack { gap: 4px; }
+  .ranking-stack > span { gap: 4px; }
+  .ranking-stack small { font-size: 7px; }
+  .ranking-company-cell > strong { font-size: 9px; }
+  .ranking-company-meta { font-size: 7px; }
+}
