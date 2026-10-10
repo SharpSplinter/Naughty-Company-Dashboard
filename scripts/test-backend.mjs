@@ -88,6 +88,23 @@ try {
     assert.equal(response.company.id, 77)
   })
 
+  await test("binds the default fetch to the Worker global scope", async () => {
+    const originalFetch = globalThis.fetch
+    let receiver
+    globalThis.fetch = function (input, init) {
+      receiver = this
+      return Promise.resolve(new Response(JSON.stringify({ company: { id: 77 } })))
+    }
+    try {
+      const client = new TornApiClient({ apiKey: "test" })
+      const response = await client.getCompanyProfile()
+      assert.equal(receiver, globalThis)
+      assert.equal(response.company.id, 77)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   await test("fetches company profile, employees, and stock in one combined Torn request", async () => {
     let requestedUrl = ""
     const client = new TornApiClient({ apiKey: "test", fetcher: async (input) => {
