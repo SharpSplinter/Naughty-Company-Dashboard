@@ -581,8 +581,13 @@ th.numeric-cell {
 
 /* User-controlled dashboard-wide layout preferences. */
 .app-shell.dashboard-width-wide .page-content { max-width: none; width: 100%; }
-.app-shell.dashboard-width-standard .page-content { max-width: 1680px; width: 100%; }
+.app-shell.dashboard-width-standard .page-content { max-width: 1360px; width: 100%; }
 .app-shell.dashboard-density-compact .page-content { gap: 12px; padding-top: 20px; padding-bottom: 14px; }
+.app-shell.dashboard-density-compact .welcome-row { margin-bottom: 12px; }
+.app-shell.dashboard-density-compact .page-content h1 { font-size: clamp(22px, 2.3vw, 30px); }
+.app-shell.dashboard-density-compact .page-content .subtitle { margin-top: 5px; line-height: 1.45; }
+.app-shell.dashboard-density-compact .metric-card { gap: 7px; }
+.app-shell.dashboard-density-compact .company-facts > div > span, .app-shell.dashboard-density-compact .company-facts > div > small { line-height: 1.35; }
 .app-shell.dashboard-density-compact .page-content > * { margin-bottom: 12px; }
 .app-shell.dashboard-density-compact .panel,
 .app-shell.dashboard-density-compact .catalog-panel,
