@@ -476,3 +476,61 @@ th.numeric-cell {
   .admin-search-row { max-width: none; }
   .admin-search-row .primary-button { padding-inline: 12px; }
 }
+
+
+/* Automation Center */
+.automation-workspace{display:grid;gap:18px;min-width:0}
+.automation-intro{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding:22px;background:radial-gradient(ellipse at 100% 0,#7d6bff20,transparent 48%),var(--panel)}
+.automation-intro-copy{max-width:720px;min-width:0}
+.automation-eyebrow{font-size:10px;font-weight:700;letter-spacing:.16em;color:var(--violet);margin-bottom:10px}
+.automation-intro h2{font:600 clamp(20px,2vw,27px) 'Space Grotesk';color:var(--white);margin:0 0 9px;line-height:1.25}
+.automation-intro p,.automation-run-card .panel-heading p{color:var(--muted);line-height:1.65;margin:0}
+.automation-intro-stats{display:flex;gap:10px;flex:0 0 auto}
+.automation-intro-stats>div{min-width:105px;border:1px solid var(--line);border-radius:11px;background:#0c1222;padding:13px}
+.automation-intro-stats small{display:block;color:var(--muted);font-size:9px;font-weight:700;letter-spacing:.1em;margin-bottom:7px}
+.automation-intro-stats strong{font:600 25px 'Space Grotesk';color:var(--white)}
+.automation-run-card,.automation-rule-builder,.automation-rules-list,.automation-inbox{padding:18px;min-width:0}
+.automation-run-summary{display:flex;align-items:flex-start;gap:13px;padding:14px;border:1px solid var(--line);border-radius:10px;background:#0c1222}
+.automation-run-summary>div{min-width:0}
+.automation-run-summary strong{display:block;color:var(--white);font-size:13px;margin-bottom:5px}
+.automation-run-summary p{color:var(--muted);font-size:12px;line-height:1.55;margin:0}
+.automation-status,.automation-rule-state{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:999px;padding:5px 9px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}
+.automation-status.succeeded{color:var(--green);border-color:#4fd5ae45;background:#4fd5ae12}
+.automation-status.partial,.automation-status.running{color:var(--amber);border-color:#f1b86b45;background:#f1b86b12}
+.automation-status.failed{color:#ff8888;border-color:#ff777745;background:#ff777712}
+.automation-grid{display:grid;grid-template-columns:minmax(280px,.85fr) minmax(0,1.15fr);gap:18px;align-items:start}
+.automation-form{display:grid;gap:13px}
+.automation-form label{display:grid;gap:7px;color:#cdd4e8;font-size:12px;font-weight:600}
+.automation-form select{width:100%;min-height:40px;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:#0b1120;color:var(--white)}
+.automation-form .primary-button{width:100%;justify-content:center;min-height:42px;margin-top:3px}
+.automation-description{font-size:12px;color:var(--muted);line-height:1.6;margin:-4px 0 0}
+.automation-rule-list,.automation-event-list{display:grid;gap:10px}
+.automation-rule-card,.automation-event-card{min-width:0;border:1px solid var(--line);border-radius:11px;background:#0d1425;padding:14px}
+.automation-rule-top{display:flex;align-items:flex-start;gap:10px;min-width:0}
+.automation-rule-top>div{flex:1;min-width:0}
+.automation-rule-top h3,.automation-event-content h3{margin:0 0 4px;font-size:13px;color:var(--white);line-height:1.4}
+.automation-rule-top p{margin:0;color:var(--muted);font-size:11px;overflow-wrap:anywhere}
+.automation-rule-icon{width:27px;height:27px;display:grid;place-items:center;flex:0 0 27px;border-radius:8px;background:#4fd5ae12;color:var(--green)}
+.automation-rule-icon.paused{background:#8c96b112;color:var(--muted)}
+.automation-rule-state.enabled{color:var(--green);background:#4fd5ae10}
+.automation-rule-state.paused{color:var(--muted)}
+.automation-rule-detail{font-size:11px;color:var(--muted);line-height:1.6;margin:12px 0}
+.automation-rule-actions,.automation-event-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.automation-rule-actions .secondary-button,.automation-event-actions .secondary-button{min-height:34px;padding:7px 11px}
+.automation-notice{padding:11px 13px;border:1px solid #4fd5ae45;border-radius:9px;background:#4fd5ae10;color:#8ce8ce;font-size:12px}
+.automation-event-card{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:12px;align-items:start}
+.automation-event-card.acknowledged{opacity:.78}
+.automation-event-severity{width:27px;height:27px;display:grid;place-items:center;border-radius:8px;background:#70a7ff15;color:var(--blue);font-size:12px;font-weight:700}
+.automation-event-severity.warning{background:#f1b86b14;color:var(--amber)}
+.automation-event-severity.critical{background:#ff777715;color:#ff9999}
+.automation-event-content{min-width:0}
+.automation-event-meta{display:flex;gap:12px;justify-content:space-between;flex-wrap:wrap;margin-bottom:7px;color:var(--muted);font-size:10px}
+.automation-event-content>p{margin:0 0 8px;color:#aeb8d0;font-size:12px;line-height:1.65;overflow-wrap:anywhere}
+.automation-event-content>small{display:block;color:var(--muted);font-size:10px;margin-top:7px;overflow-wrap:anywhere}
+.automation-event-values{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:9px;margin-top:9px;color:var(--muted);font-size:11px}
+.automation-event-values strong{color:#ffaaaa}
+.automation-acknowledged{font-size:10px;color:var(--green);white-space:nowrap}
+.automation-event-actions{flex-direction:column;align-items:stretch}
+.automation-event-actions .text-button{white-space:nowrap}
+@media(max-width:1050px){.automation-grid{grid-template-columns:1fr}.automation-intro{align-items:flex-start;flex-direction:column}.automation-intro-stats{width:100%}.automation-intro-stats>div{flex:1}}
+@media(max-width:640px){.automation-run-card,.automation-rule-builder,.automation-rules-list,.automation-inbox{padding:13px}.automation-event-card{grid-template-columns:28px minmax(0,1fr)}.automation-event-actions{grid-column:2;flex-direction:row;align-items:center}.automation-event-actions .secondary-button{white-space:normal}.automation-event-meta{flex-direction:column;gap:4px}.automation-intro{padding:17px}.automation-intro-stats>div{min-width:0}.automation-rule-state{font-size:9px;padding:4px 6px}}

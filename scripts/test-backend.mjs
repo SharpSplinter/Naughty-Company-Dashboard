@@ -9,6 +9,7 @@ const root = process.cwd()
 const temp = mkdtempSync(join(tmpdir(), "naughty-company-tests-"))
 writeFileSync(join(temp, "package.json"), JSON.stringify({ type: "commonjs" }))
 const sourceFiles = [
+  "src/lib/automation/rules.ts",
   "src/lib/company/engine.ts",
   "src/lib/company/types.ts",
   "src/lib/torn/client.ts",
@@ -45,6 +46,7 @@ try {
   const { TornApiClient, TornApiClientError } = require(join(temp, "lib/torn/client.js"))
   const worker = require(join(temp, "worker/index.js")).default
   const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
+  const { evaluateIncomeDrop, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } = require(join(temp, "lib/automation/rules.js"))
 
   let passed = 0
   async function test(name, fn) {
@@ -614,6 +616,87 @@ try {
     assert.equal(response.status, 200)
     assert.equal((await response.json()).imported, true)
     assert.deepEqual(saved.get("777:charts"), history)
+  })
+
+  await test("automation income-drop rules trigger only after a valid threshold crossing", () => {
+    assert.deepEqual(evaluateIncomeDrop(100, 80, 15), { changePercent: -20 })
+    assert.equal(evaluateIncomeDrop(100, 90, 15), null)
+    assert.equal(evaluateIncomeDrop(0, 0, 15), null)
+    assert.equal(evaluateIncomeDrop(null, 0, 15), null)
+  })
+
+  await test("automation thresholds and cooldowns are bounded", () => {
+    assert.equal(normalizeAlertThreshold(200), 90)
+    assert.equal(normalizeAlertThreshold(-3), 1)
+    assert.equal(normalizeCooldownHours(0), 1)
+    assert.equal(normalizeCooldownHours(999), 168)
+  })
+
+  await test("automation stale-data checks ignore invalid timestamps and respect the configured age", () => {
+    const now = Date.parse("2026-10-10T18:00:00.000Z")
+    assert.equal(isSnapshotStale("2026-10-09T06:00:00.000Z", now, 36), true)
+    assert.equal(isSnapshotStale("2026-10-10T06:00:00.000Z", now, 36), false)
+    assert.equal(isSnapshotStale("not-a-date", now, 1), false)
+  })
+
+  await test("personal automation rules are created only for the authenticated owner's connected company", async () => {
+    const writes = []
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            const query = sql.toLowerCase()
+            if (query.includes("from sessions s join players p")) return { player_id: "777", player_name: "Alert Tester" }
+            if (query.includes("from admin_settings")) return null
+            if (query.includes("from dashboard_member_status")) return null
+            if (query.includes("from companies where player_id = ? and company_id = ?")) return { company_id: values[1] }
+            return null
+          },
+          async all() { return { results: [] } },
+          async run() { writes.push({ sql, values }); return { success: true, meta: { changes: 1 } } },
+        }
+      },
+    }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/alert-rules", {
+      method: "POST", headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer test-session", "Content-Type": "application/json" },
+      body: JSON.stringify({ ruleType: "income_drop", companyId: "123", thresholdPercent: 15, cooldownHours: 24 }),
+    }), { DB: db })
+    assert.equal(response.status, 201)
+    const payload = await response.json()
+    assert.ok(payload.ruleId)
+    const insert = writes.find((item) => item.sql.includes("INSERT INTO alert_rules"))
+    assert.ok(insert)
+    assert.equal(insert.values[1], "777")
+    assert.equal(insert.values[2], "123")
+    assert.equal(insert.values[3], "income_drop")
+    assert.equal(writes.some((item) => item.sql.toLowerCase().includes("company_sharing_recipients")), false)
+  })
+
+  await test("alert acknowledgment cannot access another owner's event", async () => {
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            const query = sql.toLowerCase()
+            if (query.includes("from sessions s join players p")) return { player_id: "777", player_name: "Alert Tester" }
+            if (query.includes("from admin_settings")) return null
+            if (query.includes("from dashboard_member_status")) return null
+            if (query.includes("select event_id from alert_events where event_id = ? and owner_player_id = ?")) { assert.equal(values[1], "777"); return null }
+            return null
+          },
+          async all() { return { results: [] } },
+          async run() { return { success: true, meta: { changes: 0 } } },
+        }
+      },
+    }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/alerts/00000000-0000-4000-8000-000000000000/acknowledge", {
+      method: "POST", headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer test-session" },
+    }), { DB: db })
+    assert.equal(response.status, 404)
   })
 
   console.log(`\n${passed} backend checks passed.`)

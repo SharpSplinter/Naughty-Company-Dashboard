@@ -1,4 +1,5 @@
 import { TornApiClient, TornApiClientError } from "../lib/torn/client"
+import { evaluateIncomeDrop, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } from "../lib/automation/rules"
 
 type D1Result<T = Record<string, unknown>> = { results?: T[]; success?: boolean; meta?: { changes?: number } }
 type D1Statement = { bind(...values: (string | number | null)[]): D1Statement; first<T = Record<string, unknown>>(): Promise<T | null>; all<T = Record<string, unknown>>(): Promise<D1Result<T>>; run(): Promise<D1Result> }
@@ -469,14 +470,16 @@ async function refreshFactionDirectoryFromAnyKey(env: WorkerEnv, limit = 35): Pr
   } catch { /* Keep scheduled sync resilient to a revoked key or temporary Torn failure. */ }
 }
 
-async function refreshRankingProfiles(env: WorkerEnv): Promise<void> {
-  if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return
+async function refreshRankingProfiles(env: WorkerEnv): Promise<{ companiesChecked: number; companiesFailed: number }> {
+  if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return { companiesChecked: 0, companiesFailed: 0 }
   const db = requireDb(env)
   const perCompany = await db.prepare("SELECT player_id, company_id, ciphertext, iv FROM company_api_keys ORDER BY updated_at ASC").all<{ player_id: string; company_id: string; ciphertext: string; iv: string }>()
   const keys = perCompany.results ?? []
   const keyedPlayers = new Set(keys.map((row) => row.player_id))
   const legacy = await db.prepare("SELECT player_id, ciphertext, iv FROM company_keys ORDER BY updated_at ASC").all<{ player_id: string; ciphertext: string; iv: string }>()
   const work = [...keys, ...(legacy.results ?? []).filter((row) => !keyedPlayers.has(row.player_id)).map((row) => ({ ...row, company_id: "" }))]
+  let companiesChecked = 0
+  let companiesFailed = 0
   for (const keyRow of work) {
     try {
       const apiKey = await decryptKey(env, keyRow.ciphertext, keyRow.iv)
@@ -493,8 +496,15 @@ async function refreshRankingProfiles(env: WorkerEnv): Promise<void> {
       await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(profile), employees, now).run()
       await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), asJson(stock), now).run()
       await persistFactionDirectorSnapshot(env, profile, stock)
-    } catch { /* One stale key or Torn API error must not stop the remaining companies. */ }
+      companiesChecked += 1
+      await evaluateAutomationForCompany(env, keyRow.player_id, String(companyId)).catch(() => undefined)
+    } catch (error) {
+      companiesFailed += 1
+      await emitRefreshFailureAlerts(env, keyRow.player_id, keyRow.company_id || null, error).catch(() => undefined)
+      /* One stale key or Torn API error must not stop the remaining companies. */
+    }
   }
+  return { companiesChecked, companiesFailed }
 }
 
 type AdminAuditOutcome = "succeeded" | "failed" | "denied" | "pending"
@@ -508,6 +518,179 @@ async function writeAdminAudit(env: WorkerEnv, actor: Session, action: string, t
 
 function parseStoredJson(value: unknown): unknown {
   try { return JSON.parse(String(value)) as unknown } catch { return null }
+}
+
+type AlertRuleType = "income_drop" | "stale_data" | "refresh_failure"
+type AlertRuleRow = { rule_id: string; owner_player_id: string; company_id: string | null; rule_type: AlertRuleType; enabled: number; threshold_percent: number; cooldown_hours: number; stale_after_hours: number; last_triggered_at: string | null; last_evaluated_at: string | null; created_at: string; updated_at: string }
+type AlertEventInput = { severity: "info" | "warning" | "critical"; title: string; message: string; companyId?: string | null; previousValue?: number | null; currentValue?: number | null; changePercent?: number | null; sourceSnapshotAt?: string | null; dedupeSuffix: string }
+
+async function ensureAutomationSchema(env: WorkerEnv): Promise<void> {
+  const db = requireDb(env)
+  await db.prepare(`CREATE TABLE IF NOT EXISTS alert_rules (
+    rule_id TEXT PRIMARY KEY,
+    owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+    company_id TEXT,
+    rule_type TEXT NOT NULL CHECK (rule_type IN ('income_drop', 'stale_data', 'refresh_failure')),
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    threshold_percent REAL NOT NULL DEFAULT 15,
+    cooldown_hours INTEGER NOT NULL DEFAULT 24,
+    stale_after_hours INTEGER NOT NULL DEFAULT 30,
+    last_triggered_at TEXT,
+    last_evaluated_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`).run()
+  await db.prepare(`CREATE TABLE IF NOT EXISTS alert_events (
+    event_id TEXT PRIMARY KEY,
+    owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+    rule_id TEXT NOT NULL REFERENCES alert_rules(rule_id) ON DELETE CASCADE,
+    company_id TEXT,
+    rule_type TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'critical')),
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    previous_value REAL,
+    current_value REAL,
+    change_percent REAL,
+    source_snapshot_at TEXT,
+    status TEXT NOT NULL DEFAULT 'unread' CHECK (status IN ('unread', 'acknowledged')),
+    dedupe_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    acknowledged_at TEXT
+  )`).run()
+  await db.prepare(`CREATE TABLE IF NOT EXISTS automation_runs (
+    run_id TEXT PRIMARY KEY,
+    trigger_name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'partial', 'failed')),
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    companies_checked INTEGER NOT NULL DEFAULT 0,
+    companies_failed INTEGER NOT NULL DEFAULT 0,
+    alerts_created INTEGER NOT NULL DEFAULT 0,
+    error_summary TEXT
+  )`).run()
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_alert_rules_owner_enabled ON alert_rules(owner_player_id, enabled, rule_type)").run()
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_alert_events_owner_status_created ON alert_events(owner_player_id, status, created_at)").run()
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_automation_runs_started ON automation_runs(started_at DESC)").run()
+}
+
+function dailyIncomeFromProfile(payload: unknown): number | null {
+  const root = companyProfileRoot(payload)
+  const income = isRecord(root.income) ? root.income : null
+  const value = income?.daily
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value)
+  return null
+}
+
+async function createAlertEvent(env: WorkerEnv, rule: AlertRuleRow, input: AlertEventInput): Promise<boolean> {
+  const db = requireDb(env)
+  const now = new Date().toISOString()
+  const lastTriggered = rule.last_triggered_at ? Date.parse(rule.last_triggered_at) : Number.NaN
+  const cooldownHours = normalizeCooldownHours(rule.cooldown_hours)
+  if (Number.isFinite(lastTriggered) && Date.now() - lastTriggered < cooldownHours * 3600000) return false
+  const dedupeKey = `${rule.rule_id}:${input.dedupeSuffix}`
+  const result = await db.prepare("INSERT OR IGNORE INTO alert_events (event_id, owner_player_id, rule_id, company_id, rule_type, severity, title, message, previous_value, current_value, change_percent, source_snapshot_at, status, dedupe_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?)")
+    .bind(crypto.randomUUID(), rule.owner_player_id, rule.rule_id, input.companyId ?? rule.company_id, rule.rule_type, input.severity, input.title.slice(0, 120), input.message.slice(0, 500), input.previousValue ?? null, input.currentValue ?? null, input.changePercent ?? null, input.sourceSnapshotAt ?? null, dedupeKey, now).run()
+  const inserted = (result.meta?.changes ?? 0) > 0
+  if (inserted) await db.prepare("UPDATE alert_rules SET last_triggered_at = ?, updated_at = ? WHERE rule_id = ? AND owner_player_id = ?").bind(now, now, rule.rule_id, rule.owner_player_id).run()
+  return inserted
+}
+
+async function evaluateAutomationForCompany(env: WorkerEnv, playerId: string, companyId: string): Promise<void> {
+  await ensureAutomationSchema(env)
+  const db = requireDb(env)
+  const ruleResult = await db.prepare("SELECT * FROM alert_rules WHERE owner_player_id = ? AND enabled = 1 AND (company_id IS NULL OR company_id = ?)").bind(playerId, companyId).all<AlertRuleRow>()
+  const rules = ruleResult.results ?? []
+  if (!rules.length) return
+  const snapshots = await db.prepare("SELECT profile_json AS profileJson, fetched_at AS fetchedAt FROM company_snapshots WHERE player_id = ? AND company_id = ? ORDER BY fetched_at DESC, snapshot_id DESC LIMIT 2").bind(playerId, companyId).all<{ profileJson: string; fetchedAt: string }>()
+  const rows = snapshots.results ?? []
+  const current = rows[0]
+  const previous = rows[1]
+  const currentIncome = current ? dailyIncomeFromProfile(parseStoredJson(current.profileJson)) : null
+  const previousIncome = previous ? dailyIncomeFromProfile(parseStoredJson(previous.profileJson)) : null
+  const now = new Date().toISOString()
+  for (const rule of rules) {
+    try {
+      if (rule.rule_type === "income_drop" && current && previous) {
+        const drop = evaluateIncomeDrop(previousIncome, currentIncome, rule.threshold_percent)
+        if (drop) await createAlertEvent(env, rule, {
+          severity: "warning", title: "Daily income dropped",
+          message: `Daily income fell ${Math.abs(drop.changePercent).toFixed(1)}% since the previous successful company refresh.`,
+          companyId, previousValue: previousIncome, currentValue: currentIncome, changePercent: drop.changePercent,
+          sourceSnapshotAt: current.fetchedAt, dedupeSuffix: `income:${current.fetchedAt}`,
+        })
+      }
+      await db.prepare("UPDATE alert_rules SET last_evaluated_at = ? WHERE rule_id = ? AND owner_player_id = ?").bind(now, rule.rule_id, playerId).run()
+    } catch { /* A malformed rule must not interrupt company refreshes. */ }
+  }
+}
+
+async function emitRefreshFailureAlerts(env: WorkerEnv, playerId: string, companyId: string | null, error: unknown): Promise<void> {
+  await ensureAutomationSchema(env)
+  const db = requireDb(env)
+  const rows = await db.prepare("SELECT * FROM alert_rules WHERE owner_player_id = ? AND enabled = 1 AND rule_type = 'refresh_failure' AND (company_id IS NULL OR (? IS NOT NULL AND company_id = ?))")
+    .bind(playerId, companyId, companyId).all<AlertRuleRow>()
+  const now = new Date().toISOString()
+  const detail = error instanceof Error ? error.message : "The refresh failed unexpectedly."
+  const safeDetail = detail.replace(/ApiKey\s+\S+/gi, "API key [redacted]").replace(/\b[a-f0-9]{32,}\b/gi, "[redacted]").slice(0, 180)
+  for (const rule of rows.results ?? []) {
+    await createAlertEvent(env, rule, {
+      severity: "critical", title: "Company refresh failed",
+      message: `The scheduled company refresh did not complete. ${safeDetail || "Check the saved connection and retry."}`,
+      companyId, sourceSnapshotAt: now, dedupeSuffix: `refresh-failure:${now.slice(0, 10)}`,
+    }).catch(() => false)
+  }
+}
+
+async function evaluateStaleDataRules(env: WorkerEnv): Promise<void> {
+  await ensureAutomationSchema(env)
+  const db = requireDb(env)
+  const result = await db.prepare("SELECT * FROM alert_rules WHERE enabled = 1 AND rule_type = 'stale_data'").all<AlertRuleRow>()
+  const nowMs = Date.now()
+  const now = new Date(nowMs).toISOString()
+  for (const rule of result.results ?? []) {
+    try {
+      const latest = rule.company_id
+        ? await db.prepare("SELECT company_id AS companyId, fetched_at AS fetchedAt FROM company_snapshots WHERE player_id = ? AND company_id = ? ORDER BY fetched_at DESC, snapshot_id DESC LIMIT 1").bind(rule.owner_player_id, rule.company_id).first<{ companyId: string; fetchedAt: string }>()
+        : await db.prepare("SELECT company_id AS companyId, fetched_at AS fetchedAt FROM company_snapshots WHERE player_id = ? ORDER BY fetched_at DESC, snapshot_id DESC LIMIT 1").bind(rule.owner_player_id).first<{ companyId: string; fetchedAt: string }>()
+      if (!latest) {
+        await createAlertEvent(env, rule, { severity: "warning", title: "No company snapshot available", message: "No successful company snapshot is available for this rule yet. Check the company connection and refresh status.", companyId: rule.company_id, dedupeSuffix: `no-snapshot:${now.slice(0, 10)}` })
+      } else if (isSnapshotStale(latest.fetchedAt, nowMs, rule.stale_after_hours)) {
+        const ageHours = Math.max(0, Math.floor((nowMs - Date.parse(latest.fetchedAt)) / 3600000))
+        await createAlertEvent(env, rule, { severity: "warning", title: "Company data is stale", message: `The last successful company snapshot is ${ageHours} hours old. The configured limit is ${rule.stale_after_hours} hours.`, companyId: latest.companyId, sourceSnapshotAt: latest.fetchedAt, dedupeSuffix: `stale:${now.slice(0, 10)}` })
+      }
+      await db.prepare("UPDATE alert_rules SET last_evaluated_at = ? WHERE rule_id = ? AND owner_player_id = ?").bind(now, rule.rule_id, rule.owner_player_id).run()
+    } catch { /* Keep other rules running if a single stored rule is malformed. */ }
+  }
+}
+
+async function runScheduledAutomation(controller: { scheduledTime: number; cron: string }, env: WorkerEnv): Promise<void> {
+  if (!env.DB) return
+  const db = requireDb(env)
+  try { await ensureAutomationSchema(env) } catch {
+    await Promise.allSettled([refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, 35), refreshGlobalRankingCache(env)])
+    return
+  }
+  const runId = crypto.randomUUID()
+  const startedAt = new Date(controller.scheduledTime).toISOString()
+  await db.prepare("INSERT INTO automation_runs (run_id, trigger_name, status, started_at) VALUES (?, ?, 'running', ?)").bind(runId, controller.cron || "scheduled", startedAt).run()
+  const isWeeklyLock = new Date(controller.scheduledTime).getUTCDay() === 0
+  const tasks: Promise<unknown>[] = [refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35), refreshGlobalRankingCache(env)]
+  if (isWeeklyLock) tasks.push(captureWeeklyFactionStarCounts(env, startedAt))
+  const results = await Promise.allSettled(tasks)
+  await evaluateStaleDataRules(env).catch(() => undefined)
+  const refresh = results[0]
+  const refreshSummary = refresh.status === "fulfilled" ? refresh.value as { companiesChecked?: number; companiesFailed?: number } : { companiesChecked: 0, companiesFailed: 0 }
+  const failures = results.filter((item) => item.status === "rejected").map((item) => item.status === "rejected" ? (item.reason instanceof Error ? item.reason.message : "A scheduled task failed.") : "")
+  const companiesChecked = Number(refreshSummary.companiesChecked ?? 0)
+  const companiesFailed = Number(refreshSummary.companiesFailed ?? 0) + (refresh.status === "rejected" ? 1 : 0)
+  const alerts = await db.prepare("SELECT COUNT(*) AS count FROM alert_events WHERE created_at >= ?").bind(startedAt).first<{ count: number }>().catch(() => null)
+  const status = results.every((item) => item.status === "rejected") ? "failed" : (failures.length || companiesFailed ? "partial" : "succeeded")
+  const finishedAt = new Date().toISOString()
+  const summary = [...failures, ...(companiesFailed ? [`${companiesFailed} company refresh(es) failed.`] : [])].join(" ").slice(0, 500) || null
+  await db.prepare("UPDATE automation_runs SET status = ?, finished_at = ?, companies_checked = ?, companies_failed = ?, alerts_created = ?, error_summary = ? WHERE run_id = ?")
+    .bind(status, finishedAt, companiesChecked, companiesFailed, Number(alerts?.count ?? 0), summary, runId).run()
 }
 
 async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
@@ -634,6 +817,78 @@ async function restoreAdminBackup(env: WorkerEnv, targetPlayerId: string, parsed
   return counts
 }
 
+async function handleAutomationRequest(request: Request, env: WorkerEnv, origin: string): Promise<Response | null> {
+  const url = new URL(request.url)
+  const rulesPath = url.pathname === "/api/me/alert-rules" || url.pathname.startsWith("/api/me/alert-rules/")
+  const alertsPath = url.pathname === "/api/me/alerts" || url.pathname.startsWith("/api/me/alerts/")
+  if (!rulesPath && !alertsPath) return null
+  const session = await authenticate(request, env)
+  if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+  await ensureAutomationSchema(env)
+  const db = requireDb(env)
+  if (url.pathname === "/api/me/alert-rules" && request.method === "GET") {
+    const rows = await db.prepare("SELECT r.rule_id AS ruleId, r.company_id AS companyId, r.rule_type AS ruleType, r.enabled AS enabled, r.threshold_percent AS thresholdPercent, r.cooldown_hours AS cooldownHours, r.stale_after_hours AS staleAfterHours, r.last_triggered_at AS lastTriggeredAt, r.last_evaluated_at AS lastEvaluatedAt, r.created_at AS createdAt, c.company_name AS companyName FROM alert_rules r LEFT JOIN companies c ON c.player_id = r.owner_player_id AND c.company_id = r.company_id WHERE r.owner_player_id = ? ORDER BY r.created_at DESC LIMIT 100").bind(session.player_id).all<Record<string, unknown>>()
+    return jsonResponse({ rules: rows.results ?? [] }, 200, origin)
+  }
+  if (url.pathname === "/api/me/alert-rules" && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    const type = isRecord(body) && typeof body.ruleType === "string" ? body.ruleType : ""
+    if (!["income_drop", "stale_data", "refresh_failure"].includes(type)) return jsonResponse({ error: "Choose a supported alert type." }, 400, origin)
+    const rawCompanyId = isRecord(body) ? body.companyId : null
+    const companyId = rawCompanyId == null || rawCompanyId === "" ? null : positiveId(rawCompanyId)
+    if (rawCompanyId != null && rawCompanyId !== "" && !companyId) return jsonResponse({ error: "Choose a valid company." }, 400, origin)
+    if (companyId) {
+      const owned = await db.prepare("SELECT company_id FROM companies WHERE player_id = ? AND company_id = ? LIMIT 1").bind(session.player_id, companyId).first<{ company_id: string }>()
+      if (!owned) return jsonResponse({ error: "That company is not connected to your account." }, 403, origin)
+    }
+    const ruleId = crypto.randomUUID()
+    const now = new Date().toISOString()
+    const threshold = normalizeAlertThreshold(isRecord(body) ? body.thresholdPercent : undefined)
+    const cooldown = normalizeCooldownHours(isRecord(body) ? body.cooldownHours : undefined)
+    const staleAfter = normalizeCooldownHours(isRecord(body) ? body.staleAfterHours : undefined, 30)
+    await db.prepare("INSERT INTO alert_rules (rule_id, owner_player_id, company_id, rule_type, enabled, threshold_percent, cooldown_hours, stale_after_hours, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)").bind(ruleId, session.player_id, companyId, type, threshold, cooldown, staleAfter, now, now).run()
+    return jsonResponse({ ruleId, created: true }, 201, origin)
+  }
+  const ruleMatch = url.pathname.match(/^\/api\/me\/alert-rules\/([a-f0-9-]{36})$/i)
+  if (ruleMatch && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    const rule = await db.prepare("SELECT * FROM alert_rules WHERE rule_id = ? AND owner_player_id = ?").bind(ruleMatch[1], session.player_id).first<AlertRuleRow>()
+    if (!rule) return jsonResponse({ error: "Alert rule not found." }, 404, origin)
+    const enabled = isRecord(body) && typeof body.enabled === "boolean" ? Number(body.enabled) : rule.enabled
+    const threshold = isRecord(body) && body.thresholdPercent !== undefined ? normalizeAlertThreshold(body.thresholdPercent) : rule.threshold_percent
+    const cooldown = isRecord(body) && body.cooldownHours !== undefined ? normalizeCooldownHours(body.cooldownHours) : rule.cooldown_hours
+    const staleAfter = isRecord(body) && body.staleAfterHours !== undefined ? normalizeCooldownHours(body.staleAfterHours, 30) : rule.stale_after_hours
+    const now = new Date().toISOString()
+    await db.prepare("UPDATE alert_rules SET enabled = ?, threshold_percent = ?, cooldown_hours = ?, stale_after_hours = ?, updated_at = ? WHERE rule_id = ? AND owner_player_id = ?").bind(enabled, threshold, cooldown, staleAfter, now, rule.rule_id, session.player_id).run()
+    return jsonResponse({ updated: true }, 200, origin)
+  }
+  if (ruleMatch && request.method === "DELETE") {
+    const result = await db.prepare("DELETE FROM alert_rules WHERE rule_id = ? AND owner_player_id = ?").bind(ruleMatch[1], session.player_id).run()
+    if (!(result.meta?.changes ?? 0)) return jsonResponse({ error: "Alert rule not found." }, 404, origin)
+    return jsonResponse({ deleted: true }, 200, origin)
+  }
+  if (url.pathname === "/api/me/alerts" && request.method === "GET") {
+    const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 50) || 50))
+    const [rows, unread, latestRun] = await Promise.all([
+      db.prepare("SELECT e.event_id AS eventId, e.rule_id AS ruleId, e.company_id AS companyId, e.rule_type AS ruleType, e.severity, e.title, e.message, e.previous_value AS previousValue, e.current_value AS currentValue, e.change_percent AS changePercent, e.source_snapshot_at AS sourceSnapshotAt, e.status, e.created_at AS createdAt, e.acknowledged_at AS acknowledgedAt, c.company_name AS companyName FROM alert_events e LEFT JOIN companies c ON c.player_id = e.owner_player_id AND c.company_id = e.company_id WHERE e.owner_player_id = ? ORDER BY e.created_at DESC LIMIT ?").bind(session.player_id, limit).all<Record<string, unknown>>(),
+      db.prepare("SELECT COUNT(*) AS count FROM alert_events WHERE owner_player_id = ? AND status = 'unread'").bind(session.player_id).first<{ count: number }>(),
+      db.prepare("SELECT trigger_name AS triggerName, status, started_at AS startedAt, finished_at AS finishedAt, companies_checked AS companiesChecked, companies_failed AS companiesFailed, alerts_created AS alertsCreated FROM automation_runs ORDER BY started_at DESC LIMIT 1").first<Record<string, unknown>>(),
+    ])
+    return jsonResponse({ events: rows.results ?? [], unreadCount: Number(unread?.count ?? 0), latestRun: latestRun ?? null }, 200, origin)
+  }
+  const acknowledgeMatch = url.pathname.match(/^\/api\/me\/alerts\/([a-f0-9-]{36})\/acknowledge$/i)
+  if (acknowledgeMatch && request.method === "POST") {
+    const now = new Date().toISOString()
+    const result = await db.prepare("UPDATE alert_events SET status = 'acknowledged', acknowledged_at = ? WHERE event_id = ? AND owner_player_id = ? AND status = 'unread'").bind(now, acknowledgeMatch[1], session.player_id).run()
+    if (!(result.meta?.changes ?? 0)) {
+      const existing = await db.prepare("SELECT event_id FROM alert_events WHERE event_id = ? AND owner_player_id = ?").bind(acknowledgeMatch[1], session.player_id).first<{ event_id: string }>()
+      if (!existing) return jsonResponse({ error: "Alert not found." }, 404, origin)
+    }
+    return jsonResponse({ acknowledged: true }, 200, origin)
+  }
+  return jsonResponse({ error: "Automation route not found." }, 404, origin)
+}
+
 async function handleAdminRequest(request: Request, env: WorkerEnv, origin: string, ctx?: { waitUntil(promise: Promise<unknown>): void }): Promise<Response | null> {
   const url = new URL(request.url)
   if (!url.pathname.startsWith("/api/admin")) return null
@@ -648,6 +903,11 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
   await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
   const memberMatch = url.pathname.match(/^\/api\/admin\/members\/(\d+)(?:\/(status|connection-test|connection-repair))?$/)
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 50) || 50))
+  if (url.pathname === "/api/admin/automation/runs" && request.method === "GET") {
+    await ensureAutomationSchema(env)
+    const rows = await db.prepare("SELECT run_id AS runId, trigger_name AS triggerName, status, started_at AS startedAt, finished_at AS finishedAt, companies_checked AS companiesChecked, companies_failed AS companiesFailed, alerts_created AS alertsCreated, error_summary AS errorSummary FROM automation_runs ORDER BY started_at DESC LIMIT ?").bind(limit).all<Record<string, unknown>>()
+    return jsonResponse({ runs: rows.results ?? [] }, 200, origin)
+  }
   if (url.pathname === "/api/admin/overview" && request.method === "GET") {
     const metrics = await db.prepare("SELECT (SELECT COUNT(*) FROM players) AS members, (SELECT COUNT(*) FROM companies) AS companies, (SELECT COUNT(*) FROM company_api_keys) AS companyKeys, (SELECT COUNT(*) FROM company_snapshots) AS companySnapshots, (SELECT COUNT(*) FROM faction_director_snapshots) AS directorSnapshots, (SELECT COUNT(*) FROM dashboard_member_status WHERE disabled_at IS NOT NULL) AS disabledMembers, (SELECT COUNT(*) FROM admin_jobs WHERE status IN ('queued','running')) AS activeJobs, (SELECT COUNT(*) FROM admin_jobs WHERE status = 'failed') AS failedJobs, (SELECT MAX(fetched_at) FROM companies) AS latestCompanyRefresh").first<Record<string, unknown>>()
     const recent = await db.prepare("SELECT id, actor_player_id AS actorPlayerId, actor_player_name AS actorPlayerName, action, target_type AS targetType, target_id AS targetId, outcome, summary, created_at AS createdAt FROM admin_audit_log ORDER BY id DESC LIMIT 8").all<Record<string, unknown>>()
@@ -825,10 +1085,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
 
 export default {
   async scheduled(controller: { scheduledTime: number; cron: string }, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
-    const isWeeklyLock = controller.cron === "10 18 * * SUN"
-    ctx.waitUntil(Promise.all([refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35), refreshGlobalRankingCache(env).catch(() => undefined)]).then(async () => {
-      if (isWeeklyLock) await captureWeeklyFactionStarCounts(env, new Date(controller.scheduledTime).toISOString())
-    }))
+    ctx.waitUntil(runScheduledAutomation(controller, env))
   },
   async fetch(request: Request, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<Response> {
     const origin = allowedOrigin(request, env)
@@ -837,6 +1094,8 @@ export default {
     const url = new URL(request.url)
     const adminResponse = await handleAdminRequest(request, env, origin, ctx)
     if (adminResponse) return adminResponse
+    const automationResponse = await handleAutomationRequest(request, env, origin)
+    if (automationResponse) return automationResponse
     if (url.pathname === "/health" && request.method === "GET") return jsonResponse({ ok: true, service: "naughty-company-api" }, 200, origin)
     if (url.pathname === "/api/auth/sign-in" && request.method === "POST") {
       try {
