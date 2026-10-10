@@ -1,0 +1,78 @@
+name: Authenticated API smoke test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production-api-smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Authenticate and check protected read-only routes
+        env:
+          TORN_API_KEY: ${{ secrets.TORN_API_KEY }}
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          const base = "https://naughty-company-api.kboone801.workers.dev";
+          const apiKey = process.env.TORN_API_KEY;
+          if (!apiKey) {
+            console.error("Required repository secret TORN_API_KEY is missing.");
+            process.exit(1);
+          }
+          let token = "";
+          let failed = false;
+          try {
+            const loginResponse = await fetch(`${base}/api/auth/sign-in`, {
+              method: "POST",
+              headers: { "content-type": "application/json", "accept": "application/json" },
+              body: JSON.stringify({ apiKey }),
+            });
+            console.log(`POST /api/auth/sign-in -> ${loginResponse.status}`);
+            const login = await loginResponse.json().catch(() => null);
+            if (!loginResponse.ok || typeof login?.token !== "string") {
+              console.error("Authentication failed; response body suppressed.");
+              failed = true;
+            } else {
+              token = login.token;
+              for (const path of [
+                "/api/dashboard-members",
+                "/api/me/dashboard-layout",
+                "/api/me/automation-preferences",
+              ]) {
+                try {
+                  const response = await fetch(`${base}${path}`, {
+                    method: "GET",
+                    headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+                  });
+                  console.log(`GET ${path} -> ${response.status}`);
+                  if (!response.ok) failed = true;
+                } catch {
+                  console.error(`GET ${path} -> network error (details suppressed)`);
+                  failed = true;
+                }
+              }
+            }
+          } catch {
+            console.error("Authentication request failed; details suppressed.");
+            failed = true;
+          } finally {
+            if (token) {
+              try {
+                const response = await fetch(`${base}/api/auth/sign-out`, {
+                  method: "POST",
+                  headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+                });
+                console.log(`POST /api/auth/sign-out -> ${response.status}`);
+                if (!response.ok) failed = true;
+              } catch {
+                console.error("Sign-out request failed; details suppressed.");
+                failed = true;
+              }
+            }
+          }
+          if (failed) process.exitCode = 1;
+          NODE
