@@ -479,6 +479,20 @@ try {
     assert.ok(payload.checkedAt)
   })
 
+  await test("company intelligence routes are registered and require authentication", async () => {
+    const paths = [
+      "/api/me/health",
+      "/api/me/companies/96639/history?days=30",
+      "/api/me/member-insights",
+      "/api/me/dashboard-layout",
+    ]
+    for (const path of paths) {
+      const response = await worker.fetch(new Request(`https://worker.test${path}`), {})
+      assert.equal(response.status, 401, `${path} should be registered and require a session`)
+      assert.doesNotMatch((await response.text()), /Route not found/i, `${path} must not fall through to the generic router`)
+    }
+  })
+
   await test("Worker rejects untrusted browser origins", async () => {
     const response = await worker.fetch(new Request("https://worker.test/health", {
       headers: { Origin: "https://untrusted.example" },
