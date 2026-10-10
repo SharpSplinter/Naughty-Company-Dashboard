@@ -29,9 +29,9 @@ The Worker maps Torn API error codes into stable HTTP statuses, including rate l
 
 ## Security notes
 
-The initial API accepts a caller-supplied Torn key and does not use a global shared key. This is not account authentication and no credentials are persisted. The API key is held in frontend component memory and forwarded in an Authorization header.
+Members authenticate with their own limited-access Torn API key. The Worker validates faction membership, encrypts saved Torn credentials at rest, and issues random bearer session tokens while storing only SHA-256 hashes in D1. The browser stores the session token locally; raw Torn keys are not stored in browser storage. Sessions expire after 30 days.
 
-Database-backed sessions, account authentication, and persisted key management are intentionally deferred. CORS restrictions are useful browser hygiene but are not a replacement for authentication.
+The regular sign-out action revokes the current server-side session. An authenticated all-devices action revokes every active session for that player. Deleting saved credentials preserves company history. CORS restrictions are useful browser hygiene but are not a replacement for authentication.
 
 ## Local development
 

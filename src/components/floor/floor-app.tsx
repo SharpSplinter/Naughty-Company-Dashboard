@@ -89,6 +89,7 @@ export function FloorApp() {
   const [loading, setLoading] = useState(false)
   const [showRaw, setShowRaw] = useState(false)
   const [sessionToken, setSessionToken] = useState("")
+  const [sessionActionBusy, setSessionActionBusy] = useState(false)
   const [authChecking, setAuthChecking] = useState(true)
   const [demoMode, setDemoMode] = useState(false)
   const [playerName, setPlayerName] = useState("")
@@ -744,7 +745,11 @@ export function FloorApp() {
     } finally { setLoading(false) }
   }
 
-  function signOut() {
+  function signOut(revokeServerSession = true) {
+    const token = sessionToken || localStorage.getItem("ncd_session") || ""
+    if (revokeServerSession && token) {
+      void fetch(`${API_BASE}/api/auth/sign-out`, { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => undefined)
+    }
     localStorage.removeItem("ncd_session")
     setDemoMode(false)
     setSessionToken("")
@@ -766,6 +771,23 @@ export function FloorApp() {
     setRankingError("")
     setApiKey("")
     setActiveView("overview")
+  }
+
+  async function signOutEverywhere() {
+    if (!sessionToken || demoMode || sessionActionBusy) return
+    if (!window.confirm("Sign out this account on all devices? Your current session will end too.")) return
+    setSessionActionBusy(true)
+    setError("")
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/sign-out-all`, { method: "POST", headers: { Authorization: `Bearer ${sessionToken}` } })
+      const payload = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not revoke account sessions.")
+      signOut(false)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not revoke account sessions.")
+    } finally {
+      setSessionActionBusy(false)
+    }
   }
 
   async function connectCompany(event: React.FormEvent<HTMLFormElement>) {
@@ -954,7 +976,7 @@ export function FloorApp() {
             </section>
           ) : activeView === "connect" ? (
             <div className="settings-workspace"><NotificationSettingsPanel apiBase={API_BASE} sessionToken={sessionToken} demoMode={demoMode} /><section className="connect-layout">
-              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Torn API & company connections</h2><p>Manage your player login and authorized company keys for companies you direct.</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-key">{needsSecondaryKey ? "First company API key" : "Add another company API key"}</label><input id="company-key" type="password" autoComplete="off" value={secondaryCompanyKey} onChange={(event) => setSecondaryCompanyKey(event.target.value)} placeholder={demoMode ? "Disabled in demo mode" : "Paste an authorized API key for a company you are permitted to manage"} disabled={demoMode} /><p className="field-hint"><span>♥</span> "Each key is validated for company profile and employee access, then saved against that company. Only add keys you have permission to use."</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}{demoMode && <p className="demo-caption">This tutorial workspace is read-only. Exit demo to connect real Torn data.</p>}<button className="primary-button form-submit" disabled={loading || demoMode}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>"Company keys are encrypted and stored separately, so adding another company does not replace your other saved company keys."</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <button key={company.company_id} type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}>{company.company_name || `Company #${company.company_id}`} <span>#{company.company_id}</span></button>)}</div>}</div>}</div>
+              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Torn API & company connections</h2><p>Manage your player login and authorized company keys for companies you direct.</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-key">{needsSecondaryKey ? "First company API key" : "Add another company API key"}</label><input id="company-key" type="password" autoComplete="off" value={secondaryCompanyKey} onChange={(event) => setSecondaryCompanyKey(event.target.value)} placeholder={demoMode ? "Disabled in demo mode" : "Paste an authorized API key for a company you are permitted to manage"} disabled={demoMode} /><p className="field-hint"><span>♥</span> "Each key is validated for company profile and employee access, then saved against that company. Only add keys you have permission to use."</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}{demoMode && <p className="demo-caption">This tutorial workspace is read-only. Exit demo to connect real Torn data.</p>}<button className="primary-button form-submit" disabled={loading || demoMode}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>"Company keys are encrypted and stored separately, so adding another company does not replace your other saved company keys."</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <button key={company.company_id} type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}>{company.company_name || `Company #${company.company_id}`} <span>#{company.company_id}</span></button>)}</div>}</div>{sessionToken && <div className="key-store-panel"><div><strong>Account security</strong><p>Sign out of all active dashboard sessions while keeping saved keys and company history.</p></div><button className="text-button danger-text" type="button" disabled={sessionActionBusy || demoMode} onClick={() => void signOutEverywhere()}>{sessionActionBusy ? "Revoking sessions…" : "Sign out all devices"}</button></div>}</div>
               <div className="panel guide-panel"><span className="guide-icon">✓</span><h2>Before you connect</h2><ul><li>Use a Torn API key with the access needed for your company.</li><li>Private employee stats may only be available to authorized company directors.</li><li>Requests pass through the Cloudflare Worker to Torn's API.</li></ul><div className="guide-note"><strong>Privacy by design</strong><p>Your player account is identified by Torn. Deleting the saved key does not delete recorded company data.</p></div></div>
             </section></div>
           ) : (
