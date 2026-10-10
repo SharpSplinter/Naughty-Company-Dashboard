@@ -61,7 +61,6 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [preferences, setPreferences] = useState<AutomationPreferences>(DEFAULT_PREFERENCES)
-  const [savingPreferences, setSavingPreferences] = useState(false)
   const [webhookUrl, setWebhookUrl] = useState("")
   const [webhookConfigured, setWebhookConfigured] = useState(false)
   const [webhookBusy, setWebhookBusy] = useState(false)
@@ -190,13 +189,6 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not acknowledge this alert.") }
   }
 
-  async function savePreferences(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setSavingPreferences(true); setError(""); setNotice("")
-    try { await automationFetch(apiBase, sessionToken, "/api/me/automation-preferences", { method: "POST", body: JSON.stringify(preferences) }); setNotice("Notification preferences saved.") }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "Could not save notification preferences.") }
-    finally { setSavingPreferences(false) }
-  }
-
   async function saveWebhook(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!webhookUrl.trim()) return
     setWebhookBusy(true); setError(""); setNotice("")
@@ -255,15 +247,6 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
     <section className="panel automation-delivery-settings">
       <div className="panel-heading"><div><h2>Notification delivery & quiet hours</h2><p>In-app alerts are always retained. Browser notifications can respect your local quiet window; optional webhooks send matching alerts to an external HTTPS endpoint.</p></div><span className={webhookConfigured ? "admin-status good" : "admin-status neutral"}>{webhookConfigured ? "Webhook configured" : "In-app only"}</span></div>
       <div className="automation-delivery-grid">
-        <form className="automation-form" onSubmit={savePreferences}>
-          <label className="automation-checkbox-label"><input type="checkbox" checked={preferences.browserNotificationsEnabled} onChange={async (event) => { const enabled = event.target.checked; setError(""); if (enabled && typeof Notification === "undefined") { setError("This browser does not support desktop notifications."); return } if (enabled && Notification.permission !== "granted") { if (Notification.permission === "denied") { setError("Browser notifications are blocked for this site. Allow them in your browser site settings, then try again."); return } try { const permission = await Notification.requestPermission(); if (permission !== "granted") { setError("Browser notification permission was not granted."); return } } catch { setError("Could not request browser notification permission. Check your browser settings and try again."); return } } setPreferences((current) => ({ ...current, browserNotificationsEnabled: enabled })) }} /> Enable browser notifications</label>
-          <label>Minimum notification severity<select value={preferences.minimumSeverity} onChange={(event) => setPreferences((current) => ({ ...current, minimumSeverity: event.target.value as AutomationPreferences["minimumSeverity"] }))}><option value="info">Info and above</option><option value="warning">Warning and critical</option><option value="critical">Critical only</option></select></label>
-          <label>Browser delivery<select value={preferences.digestMode} onChange={(event) => setPreferences((current) => ({ ...current, digestMode: event.target.value as AutomationPreferences["digestMode"] }))}><option value="instant">Instant browser notifications</option><option value="off">Browser notifications off</option></select></label>
-          <label className="automation-checkbox-label"><input type="checkbox" checked={preferences.quietHoursEnabled} onChange={(event) => setPreferences((current) => ({ ...current, quietHoursEnabled: event.target.checked }))} /> Respect quiet hours for browser notifications</label>
-          <div className="automation-time-row"><label>Quiet hours start<input required type="time" value={preferences.quietHoursStart} onChange={(event) => setPreferences((current) => ({ ...current, quietHoursStart: event.target.value }))} /></label><label>Quiet hours end<input required type="time" value={preferences.quietHoursEnd} onChange={(event) => setPreferences((current) => ({ ...current, quietHoursEnd: event.target.value }))} /></label></div><p className="field-hint">If start and end match, browser notifications are quiet all day. Quiet hours do not hide in-app alerts or delay webhooks.</p>
-          <label>Time zone<select value={preferences.timezone} onChange={(event) => setPreferences((current) => ({ ...current, timezone: event.target.value }))}><option value="UTC">UTC</option><option value="America/New_York">America/New_York</option><option value="America/Chicago">America/Chicago</option><option value="America/Denver">America/Denver</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="Europe/London">Europe/London</option><option value="Europe/Paris">Europe/Paris</option><option value="Asia/Tokyo">Asia/Tokyo</option><option value="Australia/Sydney">Australia/Sydney</option></select></label>
-          <button type="submit" className="primary-button" disabled={savingPreferences}>{savingPreferences ? "Saving preferences…" : "Save notification preferences"}</button>
-        </form>
         <div className="automation-webhook-panel"><div className="automation-webhook-heading"><div><h3>HTTPS webhook</h3><p>The destination is encrypted at rest and never shown again after saving. Private/local addresses are rejected.</p></div></div><form className="automation-form" onSubmit={saveWebhook}><label>Webhook URL<input type="url" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} placeholder="https://hooks.your-domain.com/alerts" autoComplete="off" /></label><button type="submit" className="primary-button" disabled={webhookBusy || !webhookUrl.trim()}>{webhookBusy ? "Saving…" : webhookConfigured ? "Replace encrypted webhook" : "Save encrypted webhook"}</button></form>{webhookConfigured && <button type="button" className="text-button" disabled={webhookBusy} onClick={() => void removeWebhook()}>Remove webhook endpoint</button>}<p className="field-hint">Payload includes alert title, severity, rule type, company ID, message, and timestamp. Never paste a webhook URL you do not control.</p></div>
       </div>
       <div className="automation-delivery-history"><div className="panel-heading"><div><h3>Webhook delivery history</h3><p>Latest outbound attempts. Failed deliveries can be retried after fixing the endpoint.</p></div><span className="count-chip">{deliveries.length} attempts</span></div>{deliveries.length ? <div className="table-scroll"><table className="admin-table"><thead><tr><th>TIME</th><th>STATUS</th><th>HTTP</th><th>DETAIL</th><th>ACTION</th></tr></thead><tbody>{deliveries.map((delivery) => <tr key={delivery.deliveryId}><td>{prettyDate(delivery.createdAt)}</td><td><span className={`admin-status ${delivery.status === "delivered" ? "good" : "danger"}`}>{delivery.status}</span></td><td>{delivery.statusCode ?? "—"}</td><td>{delivery.detail || "—"}</td><td>{delivery.status === "failed" && <button type="button" className="text-button" disabled={webhookBusy || !webhookConfigured} onClick={() => void retryWebhook(delivery)}>Retry</button>}</td></tr>)}</tbody></table></div> : <div className="empty-state">No webhook delivery attempts yet. Save an HTTPS endpoint to start delivering new alerts.</div>}</div>
@@ -311,4 +294,57 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
       {loading && !events.length ? <div className="empty-state">Loading alerts…</div> : events.length ? filteredEvents.length ? <div className="automation-event-list">{filteredEvents.map((event) => <article className={`automation-event-card ${event.status === "acknowledged" ? "acknowledged" : ""}`} key={event.eventId}><div className={`automation-event-severity ${event.severity}`}>{event.severity === "critical" ? "!" : event.severity === "warning" ? "▲" : "i"}</div><div className="automation-event-content"><div className="automation-event-meta"><span>{ruleLabel(event.ruleType)}</span><span>{prettyDate(event.createdAt)}</span></div><h3>{event.title}</h3><p>{event.message}</p>{event.companyName && <small>{event.companyName}</small>}{event.changePercent != null && <div className="automation-event-values"><span>Previous {Number(event.previousValue ?? 0).toLocaleString()}</span><span>Current {Number(event.currentValue ?? 0).toLocaleString()}</span><strong>{event.changePercent.toFixed(1)}%</strong></div>}{event.sourceSnapshotAt && <small>Snapshot: {prettyDate(event.sourceSnapshotAt)}</small>}</div><div className="automation-event-actions">{event.status === "unread" ? <button className="secondary-button" type="button" onClick={() => void acknowledge(event)}>Acknowledge</button> : <span className="automation-acknowledged">Acknowledged</span>}{event.ruleType === "income_drop" && <button className="text-button" type="button" onClick={onNavigateCharts}>Open trends ↗</button>}</div></article>)}</div> : <div className="empty-state">No alerts match these filters. Try a different search or clear the filters.</div> : <div className="empty-state">No alerts yet. When a rule detects a meaningful change, it will appear here.</div>}
     </section>
   </div>
+}
+
+
+export function NotificationSettingsPanel({ apiBase, sessionToken, demoMode }: { apiBase: string; sessionToken: string; demoMode: boolean }) {
+  const [preferences, setPreferences] = useState<AutomationPreferences>(DEFAULT_PREFERENCES)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+  const [notice, setNotice] = useState("")
+
+  useEffect(() => {
+    let cancelled = false
+    if (!sessionToken || demoMode) { setLoading(false); return }
+    setLoading(true); setError("")
+    automationFetch<{ preferences: Record<string, unknown> }>(apiBase, sessionToken, "/api/me/automation-preferences")
+      .then(({ preferences: raw }) => { if (!cancelled) setPreferences({ browserNotificationsEnabled: Boolean(raw.browserNotificationsEnabled), quietHoursEnabled: Boolean(raw.quietHoursEnabled), quietHoursStart: String(raw.quietHoursStart || "22:00"), quietHoursEnd: String(raw.quietHoursEnd || "08:00"), timezone: String(raw.timezone || "UTC"), minimumSeverity: ["info", "warning", "critical"].includes(String(raw.minimumSeverity)) ? raw.minimumSeverity as AutomationPreferences["minimumSeverity"] : "info", digestMode: raw.digestMode === "off" ? "off" : "instant" }) })
+      .catch((caught) => { if (!cancelled) setError(caught instanceof Error ? caught.message : "Could not load notification preferences.") })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [apiBase, sessionToken, demoMode])
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setSaving(true); setError(""); setNotice("")
+    try { await automationFetch(apiBase, sessionToken, "/api/me/automation-preferences", { method: "POST", body: JSON.stringify(preferences) }); setNotice("Notification preferences saved.") }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Could not save notification preferences.") }
+    finally { setSaving(false) }
+  }
+
+  async function setBrowserEnabled(enabled: boolean) {
+    setError(""); setNotice("")
+    if (enabled && typeof Notification === "undefined") { setError("This browser does not support desktop notifications."); return }
+    if (enabled && Notification.permission !== "granted") {
+      if (Notification.permission === "denied") { setError("Browser notifications are blocked for this site. Allow them in your browser site settings, then try again."); return }
+      try { const permission = await Notification.requestPermission(); if (permission !== "granted") { setError("Browser notification permission was not granted."); return } }
+      catch { setError("Could not request browser notification permission. Check your browser settings and try again."); return }
+    }
+    setPreferences((current) => ({ ...current, browserNotificationsEnabled: enabled, digestMode: enabled ? "instant" : "off" }))
+  }
+
+  if (!sessionToken || demoMode) return <section className="panel automation-delivery-settings"><div className="panel-heading"><div><h2>Browser notification settings</h2><p>Choose whether this browser can notify you about company alerts.</p></div></div><div className="empty-state">Sign in to configure browser notifications. Notification preferences are unavailable in demo mode.</div></section>
+
+  return <section className="panel automation-delivery-settings"><div className="panel-heading"><div><h2>Browser notification settings</h2><p>Control browser notifications for alerts about your connected companies. These are personal preferences and are available to every signed-in user.</p></div><span className="count-chip">Personal settings</span></div>
+    {loading ? <div className="empty-state">Loading notification preferences…</div> : <form className="automation-form" onSubmit={save}>
+      <label className="automation-checkbox-label"><input type="checkbox" checked={preferences.browserNotificationsEnabled} onChange={(event) => void setBrowserEnabled(event.target.checked)} /> Enable company browser notifications</label>
+      <label>Minimum notification severity<select value={preferences.minimumSeverity} onChange={(event) => setPreferences((current) => ({ ...current, minimumSeverity: event.target.value as AutomationPreferences["minimumSeverity"] }))}><option value="info">Info and above</option><option value="warning">Warning and critical</option><option value="critical">Critical only</option></select></label>
+      <label>Browser delivery<select value={preferences.digestMode} onChange={(event) => setPreferences((current) => ({ ...current, digestMode: event.target.value as AutomationPreferences["digestMode"] }))}><option value="instant">Instant browser notifications</option><option value="off">Browser notifications off</option></select></label>
+      <label className="automation-checkbox-label"><input type="checkbox" checked={preferences.quietHoursEnabled} onChange={(event) => setPreferences((current) => ({ ...current, quietHoursEnabled: event.target.checked }))} /> Respect quiet hours for browser notifications</label>
+      <div className="automation-time-row"><label>Quiet hours start<input required type="time" value={preferences.quietHoursStart} onChange={(event) => setPreferences((current) => ({ ...current, quietHoursStart: event.target.value }))} /></label><label>Quiet hours end<input required type="time" value={preferences.quietHoursEnd} onChange={(event) => setPreferences((current) => ({ ...current, quietHoursEnd: event.target.value }))} /></label></div><p className="field-hint">If start and end match, browser notifications are quiet all day. Quiet hours do not hide in-app alerts.</p>
+      <label>Time zone<select value={preferences.timezone} onChange={(event) => setPreferences((current) => ({ ...current, timezone: event.target.value }))}><option value="UTC">UTC</option><option value="America/New_York">America/New_York</option><option value="America/Chicago">America/Chicago</option><option value="America/Denver">America/Denver</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="Europe/London">Europe/London</option><option value="Europe/Paris">Europe/Paris</option><option value="Asia/Tokyo">Asia/Tokyo</option><option value="Australia/Sydney">Australia/Sydney</option></select></label>
+      <button type="submit" className="primary-button" disabled={saving}>{saving ? "Saving preferences…" : "Save notification preferences"}</button>
+    </form>}
+    {error && <div className="error-banner" role="alert">{error}</div>}{notice && <div className="automation-notice" role="status">{notice}</div>}
+  </section>
 }
