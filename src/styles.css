@@ -336,3 +336,13 @@ th.numeric-cell {
 .transfer-success{padding:11px 13px;border:1px solid #4fd5ae35;border-radius:7px;background:#4fd5ae0b;color:#8de5c9;font-size:10px;line-height:1.55}
 @media(max-width:800px){.transfer-master-row,.transfer-page-row{align-items:flex-start;flex-direction:column;gap:12px}.transfer-actions{justify-content:flex-start;width:100%}.transfer-actions .primary-button,.transfer-actions .secondary-button{white-space:normal}.nav-list{padding-bottom:10px}}
 @media(max-width:480px){.nav-group-trigger{padding:9px 7px;font-size:10px}.nav-subitems{padding-left:3px}.nav-item.nav-subitem{padding:8px 5px;gap:5px}.nav-item.nav-subitem .nav-label{font-size:10px}.transfer-actions{gap:7px}.transfer-actions .primary-button,.transfer-actions .secondary-button{font-size:9px;padding:8px}.company-switcher-menu{width:min(300px,calc(100vw - 185px))}}
+
+/* Keep compact rank values intact and give the member directory a clean, readable layout. */
+.ranking-rank-col,.ranking-table td:first-child,.ranking-table .rank-number{white-space:nowrap;word-break:keep-all;overflow-wrap:normal;}
+.stock-difference-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0 2px;margin-top:2px;border-top:1px solid #303a54;color:#8f9bbb;font-size:9px;font-weight:700;letter-spacing:.06em;}
+.stock-difference-row strong{font:600 12px 'Space Grotesk';letter-spacing:0;white-space:nowrap;color:#dce4f8;}
+.stock-difference-row .stock-difference-positive{color:#74e0bd;}
+.stock-difference-row .stock-difference-negative{color:#ff8f9b;}
+.dashboard-members-table{min-width:780px;}
+.dashboard-members-table th,.dashboard-members-table td{white-space:nowrap;}
+.dashboard-members-table td:first-child strong{color:#e8ebfa;}
