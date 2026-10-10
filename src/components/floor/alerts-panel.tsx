@@ -14,7 +14,7 @@ async function automationFetch<T>(apiBase: string, token: string, path: string, 
     headers: { Authorization: `Bearer ${token}`, ...(init.body !== undefined ? { "content-type": "application/json" } : {}), ...(init.headers || {}) },
   })
   const payload = await response.json().catch(() => ({})) as { error?: string } & Record<string, unknown>
-  if (!response.ok) throw new Error(payload.error || `Automation request failed (${response.status}).`)
+  if (!response.ok) throw Object.assign(new Error(payload.error || `Automation request failed (${response.status}).`), { status: response.status })
   return payload as T
 }
 
@@ -66,9 +66,10 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
       setBackendAvailable(true)
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "Could not load automation data."
-      if (message.includes("(404)")) {
+      const status = caught && typeof caught === "object" && "status" in caught ? Number((caught as { status?: unknown }).status) : 0
+      if (status === 404 || message.includes("(404)")) {
         setBackendAvailable(false)
-        setError("The Automation Center backend is not deployed to this preview yet. The interface is available, but the Worker routes and D1 migration must be deployed before alerts can run.")
+        setError("The Automation Center API is not deployed to this environment yet. Deploy the updated Worker and D1 migration before alerts can load.")
       } else setError(message)
     }
     finally { setLoading(false) }
