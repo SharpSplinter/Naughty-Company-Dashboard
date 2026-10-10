@@ -92,7 +92,7 @@ export class TornApiClient {
 
     this.apiKey = apiKey
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "")
-    this.fetcher = options.fetcher ?? fetch
+    this.fetcher = options.fetcher ?? fetch.bind(globalThis)
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   }
 
