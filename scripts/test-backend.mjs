@@ -860,6 +860,37 @@ try {
     assert.equal(writes.some((item) => item.sql.toLowerCase().includes("company_sharing_recipients")), false)
   })
 
+  await test("personal dashboard layout accepts all eight widgets for a regular signed-in member", async () => {
+    const writes = []
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            const query = sql.toLowerCase()
+            if (query.includes("from sessions s join players p")) return { player_id: "777", player_name: "Member" }
+            if (query.includes("from admin_settings")) return null
+            if (query.includes("from dashboard_member_status")) return null
+            return null
+          },
+          async all() { return { results: [] } },
+          async run() { writes.push({ sql, values }); return { success: true, meta: { changes: 1 } } },
+        }
+      },
+    }
+    const widgets = ["company-health", "income-performance", "roster-overview", "recent-trends", "actionable-insights", "automation-status", "alerts", "rankings"].map((id) => ({ id, visible: true }))
+    const response = await worker.fetch(new Request("https://worker.test/api/me/dashboard-layout", {
+      method: "POST", headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session", "Content-Type": "application/json" },
+      body: JSON.stringify({ widgets, dashboardPreferences: { density: "comfortable", contentWidth: "wide" } }),
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.layout.widgets.length, 8)
+    assert.ok(payload.layout.widgets.some((item) => item.id === "actionable-insights"))
+    assert.ok(writes.some((item) => item.sql.includes("INSERT INTO user_page_data") && item.values[0] === "777"))
+  })
+
   await test("alert acknowledgment cannot access another owner's event", async () => {
     const db = {
       prepare(sql) {
