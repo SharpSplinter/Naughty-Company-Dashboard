@@ -1545,6 +1545,12 @@ export default {
       await requireDb(env).prepare("DELETE FROM company_api_keys WHERE player_id = ?").bind(session.player_id).run()
       return jsonResponse({ deleted: true, companyDataRetained: true }, 200, origin)
     }
+    if (url.pathname === "/api/auth/sign-out-all" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const result = await requireDb(env).prepare("DELETE FROM sessions WHERE player_id = ?").bind(session.player_id).run()
+      return jsonResponse({ signedOutEverywhere: true, sessionsRevoked: Number(result.meta?.changes ?? 0) }, 200, origin)
+    }
     if (url.pathname === "/api/auth/sign-out" && request.method === "POST") {
       const token = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
       if (token && env.DB) await requireDb(env).prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256(token)).run()

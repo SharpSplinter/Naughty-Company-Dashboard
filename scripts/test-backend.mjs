@@ -976,6 +976,12 @@ try {
     assert.equal(response.status, 404)
   })
 
+  await test("session revocation routes are present", () => {
+    const source = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    assert.match(source, /sign-out-all/)
+    assert.match(source, /DELETE FROM sessions WHERE player_id = \?/)
+  })
+
   console.log(`\n${passed} backend checks passed.`)
 } finally {
   rmSync(temp, { recursive: true, force: true })
