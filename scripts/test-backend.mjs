@@ -242,19 +242,23 @@ try {
     }
   })
 
-  await test("persists privacy-first company sharing toggles on the server", async () => {
+  await test("persists per-recipient sharing permissions independently on the server", async () => {
     const token = "sharing-preferences-test-token"
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
     const tokenHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
     const sharing = new Map()
+    const members = [
+      { playerId: "888", directorName: "Peer Director", companyName: "Peer Oil Rig", companyType: "Oil Rig" },
+      { playerId: "889", directorName: "Second Director", companyName: "Second Shop", companyType: "Grocery Store" },
+    ]
     const db = {
       prepare(sql) {
         let values = []
         return {
           bind(...args) { values = args; return this },
           async run() {
-            if (sql.toLowerCase().includes("insert into company_sharing_preferences")) {
-              sharing.set(String(values[0]), { shareFinancialData: Number(values[1]), shareEmployeeData: Number(values[2]), updatedAt: values[3] })
+            if (sql.toLowerCase().includes("insert into company_sharing_recipients")) {
+              sharing.set(`${values[0]}:${values[1]}`, { shareFinancialData: Number(values[2]), shareEmployeeData: Number(values[3]), shareTrendData: Number(values[4]), updatedAt: values[5] })
             }
             return { success: true, meta: { changes: 1 } }
           },
@@ -265,10 +269,19 @@ try {
                 ? { player_id: "777", player_name: "Test Director" }
                 : null
             }
-            if (lower.includes("from company_sharing_preferences where player_id")) return sharing.get(String(values[0])) ?? null
+            if (lower.includes("from players where player_id = ?")) return members.some((member) => member.playerId === String(values[0])) ? { player_id: String(values[0]) } : null
             return null
           },
-          async all() { return { results: [] } },
+          async all() {
+            const lower = sql.toLowerCase()
+            if (lower.includes("from players p left join company_sharing_recipients")) {
+              return { results: members.map((member) => ({
+                ...member,
+                ...(sharing.get(`777:${member.playerId}`) || { shareFinancialData: 0, shareEmployeeData: 0, shareTrendData: 0 }),
+              })) }
+            }
+            return { results: [] }
+          },
         }
       },
     }
@@ -276,17 +289,95 @@ try {
     const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: `Bearer ${token}` }
     const initial = await worker.fetch(new Request("https://worker.test/api/me/data-sharing", { headers }), env)
     assert.equal(initial.status, 200)
-    assert.deepEqual((await initial.json()).settings, { shareFinancialData: false, shareEmployeeData: false })
+    const initialPayload = await initial.json()
+    assert.equal(initialPayload.recipients.length, 2)
+    assert.deepEqual(
+      [initialPayload.recipients[0].shareFinancialData, initialPayload.recipients[0].shareEmployeeData, initialPayload.recipients[0].shareTrendData],
+      [false, false, false],
+    )
 
     const saved = await worker.fetch(new Request("https://worker.test/api/me/data-sharing", {
       method: "POST", headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ settings: { shareFinancialData: true, shareEmployeeData: true } }),
+      body: JSON.stringify({ recipientId: "888", shareFinancialData: true, shareEmployeeData: false, shareTrendData: true }),
     }), env)
     assert.equal(saved.status, 200)
-    assert.deepEqual((await saved.json()).settings, { shareFinancialData: true, shareEmployeeData: true })
+    assert.deepEqual((await saved.json()).recipient, { playerId: "888", shareFinancialData: true, shareEmployeeData: false, shareTrendData: true })
 
+    const otherSaved = await worker.fetch(new Request("https://worker.test/api/me/data-sharing", {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ recipientId: "889", shareFinancialData: false, shareEmployeeData: true, shareTrendData: false }),
+    }), env)
+    assert.equal(otherSaved.status, 200)
     const restored = await worker.fetch(new Request("https://worker.test/api/me/data-sharing", { headers }), env)
-    assert.deepEqual((await restored.json()).settings, { shareFinancialData: true, shareEmployeeData: true })
+    const recipients = (await restored.json()).recipients
+    assert.deepEqual(
+      [recipients[0].shareFinancialData, recipients[0].shareEmployeeData, recipients[0].shareTrendData],
+      [true, false, true],
+    )
+    assert.deepEqual(
+      [recipients[1].shareFinancialData, recipients[1].shareEmployeeData, recipients[1].shareTrendData],
+      [false, true, false],
+    )
+  })
+
+  await test("public income comparisons remain available while private chart history follows recipient permissions", async () => {
+    const token = "chart-sharing-test-token"
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
+    const tokenHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
+    let permission = { shareFinancialData: 0, shareTrendData: 0 }
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async run() { return { success: true, meta: { changes: 1 } } },
+          async first() {
+            const lower = sql.toLowerCase()
+            if (lower.includes("from sessions s join players p")) {
+              return values[0] === tokenHash && Number(values[1]) < Math.floor(Date.now() / 1000) + 60
+                ? { player_id: "777", player_name: "Test Director" }
+                : null
+            }
+            if (lower.includes("from faction_member_cache")) return {
+              playerId: "888", directorName: "Peer Director", companyId: "96639", companyName: "Peer Oil Rig",
+              companyType: "Oil Rig", companyTypeId: 28, starRating: 5, dailyIncome: 123, weeklyIncome: 861, fetchedAt: "2026-10-09T18:10:00.000Z",
+            }
+            if (lower.includes("from company_sharing_recipients where owner_player_id")) return permission
+            return null
+          },
+          async all() {
+            if (sql.toLowerCase().includes("from faction_director_snapshots")) return { results: [{
+              day: "2026-10-09",
+              profileJson: JSON.stringify({ profile: { id: 96639, name: "Peer Oil Rig", income: { daily: 123, weekly: 861 }, profit: { daily: 23 } } }),
+              stockJson: JSON.stringify({ stock: [{ name: "Barrel", in_stock: 2, cost: 3 }] }),
+              fetchedAt: "2026-10-09T18:10:00.000Z",
+            }] }
+            return { results: [] }
+          },
+        }
+      },
+    }
+    const env = { DB: db }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: `Bearer ${token}` }
+    const readComparison = () => worker.fetch(new Request("https://worker.test/api/faction/compare?playerId=888", { headers }), env)
+
+    const privateResponse = await readComparison()
+    assert.equal(privateResponse.status, 200)
+    const privatePayload = await privateResponse.json()
+    assert.equal(privatePayload.history[0].dailyIncome, 123)
+    assert.equal(privatePayload.history[0].weeklyIncome, 861)
+    assert.equal(privatePayload.history[0].dailyProfit, null)
+    assert.equal(privatePayload.history[0].stock, null)
+    assert.equal(privatePayload.history[0].stockQuantity, null)
+
+    permission = { shareFinancialData: 1, shareTrendData: 1 }
+    const sharedResponse = await readComparison()
+    assert.equal(sharedResponse.status, 200)
+    const sharedPayload = await sharedResponse.json()
+    assert.equal(sharedPayload.history[0].dailyIncome, 123)
+    assert.equal(sharedPayload.history[0].dailyProfit, 23)
+    assert.equal(sharedPayload.history[0].stockQuantity, 2)
+    assert.equal(sharedPayload.stockHistoryAvailable, true)
   })
 
   await test("Worker health endpoint applies dashboard CORS", async () => {
