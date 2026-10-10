@@ -8,9 +8,10 @@ type Session = { player_id: string; player_name: string }
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }
 const DAY = 86400
+const ADMIN_PLAYER_ID = "351311"
 
 function jsonResponse(body: unknown, status = 200, origin = "null", extraHeaders: Record<string, string> = {}): Response {
-  return new Response(JSON.stringify(body), { status, headers: { ...jsonHeaders, "access-control-allow-origin": origin, "access-control-allow-methods": "GET, POST, DELETE, OPTIONS", "access-control-allow-headers": "Authorization, Content-Type", vary: "Origin", ...extraHeaders } })
+  return new Response(JSON.stringify(body), { status, headers: { ...jsonHeaders, "access-control-allow-origin": origin, "access-control-allow-methods": "GET, POST, DELETE, OPTIONS", "access-control-allow-headers": "Authorization, Content-Type, X-Admin-Confirm-Restore", vary: "Origin", ...extraHeaders } })
 }
 function allowedOrigin(request: Request, env: WorkerEnv): string | null {
   const incoming = request.headers.get("Origin")
@@ -47,11 +48,27 @@ function requireDb(env: WorkerEnv): D1Database {
   if (!env.DB) throw new Error("Persistent storage is not configured.")
   return env.DB
 }
+async function readAdminSetting(env: WorkerEnv, key: string): Promise<unknown> {
+  const row = await requireDb(env).prepare("SELECT value_json FROM admin_settings WHERE setting_key = ?").bind(key).first<{ value_json: string }>()
+  if (!row) return undefined
+  try { return JSON.parse(row.value_json) as unknown } catch { return undefined }
+}
+async function readAdminBoolean(env: WorkerEnv, key: string, fallback: boolean): Promise<boolean> {
+  const value = await readAdminSetting(env, key)
+  return typeof value === "boolean" ? value : fallback
+}
 async function authenticate(request: Request, env: WorkerEnv): Promise<Session | null> {
   const token = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
   if (!token || !env.DB) return null
   const hash = await sha256(token)
-  return requireDb(env).prepare("SELECT p.player_id, p.player_name FROM sessions s JOIN players p ON p.player_id = s.player_id WHERE s.token_hash = ? AND s.expires_at > ?").bind(hash, Math.floor(Date.now() / 1000)).first<Session>()
+  const session = await requireDb(env).prepare("SELECT p.player_id, p.player_name FROM sessions s JOIN players p ON p.player_id = s.player_id WHERE s.token_hash = ? AND s.expires_at > ?").bind(hash, Math.floor(Date.now() / 1000)).first<Session>()
+  if (!session) return null
+  if (session.player_id !== ADMIN_PLAYER_ID) {
+    const status = await requireDb(env).prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?").bind(session.player_id).first<{ disabled_at: string | null }>()
+    if (status?.disabled_at) return null
+    if (await readAdminBoolean(env, "maintenanceMode", false)) return null
+  }
+  return session
 }
 async function validateTornKey(apiKey: string): Promise<{ id: string; name: string; factionId: string; factionName: string }> {
   if (!apiKey || apiKey.length > 256 || /\s/.test(apiKey)) throw new Error("Enter a valid Torn API key.")
@@ -296,7 +313,7 @@ async function fetchGlobalCompanyRankings(apiKey: string): Promise<{ companies: 
   }).sort((a, b) => (Number(b.weeklyIncome ?? -1) - Number(a.weeklyIncome ?? -1)))
   return { companies, snapshotFetchedAt: new Date().toISOString() }
 }
-async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string): Promise<void> {
+async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string, force = false): Promise<void> {
   if (!env.DB) return
   const db = requireDb(env)
   await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_cache (cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1), companies_json TEXT NOT NULL, fetched_at TEXT NOT NULL)").run()
@@ -307,7 +324,7 @@ async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string): Promi
   const nowMs = Date.now()
   const cacheAge = cached?.fetchedAt ? nowMs - Date.parse(cached.fetchedAt) : Number.POSITIVE_INFINITY
   const maxAgeMs = 24 * 60 * 60 * 1000
-  if (Number.isFinite(cacheAge) && cacheAge >= 0 && cacheAge < maxAgeMs) return
+  if (!force && Number.isFinite(cacheAge) && cacheAge >= 0 && cacheAge < maxAgeMs) return
 
   const nowSeconds = Math.floor(nowMs / 1000)
   const leaseUntil = nowSeconds + 120
@@ -318,7 +335,7 @@ async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string): Promi
     // Another request may have refreshed the shared snapshot while this request waited for the lease.
     const latest = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
     const latestAge = latest?.fetchedAt ? Date.now() - Date.parse(latest.fetchedAt) : Number.POSITIVE_INFINITY
-    if (Number.isFinite(latestAge) && latestAge >= 0 && latestAge < maxAgeMs) return
+    if (!force && Number.isFinite(latestAge) && latestAge >= 0 && latestAge < maxAgeMs) return
 
     let key = apiKey
     if (!key) {
@@ -480,6 +497,332 @@ async function refreshRankingProfiles(env: WorkerEnv): Promise<void> {
   }
 }
 
+type AdminAuditOutcome = "succeeded" | "failed" | "denied" | "pending"
+type AdminJobStatus = "queued" | "running" | "completed" | "failed"
+
+async function writeAdminAudit(env: WorkerEnv, actor: Session, action: string, targetType: string | null, targetId: string | null, outcome: AdminAuditOutcome, summary: string, details: Record<string, unknown> = {}): Promise<void> {
+  try {
+    await requireDb(env).prepare("INSERT INTO admin_audit_log (actor_player_id, actor_player_name, action, target_type, target_id, outcome, summary, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(actor.player_id, actor.player_name, action, targetType, targetId, outcome, summary.slice(0, 240), asJson(details), new Date().toISOString()).run()
+  } catch { /* An audit write must not expose internals or roll back an otherwise completed maintenance action. */ }
+}
+
+function parseStoredJson(value: unknown): unknown {
+  try { return JSON.parse(String(value)) as unknown } catch { return null }
+}
+
+async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
+  const db = requireDb(env)
+  const job = await db.prepare("SELECT job_type, target_player_id, target_company_id FROM admin_jobs WHERE job_id = ?").bind(jobId).first<{ job_type: string; target_player_id: string | null; target_company_id: string | null }>()
+  if (!job) return
+  const started = new Date().toISOString()
+  await db.prepare("UPDATE admin_jobs SET status = 'running', started_at = ? WHERE job_id = ? AND status = 'queued'").bind(started, jobId).run()
+  try {
+    let result: Record<string, unknown>
+    if (job.job_type === "company-refresh") {
+      if (!job.target_player_id || !job.target_company_id) throw new Error("Refresh job is missing its company target.")
+      let apiKey = await savedCompanyApiKey(env, job.target_player_id, job.target_company_id)
+      if (!apiKey) apiKey = await savedCompanyKey(env, job.target_player_id)
+      if (!apiKey) apiKey = await savedKey(env, job.target_player_id)
+      if (!apiKey) throw new Error("No saved credential is available for this company.")
+      const validated = await validateCompanyKey(apiKey)
+      if (String(validated.companyId) !== job.target_company_id) throw new Error("The saved credential returned a different company ID. No data was changed.")
+      await persistCompanyConnection(env, job.target_player_id, apiKey, validated)
+      const root = companyProfileRoot(validated.profile)
+      result = { companyId: String(validated.companyId), companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}` }
+    } else if (job.job_type === "global-refresh") {
+      await refreshRankingProfiles(env)
+      await refreshFactionDirectoryFromAnyKey(env, 35)
+      await refreshGlobalRankingCache(env, undefined, true)
+      result = { message: "Company rankings, faction directory batch, and global ranking cache refreshed." }
+    } else {
+      throw new Error("Unsupported administrative job type.")
+    }
+    await db.prepare("UPDATE admin_jobs SET status = 'completed', finished_at = ?, result_json = ?, error_message = NULL WHERE job_id = ?").bind(new Date().toISOString(), asJson(result), jobId).run()
+    const actor = { player_id: "351311", player_name: "SharpSplinter" }
+    await writeAdminAudit(env, actor, "job.completed", "job", jobId, "succeeded", `Administrative job ${job.job_type} completed.`, { jobType: job.job_type, targetPlayerId: job.target_player_id, targetCompanyId: job.target_company_id })
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 220) : "The operation failed unexpectedly."
+    await db.prepare("UPDATE admin_jobs SET status = 'failed', finished_at = ?, error_message = ? WHERE job_id = ?").bind(new Date().toISOString(), message, jobId).run()
+    const actor = { player_id: "351311", player_name: "SharpSplinter" }
+    await writeAdminAudit(env, actor, "job.failed", "job", jobId, "failed", `Administrative job ${job.job_type} failed.`, { jobType: job.job_type, targetPlayerId: job.target_player_id, targetCompanyId: job.target_company_id, error: message })
+  }
+}
+
+async function adminBackupForPlayer(env: WorkerEnv, playerId: string): Promise<Record<string, unknown>> {
+  const db = requireDb(env)
+  await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
+  await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
+  const player = await db.prepare("SELECT player_id, player_name FROM players WHERE player_id = ?").bind(playerId).first<{ player_id: string; player_name: string }>()
+  if (!player) throw new Error("That dashboard member does not exist.")
+  const [companyRows, financialRows, snapshots, directorSnapshots, pageRows, sharingRows] = await Promise.all([
+    db.prepare("SELECT company_id AS companyId, company_name AS companyName, company_type AS companyType, profile_json AS profileJson, employees_json AS employeesJson, fetched_at AS fetchedAt FROM companies WHERE player_id = ? ORDER BY fetched_at DESC").bind(playerId).all<Record<string, unknown>>(),
+    db.prepare("SELECT company_id AS companyId, stock_json AS stockJson, fetched_at AS fetchedAt FROM company_financials WHERE player_id = ? ORDER BY fetched_at DESC").bind(playerId).all<Record<string, unknown>>(),
+    db.prepare("SELECT company_id AS companyId, profile_json AS profileJson, employees_json AS employeesJson, fetched_at AS fetchedAt FROM company_snapshots WHERE player_id = ? ORDER BY fetched_at ASC").bind(playerId).all<Record<string, unknown>>(),
+    db.prepare("SELECT company_id AS companyId, snapshot_day AS snapshotDay, profile_json AS profileJson, stock_json AS stockJson, fetched_at AS fetchedAt FROM faction_director_snapshots WHERE player_id = ? ORDER BY snapshot_day ASC").bind(playerId).all<Record<string, unknown>>(),
+    db.prepare("SELECT page_key AS pageKey, data_json AS dataJson, updated_at AS updatedAt FROM user_page_data WHERE player_id = ?").bind(playerId).all<Record<string, unknown>>(),
+    db.prepare("SELECT recipient_player_id AS recipientId, share_financial_data AS shareFinancialData, share_employee_data AS shareEmployeeData, share_trend_data AS shareTrendData, updated_at AS updatedAt FROM company_sharing_recipients WHERE owner_player_id = ? ORDER BY recipient_player_id").bind(playerId).all<Record<string, unknown>>(),
+  ])
+  const companies = (companyRows.results ?? []).map((row) => ({ companyId: String(row.companyId), companyName: row.companyName ?? null, companyType: row.companyType ?? null, profile: parseStoredJson(row.profileJson), employees: parseStoredJson(row.employeesJson), fetchedAt: String(row.fetchedAt ?? "") }))
+  const financials = (financialRows.results ?? []).map((row) => ({ companyId: String(row.companyId), stock: parseStoredJson(row.stockJson), fetchedAt: String(row.fetchedAt ?? "") }))
+  const companySnapshots = (snapshots.results ?? []).map((row) => ({ companyId: String(row.companyId), profile: parseStoredJson(row.profileJson), employees: parseStoredJson(row.employeesJson), fetchedAt: String(row.fetchedAt ?? "") }))
+  const directorSnapshotData = (directorSnapshots.results ?? []).map((row) => ({ playerId, companyId: String(row.companyId), snapshotDay: String(row.snapshotDay), profile: parseStoredJson(row.profileJson), stock: parseStoredJson(row.stockJson), fetchedAt: String(row.fetchedAt ?? "") }))
+  const pageData = (pageRows.results ?? []).map((row) => ({ pageKey: String(row.pageKey), data: parseStoredJson(row.dataJson), updatedAt: String(row.updatedAt ?? "") }))
+  const sharingPreferences = (sharingRows.results ?? []).map((row) => ({ recipientId: String(row.recipientId), shareFinancialData: row.shareFinancialData === 1, shareEmployeeData: row.shareEmployeeData === 1, shareTrendData: row.shareTrendData === 1, updatedAt: String(row.updatedAt ?? "") }))
+  return { format: "naughty-company-dashboard-admin-backup", version: 1, exportedAt: new Date().toISOString(), player: { id: player.player_id, name: player.player_name }, storage: { companies, financials, companySnapshots, directorSnapshots: directorSnapshotData, pageData, sharingPreferences }, excluded: ["API credentials, session tokens, and administrator settings are never exported."] }
+}
+
+function adminBackupCounts(storage: Record<string, unknown>): Record<string, number> {
+  const count = (key: string) => Array.isArray(storage[key]) ? (storage[key] as unknown[]).length : 0
+  return { companies: count("companies"), financials: count("financials"), companySnapshots: count("companySnapshots"), directorSnapshots: count("directorSnapshots"), pageData: count("pageData"), sharingPreferences: count("sharingPreferences") }
+}
+
+async function restoreAdminBackup(env: WorkerEnv, targetPlayerId: string, parsed: Record<string, unknown>): Promise<Record<string, number>> {
+  const db = requireDb(env)
+  const storage = parsed.storage as Record<string, unknown>
+  await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
+  await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
+  const pageAllowlist = new Set(["company", "employees", "charts", "rankings", "references", "settings"])
+  const counts = adminBackupCounts(storage)
+  for (const item of (Array.isArray(storage.companies) ? storage.companies : []).slice(0, 100)) {
+    if (!isRecord(item)) continue
+    const companyId = positiveId(item.companyId ?? item.company_id)
+    if (!companyId || item.profile === undefined) continue
+    const existing = await db.prepare("SELECT employees_json AS employeesJson, company_name AS companyName, company_type AS companyType, fetched_at AS fetchedAt FROM companies WHERE player_id = ? AND company_id = ?").bind(targetPlayerId, companyId).first<Record<string, unknown>>()
+    const profileRoot = companyProfileRoot(item.profile)
+    const companyName = typeof item.companyName === "string" ? item.companyName : typeof profileRoot.name === "string" ? profileRoot.name : String(existing?.companyName ?? `Company #${companyId}`)
+    const type = isRecord(profileRoot.type) ? profileRoot.type : {}
+    const companyType = typeof item.companyType === "string" ? item.companyType : typeof type.name === "string" ? type.name : existing?.companyType ?? null
+    const employees = item.employees !== undefined ? item.employees : existing ? parseStoredJson(existing.employeesJson) : []
+    const fetchedAt = typeof item.fetchedAt === "string" && !Number.isNaN(Date.parse(item.fetchedAt)) ? item.fetchedAt : String(existing?.fetchedAt ?? new Date().toISOString())
+    await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, employees_json = excluded.employees_json, fetched_at = excluded.fetched_at").bind(targetPlayerId, String(companyId), companyName, companyType == null ? null : String(companyType), asJson(item.profile), asJson(employees), fetchedAt).run()
+  }
+  for (const item of (Array.isArray(storage.financials) ? storage.financials : []).slice(0, 100)) {
+    if (!isRecord(item)) continue
+    const companyId = positiveId(item.companyId)
+    if (!companyId || item.stock === undefined) continue
+    const fetchedAt = typeof item.fetchedAt === "string" && !Number.isNaN(Date.parse(item.fetchedAt)) ? item.fetchedAt : new Date().toISOString()
+    await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(targetPlayerId, String(companyId), asJson(item.stock), fetchedAt).run()
+  }
+  for (const item of (Array.isArray(storage.companySnapshots) ? storage.companySnapshots : []).slice(0, 10000)) {
+    if (!isRecord(item)) continue
+    const companyId = positiveId(item.companyId)
+    if (!companyId || item.profile === undefined) continue
+    const fetchedAt = typeof item.fetchedAt === "string" && !Number.isNaN(Date.parse(item.fetchedAt)) ? item.fetchedAt : new Date().toISOString()
+    const existing = await db.prepare("SELECT snapshot_id FROM company_snapshots WHERE player_id = ? AND company_id = ? AND fetched_at = ? LIMIT 1").bind(targetPlayerId, String(companyId), fetchedAt).first<{ snapshot_id: number }>()
+    if (!existing) await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(targetPlayerId, String(companyId), asJson(item.profile), asJson(item.employees ?? []), fetchedAt).run()
+  }
+  for (const item of (Array.isArray(storage.directorSnapshots) ? storage.directorSnapshots : []).slice(0, 10000)) {
+    if (!isRecord(item)) continue
+    const companyId = positiveId(item.companyId)
+    const day = typeof item.snapshotDay === "string" && /^\d{4}-\d{2}-\d{2}$/.test(item.snapshotDay) ? item.snapshotDay : null
+    if (!companyId || !day || item.profile === undefined) continue
+    const fetchedAt = typeof item.fetchedAt === "string" && !Number.isNaN(Date.parse(item.fetchedAt)) ? item.fetchedAt : new Date().toISOString()
+    await db.prepare("INSERT OR IGNORE INTO faction_director_snapshots (player_id, company_id, snapshot_day, profile_json, stock_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?)").bind(targetPlayerId, String(companyId), day, asJson(item.profile), item.stock == null ? null : asJson(item.stock), fetchedAt).run()
+  }
+  for (const item of (Array.isArray(storage.pageData) ? storage.pageData : []).slice(0, 20)) {
+    if (!isRecord(item) || typeof item.pageKey !== "string" || !pageAllowlist.has(item.pageKey)) continue
+    await db.prepare("INSERT INTO user_page_data (player_id, page_key, data_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, page_key) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at").bind(targetPlayerId, item.pageKey, asJson(item.data), new Date().toISOString()).run()
+  }
+  for (const item of (Array.isArray(storage.sharingPreferences) ? storage.sharingPreferences : []).slice(0, 1000)) {
+    if (!isRecord(item)) continue
+    const recipientId = positiveId(item.recipientId ?? item.recipient_id ?? item.playerId)
+    if (!recipientId || recipientId === targetPlayerId) continue
+    const recipient = await db.prepare("SELECT player_id FROM players WHERE player_id = ?").bind(recipientId).first<{ player_id: string }>()
+    if (!recipient) continue
+    await db.prepare("INSERT INTO company_sharing_recipients (owner_player_id, recipient_player_id, share_financial_data, share_employee_data, share_trend_data, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(owner_player_id, recipient_player_id) DO UPDATE SET share_financial_data = excluded.share_financial_data, share_employee_data = excluded.share_employee_data, share_trend_data = excluded.share_trend_data, updated_at = excluded.updated_at").bind(targetPlayerId, String(recipientId), Number(item.shareFinancialData === true || item.share_financial_data === 1), Number(item.shareEmployeeData === true || item.share_employee_data === 1), Number(item.shareTrendData === true || item.share_trend_data === 1), new Date().toISOString()).run()
+  }
+  return counts
+}
+
+async function handleAdminRequest(request: Request, env: WorkerEnv, origin: string, ctx?: { waitUntil(promise: Promise<unknown>): void }): Promise<Response | null> {
+  const url = new URL(request.url)
+  if (!url.pathname.startsWith("/api/admin")) return null
+  const session = await authenticate(request, env)
+  if (!session) return jsonResponse({ error: "An active dashboard session is required." }, 401, origin)
+  if (session.player_id !== ADMIN_PLAYER_ID) {
+    await writeAdminAudit(env, session, "authorization.denied", "route", url.pathname, "denied", "A non-administrator attempted to access an administration route.")
+    return jsonResponse({ error: "Administrator access is required." }, 403, origin)
+  }
+  const db = requireDb(env)
+  await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
+  await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
+  const memberMatch = url.pathname.match(/^\/api\/admin\/members\/(\d+)(?:\/(status|connection-test|connection-repair))?$/)
+  const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 50) || 50))
+  if (url.pathname === "/api/admin/overview" && request.method === "GET") {
+    const metrics = await db.prepare("SELECT (SELECT COUNT(*) FROM players) AS members, (SELECT COUNT(*) FROM companies) AS companies, (SELECT COUNT(*) FROM company_api_keys) AS companyKeys, (SELECT COUNT(*) FROM company_snapshots) AS companySnapshots, (SELECT COUNT(*) FROM faction_director_snapshots) AS directorSnapshots, (SELECT COUNT(*) FROM dashboard_member_status WHERE disabled_at IS NOT NULL) AS disabledMembers, (SELECT COUNT(*) FROM admin_jobs WHERE status IN ('queued','running')) AS activeJobs, (SELECT COUNT(*) FROM admin_jobs WHERE status = 'failed') AS failedJobs, (SELECT MAX(fetched_at) FROM companies) AS latestCompanyRefresh").first<Record<string, unknown>>()
+    const recent = await db.prepare("SELECT id, actor_player_id AS actorPlayerId, actor_player_name AS actorPlayerName, action, target_type AS targetType, target_id AS targetId, outcome, summary, created_at AS createdAt FROM admin_audit_log ORDER BY id DESC LIMIT 8").all<Record<string, unknown>>()
+    return jsonResponse({ metrics: metrics ?? {}, maintenanceMode: await readAdminBoolean(env, "maintenanceMode", false), recentActivity: recent.results ?? [], generatedAt: new Date().toISOString() }, 200, origin)
+  }
+  if (url.pathname === "/api/admin/members" && request.method === "GET") {
+    const q = (url.searchParams.get("q") ?? "").trim().slice(0, 100)
+    const like = `%${q}%`
+    const offset = Math.max(0, Number(url.searchParams.get("offset") || 0) || 0)
+    const base = "FROM players p LEFT JOIN companies c ON c.player_id = p.player_id AND c.fetched_at = (SELECT MAX(c2.fetched_at) FROM companies c2 WHERE c2.player_id = p.player_id) LEFT JOIN faction_member_cache f ON f.player_id = p.player_id AND f.is_director = 1 LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE (? = '' OR p.player_id LIKE ? OR p.player_name LIKE ? OR COALESCE(c.company_name, f.company_name, '') LIKE ?)"
+    const [rows, count] = await Promise.all([
+      db.prepare(`SELECT p.player_id AS playerId, p.player_name AS playerName, p.created_at AS createdAt, p.updated_at AS updatedAt, COALESCE(c.company_id, f.company_id) AS companyId, COALESCE(c.company_name, f.company_name) AS companyName, COALESCE(c.company_type, f.company_type) AS companyType, f.company_type_id AS companyTypeId, st.disabled_at AS disabledAt, st.disable_reason AS disableReason, (SELECT COUNT(*) FROM api_keys ak WHERE ak.player_id = p.player_id) AS loginKeySaved, (SELECT COUNT(*) FROM company_api_keys cak WHERE cak.player_id = p.player_id) AS companyKeyCount, (SELECT COUNT(*) FROM company_snapshots cs WHERE cs.player_id = p.player_id) AS snapshotCount ${base} ORDER BY p.player_name COLLATE NOCASE LIMIT ? OFFSET ?`).bind(q, like, like, like, limit, offset).all<Record<string, unknown>>(),
+      db.prepare(`SELECT COUNT(*) AS total ${base}`).bind(q, like, like, like).first<{ total: number }>(),
+    ])
+    const members = (rows.results ?? []).map((r) => ({ playerId: String(r.playerId), playerName: String(r.playerName), createdAt: r.createdAt ?? null, updatedAt: r.updatedAt ?? null, companyId: r.companyId == null ? null : String(r.companyId), companyName: r.companyName == null ? null : String(r.companyName), companyType: r.companyType == null ? null : String(r.companyType), companyTypeId: r.companyTypeId ?? null, disabled: r.disabledAt != null, disabledAt: r.disabledAt ?? null, disableReason: r.disableReason ?? null, loginKeySaved: Number(r.loginKeySaved ?? 0) > 0, companyKeyCount: Number(r.companyKeyCount ?? 0), snapshotCount: Number(r.snapshotCount ?? 0) }))
+    return jsonResponse({ members, total: Number(count?.total ?? 0), limit, offset }, 200, origin)
+  }
+  if (memberMatch && request.method === "GET" && !memberMatch[2]) {
+    const playerId = memberMatch[1]
+    const member = await db.prepare("SELECT p.player_id AS playerId, p.player_name AS playerName, p.created_at AS createdAt, p.updated_at AS updatedAt, st.disabled_at AS disabledAt, st.disable_reason AS disableReason FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.player_id = ?").bind(playerId).first<Record<string, unknown>>()
+    if (!member) return jsonResponse({ error: "That dashboard member does not exist." }, 404, origin)
+    const [companies, counts] = await Promise.all([
+      db.prepare("SELECT cak.company_id AS companyId, COALESCE(c.company_name, cak.company_name) AS companyName, COALESCE(c.company_type, cak.company_type) AS companyType, cak.last_four AS lastFour, cak.updated_at AS keyUpdatedAt, c.fetched_at AS fetchedAt FROM company_api_keys cak LEFT JOIN companies c ON c.player_id = cak.player_id AND c.company_id = cak.company_id WHERE cak.player_id = ? ORDER BY cak.updated_at DESC").bind(playerId).all<Record<string, unknown>>(),
+      db.prepare("SELECT (SELECT COUNT(*) FROM company_snapshots WHERE player_id = ?) AS companySnapshots, (SELECT COUNT(*) FROM faction_director_snapshots WHERE player_id = ?) AS directorSnapshots, (SELECT COUNT(*) FROM user_page_data WHERE player_id = ?) AS pageRecords, (SELECT COUNT(*) FROM company_financials WHERE player_id = ?) AS financialRecords, (SELECT COUNT(*) FROM api_keys WHERE player_id = ?) AS loginKeyCount, (SELECT COUNT(*) FROM company_keys WHERE player_id = ?) AS legacyCompanyKeyCount").bind(playerId, playerId, playerId, playerId, playerId, playerId).first<Record<string, unknown>>(),
+    ])
+    const profile = await db.prepare("SELECT company_id AS companyId, company_name AS companyName, company_type AS companyType, fetched_at AS fetchedAt FROM companies WHERE player_id = ? ORDER BY fetched_at DESC LIMIT 1").bind(playerId).first<Record<string, unknown>>()
+    return jsonResponse({ member: { ...member, disabled: member.disabledAt != null, company: profile ?? null }, connections: { companies: companies.results ?? [], loginKeySaved: Number(counts?.loginKeyCount ?? 0) > 0, legacyCompanyKeySaved: Number(counts?.legacyCompanyKeyCount ?? 0) > 0 }, history: { companySnapshots: Number(counts?.companySnapshots ?? 0), directorSnapshots: Number(counts?.directorSnapshots ?? 0), pageRecords: Number(counts?.pageRecords ?? 0), financialRecords: Number(counts?.financialRecords ?? 0) } }, 200, origin)
+  }
+  if (memberMatch && memberMatch[2] === "status" && request.method === "POST") {
+    const targetId = memberMatch[1]
+    if (targetId === ADMIN_PLAYER_ID) return jsonResponse({ error: "The primary administrator account cannot be disabled from the admin panel." }, 409, origin)
+    const target = await db.prepare("SELECT player_id FROM players WHERE player_id = ?").bind(targetId).first<{ player_id: string }>()
+    if (!target) return jsonResponse({ error: "That dashboard member does not exist." }, 404, origin)
+    const body: unknown = await request.json().catch(() => null)
+    if (!isRecord(body) || typeof body.disabled !== "boolean") return jsonResponse({ error: "Choose whether to disable or restore this member." }, 400, origin)
+    const disabled = body.disabled
+    const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 180) : ""
+    const now = new Date().toISOString()
+    await db.prepare("INSERT INTO dashboard_member_status (player_id, disabled_at, disabled_by, disable_reason, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET disabled_at = excluded.disabled_at, disabled_by = excluded.disabled_by, disable_reason = excluded.disable_reason, updated_at = excluded.updated_at").bind(targetId, disabled ? now : null, disabled ? session.player_id : null, disabled ? reason || "Disabled by dashboard administrator." : null, now).run()
+    if (disabled) await db.prepare("DELETE FROM sessions WHERE player_id = ?").bind(targetId).run()
+    await writeAdminAudit(env, session, disabled ? "member.disabled" : "member.restored", "member", targetId, "succeeded", disabled ? "Dashboard member access disabled and active sessions revoked." : "Dashboard member access restored.", { reason: disabled ? reason : null, sessionsRevoked: disabled })
+    return jsonResponse({ playerId: targetId, disabled, sessionsRevoked: disabled, updatedAt: now }, 200, origin)
+  }
+  if (memberMatch && (memberMatch[2] === "connection-test" || memberMatch[2] === "connection-repair") && request.method === "POST") {
+    const targetId = memberMatch[1]
+    const body: unknown = await request.json().catch(() => null)
+    const requestedCompanyId = isRecord(body) && (typeof body.companyId === "string" || typeof body.companyId === "number") ? String(body.companyId) : ""
+    const isRepair = memberMatch[2] === "connection-repair"
+    try {
+      let apiKey = requestedCompanyId ? await savedCompanyApiKey(env, targetId, requestedCompanyId) : null
+      if (!apiKey && !requestedCompanyId) apiKey = await savedCompanyKey(env, targetId)
+      if (!apiKey) apiKey = await savedKey(env, targetId)
+      if (!apiKey) return jsonResponse({ error: "No saved credential is available for this account. Ask the member to reconnect; never request their key in chat." }, 409, origin)
+      const validated = await validateCompanyKey(apiKey)
+      if (requestedCompanyId && String(validated.companyId) !== requestedCompanyId) throw new Error("The saved credential returned a different company ID. No data was changed.")
+      if (isRepair) await persistCompanyConnection(env, targetId, apiKey, validated)
+      const root = companyProfileRoot(validated.profile)
+      const summary = { playerId: targetId, companyId: String(validated.companyId), companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}`, profileValid: true, employeesAvailable: validated.employees !== null, stockAvailable: validated.stock !== null, repaired: isRepair, checkedAt: new Date().toISOString() }
+      await writeAdminAudit(env, session, isRepair ? "connection.repaired" : "connection.tested", "member", targetId, "succeeded", isRepair ? "Company connection validated and saved." : "Saved company connection test passed.", { companyId: String(validated.companyId) })
+      return jsonResponse(summary, 200, origin)
+    } catch (error) {
+      await writeAdminAudit(env, session, isRepair ? "connection.repair_failed" : "connection.test_failed", "member", targetId, "failed", isRepair ? "Company connection repair failed." : "Saved company connection test failed.", { companyId: requestedCompanyId || null, error: error instanceof Error ? error.message.slice(0, 180) : "Unknown error" })
+      return jsonResponse({ error: error instanceof Error ? error.message : "Company connection could not be verified." }, 502, origin)
+    }
+  }
+  if (url.pathname === "/api/admin/jobs" && request.method === "GET") {
+    const rows = await db.prepare("SELECT job_id AS jobId, job_type AS jobType, target_player_id AS targetPlayerId, target_company_id AS targetCompanyId, status, requested_by AS requestedBy, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt, result_json AS resultJson, error_message AS errorMessage FROM admin_jobs ORDER BY created_at DESC LIMIT ?").bind(limit).all<Record<string, unknown>>()
+    return jsonResponse({ jobs: (rows.results ?? []).map((row) => ({ ...row, result: parseStoredJson(row.resultJson), resultJson: undefined })) }, 200, origin)
+  }
+  if (url.pathname === "/api/admin/jobs" && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    if (!isRecord(body) || (body.jobType !== "global-refresh" && body.jobType !== "company-refresh")) return jsonResponse({ error: "Choose a supported administrative job type." }, 400, origin)
+    if (!await readAdminBoolean(env, "manualRefreshEnabled", true)) return jsonResponse({ error: "Manual refresh operations are disabled in global settings." }, 409, origin)
+    const targetPlayerId = body.jobType === "company-refresh" ? positiveId(body.targetPlayerId) : null
+    const targetCompanyId = body.jobType === "company-refresh" ? positiveId(body.targetCompanyId) : null
+    if (body.jobType === "company-refresh" && (!targetPlayerId || !targetCompanyId)) return jsonResponse({ error: "Select a member and one of their saved company IDs for a company refresh." }, 400, origin)
+    if (targetPlayerId) {
+      const target = await db.prepare("SELECT player_id FROM players WHERE player_id = ?").bind(targetPlayerId).first<{ player_id: string }>()
+      if (!target) return jsonResponse({ error: "That dashboard member does not exist." }, 404, origin)
+    }
+    const duplicate = await db.prepare("SELECT job_id FROM admin_jobs WHERE status IN ('queued','running') AND job_type = ? AND COALESCE(target_player_id,'') = ? AND COALESCE(target_company_id,'') = ? LIMIT 1").bind(body.jobType, targetPlayerId ? String(targetPlayerId) : "", targetCompanyId ? String(targetCompanyId) : "").first<{ job_id: string }>()
+    if (duplicate) return jsonResponse({ error: "An equivalent refresh job is already queued or running.", jobId: duplicate.job_id }, 409, origin)
+    const jobId = randomToken().slice(0, 20)
+    const now = new Date().toISOString()
+    await db.prepare("INSERT INTO admin_jobs (job_id, job_type, target_player_id, target_company_id, status, requested_by, created_at) VALUES (?, ?, ?, ?, 'queued', ?, ?)").bind(jobId, body.jobType, targetPlayerId ? String(targetPlayerId) : null, targetCompanyId ? String(targetCompanyId) : null, session.player_id, now).run()
+    await writeAdminAudit(env, session, "job.queued", "job", jobId, "succeeded", `Queued ${body.jobType}.`, { targetPlayerId: targetPlayerId ? String(targetPlayerId) : null, targetCompanyId: targetCompanyId ? String(targetCompanyId) : null })
+    const task = runAdminJob(env, jobId)
+    if (ctx?.waitUntil) ctx.waitUntil(task)
+    else await task
+    return jsonResponse({ jobId, status: "queued", createdAt: now }, 202, origin)
+  }
+  if (url.pathname === "/api/admin/settings" && request.method === "GET") {
+    const rows = await db.prepare("SELECT setting_key AS settingKey, value_json AS valueJson, updated_at AS updatedAt, updated_by AS updatedBy FROM admin_settings").all<Record<string, unknown>>()
+    const settings: Record<string, boolean> = { maintenanceMode: false, manualRefreshEnabled: true, historyImportEnabled: true }
+    for (const row of rows.results ?? []) {
+      if (row.settingKey === "maintenanceMode" || row.settingKey === "manualRefreshEnabled" || row.settingKey === "historyImportEnabled") {
+        const value = parseStoredJson(row.valueJson)
+        if (typeof value === "boolean") settings[String(row.settingKey)] = value
+      }
+    }
+    return jsonResponse({ settings, updatedAt: new Date().toISOString() }, 200, origin)
+  }
+  if (url.pathname === "/api/admin/settings" && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    if (!isRecord(body) || !isRecord(body.settings)) return jsonResponse({ error: "Provide a settings object." }, 400, origin)
+    const allowed = ["maintenanceMode", "manualRefreshEnabled", "historyImportEnabled"] as const
+    const unknown = Object.keys(body.settings).filter((key) => !allowed.includes(key as typeof allowed[number]))
+    if (unknown.length) return jsonResponse({ error: `Unsupported settings: ${unknown.join(", ")}.` }, 400, origin)
+    for (const key of allowed) {
+      if (body.settings[key] !== undefined && typeof body.settings[key] !== "boolean") return jsonResponse({ error: `Setting ${key} must be true or false.` }, 400, origin)
+    }
+    const changed: string[] = []
+    for (const key of allowed) {
+      if (body.settings[key] === undefined) continue
+      await db.prepare("INSERT INTO admin_settings (setting_key, value_json, updated_at, updated_by) VALUES (?, ?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at, updated_by = excluded.updated_by").bind(key, JSON.stringify(body.settings[key]), new Date().toISOString(), session.player_id).run()
+      changed.push(key)
+    }
+    await writeAdminAudit(env, session, "settings.updated", "settings", "global", "succeeded", "Updated global dashboard settings.", { changed })
+    return jsonResponse({ saved: true, changed, settings: { maintenanceMode: await readAdminBoolean(env, "maintenanceMode", false), manualRefreshEnabled: await readAdminBoolean(env, "manualRefreshEnabled", true), historyImportEnabled: await readAdminBoolean(env, "historyImportEnabled", true) } }, 200, origin)
+  }
+  if (url.pathname === "/api/admin/history/summary" && request.method === "GET") {
+    const stats = await db.prepare("SELECT (SELECT COUNT(*) FROM companies) AS companies, (SELECT COUNT(*) FROM company_financials) AS financialRecords, (SELECT COUNT(*) FROM company_snapshots) AS companySnapshots, (SELECT COUNT(*) FROM faction_director_snapshots) AS directorSnapshots, (SELECT COUNT(*) FROM user_page_data) AS pageRecords").first<Record<string, unknown>>()
+    const latest = await db.prepare("SELECT MAX(fetched_at) AS latestCompanySnapshot FROM company_snapshots").first<{ latestCompanySnapshot: string | null }>()
+    return jsonResponse({ stats: stats ?? {}, latestCompanySnapshot: latest?.latestCompanySnapshot ?? null, backupMode: "owner-matched merge; credentials and sessions excluded" }, 200, origin)
+  }
+  if (url.pathname === "/api/admin/history/backup" && request.method === "GET") {
+    const playerId = positiveId(url.searchParams.get("playerId"))
+    if (!playerId) return jsonResponse({ error: "Select a valid dashboard member to export." }, 400, origin)
+    try {
+      const backup = await adminBackupForPlayer(env, String(playerId))
+      await writeAdminAudit(env, session, "history.backup_exported", "member", String(playerId), "succeeded", "Exported a dashboard member backup; credentials and sessions were excluded.", { counts: adminBackupCounts(backup.storage as Record<string, unknown>) })
+      return jsonResponse(backup, 200, origin, { "content-disposition": `attachment; filename="ncd-admin-backup-${playerId}.json"` })
+    } catch (error) { return jsonResponse({ error: error instanceof Error ? error.message : "Could not export this member's data." }, 404, origin) }
+  }
+  if (url.pathname === "/api/admin/history/restore" && request.method === "POST") {
+    const targetPlayerId = positiveId(url.searchParams.get("playerId"))
+    if (!targetPlayerId) return jsonResponse({ error: "Select the dashboard member whose history should be restored." }, 400, origin)
+    const restoreTarget = await db.prepare("SELECT player_id FROM players WHERE player_id = ?").bind(String(targetPlayerId)).first<{ player_id: string }>()
+    if (!restoreTarget) return jsonResponse({ error: "That dashboard member does not exist." }, 404, origin)
+    if (!await readAdminBoolean(env, "historyImportEnabled", true)) return jsonResponse({ error: "History imports and restores are disabled in global settings." }, 409, origin)
+    const raw = await request.text()
+    if (raw.length > 10_000_000) return jsonResponse({ error: "The JSON backup is too large. Keep imports under 10 MB." }, 413, origin)
+    let parsed: unknown
+    try { parsed = JSON.parse(raw) as unknown } catch { return jsonResponse({ error: "Upload a valid JSON backup." }, 400, origin) }
+    if (!isRecord(parsed) || !isRecord(parsed.player) || String(parsed.player.id ?? "") !== String(targetPlayerId) || !((parsed.format === "naughty-company-dashboard-admin-backup" || parsed.format === "naughty-company-dashboard-backup") && parsed.version === 1) || !isRecord(parsed.storage)) {
+      await writeAdminAudit(env, session, "history.restore_rejected", "member", String(targetPlayerId), "failed", "Rejected a backup with an unsupported format or owner mismatch.")
+      return jsonResponse({ error: "Backup format or owner does not match the selected dashboard member. The restore was not applied." }, 400, origin)
+    }
+    const storage = parsed.storage
+    const counts = adminBackupCounts(storage)
+    const limits: Record<string, number> = { companies: 100, financials: 100, companySnapshots: 10000, directorSnapshots: 10000, pageData: 20, sharingPreferences: 1000 }
+    for (const key of Object.keys(limits)) if (Array.isArray(storage[key]) && (storage[key] as unknown[]).length > limits[key]) return jsonResponse({ error: `Backup exceeds the supported ${key} limit.` }, 413, origin)
+    if (url.searchParams.get("preview") === "1") {
+      await writeAdminAudit(env, session, "history.restore_previewed", "member", String(targetPlayerId), "succeeded", "Validated a dashboard history restore without applying it.", { counts })
+      return jsonResponse({ preview: true, targetPlayerId: String(targetPlayerId), counts, warnings: ["Restore merges records and does not delete existing records.", "API credentials, sessions, and administrator settings are excluded.", "Confirm the target Torn ID and backup timestamp before applying."] }, 200, origin)
+    }
+    const confirmation = request.headers.get("x-admin-confirm-restore")
+    if (confirmation !== "yes") return jsonResponse({ error: "Restore requires explicit confirmation after preview." }, 428, origin)
+    try {
+      const restored = await restoreAdminBackup(env, String(targetPlayerId), parsed)
+      await writeAdminAudit(env, session, "history.restore_applied", "member", String(targetPlayerId), "succeeded", "Restored a validated owner-matched backup by merging historical records.", { counts: restored, exportedAt: parsed.exportedAt ?? null })
+      return jsonResponse({ restored: true, targetPlayerId: String(targetPlayerId), counts: restored, message: "Backup records were merged. Existing unrelated records, API credentials, and sessions were left intact." }, 200, origin)
+    } catch (error) {
+      await writeAdminAudit(env, session, "history.restore_failed", "member", String(targetPlayerId), "failed", "A validated history restore failed.", { counts, error: error instanceof Error ? error.message.slice(0, 180) : "Unknown error" })
+      return jsonResponse({ error: "Restore could not be completed. Existing records were not intentionally deleted; inspect the audit log before retrying." }, 500, origin)
+    }
+  }
+  if (url.pathname === "/api/admin/audit" && request.method === "GET") {
+    const before = Math.max(0, Number(url.searchParams.get("before") || 0) || 0)
+    const rows = before ? await db.prepare("SELECT id, actor_player_id AS actorPlayerId, actor_player_name AS actorPlayerName, action, target_type AS targetType, target_id AS targetId, outcome, summary, details_json AS detailsJson, created_at AS createdAt FROM admin_audit_log WHERE id < ? ORDER BY id DESC LIMIT ?").bind(before, limit).all<Record<string, unknown>>() : await db.prepare("SELECT id, actor_player_id AS actorPlayerId, actor_player_name AS actorPlayerName, action, target_type AS targetType, target_id AS targetId, outcome, summary, details_json AS detailsJson, created_at AS createdAt FROM admin_audit_log ORDER BY id DESC LIMIT ?").bind(limit).all<Record<string, unknown>>()
+    return jsonResponse({ events: (rows.results ?? []).map((row) => ({ ...row, details: parseStoredJson(row.detailsJson), detailsJson: undefined })) }, 200, origin)
+  }
+  return jsonResponse({ error: "Administration route not found." }, 404, origin)
+}
+
 export default {
   async scheduled(controller: { scheduledTime: number; cron: string }, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
     const isWeeklyLock = controller.cron === "10 18 * * SUN"
@@ -490,8 +833,10 @@ export default {
   async fetch(request: Request, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<Response> {
     const origin = allowedOrigin(request, env)
     if (!origin) return jsonResponse({ error: "Origin not allowed." }, 403)
-    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { "access-control-allow-origin": origin, "access-control-allow-methods": "GET, POST, DELETE, OPTIONS", "access-control-allow-headers": "Authorization, Content-Type", "access-control-max-age": "86400", vary: "Origin" } })
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { "access-control-allow-origin": origin, "access-control-allow-methods": "GET, POST, DELETE, OPTIONS", "access-control-allow-headers": "Authorization, Content-Type, X-Admin-Confirm-Restore", "access-control-max-age": "86400", vary: "Origin" } })
     const url = new URL(request.url)
+    const adminResponse = await handleAdminRequest(request, env, origin, ctx)
+    if (adminResponse) return adminResponse
     if (url.pathname === "/health" && request.method === "GET") return jsonResponse({ ok: true, service: "naughty-company-api" }, 200, origin)
     if (url.pathname === "/api/auth/sign-in" && request.method === "POST") {
       try {
@@ -500,6 +845,11 @@ export default {
         const secondaryCompanyKey = isRecord(body) && typeof body.secondaryCompanyKey === "string" ? body.secondaryCompanyKey.trim() : ""
         if (!apiKey) return jsonResponse({ error: "A Torn API key is required." }, 400, origin)
         const player = await validateTornKey(apiKey)
+        if (player.id !== ADMIN_PLAYER_ID) {
+          const memberStatus = await requireDb(env).prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?").bind(player.id).first<{ disabled_at: string | null }>()
+          if (memberStatus?.disabled_at) return jsonResponse({ error: "Dashboard access for this account has been disabled. Contact the dashboard administrator." }, 403, origin)
+          if (await readAdminBoolean(env, "maintenanceMode", false)) return jsonResponse({ error: "The dashboard is in maintenance mode. Please try again later." }, 503, origin)
+        }
         const directorCheck = await inspectDirectorKey(apiKey, player.id)
         let loginCompanyData: Awaited<ReturnType<typeof validateCompanyKey>> | null = null
         let loginCompanyError: string | null = null
@@ -522,7 +872,7 @@ export default {
         const expiresAt = Math.floor(Date.now() / 1000) + 30 * DAY
         await db.prepare("INSERT INTO sessions (token_hash, player_id, expires_at, created_at) VALUES (?, ?, ?, ?)").bind(await sha256(token), player.id, expiresAt, now).run()
         const meta = await db.prepare("SELECT last_four, updated_at FROM api_keys WHERE player_id = ?").bind(player.id).first<{ last_four: string; updated_at: string }>()
-        return jsonResponse({ token, expiresAt, player, key: { saved: true, lastFour: meta?.last_four, updatedAt: meta?.updated_at }, company: { isDirector: directorCheck.isDirector, key: companyKey, needsSecondaryKey: !companyKey.saved } }, 200, origin)
+        return jsonResponse({ token, expiresAt, player, isAdmin: player.id === ADMIN_PLAYER_ID, key: { saved: true, lastFour: meta?.last_four, updatedAt: meta?.updated_at }, company: { isDirector: directorCheck.isDirector, key: companyKey, needsSecondaryKey: !companyKey.saved } }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
     if (url.pathname === "/api/auth/session" && request.method === "GET") {
@@ -534,7 +884,7 @@ export default {
       const companyKey = await companyKeyMeta(env, session.player_id)
       const cachedDirector = await requireDb(env).prepare("SELECT is_director FROM faction_member_cache WHERE player_id = ?").bind(session.player_id).first<{ is_director: number }>()
       const isDirector = cachedDirector?.is_director === 1
-      return jsonResponse({ player: { id: session.player_id, name: session.player_name }, key: key ? { saved: true, lastFour: key.last_four, updatedAt: key.updated_at } : { saved: false }, company: { isDirector, key: companyKey, needsSecondaryKey: !companyKey.saved, connectionError: companyConnectionError } }, 200, origin)
+      return jsonResponse({ player: { id: session.player_id, name: session.player_name }, isAdmin: session.player_id === ADMIN_PLAYER_ID, key: key ? { saved: true, lastFour: key.last_four, updatedAt: key.updated_at } : { saved: false }, company: { isDirector, key: companyKey, needsSecondaryKey: !companyKey.saved, connectionError: companyConnectionError } }, 200, origin)
     }
     if (url.pathname === "/api/auth/key" && request.method === "POST") {
       const session = await authenticate(request, env)
@@ -775,6 +1125,7 @@ export default {
     if (url.pathname === "/api/me/data-backup" && (request.method === "GET" || request.method === "POST")) {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (request.method === "POST" && !await readAdminBoolean(env, "historyImportEnabled", true)) return jsonResponse({ error: "History imports are disabled by the dashboard administrator." }, 409, origin)
       const db = requireDb(env)
       await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
       await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
@@ -948,6 +1299,7 @@ export default {
     if (url.pathname === "/api/company/refresh" && request.method === "POST") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (!await readAdminBoolean(env, "manualRefreshEnabled", true)) return jsonResponse({ error: "Manual refreshes are disabled by the dashboard administrator." }, 409, origin)
       try {
         const refreshBody: unknown = await request.json().catch(() => null)
         const requestedId = isRecord(refreshBody) && (typeof refreshBody.companyId === "string" || typeof refreshBody.companyId === "number") ? String(refreshBody.companyId) : ""

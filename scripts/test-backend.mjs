@@ -431,6 +431,73 @@ try {
     assert.equal(response.status, 403)
   })
 
+  await test("admin API rejects requests without an authenticated dashboard session", async () => {
+    const response = await worker.fetch(new Request("https://worker.test/api/admin/overview", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev" },
+    }), { DB: { prepare() { return { bind() { return this }, async first() { return null }, async all() { return { results: [] } }, async run() { return { success: true } } } } } })
+    assert.equal(response.status, 401)
+    assert.match((await response.json()).error, /active dashboard session/i)
+  })
+
+  await test("admin API rejects an authenticated non-administrator", async () => {
+    const db = { prepare(sql) { return {
+      bind() { return this },
+      async first() {
+        if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "777", player_name: "Member Tester" }
+        return null
+      },
+      async all() { return { results: [] } },
+      async run() { return { success: true } },
+    } } }
+    const response = await worker.fetch(new Request("https://worker.test/api/admin/overview", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session" },
+    }), { DB: db })
+    assert.equal(response.status, 403)
+    assert.match((await response.json()).error, /administrator access/i)
+  })
+
+  await test("admin settings reject malformed multi-setting updates before writing any setting", async () => {
+    const writes = []
+    const db = { prepare(sql) { let values = []; return {
+      bind(...args) { values = args; return this },
+      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter" }; return null },
+      async all() { return { results: [] } },
+      async run() { if (sql.toLowerCase().includes("insert into admin_settings")) writes.push(values); return { success: true, meta: { changes: 1 } } },
+    } } }
+    const response = await worker.fetch(new Request("https://worker.test/api/admin/settings", {
+      method: "POST",
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer admin-session", "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: { maintenanceMode: true, manualRefreshEnabled: "not-a-boolean" } }),
+    }), { DB: db })
+    assert.equal(response.status, 400)
+    assert.equal(writes.length, 0)
+  })
+
+  await test("admin panel cannot disable its primary administrator account", async () => {
+    const db = { prepare(sql) { return {
+      bind() { return this },
+      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter" }; return null },
+      async all() { return { results: [] } },
+      async run() { return { success: true, meta: { changes: 1 } } },
+    } } }
+    const response = await worker.fetch(new Request("https://worker.test/api/admin/members/351311/status", {
+      method: "POST",
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer admin-session", "Content-Type": "application/json" },
+      body: JSON.stringify({ disabled: true, reason: "test" }),
+    }), { DB: db })
+    assert.equal(response.status, 409)
+    assert.match((await response.json()).error, /cannot be disabled/i)
+  })
+
+  await test("admin restore confirmation header is allowed by CORS preflight", async () => {
+    const response = await worker.fetch(new Request("https://worker.test/api/admin/history/restore?playerId=777", {
+      method: "OPTIONS",
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", "Access-Control-Request-Headers": "authorization,content-type,x-admin-confirm-restore" },
+    }), {})
+    assert.equal(response.status, 204)
+    assert.match(response.headers.get("access-control-allow-headers") ?? "", /x-admin-confirm-restore/i)
+  })
+
   await test("Worker requires a caller-supplied Torn key", async () => {
     const response = await worker.fetch(new Request("https://worker.test/api/company/profile", {
       headers: { Origin: "https://naughty-company-dashboard.pages.dev" },

@@ -6,11 +6,12 @@ import { buildChartSeriesFor, LineChart } from "./chart-utils"
 import type { ChartSeries, SnapshotHistoryCompany, SnapshotMetric } from "./chart-utils"
 import { createDemoData } from "./demo-data"
 import { placement } from "./ranking-utils"
+import { AdminPanel } from "./admin-panel"
 import { companyTypeIdFromProfile, financialCosts, formatMoney, formatNumber, getObject, pretty, stockPriceRows } from "./financial-utils"
 
 const catalog = positionsData as CompanyPositionCatalog
 const companyNames = Object.keys(catalog.companies).sort()
-const dashboardViews = ["overview", "employees", "catalog", "dashboard-members", "connect", "type-rankings", "faction-rankings", "charts", "data-transfer", "data-sharing"] as const
+const dashboardViews = ["overview", "employees", "catalog", "dashboard-members", "connect", "type-rankings", "faction-rankings", "charts", "data-transfer", "data-sharing", "admin"] as const
 type DashboardView = typeof dashboardViews[number]
 type TransferPageKey = "company" | "employees" | "charts" | "rankings" | "references" | "settings" | "master"
 const transferPages: { key: TransferPageKey; title: string; description: string }[] = [
@@ -67,6 +68,7 @@ export function FloorApp() {
   const [demoMode, setDemoMode] = useState(false)
   const [playerName, setPlayerName] = useState("")
   const [playerId, setPlayerId] = useState("")
+  const [isAdmin, setIsAdmin] = useState(false)
   const [selectedCompanyId, setSelectedCompanyId] = useState("")
   const [showCompanySelector, setShowCompanySelector] = useState(false)
   const [keySaved, setKeySaved] = useState(false)
@@ -144,11 +146,12 @@ export function FloorApp() {
       try {
         const response = await fetch(`${API_BASE}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } })
         if (!response.ok) throw new Error("Session expired")
-        const session = await response.json() as { player: { id: string; name: string }; key: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
+        const session = await response.json() as { player: { id: string; name: string }; isAdmin?: boolean; key: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
         if (cancelled) return
         setSessionToken(token)
         setPlayerName(session.player.name)
         setPlayerId(session.player.id)
+        setIsAdmin(session.isAdmin === true && session.player.id === "351311")
         setKeySaved(session.key.saved)
         setIsDirector(session.company?.isDirector ?? false)
         setCompanyKeySaved(session.company?.key?.saved ?? false)
@@ -183,6 +186,10 @@ export function FloorApp() {
     void restoreSession()
     return () => { cancelled = true }
   }, [])
+
+  useEffect(() => {
+    if (!authChecking && activeView === "admin" && (!isAdmin || demoMode)) setActiveView("overview")
+  }, [authChecking, activeView, isAdmin, demoMode])
 
   useEffect(() => {
     if (!sessionToken) return
@@ -488,8 +495,8 @@ export function FloorApp() {
     : rankByIncome(company, companyPeerRows)
   const currentGlobalCompanyRank = currentRankingCompany ? rankByIncome(currentRankingCompany, companyPeerRows) : null
   const chartSeriesFor = (metric: SnapshotMetric): ChartSeries[] => buildChartSeriesFor(metric, currentChartCompany, ownCompareData, result, model, selectedComparePlayerId, compareData, currentGlobalCompanyRank, currentStar)
-  const activePageTitle = activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "dashboard-members" ? "Dashboard Members" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : activeView === "data-sharing" ? "Data Sharing" : "Settings"
-  const activePageGroup = activeView === "overview" || activeView === "employees" || activeView === "charts" ? "Company" : activeView === "type-rankings" || activeView === "faction-rankings" ? "Rankings" : activeView === "catalog" || activeView === "dashboard-members" ? "References" : activeView === "connect" || activeView === "data-transfer" || activeView === "data-sharing" ? "Settings" : "Workspace"
+  const activePageTitle = activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "dashboard-members" ? "Dashboard Members" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : activeView === "data-sharing" ? "Data Sharing" : activeView === "admin" ? "Administration" : "Settings"
+  const activePageGroup = activeView === "overview" || activeView === "employees" || activeView === "charts" ? "Company" : activeView === "type-rankings" || activeView === "faction-rankings" ? "Rankings" : activeView === "catalog" || activeView === "dashboard-members" ? "References" : activeView === "connect" || activeView === "data-transfer" || activeView === "data-sharing" ? "Settings" : activeView === "admin" ? "Administration" : "Workspace"
   const currentStockRows = stockPriceRows(result?.stock)
   const totalStockValueRows = currentStockRows.filter((item) => item.quantity !== null && item.price !== null)
   const totalStockValue = totalStockValueRows.reduce((sum, item) => sum + Math.max(0, item.quantity ?? 0) * Math.max(0, item.price ?? 0), 0)
@@ -614,6 +621,7 @@ export function FloorApp() {
     setDemoMode(true)
     setPlayerName("Demo Director")
     setPlayerId("demo-player")
+    setIsAdmin(false)
     setKeySaved(false)
     setIsDirector(true)
     setCompanyKeySaved(true)
@@ -645,13 +653,14 @@ export function FloorApp() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ apiKey: apiKey.trim(), secondaryCompanyKey: secondaryCompanyKey.trim() }),
       })
-      const payload = await response.json() as { error?: string; token?: string; player?: { id: string; name: string }; key?: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
+      const payload = await response.json() as { error?: string; token?: string; isAdmin?: boolean; player?: { id: string; name: string }; key?: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
       if (!response.ok) throw new Error(payload.error || "Sign-in failed. Check that your Torn key is valid and has limited permissions.")
       if (!payload.token) throw new Error("The sign-in service did not return a session. Please try again.")
       localStorage.setItem("ncd_session", payload.token)
       setSessionToken(payload.token)
       setPlayerName(payload.player?.name || "Torn member")
       setPlayerId(payload.player?.id || "")
+      setIsAdmin(payload.isAdmin === true && payload.player?.id === "351311")
       setKeySaved(payload.key?.saved ?? true)
       setIsDirector(payload.company?.isDirector ?? false)
       setCompanyKeySaved(payload.company?.key?.saved ?? false)
@@ -702,6 +711,7 @@ export function FloorApp() {
     setSessionToken("")
     setPlayerName("")
     setPlayerId("")
+    setIsAdmin(false)
     setSelectedCompanyId("")
     setShowCompanySelector(false)
     setKeySaved(false)
@@ -799,6 +809,7 @@ export function FloorApp() {
           <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.rankings} onClick={() => setOpenNavGroups((groups) => ({ ...groups, rankings: !groups.rankings }))}><span>Rankings</span><b>{openNavGroups.rankings ? "⌄" : "›"}</b></button>{openNavGroups.rankings && <div className="nav-subitems"><button className={activeView === "type-rankings" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("type-rankings")}><span aria-hidden="true">↗</span><span className="nav-label">Company Rankings</span></button><button className={activeView === "faction-rankings" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("faction-rankings")}><span aria-hidden="true">♜</span><span className="nav-label">Faction Rankings</span></button></div>}</div>
           <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.references} onClick={() => setOpenNavGroups((groups) => ({ ...groups, references: !groups.references }))}><span>References</span><b>{openNavGroups.references ? "⌄" : "›"}</b></button>{openNavGroups.references && <div className="nav-subitems"><button className={activeView === "catalog" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("catalog")}><span aria-hidden="true">▦</span><span className="nav-label">Position Catalog</span><em>{companyNames.length}</em></button><button className={activeView === "dashboard-members" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("dashboard-members")}><span aria-hidden="true">♙</span><span className="nav-label">Dashboard Members</span><em>{dashboardMembers.length || "—"}</em></button></div>}</div>
           <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.settings} onClick={() => setOpenNavGroups((groups) => ({ ...groups, settings: !groups.settings }))}><span>Settings</span><b>{openNavGroups.settings ? "⌄" : "›"}</b></button>{openNavGroups.settings && <div className="nav-subitems"><button className={activeView === "connect" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("connect")}><span aria-hidden="true">⚙</span><span className="nav-label">Settings</span></button><button className={activeView === "data-sharing" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("data-sharing")}><span aria-hidden="true">⇄</span><span className="nav-label">Data Sharing</span></button><button className={activeView === "data-transfer" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("data-transfer")}><span aria-hidden="true">⇅</span><span className="nav-label">Import / Export</span></button></div>}</div>
+          {isAdmin && <div className="nav-group admin-nav-group"><div className="side-label">ADMINISTRATION</div><button type="button" className={activeView === "admin" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("admin")}><span aria-hidden="true">♜</span><span className="nav-label">Administration</span><em>ADMIN</em></button></div>}
         </nav>
         <div className="sidebar-bottom">
           <div className="connection-indicator"><span className={result ? "status-dot live" : "status-dot"} />{demoMode ? "Demo workspace · sample data" : keySaved ? `Signed in${playerName ? ` as ${playerName}` : ""}` : "Player signed in · key deleted"}</div><button className="signout-button" onClick={demoMode ? exitDemo : signOut}>{demoMode ? "Exit demo" : "Sign out"}</button>
@@ -815,10 +826,12 @@ export function FloorApp() {
 
         <div className="page-content">
           <section className="welcome-row">
-            <div><div className="eyebrow"><span className="eyebrow-line" /> COMPANY INTELLIGENCE</div><h1>{activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "dashboard-members" ? "Dashboard Members" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : activeView === "data-sharing" ? "Data Sharing" : "Settings"}</h1><p className="subtitle">{activeView === "overview" ? "A focused view of company performance, income, and star-level progress." : activeView === "employees" ? "Employee details, role fit, and position projections in one dedicated workspace." : activeView === "catalog" ? "Explore role requirements across the Torn company ecosystem." : activeView === "dashboard-members" ? "Directory of dashboard accounts and their latest saved Torn company details." : activeView === "type-rankings" ? "Compare companies within the same Torn company type, ranked by weekly income." : activeView === "faction-rankings" ? "See all confirmed faction directors, including members who do not use this dashboard." : activeView === "charts" ? "Track daily income, profit, stock levels, and historical company performance." : activeView === "data-transfer" ? "Import legacy company history or export page-by-page JSON backups of your saved dashboard data." : activeView === "data-sharing" ? "Choose exactly which dashboard members can see your trends, financial details, and employee data." : "Manage your Torn API connection and saved company keys."}</p></div>
+            <div><div className="eyebrow"><span className="eyebrow-line" /> COMPANY INTELLIGENCE</div><h1>{activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "dashboard-members" ? "Dashboard Members" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : activeView === "data-sharing" ? "Data Sharing" : activeView === "admin" ? "Administration" : "Settings"}</h1><p className="subtitle">{activeView === "overview" ? "A focused view of company performance, income, and star-level progress." : activeView === "employees" ? "Employee details, role fit, and position projections in one dedicated workspace." : activeView === "catalog" ? "Explore role requirements across the Torn company ecosystem." : activeView === "dashboard-members" ? "Directory of dashboard accounts and their latest saved Torn company details." : activeView === "type-rankings" ? "Compare companies within the same Torn company type, ranked by weekly income." : activeView === "faction-rankings" ? "See all confirmed faction directors, including members who do not use this dashboard." : activeView === "charts" ? "Track daily income, profit, stock levels, and historical company performance." : activeView === "data-transfer" ? "Import legacy company history or export page-by-page JSON backups of your saved dashboard data." : activeView === "data-sharing" ? "Choose exactly which dashboard members can see your trends, financial details, and employee data." : activeView === "admin" ? "Restricted administration for dashboard operations, data maintenance, and access management." : "Manage your Torn API connection and saved company keys."}</p></div>
           </section>
 
-          {activeView === "type-rankings" || activeView === "faction-rankings" ? (
+          {activeView === "admin" && isAdmin && !demoMode ? (
+            <AdminPanel apiBase={API_BASE} sessionToken={sessionToken} playerId={playerId} playerName={playerName} />
+          ) : activeView === "type-rankings" || activeView === "faction-rankings" ? (
             <section className="panel ranking-panel">
               <div className="panel-heading ranking-heading"><div><h2>{activeView === "type-rankings" ? "Rank within company type" : "Faction directors by company type"}</h2><p>{activeView === "type-rankings" ? "Companies matching the connected company type, ranked by weekly income." : "Confirmed directors from the faction roster, whether or not they use this dashboard. Select Compare to open income and stock graphs."}</p></div>{activeView === "type-rankings" ? <span className="count-chip">{selectedRankingType || "Connected company type"}</span> : <span className="count-chip">{factionDirectors.length} faction directors</span>}</div>
               <div className="ranking-meta"><span><i className="status-dot live" /> {rankingRows.length.toLocaleString()} {activeView === "type-rankings" ? "companies in your connected company type" : "same-type faction directors"}</span><span>Weekly income period: Sunday 18:00 UTC to Sunday 18:00 UTC · Data refresh: daily at 18:10 UTC · Star ratings lock Sundays at 18:10 UTC</span></div>{activeView === "faction-rankings" && <section className="weekly-star-counts" aria-label="Weekly company counts by star rating"><div><strong>Weekly star-level counts</strong><span>{weeklyStarCountsCapturedAt ? `Locked ${new Date(weeklyStarCountsCapturedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}` : "Counts lock on Sundays at 18:10 UTC"}</span></div>{weeklyStarCounts.length ? [...weeklyStarCounts].sort((a,b)=>a.starRating-b.starRating).map((entry)=><article key={entry.starRating}><small>{entry.starRating} ★</small><strong>{entry.companyCount.toLocaleString()}</strong></article>) : <p>Waiting for the first Sunday 18:10 UTC snapshot.</p>}</section>}{activeView === "faction-rankings" && (factionSyncing || factionSyncProgress) && <div className="faction-sync-status" role="status" aria-live="polite">{factionSyncing && <span className="loading-wheel" aria-hidden="true" />}<span>{factionSyncProgress || "Preparing faction directory refresh…"}</span>{factionSyncing && <div className="sync-progress-track"><i /></div>}</div>}
@@ -837,6 +850,9 @@ export function FloorApp() {
                 {compareError && <div className="error-banner" role="alert">{compareError}</div>}
                 {selectedComparePlayerId && compareData && <div className="compare-summary"><div><small>SELECTED DIRECTOR</small><strong>{compareData.director.directorName}</strong></div><div><small>COMPANY</small><strong>{compareData.director.companyName}</strong></div><div><small>TYPE / RATING</small><strong>{compareData.director.companyType || "Unknown"} · {compareData.director.starRating ?? "—"} ★</strong></div><div><small>WEEKLY INCOME</small><strong>{formatMoney(compareData.director.weeklyIncome)}</strong></div></div>}
                 {selectedComparePlayerId && compareData && (() => { const peer = sharedCompanies.find((company) => company.playerId === selectedComparePlayerId && company.shareFinancialData); return peer ? <div className="shared-financial-summary"><article><small>COMPANY</small><strong>{peer.companyName}</strong><span>{peer.directorName} · {peer.companyType}</span></article><article><small>ADVERTISING BUDGET</small><strong>{peer.adBudget == null ? "Not returned" : formatMoney(peer.adBudget)}</strong></article><article className="shared-stock-summary"><small>SHARED STOCK</small>{peer.stock?.length ? peer.stock.map((item, index) => <span key={`${item.name || "stock"}-${index}`}>{item.name || "Stock item"}: {item.quantity == null ? "Qty n/a" : formatNumber(item.quantity)} · {item.unitPrice == null ? "Price n/a" : formatMoney(item.unitPrice)}</span>) : <span>No stock pricing available in the latest saved snapshot.</span>}</article></div> : <p className="sharing-privacy-note">Private stock and advertising data has not been shared with you by this director. Public income charts remain available.</p> })()}
+                <div className="sharing-recipient-heading"><div><h3>Choose who can see your data</h3><p>Permissions are saved separately for each dashboard member. Recipient choices include every dashboard user, regardless of company type.</p></div></div>
+                {sharingSaving && <p className="field-hint" role="status">Saving sharing permission…</p>}{sharingError && <div className="error-banner" role="alert">{sharingError}</div>}{sharingNotice && <p className="sharing-notice" role="status">{sharingNotice}</p>}
+                {!sharingSettingsLoaded ? <div className="empty-state">Loading sharing permissions…</div> : sharingRecipients.length ? <div className="sharing-recipient-list"><div className="sharing-recipient-row sharing-recipient-header"><strong>DASHBOARD MEMBER</strong><strong>TRENDS & CHARTS</strong><strong>STOCK & AD BUDGET</strong><strong>EMPLOYEE DATA</strong></div>{sharingRecipients.map((recipient) => <div className="sharing-recipient-row" key={recipient.playerId}><div className="sharing-recipient-name"><strong>{recipient.directorName}</strong><small>{recipient.companyName || "No saved company"}{recipient.companyType ? ` · ${recipient.companyType}` : ""}</small></div><label className="recipient-toggle"><span>Trends & charts</span><input type="checkbox" checked={recipient.shareTrendData} onChange={(event) => void updateSharingRecipient(recipient.playerId, "shareTrendData", event.target.checked)} disabled={!sessionToken || demoMode || sharingSaving || !sharingSettingsLoaded} /></label><label className="recipient-toggle"><span>Stock & ad budget</span><input type="checkbox" checked={recipient.shareFinancialData} onChange={(event) => void updateSharingRecipient(recipient.playerId, "shareFinancialData", event.target.checked)} disabled={!sessionToken || demoMode || sharingSaving || !sharingSettingsLoaded} /></label><label className="recipient-toggle"><span>Employee data</span><input type="checkbox" checked={recipient.shareEmployeeData} onChange={(event) => void updateSharingRecipient(recipient.playerId, "shareEmployeeData", event.target.checked)} disabled={!sessionToken || demoMode || sharingSaving || !sharingSettingsLoaded} /></label></div>)}</div> : <div className="empty-state">No other dashboard members have signed in yet. Members will appear here when they create a dashboard account.</div>}
               </section>
               <section className="panel imported-history-panel">
                 <div className="panel-heading"><div><h2>Company history & live charts</h2><p>One continuous timeline for the selected company. Imported snapshots are merged with live readings by reporting date; no other company is shown unless you select a director above.</p></div><span className="count-chip">{currentChartCompany?.history.length ?? 0} imported snapshots</span></div>
