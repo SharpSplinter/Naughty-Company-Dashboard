@@ -45,6 +45,11 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
   const [loading, setLoading] = useState(false)
   const [backendAvailable, setBackendAvailable] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null)
+  const [editThresholdPercent, setEditThresholdPercent] = useState(15)
+  const [editCooldownHours, setEditCooldownHours] = useState(24)
+  const [editStaleAfterHours, setEditStaleAfterHours] = useState(30)
+  const [savingRuleId, setSavingRuleId] = useState<string | null>(null)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
 
@@ -98,6 +103,34 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not update the alert rule.") }
   }
 
+  function beginRuleEdit(rule: AlertRule) {
+    setEditingRuleId(rule.ruleId)
+    setEditThresholdPercent(rule.thresholdPercent || 15)
+    setEditCooldownHours(rule.cooldownHours || 24)
+    setEditStaleAfterHours(rule.staleAfterHours || 30)
+    setError("")
+    setNotice("")
+  }
+
+  function cancelRuleEdit() { setEditingRuleId(null) }
+
+  async function saveRuleSettings(rule: AlertRule) {
+    if (savingRuleId) return
+    setSavingRuleId(rule.ruleId); setError(""); setNotice("")
+    const settings = {
+      ...(rule.ruleType === "income_drop" ? { thresholdPercent: editThresholdPercent } : {}),
+      ...(rule.ruleType === "stale_data" ? { staleAfterHours: editStaleAfterHours } : {}),
+      cooldownHours: editCooldownHours,
+    }
+    try {
+      await automationFetch(apiBase, sessionToken, `/api/me/alert-rules/${encodeURIComponent(rule.ruleId)}`, { method: "POST", body: JSON.stringify(settings) })
+      setEditingRuleId(null)
+      setNotice(`${ruleLabel(rule.ruleType)} settings saved.`)
+      await load()
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not save the alert rule settings.") }
+    finally { setSavingRuleId(null) }
+  }
+
   async function deleteRule(rule: AlertRule) {
     if (!window.confirm(`Delete the ${ruleLabel(rule.ruleType)} rule and its alert history?`)) return
     setError(""); setNotice("")
@@ -142,7 +175,19 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
       </section>
       <section className="panel automation-rules-list">
         <div className="panel-heading"><div><h2>Your rules</h2><p>Pause a rule without deleting its history.</p></div><span className="count-chip">{rules.length} total</span></div>
-        {loading && !rules.length ? <div className="empty-state">Loading alert rules…</div> : rules.length ? <div className="automation-rule-list">{rules.map((rule) => <article className="automation-rule-card" key={rule.ruleId}><div className="automation-rule-top"><span className={`automation-rule-icon ${rule.enabled ? "enabled" : "paused"}`}>{rule.enabled ? "●" : "Ⅱ"}</span><div><h3>{ruleLabel(rule.ruleType)}</h3><p>{rule.companyName || (rule.companyId ? `Company #${rule.companyId}` : "All connected companies")}</p></div><span className={`automation-rule-state ${rule.enabled ? "enabled" : "paused"}`}>{rule.enabled ? "Active" : "Paused"}</span></div><p className="automation-rule-detail">{rule.ruleType === "income_drop" ? `Drop threshold ${rule.thresholdPercent}% · ` : rule.ruleType === "stale_data" ? `Stale after ${rule.staleAfterHours}h · ` : "Refresh failure · "}Cooldown ${rule.cooldownHours}h · Last triggered {prettyDate(rule.lastTriggeredAt)}</p><div className="automation-rule-actions"><button className="secondary-button" type="button" onClick={() => void updateRule(rule, !Boolean(rule.enabled))}>{Boolean(rule.enabled) ? "Pause" : "Enable"}</button><button className="text-button" type="button" onClick={() => void deleteRule(rule)}>Delete rule</button></div></article>)}</div> : <div className="empty-state">No rules yet. Create one to let the dashboard monitor changes for you.</div>}
+        {loading && !rules.length ? <div className="empty-state">Loading alert rules…</div> : rules.length ? <div className="automation-rule-list">{rules.map((rule) => {
+          const editing = editingRuleId === rule.ruleId
+          const savingThisRule = savingRuleId === rule.ruleId
+          return <article className="automation-rule-card" key={rule.ruleId}>
+            <div className="automation-rule-top"><span className={`automation-rule-icon ${rule.enabled ? "enabled" : "paused"}`}>{rule.enabled ? "●" : "Ⅱ"}</span><div><h3>{ruleLabel(rule.ruleType)}</h3><p>{rule.companyName || (rule.companyId ? `Company #${rule.companyId}` : "All connected companies")}</p></div><span className={`automation-rule-state ${rule.enabled ? "enabled" : "paused"}`}>{rule.enabled ? "Active" : "Paused"}</span></div>
+            {!editing ? <p className="automation-rule-detail">{rule.ruleType === "income_drop" ? `Drop threshold ${rule.thresholdPercent}% · ` : rule.ruleType === "stale_data" ? `Stale after ${rule.staleAfterHours}h · ` : "Refresh failure · "}Cooldown {rule.cooldownHours}h · Last triggered {prettyDate(rule.lastTriggeredAt)}</p> : <div className="automation-rule-editor">
+              {rule.ruleType === "income_drop" && <label>Income drop threshold<select value={editThresholdPercent} onChange={(event) => setEditThresholdPercent(Number(event.target.value))}><option value={5}>5% or more</option><option value={10}>10% or more</option><option value={15}>15% or more</option><option value={20}>20% or more</option><option value={30}>30% or more</option><option value={50}>50% or more</option></select></label>}
+              {rule.ruleType === "stale_data" && <label>Mark data stale after<select value={editStaleAfterHours} onChange={(event) => setEditStaleAfterHours(Number(event.target.value))}><option value={24}>24 hours</option><option value={30}>30 hours</option><option value={36}>36 hours</option><option value={48}>48 hours</option><option value={72}>72 hours</option></select></label>}
+              <label>Repeat alert cooldown<select value={editCooldownHours} onChange={(event) => setEditCooldownHours(Number(event.target.value))}><option value={1}>1 hour</option><option value={6}>6 hours</option><option value={24}>24 hours</option><option value={72}>3 days</option><option value={168}>7 days</option></select></label>
+            </div>}
+            <div className="automation-rule-actions">{editing ? <><button className="primary-button" type="button" disabled={savingThisRule} onClick={() => void saveRuleSettings(rule)}>{savingThisRule ? "Saving…" : "Save settings"}</button><button className="secondary-button" type="button" disabled={savingThisRule} onClick={cancelRuleEdit}>Cancel</button></> : <><button className="secondary-button" type="button" onClick={() => beginRuleEdit(rule)}>Edit settings</button><button className="secondary-button" type="button" onClick={() => void updateRule(rule, !Boolean(rule.enabled))}>{Boolean(rule.enabled) ? "Pause" : "Enable"}</button><button className="text-button" type="button" onClick={() => void deleteRule(rule)}>Delete rule</button></>}</div>
+          </article>
+        })}</div> : <div className="empty-state">No rules yet. Create one to let the dashboard monitor changes for you.</div>}
       </section>
     </div>
     <section className="panel automation-inbox">

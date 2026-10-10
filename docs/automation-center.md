@@ -28,6 +28,8 @@ The scheduler now uses one daily `10 18 * * *` trigger. The handler detects Sund
 - `POST /api/me/alerts/:eventId/acknowledge`
 - `GET /api/admin/automation/runs?limit=100&days=30` for the verified administrator; `days` accepts `7`, `30`, `90`, `365`, or `all` and returns the run list plus range-wide summary metrics and the top three repeated failure summaries.
 
+Users can edit an existing alert rule in place: income-drop thresholds, stale-data age limits, and cooldown windows are saved through the owner-scoped rule endpoint without deleting alert history.
+
 The administrator Operations panel includes Automation Insights: success rate (excluding in-progress runs), completed/failed/partial counts, average runtime, company failures, alerts created, time-window and status filters, per-run duration, and the most frequent recorded failure summaries. Summary aggregates cover the entire selected time window even though the visible run list is capped at 100 entries.
 
 Notifications are in-app only in this release. External delivery, quiet hours, and additional metric types remain later stages.
