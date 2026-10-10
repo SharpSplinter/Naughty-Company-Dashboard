@@ -478,6 +478,24 @@ th.numeric-cell {
 }
 
 
+
+.admin-automation-insights .panel-heading { align-items: start; }
+.admin-insight-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.admin-insight-controls label { display: grid; gap: 5px; color: var(--muted, #94a3b8); font-size: 10px; font-weight: 700; }
+.admin-insight-controls select { min-height: 36px; min-width: 118px; max-width: 100%; padding: 7px 9px; border: 1px solid var(--line, rgba(148,163,184,.22)); border-radius: 8px; background: var(--panel, #0c1222); color: var(--text, inherit); font-size: 11px; }
+.admin-insight-controls button { min-height: 36px; height: auto; white-space: normal; }
+.admin-automation-metrics { width: 100%; }
+.admin-insight-footnote { color: var(--muted, #94a3b8); font-size: 10px; line-height: 1.45; }
+.admin-insight-warning { color: var(--danger, #f87171); }
+.admin-insight-failures { width: 100%; border-top: 1px solid var(--line, rgba(148,163,184,.14)); padding-top: 14px; }
+.admin-insight-subheading h4 { margin: 0; font-size: 12px; }
+.admin-insight-subheading p, .admin-insight-empty { margin: 5px 0 0; color: var(--muted, #94a3b8); font-size: 11px; line-height: 1.5; }
+.admin-failure-list { display: grid; gap: 8px; margin-top: 11px; }
+.admin-failure-item { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: start; gap: 10px; padding: 10px 12px; border: 1px solid rgba(248,113,113,.18); border-radius: 9px; background: rgba(248,113,113,.035); }
+.admin-failure-count { border-radius: 6px; padding: 4px 6px; background: rgba(248,113,113,.1); color: var(--danger, #f87171); font-size: 10px; font-weight: 800; white-space: nowrap; }
+.admin-failure-item p { margin: 1px 0 0; color: var(--text, inherit); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+@media (max-width: 720px) { .admin-insight-controls { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); width: 100%; } .admin-insight-controls label, .admin-insight-controls select { width: 100%; min-width: 0; } .admin-insight-controls button { grid-column: 1 / -1; width: 100%; } }
+
 /* Automation Center */
 .automation-workspace{display:grid;gap:18px;min-width:0}
 .automation-intro{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding:22px;background:radial-gradient(ellipse at 100% 0,#7d6bff20,transparent 48%),var(--panel)}
