@@ -82,7 +82,7 @@ export function InsightsWorkspace({ view, apiBase, sessionToken, isAdmin, demoMo
       if (view === "member-insights" || view === "executive") tasks.push(loadRoster())
       if (view === "executive") tasks.push(api<{ events: typeof alerts }>(apiBase, sessionToken, "/api/me/alerts?limit=5").then((p) => { if (!cancelled) setAlerts(p.events || []) }))
       if (view === "executive" && isAdmin) tasks.push(api<typeof automation>(apiBase, sessionToken, "/api/admin/automation/runs?limit=1&days=30").then((p) => { if (!cancelled) setAutomation(p) }))
-      if (view === "member-insights" && isAdmin) tasks.push(api<MemberActivity>(apiBase, sessionToken, `/api/admin/member-activity?days=${memberActivityDays}`).then((p) => { if (!cancelled) setMemberActivity(p) }))
+      if (view === "member-insights" && isAdmin) { setMemberActivity(null); tasks.push(api<MemberActivity>(apiBase, sessionToken, `/api/admin/member-activity?days=${memberActivityDays}`).then((p) => { if (!cancelled) setMemberActivity(p) })) }
       if (view === "executive" || view === "layout") tasks.push(loadLayout())
       const results = await Promise.allSettled(tasks)
       if (!cancelled) { const failed = results.find((result) => result.status === "rejected") as PromiseRejectedResult | undefined; if (failed) setError(failed.reason instanceof Error ? failed.reason.message : "Some insights could not be loaded."); setLoading(false) }
