@@ -52,7 +52,12 @@ export function FloorApp() {
     return "overview"
   })
   const [openNavGroups, setOpenNavGroups] = useState<Record<string, boolean>>({ company: true, rankings: true, references: true, settings: true })
-  const [dashboardPreferences, setDashboardPreferences] = useState<DashboardPreferences>(DEFAULT_DASHBOARD_PREFERENCES)
+  const [dashboardPreferences, setDashboardPreferences] = useState<DashboardPreferences>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("ncd_dashboard_preferences") || "null") as Partial<DashboardPreferences> | null
+      return { density: saved?.density === "compact" ? "compact" : "comfortable", contentWidth: saved?.contentWidth === "wide" ? "wide" : "standard" }
+    } catch { return DEFAULT_DASHBOARD_PREFERENCES }
+  })
   const importInputs = useRef<Record<string, HTMLInputElement | null>>({})
   const [transferBusy, setTransferBusy] = useState(false)
   const [transferError, setTransferError] = useState("")
