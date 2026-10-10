@@ -1075,19 +1075,22 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
   const db = requireDb(env)
 
   if (healthPath && request.method === "GET") {
+    const probeStartedAt = Date.now()
     const checkedAt = new Date().toISOString()
     try {
+      const databaseStartedAt = Date.now()
       const [summary, rows] = await Promise.all([
         db.prepare("SELECT (SELECT COUNT(*) FROM (SELECT company_id FROM companies WHERE player_id = ? UNION SELECT company_id FROM company_api_keys WHERE player_id = ?)) AS companyCount, (SELECT COUNT(*) FROM company_snapshots WHERE player_id = ?) AS snapshotCount, (SELECT MAX(fetched_at) FROM company_snapshots WHERE player_id = ?) AS latestSnapshotAt").bind(session.player_id, session.player_id, session.player_id, session.player_id).first<Record<string, unknown>>(),
         db.prepare("SELECT c.company_id AS companyId, c.company_name AS companyName, c.company_type AS companyType, c.fetched_at AS fetchedAt, (SELECT COUNT(*) FROM company_snapshots s WHERE s.player_id = c.player_id AND s.company_id = c.company_id) AS snapshotCount FROM companies c WHERE c.player_id = ? UNION ALL SELECT k.company_id AS companyId, k.company_name AS companyName, k.company_type AS companyType, NULL AS fetchedAt, 0 AS snapshotCount FROM company_api_keys k WHERE k.player_id = ? AND NOT EXISTS (SELECT 1 FROM companies c WHERE c.player_id = k.player_id AND c.company_id = k.company_id) ORDER BY fetchedAt DESC LIMIT 100").bind(session.player_id, session.player_id).all<Record<string, unknown>>(),
       ])
+      const databaseLatencyMs = Date.now() - databaseStartedAt
       const companies = (rows.results ?? []).map((row) => {
         const ageHours = row.fetchedAt && Number.isFinite(Date.parse(String(row.fetchedAt))) ? Math.max(0, Math.round((Date.now() - Date.parse(String(row.fetchedAt))) / 360000) / 10) : null
         return { ...row, ageHours, freshness: ageHours === null ? "never" : ageHours >= 24 ? "stale" : ageHours >= 12 ? "aging" : "fresh" }
       })
-      return jsonResponse({ checkedAt, worker: { status: "ok", checkedAt }, database: { status: "ok" }, summary: { companyCount: Number(summary?.companyCount ?? 0), snapshotCount: Number(summary?.snapshotCount ?? 0), latestSnapshotAt: summary?.latestSnapshotAt ?? null, staleCompanies: companies.filter((company) => company.freshness === "stale" || company.freshness === "never").length }, companies }, 200, origin)
+      return jsonResponse({ checkedAt, worker: { status: "ok", checkedAt, latencyMs: Date.now() - probeStartedAt }, database: { status: "ok", latencyMs: databaseLatencyMs }, summary: { companyCount: Number(summary?.companyCount ?? 0), snapshotCount: Number(summary?.snapshotCount ?? 0), latestSnapshotAt: summary?.latestSnapshotAt ?? null, staleCompanies: companies.filter((company) => company.freshness === "stale" || company.freshness === "never").length }, companies }, 200, origin)
     } catch {
-      return jsonResponse({ checkedAt, worker: { status: "ok", checkedAt }, database: { status: "error" }, summary: { companyCount: 0, snapshotCount: 0, latestSnapshotAt: null, staleCompanies: 0 }, companies: [], error: "The health check could not query dashboard storage." }, 200, origin)
+      return jsonResponse({ checkedAt, worker: { status: "ok", checkedAt, latencyMs: Date.now() - probeStartedAt }, database: { status: "error", latencyMs: Date.now() - probeStartedAt }, summary: { companyCount: 0, snapshotCount: 0, latestSnapshotAt: null, staleCompanies: 0 }, companies: [], error: "The health check could not query dashboard storage." }, 200, origin)
     }
   }
 
