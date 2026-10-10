@@ -1145,6 +1145,7 @@ try {
     assert.match(floorSource, /activeView === "layout" \?/)
     assert.match(workspaceSource, /Dashboard-wide appearance/)
     assert.match(workspaceSource, /Executive Overview widgets/)
+    assert.match(workspaceSource, /onNavigate\("roster-insights"\)/)
   })
 
   console.log(`\n${passed} backend checks passed.`)
