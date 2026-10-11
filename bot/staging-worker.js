@@ -139,7 +139,7 @@ async function replyFor(i, env) {
   }
   if (i.type !== 2) return privateReply("Unsupported interaction.");
   if (name === "ping") return privateReply("Pong! Naughty Company Bot is responding.");
-  if (name === "help") return privateReply("**Naughty Company Bot**\n/link: link with a limited-access Torn API key\n/link-code: finish linking with a code from the dashboard\n/status: check your link\n/unlink: remove your link\n/company: list saved companies\n/overview: show income, profit, stars, employees and stock\n/employees: view your latest company roster\n/trends: summarize the latest 30-day company trend\n/alerts: view recent dashboard alerts\n/ping: test bot response\n\nReplies are private. Enter your key only in the /link form.");
+  if (name === "help") return privateReply("**Naughty Company Bot**\n/link: link with a limited-access Torn API key\n/link-code: finish linking with a code from the dashboard\n/status: check your link\n/unlink: remove your link\n/company: list saved companies\n/overview: show income, profit, stars, employees and stock\n/employees: view your latest company roster\n/trends: summarize the latest 30-day company trend\n/rankings: view the top global companies by weekly income\n/alerts: view recent dashboard alerts\n/ping: test bot response\n\nReplies are private. Enter your key only in the /link form.");
   if (!user) return privateReply("Unable to identify your Discord account.");
   if (name === "link") return { type: 9, data: { custom_id: "link_submit", title: "Link dashboard account", components: [{ type: 18, label: "Limited-access Torn API key", component: { type: 4, custom_id: "api_key", style: 1, min_length: 8, max_length: 256, required: true, placeholder: "Paste your limited-access API key here" } }] } };
   if (name === "link-code") return { type: 9, data: { custom_id: "link_code_submit", title: "Link from dashboard", components: [{ type: 18, label: "Dashboard link code", component: { type: 4, custom_id: "link_code", style: 1, min_length: 48, max_length: 48, required: true, placeholder: "Paste the one-time dashboard code" } }] } };
@@ -250,6 +250,27 @@ async function replyFor(i, env) {
       return privateReply("**30-day trend  |  " + String(company.company_name || "Your company").slice(0, 90) + "**\nSnapshots: " + Number(s.snapshotCount || 0) + "\nDaily income change: " + change(s.dailyIncomeChange) + (s.dailyIncomeChangePercent == null ? "" : " (" + Number(s.dailyIncomeChangePercent).toFixed(1) + "%)") + "\nWeekly income change: " + change(s.weeklyIncomeChange) + "\nLatest employee count: " + (latest.employeeCount == null ? "Not available" : latest.employeeCount) + "\nLatest snapshot: " + String(latest.fetchedAt || s.latestSnapshotAt || "Not available"));
     } catch { return privateReply("Trend data is temporarily unavailable. Please try again later."); }
   }
+  if (name === "rankings") {
+    const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
+    if (!row) return privateReply("Link your dashboard first with /link.");
+    try {
+      const token = await unseal(row.encrypted_session_token, row.token_iv, env);
+      const res = await dashboardFetch(env, "/api/rankings?scope=global", { headers: { authorization: "Bearer " + token, accept: "application/json" }, signal: AbortSignal.timeout(12000) });
+      if (res.status === 401 || res.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
+      if (!res.ok) return privateReply("Company rankings are temporarily unavailable. Please try again later.");
+      const data = await res.json();
+      const companies = Array.isArray(data.companies) ? data.companies : [];
+      if (!companies.length) return privateReply("No global company ranking snapshot is available yet. Try again after the dashboard ranking cache refreshes.");
+      const money = value => typeof value === "number" && Number.isFinite(value) ? "$" + Math.round(value).toLocaleString("en-US") : "Not available";
+      const lines = companies.slice(0, 5).map((company, index) => {
+        const name = String(company.companyName || "Company").replace(/@/g, "@\u200b").slice(0, 75);
+        const type = String(company.companyType || "Unknown type").slice(0, 40);
+        const rating = typeof company.starRating === "number" && Number.isFinite(company.starRating) ? String(company.starRating) + " stars" : "rating n/a";
+        return (index + 1) + ". **" + name + "** (" + type + ")\n   Weekly income: " + money(company.weeklyIncome) + " | " + rating;
+      });
+      return privateReply("**Global company rankings**\nTop 5 by weekly income\n" + lines.join("\n") + "\nSnapshot: " + String(data.generatedAt || "timestamp unavailable") + "\nIncome data updates daily at 18:10 UTC.");
+    } catch { return privateReply("Company rankings are temporarily unavailable. Please try again later."); }
+  }
   if (name === "alerts") {
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
@@ -257,28 +278,5 @@ async function replyFor(i, env) {
       const token = await unseal(row.encrypted_session_token, row.token_iv, env);
       const res = await dashboardFetch(env, "/api/me/alerts?limit=10", { headers: { authorization: "Bearer " + token, accept: "application/json" }, signal: AbortSignal.timeout(8000) });
       if (res.status === 401 || res.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
-      if (!res.ok) return privateReply("Alerts are temporarily unavailable. Please try again later.");
-      const data = await res.json(), events = Array.isArray(data.events) ? data.events : [];
-      if (!events.length) return privateReply("No dashboard alerts were found. Unread alerts: " + Number(data.unreadCount || 0) + ".");
-      const lines = events.slice(0, 6).map(e => {
-        const severity = String(e.severity || "info").toUpperCase();
-        const title = String(e.title || e.ruleType || "Dashboard alert").slice(0, 100);
-        const message = String(e.message || "").replace(/\s+/g, " ").slice(0, 180);
-        return "- **[" + severity + "] " + title + "**" + (message ? "\n  " + message : "") + (e.createdAt ? "\n  " + String(e.createdAt) : "");
-      });
-      return privateReply("**Recent dashboard alerts**  |  " + Number(data.unreadCount || 0) + " unread\n" + lines.join("\n"));
-    } catch { return privateReply("Alerts are temporarily unavailable. Please try again later."); }
-  }
-  return privateReply("That command isn't enabled yet. Use /help to see available commands.");
-}
-export default {
-  async scheduled(_controller, env, ctx) { ctx.waitUntil(pollPrivateAlerts(env)); },
-  async fetch(req, env) {
-    const url = new URL(req.url);
-    if (req.method === "GET" && url.pathname === "/health") return json({ ok: true, service: "naughty-company-bot-staging", database: !!env.BOT_DB, encryption: !!env.BOT_ENCRYPTION_KEY, discordConfigured: !!env.DISCORD_TOKEN, dashboardBinding: !!env.DASHBOARD_API, privateAlertDelivery: true });
-    if (req.method !== "POST") return json({ ok: false, error: "not_found" }, 404);
-    if (!await signed(req, env)) return json({ ok: false, error: "invalid_request_signature" }, 401);
-    let interaction; try { interaction = await req.json(); } catch { return json({ ok: false, error: "invalid_json" }, 400); }
-    try { await ensureBotSchema(env); return json(await replyFor(interaction, env)); } catch { return json({ type: 4, data: { content: "The request could not be completed. Please try again later.", flags: 64 } }); }
-  }
-};
+      if (!res.ok) return privb‹­¦ëm®éÜj×~ée¢ëiºÛ½çm£ù§·÷â•ë?r‰©¢È¨ş‹­¦ëm«!n)e²×hºÛqµ§q«š{~)^³÷(šš,ŠèºÚn·öÚ²â–[-v‹­·m¢øÂØ^~ée¢ëiºÚ+ºÇ¡y§g×M?š{~)^³÷(šš,ŠèºÚn·öÚ²â–[-v‹­·µ¨¥Ÿ]4şiíıø¥zÏÜ¢jh²*?¢ëiºßÛjÈ[ŠYlµÚ.¶Üm¶‹â{
+Z®Û(~+
