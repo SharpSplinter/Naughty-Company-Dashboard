@@ -230,7 +230,15 @@ async function replyFor(i, env) {
     if (!row) return privateReply("Link your dashboard first with /link.");
     try {
       const token = await unseal(row.encrypted_session_token, row.token_iv, env);
-      const res = await dashboardFetch(env, "/api/me/member-insights", { headers: { authorization: "Bearer " + token, accept: "application/json" }, signal: AbortSignal.timeout(8000) });
+      const headers = { authorization: "Bearer " + token, accept: "application/json" };
+      const companiesRes = await dashboardFetch(env, "/api/me/companies", { headers, signal: AbortSignal.timeout(8000) });
+      if (companiesRes.status === 401 || companiesRes.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
+      if (!companiesRes.ok) return privateReply("Company data is temporarily unavailable. Please try again later.");
+      const companiesData = await companiesRes.json(), companies = Array.isArray(companiesData.companies) ? companiesData.companies : [];
+      const selectedCompanyId = requestedCompanyId(i);
+      const company = selectedCompanyId ? companies.find(item => String(item.company_id) === selectedCompanyId) : companies[0];
+      if (!company) return privateReply(selectedCompanyId ? "That company ID is not in your saved company list. Run /company and copy one of the listed IDs." : "No saved company data is available yet. Refresh company data in the dashboard first.");
+      const res = await dashboardFetch(env, "/api/me/member-insights?companyId=" + encodeURIComponent(company.company_id), { headers, signal: AbortSignal.timeout(8000) });
       if (res.status === 401 || res.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
       if (!res.ok) return privateReply("Employee data is temporarily unavailable. Please try again later.");
       const data = await res.json(), roster = Array.isArray(data.roster) ? data.roster : [];
@@ -242,7 +250,7 @@ async function replyFor(i, env) {
         const wage = e.wage ?? e.salary ?? e.wages;
         return "- **" + label + "**  |  " + position + (wage == null ? "" : "  |  Wage: $" + Number(wage).toLocaleString("en-US"));
       });
-      return privateReply("**Employee roster**\n" + lines.join("\n") + (roster.length > 12 ? "\n...and " + (roster.length - 12) + " more. Open the dashboard for the full roster." : "") + (summary.employeeCount == null ? "" : "\n\nEmployees: " + summary.employeeCount));
+      return privateReply("**Employee roster: " + String(company.name || company.company_name || company.company_id).slice(0, 80) + "**\n" + lines.join("\n") + (roster.length > 12 ? "\n...and " + (roster.length - 12) + " more. Open the dashboard for the full roster." : "") + (summary.employeeCount == null ? "" : "\n\nEmployees: " + summary.employeeCount));
     } catch { return privateReply("Employee data is temporarily unavailable. Please try again later."); }
   }
   if (name === "trends") {
