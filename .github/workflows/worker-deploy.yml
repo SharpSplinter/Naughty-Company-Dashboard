@@ -50,5 +50,5 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: 6c03b978ed9a59adc3f61c
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
           command: deploy --config wrangler.toml
