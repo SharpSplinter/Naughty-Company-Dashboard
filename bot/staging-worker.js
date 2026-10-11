@@ -29,7 +29,21 @@ async function replyFor(i, env) {
     if (!apiKey || apiKey.length > 256) return privateReply("Enter a valid limited-access Torn API key and try again.");
     try {
       const response = await fetch("https://naughty-company-api.kboone801.workers.dev/api/auth/sign-in", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ apiKey }) });
-      if (!response.ok) return privateReply(`Dashboard sign-in failed (HTTP ${response.status}). No credentials or response details are exposed. Share only this status code so the staging issue can be diagnosed.`);
+      if (!response.ok) {
+        const requestId = response.headers.get("cf-ray") || response.headers.get("x-request-id") || null;
+        const contentType = response.headers.get("content-type") || null;
+        const server = response.headers.get("server") || null;
+        console.warn(JSON.stringify({
+          event: "dashboard_sign_in_failed",
+          endpoint: "/api/auth/sign-in",
+          status: response.status,
+          requestId,
+          contentType,
+          server
+        }));
+        const diagnostic = requestId ? ` Request ID: ${requestId}.` : "";
+        return privateReply(`Dashboard sign-in failed (HTTP ${response.status}).${diagnostic} No credentials or response details are exposed. Share only the status and request ID for staging diagnosis.`);
+      }
       const session = await response.json(); if (typeof session.token !== "string" || !session.player) return privateReply("Linking failed. Please try again later.");
       const sealed = await seal(session.token, env), playerId = String(session.player.id || session.player.player_id || "");
       if (!playerId) return privateReply("Linking failed because the dashboard did not return a player ID.");
