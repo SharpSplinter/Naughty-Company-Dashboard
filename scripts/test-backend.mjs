@@ -123,6 +123,8 @@ try {
     assert.equal(normalizeWebhookUrl("https://192.168.1.10/alert"), null)
     assert.equal(normalizeWebhookUrl("https://user:secret@hooks.example.com/alert"), null)
     assert.equal(normalizeWebhookUrl("https://[::1]/alert"), null)
+    for (const address of ["0.0.0.0", "0.1.2.3", "100.64.0.1", "100.127.255.254", "192.0.0.1", "192.0.2.1", "198.18.0.1", "198.51.100.1", "203.0.113.1", "224.0.0.1", "240.0.0.1"]) assert.equal(normalizeWebhookUrl(`https://${address}/alert`), null, `${address} must not be accepted as a public webhook host`)
+    assert.equal(normalizeWebhookUrl("https://8.8.8.8/alert"), "https://8.8.8.8/alert")
   })
 
   await test("webhook delivery never follows redirects to unvalidated destinations", () => {
