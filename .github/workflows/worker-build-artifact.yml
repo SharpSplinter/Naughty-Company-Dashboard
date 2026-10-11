@@ -1,0 +1,35 @@
+name: Build Worker deployment artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-build-artifact-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Bundle Worker
+        run: npx esbuild src/worker/index.ts --bundle --format=esm --target=es2022 --minify --outfile=worker-dist/index.js
+      - name: Upload Worker bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ncd-worker-bundle
+          path: worker-dist/index.js
+          if-no-files-found: error
+          retention-days: 1
