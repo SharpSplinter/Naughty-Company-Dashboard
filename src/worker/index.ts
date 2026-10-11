@@ -684,17 +684,47 @@ async function deliverAutomationWebhook(env: WorkerEnv, ownerPlayerId: string, a
   } catch { return { attempted: true, delivered: false, detail: "Webhook delivery could not be completed. Check the configured endpoint and encryption settings." } }
 }
 
+async function deliverAutomationDigest(env: WorkerEnv, ownerPlayerId: string, alerts: WebhookAlert[]): Promise<void> {
+  const db = requireDb(env)
+  if (!alerts.length) return
+  try {
+    const [hook, preferences] = await Promise.all([
+      db.prepare("SELECT ciphertext, iv FROM automation_webhooks WHERE owner_player_id = ? AND enabled = 1").bind(ownerPlayerId).first<{ ciphertext: string; iv: string }>(),
+      db.prepare("SELECT minimum_severity AS minimumSeverity FROM automation_preferences WHERE owner_player_id = ?").bind(ownerPlayerId).first<{ minimumSeverity: string }>(),
+    ])
+    if (!hook) return
+    const minimumRank = severityRank(preferences?.minimumSeverity ?? "info")
+    const eligible = alerts.filter((alert) => severityRank(alert.severity) >= minimumRank)
+    if (!eligible.length) return
+    const endpoint = await decryptKey(env, hook.ciphertext, hook.iv)
+    const now = new Date().toISOString()
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 5000)
+    let statusCode: number | undefined
+    let detail = ""
+    try {
+      const response = await fetch(endpoint, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", "user-agent": "Naughty-Company-Dashboard/1.0" }, body: JSON.stringify({ source: "Naughty Company Dashboard", event: "automation.daily_digest", digest: { generatedAt: now, eventCount: eligible.length, alerts: eligible } }), signal: controller.signal })
+      statusCode = response.status
+      detail = response.ok ? `Daily digest delivered with ${eligible.length} alerts.` : `Webhook endpoint returned HTTP ${response.status}.`
+    } catch (error) { detail = error instanceof Error && error.name === "AbortError" ? "Daily digest request timed out after 5 seconds." : "Daily digest request failed. Check the endpoint and try again." }
+    finally { clearTimeout(timeout) }
+    const delivered = statusCode !== undefined && statusCode >= 200 && statusCode < 300
+    for (const alert of eligible) {
+      await db.prepare("INSERT INTO automation_delivery_log (delivery_id, owner_player_id, event_id, status, status_code, detail, created_at, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), ownerPlayerId, alert.eventId, delivered ? "delivered" : "failed", statusCode ?? null, detail, now, delivered ? now : null).run()
+    }
+    await db.prepare("UPDATE automation_webhooks SET last_delivered_at = CASE WHEN ? = 1 THEN ? ELSE last_delivered_at END, last_error = ?, updated_at = ? WHERE owner_player_id = ?").bind(Number(delivered), now, delivered ? null : detail, now, ownerPlayerId).run()
+  } catch { /* Delivery failures remain visible in the run and can be retried on the next scheduled pass. */ }
+}
+
 async function deliverDailyAutomationDigests(env: WorkerEnv, now = new Date()): Promise<void> {
   const db = requireDb(env)
   const cutoff = new Date(now.getTime() - DAY * 1000).toISOString()
-  const owners = await db.prepare("SELECT owner_player_id AS ownerPlayerId, timezone, quiet_hours_enabled AS quietHoursEnabled, quiet_hours_start AS quietHoursStart, quiet_hours_end AS quietHoursEnd FROM automation_preferences WHERE digest_mode = 'daily'").all<{ ownerPlayerId: string; timezone: string; quietHoursEnabled: number; quietHoursStart: string; quietHoursEnd: string }>()
+  const owners = await db.prepare("SELECT owner_player_id AS ownerPlayerId, timezone, quiet_hours_enabled AS quietHoursEnabled, quiet_hours_start AS quietHoursStart, quiet_hours_end AS quietHoursEnd, minimum_severity AS minimumSeverity FROM automation_preferences WHERE digest_mode = 'daily'").all<{ ownerPlayerId: string; timezone: string; quietHoursEnabled: number; quietHoursStart: string; quietHoursEnd: string; minimumSeverity: string }>()
   for (const owner of owners.results ?? []) {
     if (isWithinQuietHours(owner, now)) continue
-    const events = await db.prepare("SELECT e.event_id AS eventId, e.rule_id AS ruleId, e.rule_type AS ruleType, e.severity, e.title, e.message, e.company_id AS companyId, e.created_at AS createdAt FROM alert_events e WHERE e.owner_player_id = ? AND e.created_at <= ? AND NOT EXISTS (SELECT 1 FROM automation_delivery_log d WHERE d.owner_player_id = e.owner_player_id AND d.event_id = e.event_id AND d.status = 'delivered') ORDER BY e.created_at ASC LIMIT 50").bind(owner.ownerPlayerId, cutoff).all<WebhookAlert>()
-    for (const event of events.results ?? []) {
-      if (severityRank(event.severity) < 1) continue
-      await deliverAutomationWebhook(env, owner.ownerPlayerId, event, { ignoreDigestMode: true, ignoreQuietHours: true })
-    }
+    const minimumRank = severityRank(owner.minimumSeverity)
+    const events = await db.prepare("SELECT e.event_id AS eventId, e.rule_id AS ruleId, e.rule_type AS ruleType, e.severity, e.title, e.message, e.company_id AS companyId, e.created_at AS createdAt FROM alert_events e WHERE e.owner_player_id = ? AND e.created_at <= ? AND CASE e.severity WHEN 'critical' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END >= ? AND NOT EXISTS (SELECT 1 FROM automation_delivery_log d WHERE d.owner_player_id = e.owner_player_id AND d.event_id = e.event_id AND d.status = 'delivered') ORDER BY e.created_at ASC LIMIT 50").bind(owner.ownerPlayerId, cutoff, minimumRank).all<WebhookAlert>()
+    await deliverAutomationDigest(env, owner.ownerPlayerId, events.results ?? [])
   }
 }
 
