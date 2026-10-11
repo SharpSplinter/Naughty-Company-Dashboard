@@ -240,22 +240,38 @@ async function replyFor(i, env) {
       const dailyIncome = numeric(income.daily);
       const weeklyIncome = numeric(income.weekly);
       const stockPurchaseFields = ["stock_purchased_today", "stock_purchases_today", "purchased_today", "daily_stock_cost", "stock_cost_daily", "daily_stock_expense", "stock_expense_daily", "daily_stock_purchases", "stock_purchases_daily", "daily_cost_of_stock"];
-      const dailyStockCost = findNumber(data.stock, stockPurchaseFields) ?? findNumber(root, stockPurchaseFields);
+      const suppliedDailyStockCost = findNumber(data.stock, stockPurchaseFields) ?? findNumber(root, stockPurchaseFields);
+      const currentOrderCost = stockRoot.reduce((sum, item) => sum + Math.max(0, numeric(item.cost) || 0) * Math.max(0, numeric(item.on_order) || 0), 0);
+      const dailyStockCost = suppliedDailyStockCost ?? currentOrderCost;
       const coreExpensesKnown = adBudget != null && hasWages;
       const dailyExpensesBeforeStock = (adBudget || 0) + (hasWages ? totalWages : 0);
-      const dailyProfitBeforeStock = coreExpensesKnown && dailyIncome != null ? dailyIncome - dailyExpensesBeforeStock : null;
-      const weeklyProfitBeforeStock = coreExpensesKnown && weeklyIncome != null ? weeklyIncome - (dailyExpensesBeforeStock * 7) : null;
-      const dailyProfit = dailyStockCost != null && dailyProfitBeforeStock != null ? dailyProfitBeforeStock - dailyStockCost : null;
-      const weeklyProfit = dailyStockCost != null && weeklyProfitBeforeStock != null ? weeklyProfitBeforeStock - (dailyStockCost * 7) : null;
+      const dailyProfit = coreExpensesKnown && dailyIncome != null ? dailyIncome - dailyExpensesBeforeStock - dailyStockCost : null;
+      const weeklyOrderCost = (() => {
+        const history = Array.isArray(data.stockHistory) ? data.stockHistory : [];
+        const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+        const recent = history.filter(snapshot => snapshot && typeof snapshot.day === "string" && snapshot.day >= cutoff && snapshot.day < currentSnapshotDay && Array.isArray(snapshot.stock));
+        if (!recent.length) return currentOrderCost * 7;
+        // Use each saved daily snapshot's on_order quantities as the available weekly order history.
+        // Item costs come from the current stock payload; do not substitute retail price for cost.
+        const costByItem = new Map(stockRoot.map(item => [String(item.id ?? item.name ?? ""), Math.max(0, numeric(item.cost) || 0)]));
+        return recent.reduce((sum, snapshot) => {
+          const rows = Array.isArray(snapshot.stock) ? snapshot.stock : [];
+          return sum + rows.reduce((daySum, item) => {
+            if (!item || typeof item !== "object") return daySum;
+            const key = String(item.id ?? item.name ?? "");
+            const unitCost = costByItem.get(key) ?? Math.max(0, numeric(item.cost) || 0);
+            return daySum + unitCost * Math.max(0, numeric(item.on_order) || 0);
+          }, 0);
+        }, 0);
+      })();
+      const weeklyProfit = coreExpensesKnown && weeklyIncome != null ? weeklyIncome - (dailyExpensesBeforeStock * 7) - weeklyOrderCost : null;
       const lines = [
         "**Company overview | " + safeName + "**",
         "Type: " + String(data.companyType || company.company_type || "Not available").slice(0, 60),
         "Daily income: " + money(dailyIncome),
         "Weekly income: " + money(weeklyIncome),
-        "Daily net profit (after stock purchases): " + money(dailyProfit),
-        "Daily profit before stock purchases: " + money(dailyProfitBeforeStock),
-        "Weekly net profit estimate (after stock purchases): " + money(weeklyProfit),
-        "Weekly profit estimate before stock purchases: " + money(weeklyProfitBeforeStock),
+        "Daily profit: " + money(dailyProfit),
+        "Weekly profit: " + money(weeklyProfit),
         "Advertisement budget: " + money(adBudget),
         "Total employee wages: " + (hasWages ? money(totalWages) : "Not available"),
         "Company Performance | Popularity: " + (popularity == null ? "Not available" : String(popularity)) + " · Efficiency: " + (efficiency == null ? "Not available" : String(efficiency)) + " · Environment: " + (environment == null ? "Not available" : String(environment)),
@@ -266,6 +282,7 @@ async function replyFor(i, env) {
         "Stock change vs previous daily snapshot: " + (stockDifference == null ? "Not available (no saved daily stock baseline)" : (stockDifference > 0 ? "+" : "") + stockDifference.toLocaleString("en-US")),
         "Stock on order: " + (stockRoot.length ? stockOnOrder.toLocaleString("en-US") : "Not available"),
         "Stock cost field total: " + (stockRoot.some(item => numeric(item.cost) != null) ? money(stockCost) : "Not reported by Torn"),
+        "Current stock-order cost: " + money(currentOrderCost),
         "Stock unit price: " + (stockRoot.length === 1 ? money(numeric(stockRoot[0].unitPrice, stockRoot[0].price, stockRoot[0].sell_price, stockRoot[0].selling_price, stockRoot[0].price_per_unit, stockRoot[0].cost, stockRoot[0].unit_cost, stockRoot[0].cost_per_unit)) : "See item-level stock data in dashboard"),
         "Stock purchased today: " + (dailyStockCost == null ? "Not available (daily purchase-cost data not supplied)" : money(dailyStockCost)),
         "Stock total value: " + (stockRoot.length && pricedStockCount === stockRoot.length ? money(stockValue) : "Not available (stock price data incomplete)"),

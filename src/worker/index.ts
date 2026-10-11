@@ -2188,7 +2188,19 @@ export default {
       if (!row) return jsonResponse({ error: "No saved data for this company yet. Refresh it from the saved company key first." }, 404, origin)
       const financials = await requireDb(env).prepare("SELECT stock_json FROM company_financials WHERE player_id = ? AND company_id = ?").bind(session.player_id, String(id)).first<{ stock_json: string }>()
       const stockSnapshots = await requireDb(env).prepare("SELECT snapshot_day, stock_json, fetched_at FROM faction_director_snapshots WHERE player_id = ? AND company_id = ? AND stock_json IS NOT NULL ORDER BY snapshot_day DESC LIMIT 40").bind(session.player_id, String(id)).all<{ snapshot_day: string; stock_json: string; fetched_at: string }>()
-      const stockHistory = (stockSnapshots.results ?? []).map((snapshot) => ({ day: snapshot.snapshot_day, stock: JSON.parse(snapshot.stock_json) as unknown, fetchedAt: snapshot.fetched_at })).reverse()
+      const directorStockHistory = (stockSnapshots.results ?? []).map((snapshot) => ({ day: snapshot.snapshot_day, stock: JSON.parse(snapshot.stock_json) as unknown, fetchedAt: snapshot.fetched_at })).reverse()
+      // The dashboard's Charts history is the source used by its own stock-delta display.
+      // It is scoped to the authenticated player and selected company, unlike faction-only snapshots.
+      let stockHistory = directorStockHistory
+      const chartRow = await requireDb(env).prepare("SELECT data_json FROM user_page_data WHERE player_id = ? AND page_key = ?").bind(session.player_id, "charts").first<{ data_json: string }>()
+      if (chartRow?.data_json) {
+        try {
+          const chartData = JSON.parse(chartRow.data_json) as { companies?: Array<{ companyId?: string | number; history?: Array<{ day?: string; stockQuantity?: number | null; fetchedAt?: string; period?: number }> }> }
+          const chartCompany = chartData.companies?.find((item) => String(item.companyId) === String(id))
+          const dashboardHistory = (chartCompany?.history ?? []).filter((point) => typeof point.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(point.day) && typeof point.stockQuantity === "number" && Number.isFinite(point.stockQuantity)).map((point) => ({ day: point.day as string, stock: [{ in_stock: point.stockQuantity as number }], fetchedAt: typeof point.fetchedAt === "string" ? point.fetchedAt : null }))
+          if (dashboardHistory.length) stockHistory = dashboardHistory.slice(-40)
+        } catch { /* Preserve the optional director snapshot fallback if imported chart data is malformed. */ }
+      }
       const snapshots = await requireDb(env).prepare("SELECT profile_json, fetched_at FROM company_snapshots WHERE player_id = ? AND company_id = ? AND fetched_at >= ? ORDER BY fetched_at ASC").bind(session.player_id, String(id), new Date(Date.now() - 40 * DAY * 1000).toISOString()).all<{ profile_json: string; fetched_at: string }>()
       const incomeHistory = (snapshots.results ?? []).map((snapshot) => {
         const saved = JSON.parse(snapshot.profile_json) as Record<string, unknown>
