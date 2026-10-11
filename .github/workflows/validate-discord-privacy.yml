@@ -1,0 +1,30 @@
+name: Validate Discord privacy and dashboard linking
+on:
+  push:
+    branches:
+      - feature/staging-discord-link-company
+    paths:
+      - 'src/worker/index.ts'
+      - 'src/components/floor/alerts-panel.tsx'
+      - 'bot/staging-worker.js'
+      - '.github/workflows/validate-discord-privacy.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: validate-discord-privacy-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Validate staging bot syntax
+        run: node --check bot/staging-worker.js

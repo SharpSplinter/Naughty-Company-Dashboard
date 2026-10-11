@@ -1,64 +1,58 @@
-name: Register staging Discord slash command
+name: Register staging Discord bot commands
 
 on:
+  push:
+    branches:
+      - feature/staging-discord-link-company
+    paths:
+      - '.github/workflows/register-staging-discord-ping.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: register-staging-discord-command
+  group: register-staging-discord-commands
   cancel-in-progress: false
 
 jobs:
-  register-ping:
+  register:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Register or verify /ping in the test guild
+      - name: Register commands in the test guild only
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           DISCORD_APPLICATION_ID: "1558700958983389254"
           DISCORD_TEST_GUILD_ID: "1525623497999515770"
+        shell: bash
         run: |
-          node --input-type=module <<'NODE'
-          const { DISCORD_TOKEN, DISCORD_APPLICATION_ID, DISCORD_TEST_GUILD_ID } = process.env;
-          if (!DISCORD_TOKEN) throw new Error("Required repository secret DISCORD_TOKEN is missing.");
-
-          const endpoint = `https://discord.com/api/v10/applications/${DISCORD_APPLICATION_ID}/guilds/${DISCORD_TEST_GUILD_ID}/commands`;
-          const headers = {
-            Authorization: `Bot ${DISCORD_TOKEN}`,
-            "Content-Type": "application/json",
-          };
-
-          const listResponse = await fetch(endpoint, { headers });
-          if (!listResponse.ok) {
-            throw new Error(`Discord command-list request failed with HTTP ${listResponse.status}.`);
-          }
-          const commands = await listResponse.json();
-          let ping = commands.find(command => command.name === "ping" && command.type === 1);
-
-          if (!ping) {
-            const createResponse = await fetch(endpoint, {
-              method: "POST",
-              headers,
-              body: JSON.stringify({
-                name: "ping",
-                description: "Check whether Naughty Company Bot is responding",
-                type: 1,
-              }),
-            });
-            if (!createResponse.ok) {
-              throw new Error(`Discord command registration failed with HTTP ${createResponse.status}.`);
-            }
-            ping = await createResponse.json();
-            console.log("Registered /ping in the configured test guild.");
-          } else {
-            console.log("The /ping command is already registered in the configured test guild.");
-          }
-
-          if (ping.name !== "ping" || ping.type !== 1) {
-            throw new Error("Discord did not confirm the expected /ping command.");
-          }
-          console.log("Verified /ping registration. Secret values were not printed.");
-          NODE
+          set -euo pipefail
+          test -n "$DISCORD_TOKEN"
+          payload=$(cat <<'JSON'
+          [
+            {"name":"ping","description":"Check whether the bot is responding"},
+            {"name":"help","description":"Show bot commands and privacy guidance"},
+            {"name":"link","description":"Securely link your dashboard account"},
+            {"name":"link-code","description":"Link using a one-time code from the dashboard"},
+            {"name":"status","description":"Check your dashboard account link"},
+            {"name":"unlink","description":"Remove your dashboard account link"},
+            {"name":"company","description":"List your saved dashboard companies"},
+            {"name":"employees","description":"View your latest company employee roster"},
+            {"name":"trends","description":"Summarize your latest 30-day company trend"},
+            {"name":"alerts","description":"View your recent dashboard alerts"}
+          ]
+          JSON
+          )
+          status=$(curl --silent --show-error --output /tmp/discord-response.json --write-out '%{http_code}' \
+            -X PUT "https://discord.com/api/v10/applications/$DISCORD_APPLICATION_ID/guilds/$DISCORD_TEST_GUILD_ID/commands" \
+            -H "Authorization: Bot $DISCORD_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$payload")
+          if [[ "$status" != "200" ]]; then
+            echo "Discord command registration failed (HTTP $status)."
+            jq -r '[.message // "Unknown Discord API error", (.errors // {})] | .[:2]' /tmp/discord-response.json 2>/dev/null || true
+            exit 1
+          fi
+          jq -r '["Registered staging test-guild commands:", (.[] | "• /" + .name)] | .[]' /tmp/discord-response.json
+          rm -f /tmp/discord-response.json

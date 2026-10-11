@@ -1,0 +1,62 @@
+name: Deploy staging Discord bot
+on:
+  push:
+    branches:
+      - feature/staging-discord-link-company
+    paths:
+      - 'bot/staging-worker.js'
+      - '.github/workflows/deploy-staging-discord-bot.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Validate worker syntax
+        run: node --check bot/staging-worker.js
+      - name: Deploy only the staging bot Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 6c03b978ed9a59adc3f61c715bdad45c
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          printf '%s' '{"main_module":"worker.js","compatibility_date":"2026-10-11","keep_bindings":["d1","secret_text","plain_text"],"bindings":[{"type":"service","name":"DASHBOARD_API","service":"naughty-company-api","environment":"production"}]}' > /tmp/cf-metadata.json
+          status=$(curl --silent --show-error --output /tmp/cf-response.json --write-out '%{http_code}' \
+            -X PUT "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/naughty-company-bot-staging" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -F "metadata=@/tmp/cf-metadata.json;type=application/json" \
+            -F "worker.js=@bot/staging-worker.js;filename=worker.js;type=application/javascript+module")
+          if [[ "$status" != "200" ]]; then
+            echo "Cloudflare staging deployment failed (HTTP ${status}). Safe error summary:"
+            jq -r '[.errors[]? | {code, message}] | .[:3]' /tmp/cf-response.json 2>/dev/null || echo "No structured error details."
+            exit 1
+          fi
+          if ! jq -e '.success == true' /tmp/cf-response.json >/dev/null; then
+            echo "Cloudflare rejected staging deployment. Safe error summary:"
+            jq -r '[.errors[]? | {code, message}] | .[:3]' /tmp/cf-response.json 2>/dev/null || echo "No structured error details."
+            exit 1
+          fi
+          echo "Staging Worker upload accepted. Production Worker was not targeted."
+          rm -f /tmp/cf-response.json /tmp/cf-metadata.json
+          schedule_status=$(curl --silent --show-error --output /tmp/cf-schedule-response.json --write-out '%{http_code}' \
+            -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/naughty-company-bot-staging/schedules" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data '[{"cron":"* * * * *"}]' )
+          if [[ "$schedule_status" != "200" ]] || ! jq -e '.success == true' /tmp/cf-schedule-response.json >/dev/null; then
+            echo "Could not configure the staging private-alert poll schedule (HTTP $schedule_status)."
+            jq -r '[.errors[]? | {code, message}]' /tmp/cf-schedule-response.json 2>/dev/null || true
+            exit 1
+          fi
+          rm -f /tmp/cf-schedule-response.json
+          echo "Staging private-alert poll schedule configured (every minute)."
+          health=$(curl --fail --silent --show-error https://naughty-company-bot-staging.kboone801.workers.dev/health)
+          printf 'Staging health flags: %s\n' "$(printf '%s' "$health" | jq -c '{ok, database, encryption, discordConfigured, dashboardBinding}')"
+          printf '%s' "$health" | jq -e '.ok == true and .database == true and .encryption == true and .discordConfigured == true and .dashboardBinding == true' >/dev/null
+          echo "Staging health check passed with database, encryption, Discord, and dashboard binding configured."

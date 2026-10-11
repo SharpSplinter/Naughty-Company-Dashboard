@@ -63,6 +63,11 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
   const [preferences, setPreferences] = useState<AutomationPreferences>(DEFAULT_PREFERENCES)
   const [webhookUrl, setWebhookUrl] = useState("")
   const [webhookConfigured, setWebhookConfigured] = useState(false)
+  const [discordLinked, setDiscordLinked] = useState(false)
+  const [discordAlertsEnabled, setDiscordAlertsEnabled] = useState(false)
+  const [discordCode, setDiscordCode] = useState("")
+  const [discordCodeExpiresAt, setDiscordCodeExpiresAt] = useState<string | null>(null)
+  const [discordLinkBusy, setDiscordLinkBusy] = useState(false)
   const [webhookBusy, setWebhookBusy] = useState(false)
   const [deliveries, setDeliveries] = useState<WebhookDelivery[]>([])
   const seenEventIds = useRef(new Set<string>())
@@ -88,15 +93,17 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
       setUnreadCount(alertPayload.unreadCount || 0)
       setLatestRun(alertPayload.latestRun || null)
       setBackendAvailable(true)
-      const [prefsResult, hookResult, deliveryResult] = await Promise.allSettled([
+      const [prefsResult, hookResult, deliveryResult, discordResult] = await Promise.allSettled([
         automationFetch<{ preferences: Record<string, unknown> }>(apiBase, sessionToken, "/api/me/automation-preferences"),
         automationFetch<{ configured: boolean }>(apiBase, sessionToken, "/api/me/automation-webhook"),
         automationFetch<{ deliveries: WebhookDelivery[] }>(apiBase, sessionToken, "/api/me/automation-webhook/deliveries?limit=10"),
+        automationFetch<{ linked: boolean; alertsEnabled: boolean }>(apiBase, sessionToken, "/api/me/discord-link"),
       ])
       if (requestId !== loadRequestId.current) return
       if (prefsResult.status === "fulfilled") { const raw = prefsResult.value.preferences; setPreferences({ browserNotificationsEnabled: Boolean(raw.browserNotificationsEnabled), quietHoursEnabled: Boolean(raw.quietHoursEnabled), quietHoursStart: String(raw.quietHoursStart || "22:00"), quietHoursEnd: String(raw.quietHoursEnd || "08:00"), timezone: String(raw.timezone || "UTC"), minimumSeverity: ["info", "warning", "critical"].includes(String(raw.minimumSeverity)) ? raw.minimumSeverity as AutomationPreferences["minimumSeverity"] : "info", digestMode: raw.digestMode === "daily" ? "daily" : raw.digestMode === "both" ? "both" : raw.digestMode === "off" ? "off" : "instant" }) }
       if (hookResult.status === "fulfilled") setWebhookConfigured(hookResult.value.configured === true)
       if (deliveryResult.status === "fulfilled") setDeliveries(deliveryResult.value.deliveries || [])
+      if (discordResult.status === "fulfilled") { setDiscordLinked(discordResult.value.linked === true); setDiscordAlertsEnabled(discordResult.value.alertsEnabled === true) }
     } catch (caught) {
       if (requestId !== loadRequestId.current) return
       const message = caught instanceof Error ? caught.message : "Could not load automation data."
@@ -189,6 +196,25 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not acknowledge this alert.") }
   }
 
+  async function configureDiscordAlerts() {
+    setDiscordLinkBusy(true); setError(""); setNotice("")
+    try {
+      if (!discordLinked) {
+        const result = await automationFetch<{ code: string; expiresAt: string }>(apiBase, sessionToken, "/api/me/discord-link-code", { method: "POST" })
+        setDiscordCode(result.code)
+        setDiscordCodeExpiresAt(result.expiresAt)
+        setNotice("One-time code generated. In Discord, run /link-code and paste this code. It expires in five minutes. Return here after linking, then enable private alerts.")
+      } else {
+        const enabled = !discordAlertsEnabled
+        await automationFetch<{ linked: boolean; alertsEnabled: boolean }>(apiBase, sessionToken, "/api/me/discord-link", { method: "POST", body: JSON.stringify({ alertsEnabled: enabled }) })
+        setDiscordAlertsEnabled(enabled)
+        setNotice(enabled ? "Private Discord alert DMs are enabled. Company alerts will be sent only to your linked Discord account." : "Private Discord alert DMs are disabled.")
+      }
+      await load()
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not update Discord alert settings. Please try again.") }
+    finally { setDiscordLinkBusy(false) }
+  }
+
   async function saveWebhook(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!webhookUrl.trim()) return
     setWebhookBusy(true); setError(""); setNotice("")
@@ -199,7 +225,7 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
 
   async function testWebhook(kind: "connection" | "alert" | "summary" = "connection") {
     setWebhookBusy(true); setError(""); setNotice("")
-    try { const result = await automationFetch<{ delivery: { delivered: boolean; detail?: string; statusCode?: number } }>(apiBase, sessionToken, "/api/me/automation-webhook/test", { method: "POST", body: JSON.stringify({ kind }) }); if (result.delivery.delivered) setNotice(result.delivery.detail || "Test message delivered. Check your Discord channel."); else setError(result.delivery.detail || "Webhook test failed. Check the saved endpoint and delivery status."); await load() }
+    try { const result = await automationFetch<{ delivery: { delivered: boolean; detail?: string; statusCode?: number } }>(apiBase, sessionToken, "/api/me/automation-webhook/test", { method: "POST", body: JSON.stringify({ kind }) }); if (result.delivery.delivered) setNotice(result.delivery.detail || "Test message delivered to the configured external endpoint."); else setError(result.delivery.detail || "Webhook test failed. Check the saved endpoint and delivery status."); await load() }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Webhook test failed. Check the saved endpoint and delivery status."); await load() }
     finally { setWebhookBusy(false) }
   }
@@ -254,7 +280,8 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
     <section className="panel automation-delivery-settings">
       <div className="panel-heading"><div><h2>Notification delivery & quiet hours</h2><p>In-app alerts are always retained. Browser notifications can respect your local quiet window; optional webhooks send matching alerts to an external HTTPS endpoint.</p></div><span className={webhookConfigured ? "admin-status good" : "admin-status neutral"}>{webhookConfigured ? "Webhook configured" : "In-app only"}</span></div>
       <div className="automation-delivery-grid">
-        <div className="automation-webhook-panel"><div className="automation-webhook-heading"><div><h3>HTTPS webhook</h3><p>The destination is encrypted at rest and never shown again after saving. Private/local addresses are rejected.</p></div></div><form className="automation-form" onSubmit={saveWebhook}><label>Webhook URL<input type="url" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} placeholder="https://hooks.your-domain.com/alerts" autoComplete="off" /></label><button type="submit" className="primary-button" disabled={webhookBusy || !webhookUrl.trim()}>{webhookBusy ? "Saving…" : webhookConfigured ? "Replace encrypted webhook" : "Save encrypted webhook"}</button></form>{webhookConfigured && <div className="automation-webhook-actions"><button type="button" className="primary-button" disabled={webhookBusy} onClick={() => void testWebhook("connection")}>{webhookBusy ? "Sending…" : "Test connection"}</button><button type="button" className="text-button" disabled={webhookBusy} onClick={() => void testWebhook("alert")}>Test alert format</button><button type="button" className="text-button" disabled={webhookBusy} onClick={() => void testWebhook("summary")}>Test summary format</button><button type="button" className="text-button" disabled={webhookBusy} onClick={() => void removeWebhook()}>Remove webhook endpoint</button></div>}<p className="field-hint">Use Test connection to check reachability, Test alert format to preview a sample alert, and Test summary format to preview a daily roundup. Sample tests do not create alert history. Discord webhooks receive readable embeds; other HTTPS endpoints keep receiving JSON. Never paste a webhook URL you do not control.</p></div>
+        <div className="automation-webhook-panel"><div className="automation-webhook-heading"><div><h3>Private Discord alerts</h3><p>Discord alerts are delivered by direct message to the Discord account linked to this dashboard. They are never posted to a shared channel.</p></div><span className={discordAlertsEnabled ? "admin-status good" : "admin-status neutral"}>{discordAlertsEnabled ? "DM alerts enabled" : discordLinked ? "Account linked" : "Not linked"}</span></div><p className="field-hint">You can link from here using a one-time code, or link directly in Discord with /link and your limited-access Torn API key.</p><button type="button" className="primary-button" disabled={discordLinkBusy || demoMode} onClick={() => void configureDiscordAlerts()}>{discordLinkBusy ? "Working…" : !discordLinked ? "Generate one-time link code" : discordAlertsEnabled ? "Disable private Discord alerts" : "Enable private Discord alerts"}</button>{discordCode && !discordLinked && <div className="automation-notice" role="status"><strong>Your one-time Discord link code</strong><p><code>{discordCode}</code></p><p>In Discord, run <strong>/link-code</strong> and paste this code. It expires at {prettyDate(discordCodeExpiresAt)}. After linking, return here and enable private alerts.</p><button type="button" className="text-button" onClick={() => void load()}>Check link status</button></div>}{discordLinked && <p className="field-hint">Discord account linked. {discordAlertsEnabled ? "New matching alerts will be sent privately by DM." : "Enable private alerts to start receiving DMs."}</p>}</div>
+        <div className="automation-webhook-panel"><div className="automation-webhook-heading"><div><h3>External HTTPS webhook</h3><p>For non-Discord services only. Discord channel webhooks are blocked because channel members could see company-specific alerts.</p></div></div><form className="automation-form" onSubmit={saveWebhook}><label>Webhook URL<input type="url" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} placeholder="https://hooks.your-domain.com/alerts" autoComplete="off" /></label><button type="submit" className="primary-button" disabled={webhookBusy || !webhookUrl.trim()}>{webhookBusy ? "Saving…" : webhookConfigured ? "Replace encrypted webhook" : "Save encrypted webhook"}</button></form>{webhookConfigured && <div className="automation-webhook-actions"><button type="button" className="primary-button" disabled={webhookBusy} onClick={() => void testWebhook("connection")}>{webhookBusy ? "Sending…" : "Test connection"}</button><button type="button" className="text-button" disabled={webhookBusy} onClick={() => void testWebhook("alert")}>Test alert format</button><button type="button" className="text-button" disabled={webhookBusy} onClick={() => void testWebhook("summary")}>Test summary format</button><button type="button" className="text-button" disabled={webhookBusy} onClick={() => void removeWebhook()}>Remove webhook endpoint</button></div>}<p className="field-hint">Use Test connection to check reachability, Test alert format to preview a sample alert, and Test summary format to preview a daily roundup. Sample tests do not create alert history. Discord channel webhook URLs are rejected for privacy; use Private Discord alerts for direct messages. Never paste a webhook URL you do not control.</p></div>
       </div>
       <div className="automation-delivery-history"><div className="panel-heading"><div><h3>Webhook delivery history</h3><p>Latest outbound attempts. Failed deliveries can be retried after fixing the endpoint.</p></div><span className="count-chip">{deliveries.length} attempts</span></div>{deliveries.length ? <div className="table-scroll"><table className="admin-table"><thead><tr><th>TIME</th><th>STATUS</th><th>HTTP</th><th>DETAIL</th><th>ACTION</th></tr></thead><tbody>{deliveries.map((delivery) => <tr key={delivery.deliveryId}><td>{prettyDate(delivery.createdAt)}</td><td><span className={`admin-status ${delivery.status === "delivered" ? "good" : "danger"}`}>{delivery.status}</span></td><td>{delivery.statusCode ?? "—"}</td><td>{delivery.detail || "—"}</td><td>{delivery.status === "failed" && <button type="button" className="text-button" disabled={webhookBusy || !webhookConfigured} onClick={() => void retryWebhook(delivery)}>Retry</button>}</td></tr>)}</tbody></table></div> : <div className="empty-state">No webhook delivery attempts yet. Save an HTTPS endpoint to start delivering new alerts.</div>}</div>
     </section>
