@@ -141,6 +141,20 @@ try {
     assert.match(workerSource, /fetch\(endpoint, \{ method: "POST", redirect: "manual"/)
   })
 
+  await test("Discord webhooks receive native alert, digest, and test message payloads", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    assert.match(workerSource, /function buildWebhookPayload\(/)
+    assert.match(workerSource, /url\.hostname === "discord\.com" \|\| url\.hostname === "discordapp\.com"/)
+    assert.match(workerSource, /allowed_mentions: \{ parse: \[\] \}/)
+    assert.match(workerSource, /Naughty Company Dashboard daily summary/)
+    assert.match(workerSource, /Discord is connected and ready for alerts and summaries/)
+    assert.match(workerSource, /const webhookTestPath = url\.pathname === "\/api\/me\/automation-webhook\/test"/)
+    assert.match(workerSource, /sendWebhookTest\(env, session\.player_id\)/)
+    const uiSource = readFileSync(join(root, "src/components/floor/alerts-panel.tsx"), "utf8")
+    assert.match(uiSource, /Send test message/)
+    assert.match(uiSource, /automation-webhook\/test/)
+  })
+
   await test("normalizes company profile and employee role fit", () => {
     const catalog = { companies: { "Test Shop": [
       { rank: "Manager", primary: "INT", primaryMin: 100, secondary: "END", secondaryMin: 50, special: null },
