@@ -99,6 +99,17 @@ try {
     assert.match(uiSource, /Run details: \{latestRun.errorSummary\}/)
   })
 
+  await test("exceptional instant webhook delivery failures are logged for retry and visibility", () => {
+    const source = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const start = source.indexOf("async function deliverAutomationWebhook(")
+    const end = source.indexOf("async function deliverAutomationDigest(", start)
+    const delivery = source.slice(start, end)
+    assert.match(delivery, /Record failures that occur before the HTTP request/)
+    assert.match(delivery, /INSERT INTO automation_delivery_log[^\n]+VALUES \(\?, \?, \?, 'failed', NULL/)
+    assert.match(delivery, /UPDATE automation_webhooks SET last_error = \?, updated_at = \? WHERE owner_player_id = \?/)
+    assert.match(delivery, /return \{ attempted: true, delivered: false, detail \}/)
+  })
+
   await test("combined webhook mode sends alerts immediately and includes owners in daily summaries", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     assert.match(workerSource, /!\["instant", "both"\]\.includes\(preferences\.digestMode\)/)

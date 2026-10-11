@@ -725,7 +725,21 @@ async function deliverAutomationWebhook(env: WorkerEnv, ownerPlayerId: string, a
     await db.prepare("INSERT INTO automation_delivery_log (delivery_id, owner_player_id, event_id, status, status_code, detail, created_at, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), ownerPlayerId, alert.eventId, delivered ? "delivered" : "failed", statusCode ?? null, detail, now, delivered ? now : null).run()
     await db.prepare("UPDATE automation_webhooks SET last_delivered_at = CASE WHEN ? = 1 THEN ? ELSE last_delivered_at END, last_error = ?, updated_at = ? WHERE owner_player_id = ?").bind(Number(delivered), now, delivered ? null : detail, now, ownerPlayerId).run()
     return { attempted: true, delivered, statusCode, detail }
-  } catch { return { attempted: true, delivered: false, detail: "Webhook delivery could not be completed. Check the configured endpoint and encryption settings." } }
+  } catch {
+    const failedAt = new Date().toISOString()
+    const detail = "Webhook delivery could not be completed. Check the configured endpoint and encryption settings."
+    // Record failures that occur before the HTTP request, such as key decryption errors.
+    // Best-effort logging must never mask the original delivery result.
+    try {
+      await db.prepare("INSERT INTO automation_delivery_log (delivery_id, owner_player_id, event_id, status, status_code, detail, created_at, delivered_at) VALUES (?, ?, ?, 'failed', NULL, ?, ?, NULL)")
+        .bind(crypto.randomUUID(), ownerPlayerId, alert.eventId, detail, failedAt).run()
+    } catch { /* The database itself may be unavailable. */ }
+    try {
+      await db.prepare("UPDATE automation_webhooks SET last_error = ?, updated_at = ? WHERE owner_player_id = ?")
+        .bind(detail, failedAt, ownerPlayerId).run()
+    } catch { /* Keep the caller resilient if status persistence is unavailable. */ }
+    return { attempted: true, delivered: false, detail }
+  }
 }
 
 async function deliverAutomationDigest(env: WorkerEnv, ownerPlayerId: string, alerts: WebhookAlert[]): Promise<boolean> {
