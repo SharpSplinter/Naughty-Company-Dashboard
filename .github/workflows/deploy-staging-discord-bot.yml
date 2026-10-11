@@ -44,5 +44,7 @@ jobs:
           fi
           echo "Staging Worker upload accepted. Production Worker was not targeted."
           rm -f /tmp/cf-response.json /tmp/cf-metadata.json
-          curl --fail --silent --show-error https://naughty-company-bot-staging.kboone801.workers.dev/health | jq -e '.ok == true and .database == true and .encryption == true and .discordConfigured == true and .dashboardBinding == true' >/dev/null
-          echo "Staging health check passed with database, encryption, and Discord configuration present."
+          health=$(curl --fail --silent --show-error https://naughty-company-bot-staging.kboone801.workers.dev/health)
+          printf 'Staging health flags: %s\n' "$(printf '%s' "$health" | jq -c '{ok, database, encryption, discordConfigured, dashboardBinding}')"
+          printf '%s' "$health" | jq -e '.ok == true and .database == true and .encryption == true and .discordConfigured == true and .dashboardBinding == true' >/dev/null
+          echo "Staging health check passed with database, encryption, Discord, and dashboard binding configured."
