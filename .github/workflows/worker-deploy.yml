@@ -8,6 +8,7 @@ on:
     paths:
       - "src/worker/**"
       - "src/lib/**"
+      - "migrations/auth/**"
       - "wrangler.toml"
       - "package.json"
       - "package-lock.json"
@@ -39,9 +40,15 @@ jobs:
         run: |
           npm run typecheck
           npm test
-      - name: Deploy Worker to Cloudflare
+      - name: Apply pending D1 migrations
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: d1 migrations apply naughty-company-dashboard --remote --config wrangler.toml
+      - name: Deploy Worker to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c
           command: deploy --config wrangler.toml

@@ -577,7 +577,7 @@ async function ensureAutomationSchema(env: WorkerEnv): Promise<void> {
     quiet_hours_end TEXT NOT NULL DEFAULT '08:00',
     timezone TEXT NOT NULL DEFAULT 'UTC',
     minimum_severity TEXT NOT NULL DEFAULT 'info' CHECK (minimum_severity IN ('info', 'warning', 'critical')),
-    digest_mode TEXT NOT NULL DEFAULT 'instant' CHECK (digest_mode IN ('instant', 'daily', 'off')),
+    digest_mode TEXT NOT NULL DEFAULT 'instant' CHECK (digest_mode IN ('instant', 'daily', 'both', 'off')),
     updated_at TEXT NOT NULL
   )`).run()
   await db.prepare(`CREATE TABLE IF NOT EXISTS automation_webhooks (
@@ -702,7 +702,7 @@ async function deliverAutomationWebhook(env: WorkerEnv, ownerPlayerId: string, a
     ])
     if (!hook) return { attempted: false, delivered: false, detail: "No webhook is configured." }
     if (preferences?.minimumSeverity && severityRank(alert.severity) < severityRank(preferences.minimumSeverity)) return { attempted: false, delivered: false, detail: "Alert is below the configured minimum severity." }
-    if (!options.ignoreDigestMode && preferences?.digestMode !== undefined && preferences.digestMode !== "instant") return { attempted: false, delivered: false, detail: preferences.digestMode === "off" ? "Webhook delivery is disabled by notification preferences." : "Alert is queued for daily digest delivery." }
+    if (!options.ignoreDigestMode && preferences?.digestMode !== undefined && !["instant", "both"].includes(preferences.digestMode)) return { attempted: false, delivered: false, detail: preferences.digestMode === "off" ? "Webhook delivery is disabled by notification preferences." : "Alert is queued for daily digest delivery." }
     if (!options.ignoreQuietHours && isWithinQuietHours(preferences)) return { attempted: false, delivered: false, detail: "Alert is within configured quiet hours." }
     const endpoint = await decryptKey(env, hook.ciphertext, hook.iv)
     const controller = new AbortController()
@@ -766,7 +766,7 @@ async function deliverAutomationDigest(env: WorkerEnv, ownerPlayerId: string, al
 async function deliverDailyAutomationDigests(env: WorkerEnv, now = new Date()): Promise<void> {
   const db = requireDb(env)
   const cutoff = new Date(now.getTime() - DAY * 1000).toISOString()
-  const owners = await db.prepare("SELECT owner_player_id AS ownerPlayerId, timezone, quiet_hours_enabled AS quietHoursEnabled, quiet_hours_start AS quietHoursStart, quiet_hours_end AS quietHoursEnd, minimum_severity AS minimumSeverity FROM automation_preferences WHERE digest_mode = 'daily'").all<{ ownerPlayerId: string; timezone: string; quietHoursEnabled: number; quietHoursStart: string; quietHoursEnd: string; minimumSeverity: string }>()
+  const owners = await db.prepare("SELECT owner_player_id AS ownerPlayerId, timezone, quiet_hours_enabled AS quietHoursEnabled, quiet_hours_start AS quietHoursStart, quiet_hours_end AS quietHoursEnd, minimum_severity AS minimumSeverity FROM automation_preferences WHERE digest_mode IN ('daily', 'both')").all<{ ownerPlayerId: string; timezone: string; quietHoursEnabled: number; quietHoursStart: string; quietHoursEnd: string; minimumSeverity: string }>()
   for (const owner of owners.results ?? []) {
     if (isWithinQuietHours(owner, now)) continue
     const minimumRank = severityRank(owner.minimumSeverity)
@@ -1108,7 +1108,7 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
     const validTime = (value: unknown, fallback: string) => typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value) ? value : fallback
     const validZone = (value: unknown, fallback: string) => { if (typeof value !== "string" || value.length > 80) return fallback; try { new Intl.DateTimeFormat("en", { timeZone: value }); return value } catch { return fallback } }
     const severity = ["info", "warning", "critical"].includes(String(body.minimumSeverity)) ? String(body.minimumSeverity) : String(existing?.minimum_severity ?? "info")
-    const digest = ["instant", "daily", "off"].includes(String(body.digestMode)) ? String(body.digestMode) : String(existing?.digest_mode ?? "instant")
+    const digest = ["instant", "daily", "both", "off"].includes(String(body.digestMode)) ? String(body.digestMode) : String(existing?.digest_mode ?? "instant")
     const prefs = { browserNotificationsEnabled: Number(typeof body.browserNotificationsEnabled === "boolean" ? body.browserNotificationsEnabled : Boolean(existing?.browser_notifications_enabled)), quietHoursEnabled: Number(typeof body.quietHoursEnabled === "boolean" ? body.quietHoursEnabled : Boolean(existing?.quiet_hours_enabled)), quietHoursStart: validTime(body.quietHoursStart, String(existing?.quiet_hours_start ?? "22:00")), quietHoursEnd: validTime(body.quietHoursEnd, String(existing?.quiet_hours_end ?? "08:00")), timezone: validZone(body.timezone, String(existing?.timezone ?? "UTC")), minimumSeverity: severity, digestMode: digest }
     const now = new Date().toISOString()
     await db.prepare("INSERT INTO automation_preferences (owner_player_id, browser_notifications_enabled, quiet_hours_enabled, quiet_hours_start, quiet_hours_end, timezone, minimum_severity, digest_mode, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner_player_id) DO UPDATE SET browser_notifications_enabled = excluded.browser_notifications_enabled, quiet_hours_enabled = excluded.quiet_hours_enabled, quiet_hours_start = excluded.quiet_hours_start, quiet_hours_end = excluded.quiet_hours_end, timezone = excluded.timezone, minimum_severity = excluded.minimum_severity, digest_mode = excluded.digest_mode, updated_at = excluded.updated_at").bind(session.player_id, prefs.browserNotificationsEnabled, prefs.quietHoursEnabled, prefs.quietHoursStart, prefs.quietHoursEnd, prefs.timezone, prefs.minimumSeverity, prefs.digestMode, now).run()
