@@ -65,7 +65,7 @@ async function replyFor(i, env) {
     } catch { return privateReply("Linking is temporarily unavailable. Please try again later."); }
   }
   if (i.type !== 2) return privateReply("Unsupported interaction.");
-  if (name === "ping") return privateReply("Ã°ÂÂÂ Pong! Naughty Company Bot is responding.");
+  if (name === "ping") return privateReply("Pong! Naughty Company Bot is responding.");
   if (name === "help") return privateReply("**Naughty Company Bot**\n/link: securely link your dashboard account\n/status: check your link\n/unlink: remove your link\n/company: list saved companies\n/employees: view your latest company roster\n/trends: summarize the latest 30-day company trend\n/alerts: view recent dashboard alerts\n/ping: test bot response\n\nReplies are private. Enter your key only in the /link form.");
   if (!user) return privateReply("Unable to identify your Discord account.");
   if (name === "link") return { type: 9, data: { custom_id: "link_submit", title: "Link dashboard account", components: [{ type: 18, label: "Limited-access Torn API key", component: { type: 4, custom_id: "api_key", style: 1, min_length: 8, max_length: 256, required: true, placeholder: "Paste your limited-access API key here" } }] } };
@@ -79,7 +79,7 @@ async function replyFor(i, env) {
       if (!res.ok) return privateReply("Company data is temporarily unavailable. Please try again later.");
       const data = await res.json(), companies = Array.isArray(data.companies) ? data.companies : [];
       if (!companies.length) return privateReply("No saved company data is available yet. Open the dashboard and refresh company data.");
-      return privateReply("**Your saved companies**\n" + companies.slice(0,8).map(c => "Ã¢ÂÂ¢ **" + String(c.company_name || "Company").slice(0,100) + "** (" + String(c.company_type || "type unknown").slice(0,40) + ") ÃÂ· ID " + String(c.company_id || "n/a")).join("\n"));
+      return privateReply("**Your saved companies**\n" + companies.slice(0,8).map(c => "- **" + String(c.company_name || "Company").slice(0,100) + "** (" + String(c.company_type || "type unknown").slice(0,40) + ")  |  ID " + String(c.company_id || "n/a")).join("\n"));
     } catch { return privateReply("Company data is temporarily unavailable. Please try again later."); }
   }
   if (name === "employees") {
@@ -97,9 +97,9 @@ async function replyFor(i, env) {
         const label = String(e.name || e.employeeName || e.employee_name || ("Employee " + (n + 1))).slice(0, 70);
         const position = String(e.positionName || e.position_name || e.position?.name || e.position || "Position not reported").slice(0, 60);
         const wage = e.wage ?? e.salary ?? e.wages;
-        return "Ã¢ÂÂ¢ **" + label + "** ÃÂ· " + position + (wage == null ? "" : " ÃÂ· Wage: $" + Number(wage).toLocaleString("en-US"));
+        return "- **" + label + "**  |  " + position + (wage == null ? "" : "  |  Wage: $" + Number(wage).toLocaleString("en-US"));
       });
-      return privateReply("**Employee roster**\n" + lines.join("\n") + (roster.length > 12 ? "\nÃ¢ÂÂ¦and " + (roster.length - 12) + " more. Open the dashboard for the full roster." : "") + (summary.employeeCount == null ? "" : "\n\nEmployees: " + summary.employeeCount));
+      return privateReply("**Employee roster**\n" + lines.join("\n") + (roster.length > 12 ? "\n...and " + (roster.length - 12) + " more. Open the dashboard for the full roster." : "") + (summary.employeeCount == null ? "" : "\n\nEmployees: " + summary.employeeCount));
     } catch { return privateReply("Employee data is temporarily unavailable. Please try again later."); }
   }
   if (name === "trends") {
@@ -119,7 +119,7 @@ async function replyFor(i, env) {
       const data = await historyRes.json(), s = data.summary || {}, latest = (Array.isArray(data.history) ? data.history : []).slice(-1)[0] || {};
       const money = v => typeof v === "number" && Number.isFinite(v) ? "$" + Math.round(v).toLocaleString("en-US") : "Not available";
       const change = v => typeof v === "number" && Number.isFinite(v) ? (v > 0 ? "+" : "") + money(v) : "Not available";
-      return privateReply("**30-day trend ÃÂ· " + String(company.company_name || "Your company").slice(0, 90) + "**\nSnapshots: " + Number(s.snapshotCount || 0) + "\nDaily income change: " + change(s.dailyIncomeChange) + (s.dailyIncomeChangePercent == null ? "" : " (" + Number(s.dailyIncomeChangePercent).toFixed(1) + "%)") + "\nWeekly income change: " + change(s.weeklyIncomeChange) + "\nLatest employee count: " + (latest.employeeCount == null ? "Not available" : latest.employeeCount) + "\nLatest snapshot: " + String(latest.fetchedAt || s.latestSnapshotAt || "Not available"));
+      return privateReply("**30-day trend  |  " + String(company.company_name || "Your company").slice(0, 90) + "**\nSnapshots: " + Number(s.snapshotCount || 0) + "\nDaily income change: " + change(s.dailyIncomeChange) + (s.dailyIncomeChangePercent == null ? "" : " (" + Number(s.dailyIncomeChangePercent).toFixed(1) + "%)") + "\nWeekly income change: " + change(s.weeklyIncomeChange) + "\nLatest employee count: " + (latest.employeeCount == null ? "Not available" : latest.employeeCount) + "\nLatest snapshot: " + String(latest.fetchedAt || s.latestSnapshotAt || "Not available"));
     } catch { return privateReply("Trend data is temporarily unavailable. Please try again later."); }
   }
   if (name === "alerts") {
@@ -136,9 +136,9 @@ async function replyFor(i, env) {
         const severity = String(e.severity || "info").toUpperCase();
         const title = String(e.title || e.ruleType || "Dashboard alert").slice(0, 100);
         const message = String(e.message || "").replace(/\s+/g, " ").slice(0, 180);
-        return "Ã¢ÂÂ¢ **[" + severity + "] " + title + "**" + (message ? "\n  " + message : "") + (e.createdAt ? "\n  " + String(e.createdAt) : "");
+        return "- **[" + severity + "] " + title + "**" + (message ? "\n  " + message : "") + (e.createdAt ? "\n  " + String(e.createdAt) : "");
       });
-      return privateReply("**Recent dashboard alerts** ÃÂ· " + Number(data.unreadCount || 0) + " unread\n" + lines.join("\n"));
+      return privateReply("**Recent dashboard alerts**  |  " + Number(data.unreadCount || 0) + " unread\n" + lines.join("\n"));
     } catch { return privateReply("Alerts are temporarily unavailable. Please try again later."); }
   }
   return privateReply("That command isn't enabled yet. Use /help to see available commands.");
