@@ -104,15 +104,17 @@ try {
     assert.match(source, /const comparison = useMemo\(\(\) => \{ const points = comparisonHistory/)
   })
 
-  await test("daily webhook digest batches eligible alerts into one owner-scoped delivery", () => {
+  await test("daily webhook digest sends every eligible alert in Discord-safe batches and logs each batch accurately", () => {
     const source = readFileSync(join(root, "src/worker/index.ts"), "utf8")
-    assert.match(source, /event: "automation\.daily_digest"/)
-    assert.match(source, /eventCount: eligible\.length, alerts: eligible/)
+    assert.match(source, /for \(let offset = 0; offset < eligible\.length; offset \+= 10\)/)
+    assert.match(source, /const batch = eligible\.slice\(offset, offset \+ 10\)/)
+    assert.match(source, /eventCount: batch\.length, alerts: batch/)
     assert.match(source, /await deliverAutomationDigest\(env, owner\.ownerPlayerId, events\.results \?\? \[\]\)/)
-    assert.match(source, /for \(const alert of eligible\) \{\s*await db\.prepare\("INSERT INTO automation_delivery_log/)
-    assert.match(source, /e\.owner_player_id = \? AND e\.created_at <= \? AND CASE e\.severity/)
+    assert.match(source, /for \(const alert of batch\) \{\s*await db\.prepare\(\"INSERT INTO automation_delivery_log/)
+    assert.match(source, /last_error = \?, updated_at = \? WHERE owner_player_id = \?/)
     assert.match(source, /Daily digest could not be completed\. Check the configured endpoint and encryption settings\./)
-    assert.match(source, /UPDATE automation_webhooks SET last_error = \?, updated_at = \? WHERE owner_player_id = \?/)
+    assert.match(source, /anyFailed \? lastFailure : null/)
+    assert.match(source, /e\.owner_player_id = \? AND e\.created_at <= \? AND CASE e\.severity/)
   })
 
   await test("webhook digest preferences are independent from browser notification delivery", () => {

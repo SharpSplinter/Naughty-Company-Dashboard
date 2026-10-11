@@ -741,22 +741,33 @@ async function deliverAutomationDigest(env: WorkerEnv, ownerPlayerId: string, al
     const eligible = alerts.filter((alert) => severityRank(alert.severity) >= minimumRank)
     if (!eligible.length) return
     const endpoint = await decryptKey(env, hook.ciphertext, hook.iv)
-    const now = new Date().toISOString()
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 5000)
-    let statusCode: number | undefined
-    let detail = ""
-    try {
-      const response = await fetch(endpoint, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", "user-agent": "Naughty-Company-Dashboard/1.0" }, body: JSON.stringify(buildWebhookPayload(endpoint, { source: "Naughty Company Dashboard", event: "automation.daily_digest", digest: { generatedAt: now, eventCount: eligible.length, alerts: eligible } })), signal: controller.signal })
-      statusCode = response.status
-      detail = response.ok ? `Daily digest delivered with ${eligible.length} alerts.` : `Webhook endpoint returned HTTP ${response.status}.`
-    } catch (error) { detail = error instanceof Error && error.name === "AbortError" ? "Daily digest request timed out after 5 seconds." : "Daily digest request failed. Check the endpoint and try again." }
-    finally { clearTimeout(timeout) }
-    const delivered = statusCode !== undefined && statusCode >= 200 && statusCode < 300
-    for (const alert of eligible) {
-      await db.prepare("INSERT INTO automation_delivery_log (delivery_id, owner_player_id, event_id, status, status_code, detail, created_at, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), ownerPlayerId, alert.eventId, delivered ? "delivered" : "failed", statusCode ?? null, detail, now, delivered ? now : null).run()
+    let anyDelivered = false
+    let anyFailed = false
+    let lastFailure = ""
+    const batchCount = Math.ceil(eligible.length / 10)
+    for (let offset = 0; offset < eligible.length; offset += 10) {
+      const batch = eligible.slice(offset, offset + 10)
+      const now = new Date().toISOString()
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 5000)
+      let statusCode: number | undefined
+      let detail = ""
+      try {
+        const response = await fetch(endpoint, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", "user-agent": "Naughty-Company-Dashboard/1.0" }, body: JSON.stringify(buildWebhookPayload(endpoint, { source: "Naughty Company Dashboard", event: "automation.daily_digest", digest: { generatedAt: now, eventCount: batch.length, alerts: batch } })), signal: controller.signal })
+        statusCode = response.status
+        detail = response.ok ? `Daily digest batch ${Math.floor(offset / 10) + 1}/${batchCount} delivered with ${batch.length} alerts.` : `Webhook endpoint returned HTTP ${response.status} for daily digest batch ${Math.floor(offset / 10) + 1}/${batchCount}.`
+      } catch (error) { detail = error instanceof Error && error.name === "AbortError" ? "Daily digest request timed out after 5 seconds." : "Daily digest request failed. Check the endpoint and try again." }
+      finally { clearTimeout(timeout) }
+      const delivered = statusCode !== undefined && statusCode >= 200 && statusCode < 300
+      anyDelivered ||= delivered
+      anyFailed ||= !delivered
+      if (!delivered) lastFailure = detail
+      for (const alert of batch) {
+        await db.prepare("INSERT INTO automation_delivery_log (delivery_id, owner_player_id, event_id, status, status_code, detail, created_at, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), ownerPlayerId, alert.eventId, delivered ? "delivered" : "failed", statusCode ?? null, detail, now, delivered ? now : null).run()
+      }
     }
-    await db.prepare("UPDATE automation_webhooks SET last_delivered_at = CASE WHEN ? = 1 THEN ? ELSE last_delivered_at END, last_error = ?, updated_at = ? WHERE owner_player_id = ?").bind(Number(delivered), now, delivered ? null : detail, now, ownerPlayerId).run()
+    const finishedAt = new Date().toISOString()
+    await db.prepare("UPDATE automation_webhooks SET last_delivered_at = CASE WHEN ? = 1 THEN ? ELSE last_delivered_at END, last_error = ?, updated_at = ? WHERE owner_player_id = ?").bind(Number(anyDelivered), finishedAt, anyFailed ? lastFailure : null, finishedAt, ownerPlayerId).run()
   } catch {
     // Keep failures visible even when decrypting the webhook or recording individual deliveries fails.
     // Avoid surfacing raw exception text because it may contain provider-specific endpoint details.
