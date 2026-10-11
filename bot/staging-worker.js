@@ -62,7 +62,7 @@ async function pollPrivateAlerts(env) {
         const title = String(event.title || "Dashboard alert").slice(0, 150);
         const message = String(event.message || "").replace(/\s+/g, " ").slice(0, 900);
         const company = event.companyName ? String(event.companyName).slice(0, 100) : event.companyId ? "Company ID " + String(event.companyId) : "Your company";
-        const content = "ð Naughty Company Dashboard alert\n[" + severity + "] " + title + "\n" + message + "\nCompany: " + company + "\n" + String(event.createdAt);
+        const content = "Ã°ÂÂÂ Naughty Company Dashboard alert\n[" + severity + "] " + title + "\n" + message + "\nCompany: " + company + "\n" + String(event.createdAt);
         let delivered = false;
         try { delivered = await sendPrivateDiscordMessage(env, link.discordUserId, content); } catch {}
         const attempts = Number(prior?.attempts || 0) + 1, status = delivered ? "delivered" : "failed";
@@ -211,7 +211,14 @@ async function replyFor(i, env) {
           if (dashboardSnapshots.length) data.stockHistory = dashboardSnapshots;
           const storage = backup.storage && typeof backup.storage === "object" ? backup.storage : {};
           const directorSnapshots = Array.isArray(storage.directorSnapshots) ? storage.directorSnapshots.filter(item => item && String(item.companyId) === String(company.company_id) && typeof item.snapshotDay === "string" && item.stock != null).map(item => ({ day: item.snapshotDay, stock: item.stock, fetchedAt: item.fetchedAt || "" })) : [];
-          if (directorSnapshots.length) data.stockOrderHistory = directorSnapshots;
+          if (directorSnapshots.length) {
+            data.stockOrderHistory = directorSnapshots;
+            // The production API may not yet expose the saved Charts baseline on this route.
+            // If Charts has no earlier daily point, fall back to the same company's saved director snapshots.
+            const baselineDay = new Date(Date.now() - 18 * 60 * 60 * 1000).toISOString().slice(0, 10);
+            const hasEarlierChartPoint = dashboardSnapshots.some(point => point.day < baselineDay);
+            if (!hasEarlierChartPoint) data.stockHistory = directorSnapshots;
+          }
         }
       } catch { /* History is optional; preserve the current overview if backup retrieval fails. */ }
       const profile = data.profile && typeof data.profile === "object" ? data.profile : {};
@@ -299,7 +306,7 @@ async function replyFor(i, env) {
         "Weekly profit: " + money(weeklyProfit),
         "Advertisement budget: " + money(adBudget),
         "Total employee wages: " + (hasWages ? money(totalWages) : "Not available"),
-        "Company Performance | Popularity: " + (popularity == null ? "Not available" : String(popularity)) + " Â· Efficiency: " + (efficiency == null ? "Not available" : String(efficiency)) + " Â· Environment: " + (environment == null ? "Not available" : String(environment)),
+        "Company Performance | Popularity: " + (popularity == null ? "Not available" : String(popularity)) + " · Efficiency: " + (efficiency == null ? "Not available" : String(efficiency)) + " · Environment: " + (environment == null ? "Not available" : String(environment)),
         "Star rating: " + (rating == null ? "Not available" : String(rating)),
         "Employees in latest payload: " + (employeeList.length || "Not reported"),
         ...(stockRoot.length ? ["Stock quantity by item: " + stockQuantityLabel] : ["Stock quantity: Not available"]),
@@ -316,7 +323,7 @@ async function replyFor(i, env) {
         "Snapshot age: " + snapshotAgeLabel(data.fetchedAt || company.fetched_at)
       ];
       const snapshotMs = Date.parse(data.fetchedAt || company.fetched_at || "");
-      if (Number.isFinite(snapshotMs) && Date.now() - snapshotMs > 36 * 3600000) lines.push("â ï¸ This company snapshot may be stale. Refresh it in the dashboard.");
+      if (Number.isFinite(snapshotMs) && Date.now() - snapshotMs > 36 * 3600000) lines.push("Ã¢ÂÂ Ã¯Â¸Â This company snapshot may be stale. Refresh it in the dashboard.");
       return privateReply(lines.join("\n"));
     } catch { return privateReply("Company overview is temporarily unavailable. Please try again later."); }
   }
@@ -409,7 +416,7 @@ async function replyFor(i, env) {
       const generatedAt = data.generatedAt || "";
       const rankingAge = snapshotAgeLabel(generatedAt);
       const rankingMs = Date.parse(generatedAt);
-      const freshnessNote = Number.isFinite(rankingMs) && Date.now() - rankingMs > 36 * 3600000 ? "\nâ ï¸ Ranking snapshot may be stale; compare its timestamp before relying on it." : "";
+      const freshnessNote = Number.isFinite(rankingMs) && Date.now() - rankingMs > 36 * 3600000 ? "\nÃ¢ÂÂ Ã¯Â¸Â Ranking snapshot may be stale; compare its timestamp before relying on it." : "";
       return privateReply("**Global company rankings**\nTop 5 by weekly income\n" + lines.join("\n") + "\nSnapshot: " + String(generatedAt || "timestamp unavailable") + "\nSnapshot age: " + rankingAge + "\nCompany income source updates daily at 18:10 UTC; this ranking timestamp is shown separately." + freshnessNote);
     } catch { return privateReply("Company rankings are temporarily unavailable. Please try again later."); }
   }
