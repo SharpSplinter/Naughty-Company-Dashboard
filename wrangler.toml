@@ -13,3 +13,18 @@ migrations_dir = "migrations/auth"
 
 [triggers]
 crons = ["10 18 * * *"]
+
+[env.staging]
+name = "naughty-company-api-staging"
+
+[env.staging.observability]
+enabled = true
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "naughty-company-api-staging"
+database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"
+migrations_dir = "migrations/auth"
+
+[env.staging.triggers]
+crons = []
