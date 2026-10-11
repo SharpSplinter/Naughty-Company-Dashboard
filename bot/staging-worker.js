@@ -278,5 +278,28 @@ async function replyFor(i, env) {
       const token = await unseal(row.encrypted_session_token, row.token_iv, env);
       const res = await dashboardFetch(env, "/api/me/alerts?limit=10", { headers: { authorization: "Bearer " + token, accept: "application/json" }, signal: AbortSignal.timeout(8000) });
       if (res.status === 401 || res.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
-      if (!res.ok) return privb‹­¦ëm®éÜj×~ée¢ëiºÛ½çm£ù§·÷â•ë?r‰©¢È¨þ‹­¦ëm«!n)e²×hºÛqµ§q«š{~)^³÷(šš,ŠèºÚn·öÚ²â–[-v‹­·m¢øžÂØ^~ée¢ëiºÚ+ºÇ¡y§g×M?š{~)^³÷(šš,ŠèºÚn·öÚ²â–[-v‹­·µ¨¥Ÿ]4þiíýø¥zÏÜ¢jh²*?¢ëiºßÛjÈ[ŠYlµÚ.¶Üm¶‹â{
-Z®Û(~+
+      if (!res.ok) return privateReply("Alerts are temporarily unavailable. Please try again later.");
+      const data = await res.json(), events = Array.isArray(data.events) ? data.events : [];
+      if (!events.length) return privateReply("No dashboard alerts were found. Unread alerts: " + Number(data.unreadCount || 0) + ".");
+      const lines = events.slice(0, 6).map(e => {
+        const severity = String(e.severity || "info").toUpperCase();
+        const title = String(e.title || e.ruleType || "Dashboard alert").slice(0, 100);
+        const message = String(e.message || "").replace(/\s+/g, " ").slice(0, 180);
+        return "- **[" + severity + "] " + title + "**" + (message ? "\n  " + message : "") + (e.createdAt ? "\n  " + String(e.createdAt) : "");
+      });
+      return privateReply("**Recent dashboard alerts**  |  " + Number(data.unreadCount || 0) + " unread\n" + lines.join("\n"));
+    } catch { return privateReply("Alerts are temporarily unavailable. Please try again later."); }
+  }
+  return privateReply("That command isn't enabled yet. Use /help to see available commands.");
+}
+export default {
+  async scheduled(_controller, env, ctx) { ctx.waitUntil(pollPrivateAlerts(env)); },
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    if (req.method === "GET" && url.pathname === "/health") return json({ ok: true, service: "naughty-company-bot-staging", database: !!env.BOT_DB, encryption: !!env.BOT_ENCRYPTION_KEY, discordConfigured: !!env.DISCORD_TOKEN, dashboardBinding: !!env.DASHBOARD_API, privateAlertDelivery: true });
+    if (req.method !== "POST") return json({ ok: false, error: "not_found" }, 404);
+    if (!await signed(req, env)) return json({ ok: false, error: "invalid_request_signature" }, 401);
+    let interaction; try { interaction = await req.json(); } catch { return json({ ok: false, error: "invalid_json" }, 400); }
+    try { await ensureBotSchema(env); return json(await replyFor(interaction, env)); } catch { return json({ type: 4, data: { content: "The request could not be completed. Please try again later.", flags: 64 } }); }
+  }
+};
