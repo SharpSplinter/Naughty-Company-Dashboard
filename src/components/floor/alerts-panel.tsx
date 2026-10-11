@@ -7,7 +7,7 @@ type AlertRule = { ruleId: string; companyId: string | null; companyName?: strin
 type AlertEvent = { eventId: string; ruleId: string; companyId: string | null; companyName?: string | null; ruleType: AlertRuleType; severity: "info" | "warning" | "critical"; title: string; message: string; previousValue?: number | null; currentValue?: number | null; changePercent?: number | null; sourceSnapshotAt?: string | null; status: "unread" | "acknowledged"; createdAt: string; acknowledgedAt?: string | null }
 type AutomationRun = { triggerName: string; status: string; startedAt: string; finishedAt?: string | null; companiesChecked: number; companiesFailed: number; alertsCreated: number } | null
 type Props = { apiBase: string; sessionToken: string; companies: CompanyOption[]; selectedCompanyId: string; demoMode: boolean; onNavigateCharts: () => void }
-type AutomationPreferences = { browserNotificationsEnabled: boolean; quietHoursEnabled: boolean; quietHoursStart: string; quietHoursEnd: string; timezone: string; minimumSeverity: "info" | "warning" | "critical"; digestMode: "instant" | "off" }
+type AutomationPreferences = { browserNotificationsEnabled: boolean; quietHoursEnabled: boolean; quietHoursStart: string; quietHoursEnd: string; timezone: string; minimumSeverity: "info" | "warning" | "critical"; digestMode: "instant" | "daily" | "off" }
 type WebhookDelivery = { deliveryId: string; eventId: string; status: "delivered" | "failed"; statusCode?: number | null; detail?: string | null; createdAt: string; deliveredAt?: string | null }
 const DEFAULT_PREFERENCES: AutomationPreferences = { browserNotificationsEnabled: false, quietHoursEnabled: false, quietHoursStart: "22:00", quietHoursEnd: "08:00", timezone: "UTC", minimumSeverity: "info", digestMode: "instant" }
 
@@ -94,7 +94,7 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
         automationFetch<{ deliveries: WebhookDelivery[] }>(apiBase, sessionToken, "/api/me/automation-webhook/deliveries?limit=10"),
       ])
       if (requestId !== loadRequestId.current) return
-      if (prefsResult.status === "fulfilled") { const raw = prefsResult.value.preferences; setPreferences({ browserNotificationsEnabled: Boolean(raw.browserNotificationsEnabled), quietHoursEnabled: Boolean(raw.quietHoursEnabled), quietHoursStart: String(raw.quietHoursStart || "22:00"), quietHoursEnd: String(raw.quietHoursEnd || "08:00"), timezone: String(raw.timezone || "UTC"), minimumSeverity: ["info", "warning", "critical"].includes(String(raw.minimumSeverity)) ? raw.minimumSeverity as AutomationPreferences["minimumSeverity"] : "info", digestMode: raw.digestMode === "off" ? "off" : "instant" }) }
+      if (prefsResult.status === "fulfilled") { const raw = prefsResult.value.preferences; setPreferences({ browserNotificationsEnabled: Boolean(raw.browserNotificationsEnabled), quietHoursEnabled: Boolean(raw.quietHoursEnabled), quietHoursStart: String(raw.quietHoursStart || "22:00"), quietHoursEnd: String(raw.quietHoursEnd || "08:00"), timezone: String(raw.timezone || "UTC"), minimumSeverity: ["info", "warning", "critical"].includes(String(raw.minimumSeverity)) ? raw.minimumSeverity as AutomationPreferences["minimumSeverity"] : "info", digestMode: raw.digestMode === "daily" ? "daily" : raw.digestMode === "off" ? "off" : "instant" }) }
       if (hookResult.status === "fulfilled") setWebhookConfigured(hookResult.value.configured === true)
       if (deliveryResult.status === "fulfilled") setDeliveries(deliveryResult.value.deliveries || [])
     } catch (caught) {
@@ -223,7 +223,7 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
   }
 
   useEffect(() => {
-    if (!preferences.browserNotificationsEnabled || preferences.digestMode === "off" || typeof Notification === "undefined" || Notification.permission !== "granted" || withinQuietHours(preferences)) return
+    if (!preferences.browserNotificationsEnabled || typeof Notification === "undefined" || Notification.permission !== "granted" || withinQuietHours(preferences)) return
     const rank = (value: string) => value === "critical" ? 3 : value === "warning" ? 2 : 1
     for (const event of events) {
       if (event.status !== "unread" || seenEventIds.current.has(event.eventId) || rank(event.severity) < rank(preferences.minimumSeverity)) continue
@@ -309,7 +309,7 @@ export function NotificationSettingsPanel({ apiBase, sessionToken, demoMode }: {
     if (!sessionToken || demoMode) { setLoading(false); return }
     setLoading(true); setError("")
     automationFetch<{ preferences: Record<string, unknown> }>(apiBase, sessionToken, "/api/me/automation-preferences")
-      .then(({ preferences: raw }) => { if (!cancelled) setPreferences({ browserNotificationsEnabled: Boolean(raw.browserNotificationsEnabled), quietHoursEnabled: Boolean(raw.quietHoursEnabled), quietHoursStart: String(raw.quietHoursStart || "22:00"), quietHoursEnd: String(raw.quietHoursEnd || "08:00"), timezone: String(raw.timezone || "UTC"), minimumSeverity: ["info", "warning", "critical"].includes(String(raw.minimumSeverity)) ? raw.minimumSeverity as AutomationPreferences["minimumSeverity"] : "info", digestMode: raw.digestMode === "off" ? "off" : "instant" }) })
+      .then(({ preferences: raw }) => { if (!cancelled) setPreferences({ browserNotificationsEnabled: Boolean(raw.browserNotificationsEnabled), quietHoursEnabled: Boolean(raw.quietHoursEnabled), quietHoursStart: String(raw.quietHoursStart || "22:00"), quietHoursEnd: String(raw.quietHoursEnd || "08:00"), timezone: String(raw.timezone || "UTC"), minimumSeverity: ["info", "warning", "critical"].includes(String(raw.minimumSeverity)) ? raw.minimumSeverity as AutomationPreferences["minimumSeverity"] : "info", digestMode: raw.digestMode === "daily" ? "daily" : raw.digestMode === "off" ? "off" : "instant" }) })
       .catch((caught) => { if (!cancelled) setError(caught instanceof Error ? caught.message : "Could not load notification preferences.") })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
@@ -330,7 +330,7 @@ export function NotificationSettingsPanel({ apiBase, sessionToken, demoMode }: {
       try { const permission = await Notification.requestPermission(); if (permission !== "granted") { setError("Browser notification permission was not granted."); return } }
       catch { setError("Could not request browser notification permission. Check your browser settings and try again."); return }
     }
-    setPreferences((current) => ({ ...current, browserNotificationsEnabled: enabled, digestMode: enabled ? "instant" : "off" }))
+    setPreferences((current) => ({ ...current, browserNotificationsEnabled: enabled }))
   }
 
   if (!sessionToken || demoMode) return <section className="panel automation-delivery-settings"><div className="panel-heading"><div><h2>Browser notification settings</h2><p>Choose whether this browser can notify you about company alerts.</p></div></div><div className="empty-state">Sign in to configure browser notifications. Notification preferences are unavailable in demo mode.</div></section>
@@ -339,7 +339,7 @@ export function NotificationSettingsPanel({ apiBase, sessionToken, demoMode }: {
     {loading ? <div className="empty-state">Loading notification preferences…</div> : <form className="automation-form" onSubmit={save}>
       <label className="automation-checkbox-label"><input type="checkbox" checked={preferences.browserNotificationsEnabled} onChange={(event) => void setBrowserEnabled(event.target.checked)} /> Enable company browser notifications</label>
       <label>Minimum notification severity<select value={preferences.minimumSeverity} onChange={(event) => setPreferences((current) => ({ ...current, minimumSeverity: event.target.value as AutomationPreferences["minimumSeverity"] }))}><option value="info">Info and above</option><option value="warning">Warning and critical</option><option value="critical">Critical only</option></select></label>
-      <label>Browser delivery<select value={preferences.digestMode} onChange={(event) => setPreferences((current) => ({ ...current, digestMode: event.target.value as AutomationPreferences["digestMode"] }))}><option value="instant">Instant browser notifications</option><option value="off">Browser notifications off</option></select></label>
+      <label>Webhook delivery mode<select value={preferences.digestMode} onChange={(event) => setPreferences((current) => ({ ...current, digestMode: event.target.value as AutomationPreferences["digestMode"] }))}><option value="instant">Instant webhook delivery</option><option value="daily">Daily webhook digest</option><option value="off">Webhook delivery off</option></select></label>
       <label className="automation-checkbox-label"><input type="checkbox" checked={preferences.quietHoursEnabled} onChange={(event) => setPreferences((current) => ({ ...current, quietHoursEnabled: event.target.checked }))} /> Respect quiet hours for browser notifications</label>
       <div className="automation-time-row"><label>Quiet hours start<input required type="time" value={preferences.quietHoursStart} onChange={(event) => setPreferences((current) => ({ ...current, quietHoursStart: event.target.value }))} /></label><label>Quiet hours end<input required type="time" value={preferences.quietHoursEnd} onChange={(event) => setPreferences((current) => ({ ...current, quietHoursEnd: event.target.value }))} /></label></div><p className="field-hint">If start and end match, browser notifications are quiet all day. Quiet hours do not hide in-app alerts.</p>
       <label>Time zone<select value={preferences.timezone} onChange={(event) => setPreferences((current) => ({ ...current, timezone: event.target.value }))}><option value="UTC">UTC</option><option value="America/New_York">America/New_York</option><option value="America/Chicago">America/Chicago</option><option value="America/Denver">America/Denver</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="Europe/London">Europe/London</option><option value="Europe/Paris">Europe/Paris</option><option value="Asia/Tokyo">Asia/Tokyo</option><option value="Australia/Sydney">Australia/Sydney</option></select></label>
