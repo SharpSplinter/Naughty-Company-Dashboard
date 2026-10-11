@@ -90,7 +90,8 @@ try {
     const source = readFileSync(join(root, "src/components/floor/insights-workspace.tsx"), "utf8")
     assert.match(source, /const \[comparisonHistory, setComparisonHistory\] = useState<TrendPoint\[\]>/)
     assert.match(source, /Number\(comparisonDays\) === 7 \? "30" : Number\(comparisonDays\) === 30 \? "90" : "365"/)
-    assert.match(source, /if \(view === "trends"\) tasks\.push\(loadComparison\(\)\)/)
+    assert.match(source, /if \(view === "trends" \|\| view === "executive"\) tasks\.push\(loadComparison\(\)\)/)
+    assert.match(source, /vs prior \{comparisonDays\}-day average/)
     assert.match(source, /const comparison = useMemo\(\(\) => \{ const points = comparisonHistory/)
   })
 
