@@ -139,7 +139,7 @@ async function replyFor(i, env) {
   }
   if (i.type !== 2) return privateReply("Unsupported interaction.");
   if (name === "ping") return privateReply("Pong! Naughty Company Bot is responding.");
-  if (name === "help") return privateReply("**Naughty Company Bot**\n/link: link with a limited-access Torn API key\n/link-code: finish linking with a code from the dashboard\n/status: check your link\n/unlink: remove your link\n/company: list saved companies\n/employees: view your latest company roster\n/trends: summarize the latest 30-day company trend\n/alerts: view recent dashboard alerts\n/ping: test bot response\n\nReplies are private. Enter your key only in the /link form.");
+  if (name === "help") return privateReply("**Naughty Company Bot**\n/link: link with a limited-access Torn API key\n/link-code: finish linking with a code from the dashboard\n/status: check your link\n/unlink: remove your link\n/company: list saved companies\n/overview: show income, profit, stars, employees and stock\n/employees: view your latest company roster\n/trends: summarize the latest 30-day company trend\n/alerts: view recent dashboard alerts\n/ping: test bot response\n\nReplies are private. Enter your key only in the /link form.");
   if (!user) return privateReply("Unable to identify your Discord account.");
   if (name === "link") return { type: 9, data: { custom_id: "link_submit", title: "Link dashboard account", components: [{ type: 18, label: "Limited-access Torn API key", component: { type: 4, custom_id: "api_key", style: 1, min_length: 8, max_length: 256, required: true, placeholder: "Paste your limited-access API key here" } }] } };
   if (name === "link-code") return { type: 9, data: { custom_id: "link_code_submit", title: "Link from dashboard", components: [{ type: 18, label: "Dashboard link code", component: { type: 4, custom_id: "link_code", style: 1, min_length: 48, max_length: 48, required: true, placeholder: "Paste the one-time dashboard code" } }] } };
@@ -162,6 +162,50 @@ async function replyFor(i, env) {
       if (!companies.length) return privateReply("No saved company data is available yet. Open the dashboard and refresh company data.");
       return privateReply("**Your saved companies**\n" + companies.slice(0,8).map(c => "- **" + String(c.company_name || "Company").slice(0,100) + "** (" + String(c.company_type || "type unknown").slice(0,40) + ")  |  ID " + String(c.company_id || "n/a")).join("\n"));
     } catch { return privateReply("Company data is temporarily unavailable. Please try again later."); }
+  }
+  if (name === "overview") {
+    const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
+    if (!row) return privateReply("Link your dashboard first with /link.");
+    try {
+      const token = await unseal(row.encrypted_session_token, row.token_iv, env);
+      const headers = { authorization: "Bearer " + token, accept: "application/json" };
+      const companiesRes = await dashboardFetch(env, "/api/me/companies", { headers, signal: AbortSignal.timeout(8000) });
+      if (companiesRes.status === 401 || companiesRes.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
+      if (!companiesRes.ok) return privateReply("Company data is temporarily unavailable. Please try again later.");
+      const companiesData = await companiesRes.json();
+      const companies = Array.isArray(companiesData.companies) ? companiesData.companies : [];
+      if (!companies.length) return privateReply("No saved companies are available yet. Open the dashboard and refresh company data.");
+      const company = companies[0];
+      const detailRes = await dashboardFetch(env, "/api/me/companies/" + encodeURIComponent(company.company_id), { headers, signal: AbortSignal.timeout(8000) });
+      if (detailRes.status === 401 || detailRes.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
+      if (detailRes.status === 404) return privateReply("No saved snapshot exists for " + String(company.company_name || "this company") + " yet. Refresh it in the dashboard first.");
+      if (!detailRes.ok) return privateReply("Company overview is temporarily unavailable. Please try again later.");
+      const data = await detailRes.json();
+      const profile = data.profile && typeof data.profile === "object" ? data.profile : {};
+      const root = profile.company && typeof profile.company === "object" ? profile.company : profile.profile && typeof profile.profile === "object" ? profile.profile : profile;
+      const income = root.income && typeof root.income === "object" ? root.income : {};
+      const profit = root.profit && typeof root.profit === "object" ? root.profit : {};
+      const money = value => typeof value === "number" && Number.isFinite(value) ? "$" + Math.round(value).toLocaleString("en-US") : "Not available";
+      const dailyProfit = [profit.daily, root.daily_profit, root.dailyProfit, root.profit_daily].find(value => typeof value === "number" && Number.isFinite(value));
+      const rating = [root.company_rating, root.star_rating, root.rating, root.stars].find(value => typeof value === "number" && Number.isFinite(value));
+      const employeeRoot = data.employees && typeof data.employees === "object" ? data.employees : {};
+      const employeeList = Array.isArray(data.employees) ? data.employees : Array.isArray(employeeRoot.employees) ? employeeRoot.employees : Array.isArray(employeeRoot.company_employees) ? employeeRoot.company_employees : [];
+      const stockRoot = Array.isArray(data.stock) ? data.stock : data.stock && Array.isArray(data.stock.stock) ? data.stock.stock : data.stock && typeof data.stock === "object" ? Object.values(data.stock).filter(value => value && typeof value === "object") : [];
+      const stockQuantity = stockRoot.reduce((sum, item) => { const value = [item.in_stock, item.quantity, item.amount].find(n => typeof n === "number" && Number.isFinite(n)); return sum + (value || 0); }, 0);
+      const safeName = String(data.companyName || company.company_name || "Your company").replace(/@/g, "@\\u200b").slice(0, 90);
+      const lines = [
+        "**Company overview | " + safeName + "**",
+        "Type: " + String(data.companyType || company.company_type || "Not available").slice(0, 60),
+        "Daily income: " + money(income.daily),
+        "Weekly income: " + money(income.weekly),
+        "Daily profit: " + money(dailyProfit),
+        "Star rating: " + (rating == null ? "Not available" : String(rating)),
+        "Employees in latest payload: " + (employeeList.length || "Not reported"),
+        "Stock items: " + (stockRoot.length || "Not reported") + " | Total quantity: " + (stockRoot.length ? stockQuantity.toLocaleString("en-US") : "Not available"),
+        "Snapshot updated: " + String(data.fetchedAt || company.fetched_at || "Not available")
+      ];
+      return privateReply(lines.join("\\n"));
+    } catch { return privateReply("Company overview is temporarily unavailable. Please try again later."); }
   }
   if (name === "employees") {
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
