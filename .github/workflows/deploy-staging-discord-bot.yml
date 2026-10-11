@@ -48,7 +48,7 @@ jobs:
             -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/naughty-company-bot-staging/schedules" \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             -H "Content-Type: application/json" \
-            --data '{"schedules":[{"cron":"* * * * *"}]}' )
+            --data '[{"cron":"* * * * *"}]' )
           if [[ "$schedule_status" != "200" ]] || ! jq -e '.success == true' /tmp/cf-schedule-response.json >/dev/null; then
             echo "Could not configure the staging private-alert poll schedule (HTTP $schedule_status)."
             jq -r '[.errors[]? | {code, message}]' /tmp/cf-schedule-response.json 2>/dev/null || true
