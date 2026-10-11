@@ -1,0 +1,47 @@
+name: Verify Cloudflare API token
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-token:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Verify Cloudflare API token without exposing it
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        shell: bash
+        run: |
+          set +x
+          if [[ -z "${CLOUDFLARE_API_TOKEN}" ]]; then
+            echo "::error::CLOUDFLARE_API_TOKEN secret is missing or empty."
+            exit 1
+          fi
+
+          response_file="$(mktemp)"
+          status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            https://api.cloudflare.com/client/v4/accounts)"
+
+          unset CLOUDFLARE_API_TOKEN
+
+          if [[ "$status" != "200" ]]; then
+            echo "::error::Cloudflare API authentication/account listing failed (HTTP $status). Response body suppressed to avoid leaking account metadata."
+            rm -f "$response_file"
+            exit 1
+          fi
+
+          if ! jq -e '.success == true and (.result | type == "array")' "$response_file" >/dev/null; then
+            echo "::error::Cloudflare returned HTTP 200 but the API response did not report success."
+            rm -f "$response_file"
+            exit 1
+          fi
+
+          count="$(jq '.result | length' "$response_file")"
+          echo "Cloudflare Bearer-token authentication succeeded. Accounts visible to this token: $count."
+          rm -f "$response_file"
