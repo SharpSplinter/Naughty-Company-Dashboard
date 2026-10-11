@@ -654,6 +654,45 @@ function isWithinQuietHours(preferences: { quietHoursEnabled?: number; quietHour
   return start === end ? true : start < end ? now >= start && now < end : now >= start || now < end
 }
 
+function buildWebhookPayload(endpoint: string, payload: Record<string, unknown>): Record<string, unknown> {
+  let url: URL
+  try { url = new URL(endpoint) } catch { return payload }
+  if (!((url.hostname === "discord.com" || url.hostname === "discordapp.com") && url.pathname.startsWith("/api/webhooks/"))) return payload
+  const event = String(payload.event || "automation.alert")
+  if (event === "automation.test") return { content: "✅ Naughty Company Dashboard webhook test succeeded. Discord is connected and ready for alerts and summaries.", allowed_mentions: { parse: [] } }
+  const alert = isRecord(payload.alert) ? payload.alert as unknown as WebhookAlert : null
+  const digest = isRecord(payload.digest) ? payload.digest : null
+  const alerts = digest && Array.isArray(digest.alerts) ? digest.alerts.filter(isRecord) as unknown as WebhookAlert[] : []
+  const toEmbed = (item: WebhookAlert) => ({ title: String(item.title || "Dashboard alert").slice(0, 256), description: String(item.message || "An automation event was detected.").slice(0, 4096), color: item.severity === "critical" ? 0xD92D20 : item.severity === "warning" ? 0xF79009 : 0x1570EF, fields: [{ name: "Severity", value: String(item.severity || "info").toUpperCase().slice(0, 1024), inline: true }, { name: "Rule", value: String(item.ruleType || "automation").replace(/_/g, " ").slice(0, 1024), inline: true }, ...(item.companyId ? [{ name: "Company ID", value: String(item.companyId).slice(0, 1024), inline: true }] : [])], ...(item.createdAt ? { timestamp: item.createdAt } : {}), footer: { text: "Naughty Company Dashboard" } })
+  if (event === "automation.daily_digest") return { content: `📊 **Naughty Company Dashboard daily summary** · ${Number(digest?.eventCount || alerts.length)} alert(s)`, embeds: alerts.slice(0, 10).map(toEmbed), allowed_mentions: { parse: [] } }
+  if (alert) return { content: "🔔 **Naughty Company Dashboard alert**", embeds: [toEmbed(alert)], allowed_mentions: { parse: [] } }
+  return { content: "Naughty Company Dashboard notification", allowed_mentions: { parse: [] } }
+}
+
+async function sendWebhookTest(env: WorkerEnv, ownerPlayerId: string): Promise<{ delivered: boolean; statusCode?: number; detail: string }> {
+  const db = requireDb(env)
+  try {
+    const hook = await db.prepare("SELECT ciphertext, iv FROM automation_webhooks WHERE owner_player_id = ? AND enabled = 1").bind(ownerPlayerId).first<{ ciphertext: string; iv: string }>()
+    if (!hook) return { delivered: false, detail: "Save a webhook URL before sending a test message." }
+    const endpoint = await decryptKey(env, hook.ciphertext, hook.iv)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 5000)
+    let statusCode: number | undefined
+    let detail = ""
+    try {
+      const payload = buildWebhookPayload(endpoint, { source: "Naughty Company Dashboard", event: "automation.test" })
+      const response = await fetch(endpoint, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", "user-agent": "Naughty-Company-Dashboard/1.0" }, body: JSON.stringify(payload), signal: controller.signal })
+      statusCode = response.status
+      detail = response.ok ? "Test message delivered. Check your Discord channel." : `Webhook endpoint returned HTTP ${response.status}.`
+    } catch (error) { detail = error instanceof Error && error.name === "AbortError" ? "Webhook test timed out after 5 seconds." : "Webhook test failed. Check the saved endpoint and try again." }
+    finally { clearTimeout(timeout) }
+    const delivered = statusCode !== undefined && statusCode >= 200 && statusCode < 300
+    const now = new Date().toISOString()
+    await db.prepare("UPDATE automation_webhooks SET last_delivered_at = CASE WHEN ? = 1 THEN ? ELSE last_delivered_at END, last_error = ?, updated_at = ? WHERE owner_player_id = ?").bind(Number(delivered), now, delivered ? null : detail, now, ownerPlayerId).run()
+    return { delivered, statusCode, detail }
+  } catch { return { delivered: false, detail: "Webhook test could not be completed. Check the Worker encryption settings and saved endpoint." } }
+}
+
 async function deliverAutomationWebhook(env: WorkerEnv, ownerPlayerId: string, alert: WebhookAlert, options: { ignoreDigestMode?: boolean; ignoreQuietHours?: boolean } = {}): Promise<{ attempted: boolean; delivered: boolean; statusCode?: number; detail?: string }> {
   const db = requireDb(env)
   try {
@@ -671,7 +710,7 @@ async function deliverAutomationWebhook(env: WorkerEnv, ownerPlayerId: string, a
     let statusCode: number | undefined
     let detail = ""
     try {
-      const response = await fetch(endpoint, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", "user-agent": "Naughty-Company-Dashboard/1.0" }, body: JSON.stringify({ source: "Naughty Company Dashboard", event: "automation.alert", alert }), signal: controller.signal })
+      const response = await fetch(endpoint, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", "user-agent": "Naughty-Company-Dashboard/1.0" }, body: JSON.stringify(buildWebhookPayload(endpoint, { source: "Naughty Company Dashboard", event: "automation.alert", alert })), signal: controller.signal })
       statusCode = response.status
       if (!response.ok) detail = `Webhook endpoint returned HTTP ${response.status}.`
       else detail = "Webhook delivered successfully."
@@ -703,7 +742,7 @@ async function deliverAutomationDigest(env: WorkerEnv, ownerPlayerId: string, al
     let statusCode: number | undefined
     let detail = ""
     try {
-      const response = await fetch(endpoint, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", "user-agent": "Naughty-Company-Dashboard/1.0" }, body: JSON.stringify({ source: "Naughty Company Dashboard", event: "automation.daily_digest", digest: { generatedAt: now, eventCount: eligible.length, alerts: eligible } }), signal: controller.signal })
+      const response = await fetch(endpoint, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", "user-agent": "Naughty-Company-Dashboard/1.0" }, body: JSON.stringify(buildWebhookPayload(endpoint, { source: "Naughty Company Dashboard", event: "automation.daily_digest", digest: { generatedAt: now, eventCount: eligible.length, alerts: eligible } })), signal: controller.signal })
       statusCode = response.status
       detail = response.ok ? `Daily digest delivered with ${eligible.length} alerts.` : `Webhook endpoint returned HTTP ${response.status}.`
     } catch (error) { detail = error instanceof Error && error.name === "AbortError" ? "Daily digest request timed out after 5 seconds." : "Daily digest request failed. Check the endpoint and try again." }
@@ -1015,9 +1054,10 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
   const alertsPath = url.pathname === "/api/me/alerts" || url.pathname.startsWith("/api/me/alerts/")
   const preferencesPath = url.pathname === "/api/me/automation-preferences"
   const webhookPath = url.pathname === "/api/me/automation-webhook"
+  const webhookTestPath = url.pathname === "/api/me/automation-webhook/test"
   const deliveriesPath = url.pathname === "/api/me/automation-webhook/deliveries"
   const retryMatch = url.pathname.match(/^\/api\/me\/automation-webhook\/retry\/([a-f0-9-]{36})$/i)
-  if (!rulesPath && !alertsPath && !preferencesPath && !webhookPath && !deliveriesPath && !retryMatch) return null
+  if (!rulesPath && !alertsPath && !preferencesPath && !webhookPath && !webhookTestPath && !deliveriesPath && !retryMatch) return null
   const session = await authenticate(request, env)
   if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
   await ensureAutomationSchema(env)
@@ -1041,6 +1081,10 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
     const now = new Date().toISOString()
     await db.prepare("INSERT INTO automation_webhooks (owner_player_id, ciphertext, iv, enabled, created_at, updated_at, last_delivered_at, last_error) VALUES (?, ?, ?, 1, ?, ?, NULL, NULL) ON CONFLICT(owner_player_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, enabled = 1, updated_at = excluded.updated_at, last_error = NULL").bind(session.player_id, encrypted.ciphertext, encrypted.iv, now, now).run()
     return jsonResponse({ configured: true, saved: true, updatedAt: now }, 200, origin)
+  }
+  if (webhookTestPath && request.method === "POST") {
+    const result = await sendWebhookTest(env, session.player_id)
+    return jsonResponse({ delivery: result }, 200, origin)
   }
   if (webhookPath && request.method === "DELETE") {
     await db.prepare("DELETE FROM automation_webhooks WHERE owner_player_id = ?").bind(session.player_id).run()
