@@ -196,6 +196,24 @@ async function replyFor(i, env) {
       if (detailRes.status === 404) return privateReply("No saved snapshot exists for " + String(company.company_name || "this company") + " yet. Refresh it in the dashboard first.");
       if (!detailRes.ok) return privateReply("Company overview is temporarily unavailable. Please try again later.");
       const data = await detailRes.json();
+      // The dashboard's saved Charts history is the source used by its own stock-delta display.
+      // Fetch the authenticated backup read-only so staging can match that history without a production API deployment.
+      try {
+        const backupRes = await dashboardFetch(env, "/api/me/data-backup", { headers, signal: AbortSignal.timeout(8000) });
+        if (backupRes.ok) {
+          const backup = await backupRes.json();
+          const pages = backup && backup.pages && typeof backup.pages === "object" ? backup.pages : {};
+          const charts = pages.charts && typeof pages.charts === "object" ? pages.charts : {};
+          const chartHistory = charts.history && typeof charts.history === "object" ? charts.history : charts;
+          const chartCompanies = Array.isArray(chartHistory.companies) ? chartHistory.companies : [];
+          const chartCompany = chartCompanies.find(item => item && String(item.companyId) === String(company.company_id));
+          const dashboardSnapshots = Array.isArray(chartCompany && chartCompany.history) ? chartCompany.history.filter(point => point && typeof point.day === "string" && Number.isFinite(Number(point.stockQuantity))).map(point => ({ day: point.day, stock: [{ in_stock: Number(point.stockQuantity) }], fetchedAt: point.fetchedAt || "" })) : [];
+          if (dashboardSnapshots.length) data.stockHistory = dashboardSnapshots;
+          const storage = backup.storage && typeof backup.storage === "object" ? backup.storage : {};
+          const directorSnapshots = Array.isArray(storage.directorSnapshots) ? storage.directorSnapshots.filter(item => item && String(item.companyId) === String(company.company_id) && typeof item.snapshotDay === "string" && item.stock != null).map(item => ({ day: item.snapshotDay, stock: item.stock, fetchedAt: item.fetchedAt || "" })) : [];
+          if (directorSnapshots.length) data.stockOrderHistory = directorSnapshots;
+        }
+      } catch { /* History is optional; preserve the current overview if backup retrieval fails. */ }
       const profile = data.profile && typeof data.profile === "object" ? data.profile : {};
       const root = profile.company && typeof profile.company === "object" ? profile.company : profile.profile && typeof profile.profile === "object" ? profile.profile : profile;
       const income = root.income && typeof root.income === "object" ? root.income : {};
@@ -247,7 +265,7 @@ async function replyFor(i, env) {
       const dailyExpensesBeforeStock = (adBudget || 0) + (hasWages ? totalWages : 0);
       const dailyProfit = coreExpensesKnown && dailyIncome != null ? dailyIncome - dailyExpensesBeforeStock - dailyStockCost : null;
       const weeklyOrderCost = (() => {
-        const history = Array.isArray(data.stockHistory) ? data.stockHistory : [];
+        const history = Array.isArray(data.stockOrderHistory) ? data.stockOrderHistory : Array.isArray(data.stockHistory) ? data.stockHistory : [];
         const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
         const recent = history.filter(snapshot => snapshot && typeof snapshot.day === "string" && snapshot.day >= cutoff && snapshot.day < currentSnapshotDay && Array.isArray(snapshot.stock));
         if (!recent.length) return currentOrderCost;
