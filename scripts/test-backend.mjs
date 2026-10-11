@@ -115,6 +115,8 @@ try {
     assert.match(source, /Daily digest could not be completed\. Check the configured endpoint and encryption settings\./)
     assert.match(source, /anyFailed \? lastFailure : null/)
     assert.match(source, /e\.owner_player_id = \? AND e\.created_at <= \? AND CASE e\.severity/)
+    assert.match(source, /d\.status = 'delivered' AND d\.detail LIKE 'Daily digest%'/)
+    assert.doesNotMatch(source, /d\.event_id = e\.event_id AND d\.status = 'delivered'\) ORDER BY e\.created_at/)
   })
 
   await test("webhook digest preferences are independent from browser notification delivery", () => {
