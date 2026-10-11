@@ -231,8 +231,9 @@ async function replyFor(i, env) {
       const safeName = String(data.companyName || company.company_name || "Your company").replace(/@/g, "@\u200b").slice(0, 90);
       const dailyIncome = numeric(income.daily);
       const weeklyIncome = numeric(income.weekly);
-      const dailyExpensesKnown = adBudget != null && hasWages && pricedStockCount === stockRoot.length && stockRoot.length > 0;
-      const dailyExpenses = (adBudget || 0) + (hasWages ? totalWages : 0) + stockValue;
+      const dailyStockCost = findNumber(root, ["daily_stock_cost", "stock_cost_daily", "daily_stock_expense", "stock_expense_daily", "daily_stock_purchases", "stock_purchases_daily", "daily_cost_of_stock"]);
+      const dailyExpensesKnown = adBudget != null && hasWages && dailyStockCost != null;
+      const dailyExpenses = (adBudget || 0) + (hasWages ? totalWages : 0) + (dailyStockCost || 0);
       const dailyProfit = dailyExpensesKnown && dailyIncome != null ? dailyIncome - dailyExpenses : null;
       const weeklyProfit = dailyExpensesKnown && weeklyIncome != null ? weeklyIncome - (dailyExpenses * 7) : null;
       const lines = [
@@ -240,8 +241,8 @@ async function replyFor(i, env) {
         "Type: " + String(data.companyType || company.company_type || "Not available").slice(0, 60),
         "Daily income: " + money(dailyIncome),
         "Weekly income: " + money(weeklyIncome),
-        "Daily profit (income − ad budget − wages − stock costs): " + money(dailyProfit),
-        "Weekly profit (weekly income − 7× daily expenses): " + money(weeklyProfit),
+        "Daily profit (income − ad budget − wages − stock purchases): " + money(dailyProfit),
+        "Weekly profit estimate (weekly income − 7× daily expenses): " + money(weeklyProfit),
         "Advertisement budget: " + money(adBudget),
         "Total employee wages: " + (hasWages ? money(totalWages) : "Not available"),
         "Company Performance | Popularity: " + (popularity == null ? "Not available" : String(popularity)) + " · Efficiency: " + (efficiency == null ? "Not available" : String(efficiency)) + " · Environment: " + (environment == null ? "Not available" : String(environment)),
