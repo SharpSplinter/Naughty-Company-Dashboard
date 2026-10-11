@@ -33,13 +33,20 @@ async function replyFor(i, env) {
         const requestId = response.headers.get("cf-ray") || response.headers.get("x-request-id") || null;
         const contentType = response.headers.get("content-type") || null;
         const server = response.headers.get("server") || null;
+        let responseUrl = null;
+        try {
+          const resolved = new URL(response.url);
+          responseUrl = resolved.origin + resolved.pathname;
+        } catch {}
         console.warn(JSON.stringify({
           event: "dashboard_sign_in_failed",
           endpoint: "/api/auth/sign-in",
           status: response.status,
           requestId,
           contentType,
-          server
+          server,
+          redirected: response.redirected,
+          responseUrl
         }));
         const diagnostic = requestId ? ` Request ID: ${requestId}.` : "";
         return privateReply(`Dashboard sign-in failed (HTTP ${response.status}).${diagnostic} No credentials or response details are exposed. Share only the status and request ID for staging diagnosis.`);
