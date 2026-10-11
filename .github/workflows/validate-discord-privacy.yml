@@ -4,6 +4,7 @@ on:
     branches:
       - main
       - feature/staging-discord-link-company
+      - feature/discord-company-overview
     paths:
       - 'src/worker/index.ts'
       - 'src/components/floor/alerts-panel.tsx'
