@@ -728,18 +728,18 @@ async function deliverAutomationWebhook(env: WorkerEnv, ownerPlayerId: string, a
   } catch { return { attempted: true, delivered: false, detail: "Webhook delivery could not be completed. Check the configured endpoint and encryption settings." } }
 }
 
-async function deliverAutomationDigest(env: WorkerEnv, ownerPlayerId: string, alerts: WebhookAlert[]): Promise<void> {
+async function deliverAutomationDigest(env: WorkerEnv, ownerPlayerId: string, alerts: WebhookAlert[]): Promise<boolean> {
   const db = requireDb(env)
-  if (!alerts.length) return
+  if (!alerts.length) return false
   try {
     const [hook, preferences] = await Promise.all([
       db.prepare("SELECT ciphertext, iv FROM automation_webhooks WHERE owner_player_id = ? AND enabled = 1").bind(ownerPlayerId).first<{ ciphertext: string; iv: string }>(),
       db.prepare("SELECT minimum_severity AS minimumSeverity FROM automation_preferences WHERE owner_player_id = ?").bind(ownerPlayerId).first<{ minimumSeverity: string }>(),
     ])
-    if (!hook) return
+    if (!hook) return false
     const minimumRank = severityRank(preferences?.minimumSeverity ?? "info")
     const eligible = alerts.filter((alert) => severityRank(alert.severity) >= minimumRank)
-    if (!eligible.length) return
+    if (!eligible.length) return false
     const endpoint = await decryptKey(env, hook.ciphertext, hook.iv)
     let anyDelivered = false
     let anyFailed = false
@@ -768,6 +768,7 @@ async function deliverAutomationDigest(env: WorkerEnv, ownerPlayerId: string, al
     }
     const finishedAt = new Date().toISOString()
     await db.prepare("UPDATE automation_webhooks SET last_delivered_at = CASE WHEN ? = 1 THEN ? ELSE last_delivered_at END, last_error = ?, updated_at = ? WHERE owner_player_id = ?").bind(Number(anyDelivered), finishedAt, anyFailed ? lastFailure : null, finishedAt, ownerPlayerId).run()
+    return anyFailed
   } catch {
     // Keep failures visible even when decrypting the webhook or recording individual deliveries fails.
     // Avoid surfacing raw exception text because it may contain provider-specific endpoint details.
@@ -776,19 +777,24 @@ async function deliverAutomationDigest(env: WorkerEnv, ownerPlayerId: string, al
       await db.prepare("UPDATE automation_webhooks SET last_error = ?, updated_at = ? WHERE owner_player_id = ?")
         .bind("Daily digest could not be completed. Check the configured endpoint and encryption settings.", failedAt, ownerPlayerId).run()
     } catch { /* The database itself may be unavailable; the next scheduled pass can retry. */ }
+    return true
   }
 }
 
-async function deliverDailyAutomationDigests(env: WorkerEnv, now = new Date()): Promise<void> {
+async function deliverDailyAutomationDigests(env: WorkerEnv, now = new Date()): Promise<number> {
   const db = requireDb(env)
   const cutoff = new Date(now.getTime() - DAY * 1000).toISOString()
   const owners = await db.prepare("SELECT owner_player_id AS ownerPlayerId, timezone, quiet_hours_enabled AS quietHoursEnabled, quiet_hours_start AS quietHoursStart, quiet_hours_end AS quietHoursEnd, minimum_severity AS minimumSeverity FROM automation_preferences WHERE digest_mode IN ('daily', 'both')").all<{ ownerPlayerId: string; timezone: string; quietHoursEnabled: number; quietHoursStart: string; quietHoursEnd: string; minimumSeverity: string }>()
+  let failedOwners = 0
   for (const owner of owners.results ?? []) {
     if (isWithinQuietHours(owner, now)) continue
-    const minimumRank = severityRank(owner.minimumSeverity)
-    const events = await db.prepare("SELECT e.event_id AS eventId, e.rule_id AS ruleId, e.rule_type AS ruleType, e.severity, e.title, e.message, e.company_id AS companyId, e.created_at AS createdAt FROM alert_events e WHERE e.owner_player_id = ? AND e.created_at <= ? AND CASE e.severity WHEN 'critical' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END >= ? AND NOT EXISTS (SELECT 1 FROM automation_delivery_log d WHERE d.owner_player_id = e.owner_player_id AND d.event_id = e.event_id AND d.status = 'delivered' AND d.detail LIKE 'Daily digest%') ORDER BY e.created_at ASC LIMIT 50").bind(owner.ownerPlayerId, cutoff, minimumRank).all<WebhookAlert>()
-    await deliverAutomationDigest(env, owner.ownerPlayerId, events.results ?? [])
+    try {
+      const minimumRank = severityRank(owner.minimumSeverity)
+      const events = await db.prepare("SELECT e.event_id AS eventId, e.rule_id AS ruleId, e.rule_type AS ruleType, e.severity, e.title, e.message, e.company_id AS companyId, e.created_at AS createdAt FROM alert_events e WHERE e.owner_player_id = ? AND e.created_at <= ? AND CASE e.severity WHEN 'critical' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END >= ? AND NOT EXISTS (SELECT 1 FROM automation_delivery_log d WHERE d.owner_player_id = e.owner_player_id AND d.event_id = e.event_id AND d.status = 'delivered' AND d.detail LIKE 'Daily digest%') ORDER BY e.created_at ASC LIMIT 50").bind(owner.ownerPlayerId, cutoff, minimumRank).all<WebhookAlert>()
+      if (await deliverAutomationDigest(env, owner.ownerPlayerId, events.results ?? [])) failedOwners += 1
+    } catch { failedOwners += 1 }
   }
+  return failedOwners
 }
 
 function validateWebhookUrl(value: unknown): string | null { return normalizeWebhookUrl(value) }
@@ -889,12 +895,13 @@ async function emitRefreshFailureAlerts(env: WorkerEnv, playerId: string, compan
   }
 }
 
-async function evaluateStaleDataRules(env: WorkerEnv): Promise<void> {
+async function evaluateStaleDataRules(env: WorkerEnv): Promise<number> {
   await ensureAutomationSchema(env)
   const db = requireDb(env)
   const result = await db.prepare("SELECT * FROM alert_rules WHERE enabled = 1 AND rule_type = 'stale_data'").all<AlertRuleRow>()
   const nowMs = Date.now()
   const now = new Date(nowMs).toISOString()
+  let failedRules = 0
   for (const rule of result.results ?? []) {
     try {
       const latest = rule.company_id
@@ -907,8 +914,9 @@ async function evaluateStaleDataRules(env: WorkerEnv): Promise<void> {
         await createAlertEvent(env, rule, { severity: "warning", title: "Company data is stale", message: `The last successful company snapshot is ${ageHours} hours old. The configured limit is ${rule.stale_after_hours} hours.`, companyId: latest.companyId, sourceSnapshotAt: latest.fetchedAt, dedupeSuffix: `stale:${now.slice(0, 10)}` })
       }
       await db.prepare("UPDATE alert_rules SET last_evaluated_at = ? WHERE rule_id = ? AND owner_player_id = ?").bind(now, rule.rule_id, rule.owner_player_id).run()
-    } catch { /* Keep other rules running if a single stored rule is malformed. */ }
+    } catch { failedRules += 1 /* Keep other rules running if a single stored rule is malformed. */ }
   }
+  return failedRules
 }
 
 async function runScheduledAutomation(controller: { scheduledTime: number; cron: string }, env: WorkerEnv): Promise<void> {
@@ -925,17 +933,21 @@ async function runScheduledAutomation(controller: { scheduledTime: number; cron:
   const tasks: Promise<unknown>[] = [refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35), refreshGlobalRankingCache(env)]
   if (isWeeklyLock) tasks.push(captureWeeklyFactionStarCounts(env, startedAt))
   const results = await Promise.allSettled(tasks)
-  await evaluateStaleDataRules(env).catch(() => undefined)
-  await deliverDailyAutomationDigests(env).catch(() => undefined)
+  let staleRuleFailures = 0
+  let digestFailures = 0
+  try { staleRuleFailures = await evaluateStaleDataRules(env) } catch { staleRuleFailures = 1 }
+  try { digestFailures = await deliverDailyAutomationDigests(env) } catch { digestFailures = 1 }
   const refresh = results[0]
   const refreshSummary = refresh.status === "fulfilled" ? refresh.value as { companiesChecked?: number; companiesFailed?: number } : { companiesChecked: 0, companiesFailed: 0 }
   const failures = results.filter((item) => item.status === "rejected").map((item) => item.status === "rejected" ? (item.reason instanceof Error ? item.reason.message : "A scheduled task failed.") : "")
   const companiesChecked = Number(refreshSummary.companiesChecked ?? 0)
   const companiesFailed = Number(refreshSummary.companiesFailed ?? 0) + (refresh.status === "rejected" ? 1 : 0)
   const alerts = await db.prepare("SELECT COUNT(*) AS count FROM alert_events WHERE created_at >= ?").bind(startedAt).first<{ count: number }>().catch(() => null)
-  const status = results.every((item) => item.status === "rejected") ? "failed" : (failures.length || companiesFailed ? "partial" : "succeeded")
+  const allTasksFailed = results.every((item) => item.status === "rejected")
+  const hasFailures = failures.length > 0 || companiesFailed > 0 || staleRuleFailures > 0 || digestFailures > 0
+  const status = allTasksFailed ? "failed" : (hasFailures ? "partial" : "succeeded")
   const finishedAt = new Date().toISOString()
-  const summary = [...failures, ...(companiesFailed ? [`${companiesFailed} company refresh(es) failed.`] : [])].join(" ").slice(0, 500) || null
+  const summary = [...failures, ...(companiesFailed ? [`${companiesFailed} company refresh(es) failed.`] : []), ...(staleRuleFailures ? [`${staleRuleFailures} stale-data rule evaluation(s) failed.`] : []), ...(digestFailures ? [`${digestFailures} daily digest delivery group(s) failed.`] : [])].join(" ").slice(0, 500) || null
   await db.prepare("UPDATE automation_runs SET status = ?, finished_at = ?, companies_checked = ?, companies_failed = ?, alerts_created = ?, error_summary = ? WHERE run_id = ?")
     .bind(status, finishedAt, companiesChecked, companiesFailed, Number(alerts?.count ?? 0), summary, runId).run()
 }
@@ -1179,7 +1191,7 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
     const [rows, unread, latestRun] = await Promise.all([
       db.prepare("SELECT e.event_id AS eventId, e.rule_id AS ruleId, e.company_id AS companyId, e.rule_type AS ruleType, e.severity, e.title, e.message, e.previous_value AS previousValue, e.current_value AS currentValue, e.change_percent AS changePercent, e.source_snapshot_at AS sourceSnapshotAt, e.status, e.created_at AS createdAt, e.acknowledged_at AS acknowledgedAt, c.company_name AS companyName FROM alert_events e LEFT JOIN companies c ON c.player_id = e.owner_player_id AND c.company_id = e.company_id WHERE e.owner_player_id = ? ORDER BY e.created_at DESC LIMIT ?").bind(session.player_id, limit).all<Record<string, unknown>>(),
       db.prepare("SELECT COUNT(*) AS count FROM alert_events WHERE owner_player_id = ? AND status = 'unread'").bind(session.player_id).first<{ count: number }>(),
-      db.prepare("SELECT trigger_name AS triggerName, status, started_at AS startedAt, finished_at AS finishedAt, companies_checked AS companiesChecked, companies_failed AS companiesFailed, alerts_created AS alertsCreated FROM automation_runs ORDER BY started_at DESC LIMIT 1").first<Record<string, unknown>>(),
+      db.prepare("SELECT trigger_name AS triggerName, status, started_at AS startedAt, finished_at AS finishedAt, companies_checked AS companiesChecked, companies_failed AS companiesFailed, alerts_created AS alertsCreated, error_summary AS errorSummary FROM automation_runs ORDER BY started_at DESC LIMIT 1").first<Record<string, unknown>>(),
     ])
     return jsonResponse({ events: rows.results ?? [], unreadCount: Number(unread?.count ?? 0), latestRun: latestRun ?? null }, 200, origin)
   }
