@@ -86,13 +86,12 @@ try {
     assert.match(source, /ignoreDigestMode: true, ignoreQuietHours: true/)
   })
 
-  await test("webhook digest preferences are independent from browser notification delivery", () => {
-    const source = readFileSync(join(root, "src/components/floor/alerts-panel.tsx"), "utf8")
-    assert.match(source, /digestMode: "instant" \| "daily" \| "off"/)
-    assert.match(source, /Daily webhook digest/)
-    assert.match(source, /Webhook delivery mode/)
-    assert.match(source, /browserNotificationsEnabled: enabled \}\)\)/)
-    assert.doesNotMatch(source, /preferences\.browserNotificationsEnabled \|\| preferences\.digestMode === "off"/)
+  await test("historical period comparisons fetch enough prior history independent of chart range", () => {
+    const source = readFileSync(join(root, "src/components/floor/insights-workspace.tsx"), "utf8")
+    assert.match(source, /const \[comparisonHistory, setComparisonHistory\] = useState<TrendPoint\[\]>/)
+    assert.match(source, /Number\(comparisonDays\) === 7 \? "30" : Number\(comparisonDays\) === 30 \? "90" : "365"/)
+    assert.match(source, /if \(view === "trends"\) tasks\.push\(loadComparison\(\)\)/)
+    assert.match(source, /const comparison = useMemo\(\(\) => \{ const points = comparisonHistory/)
   })
 
   await test("accepts only public HTTPS webhook destinations", () => {

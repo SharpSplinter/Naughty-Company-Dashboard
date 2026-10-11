@@ -53,6 +53,7 @@ function changeLabel(value: number | null, suffix = "%") { if (value == null || 
 export function InsightsWorkspace({ view, apiBase, sessionToken, isAdmin, demoMode, companyId, sharedRosterCompanies, model, companyRank, starRank, nextStarGap, sameTypeCount, dashboardPreferences, onDashboardPreferencesChange, onNavigate }: Props) {
   const [health, setHealth] = useState<Health | null>(null)
   const [trends, setTrends] = useState<Trends | null>(null)
+  const [comparisonHistory, setComparisonHistory] = useState<TrendPoint[]>([])
   const [trendDays, setTrendDays] = useState<"7" | "30" | "90" | "365" | "all">("90")
   const [comparisonDays, setComparisonDays] = useState<"7" | "30" | "90">("7")
   const [roster, setRoster] = useState<Roster | null>(null)
@@ -73,6 +74,7 @@ export function InsightsWorkspace({ view, apiBase, sessionToken, isAdmin, demoMo
   const [layoutLoaded, setLayoutLoaded] = useState(false)
   const [layoutLoadError, setLayoutLoadError] = useState("")
   const trendRequestId = useRef(0)
+  const comparisonRequestId = useRef(0)
   const rosterRequestId = useRef(0)
   const healthRequestId = useRef(0)
   const layoutRequestId = useRef(0)
@@ -80,6 +82,7 @@ export function InsightsWorkspace({ view, apiBase, sessionToken, isAdmin, demoMo
 
   const loadHealth = useCallback(async () => { const requestId = ++healthRequestId.current; if (!sessionToken || demoMode) return; const payload = await api<Health>(apiBase, sessionToken, "/api/me/health"); if (requestId === healthRequestId.current) setHealth(payload) }, [apiBase, sessionToken, demoMode])
   const loadTrends = useCallback(async () => { const requestId = ++trendRequestId.current; if (!sessionToken || demoMode || !companyId) { setTrends(null); return }; setTrends(null); const payload = await api<Trends>(apiBase, sessionToken, `/api/me/companies/${encodeURIComponent(companyId)}/history?days=${trendDays}`); if (requestId === trendRequestId.current) setTrends(payload) }, [apiBase, sessionToken, demoMode, companyId, trendDays])
+  const loadComparison = useCallback(async () => { const requestId = ++comparisonRequestId.current; if (!sessionToken || demoMode || !companyId) { setComparisonHistory([]); return }; const range = Number(comparisonDays) === 7 ? "30" : Number(comparisonDays) === 30 ? "90" : "365"; const payload = await api<Trends>(apiBase, sessionToken, `/api/me/companies/${encodeURIComponent(companyId)}/history?days=${range}`); if (requestId === comparisonRequestId.current) setComparisonHistory(payload.history || []) }, [apiBase, sessionToken, demoMode, companyId, comparisonDays])
   const loadRoster = useCallback(async () => { const requestId = ++rosterRequestId.current; if (!sessionToken || demoMode) { setRoster(null); return }; setRoster(null); const sharedSource = view === "roster-insights" ? selectedSharedRoster : null; const params = new URLSearchParams(); if (sharedSource) { params.set("companyId", sharedSource.companyId); params.set("ownerPlayerId", sharedSource.playerId) } else if (companyId) params.set("companyId", companyId); const query = params.toString(); const payload = await api<Roster>(apiBase, sessionToken, `/api/me/member-insights${query ? `?${query}` : ""}`); if (requestId === rosterRequestId.current) setRoster(payload) }, [apiBase, sessionToken, demoMode, companyId, view, selectedSharedRoster])
   const loadLayout = useCallback(async () => { const requestId = ++layoutRequestId.current; if (!sessionToken || demoMode) { setLayoutLoadError(""); setLayoutLoaded(true); return }; setLayoutLoadError(""); setLayoutLoaded(false); try { const localPreferences = (() => { try { return JSON.parse(localStorage.getItem("ncd_dashboard_preferences") || "null") as DashboardPreferences | null } catch { return null } })(); if (localPreferences && requestId === layoutRequestId.current) onDashboardPreferencesChange({ density: localPreferences.density === "compact" ? "compact" : "comfortable", contentWidth: localPreferences.contentWidth === "wide" ? "wide" : "standard" }); const payload = await api<{ layout: Layout | null }>(apiBase, sessionToken, "/api/me/dashboard-layout"); const saved = payload.layout?.widgets; if (requestId === layoutRequestId.current && payload.layout?.dashboardPreferences) { const preferences = { density: payload.layout.dashboardPreferences.density === "compact" ? "compact" as const : "comfortable" as const, contentWidth: payload.layout.dashboardPreferences.contentWidth === "wide" ? "wide" as const : "standard" as const }; onDashboardPreferencesChange(preferences); try { localStorage.setItem("ncd_dashboard_preferences", JSON.stringify(preferences)) } catch { /* Storage may be disabled. */ } } if (requestId === layoutRequestId.current && Array.isArray(saved) && saved.length) { const map = new Map(saved.map((item) => [item.id, item])); setWidgets(DEFAULT_WIDGETS.map((item) => map.get(item.id) ?? item).sort((a, b) => a.order - b.order).map((item, order) => ({ ...item, order }))) } } catch (caught) { if (requestId === layoutRequestId.current) setLayoutLoadError(caught instanceof Error ? caught.message : "Could not load your saved dashboard layout.") } finally { if (requestId === layoutRequestId.current) setLayoutLoaded(true) } }, [apiBase, sessionToken, demoMode, onDashboardPreferencesChange])
 
@@ -131,6 +134,7 @@ export function InsightsWorkspace({ view, apiBase, sessionToken, isAdmin, demoMo
       const tasks: Promise<unknown>[] = []
       if (view === "health" || view === "executive") tasks.push(loadHealth())
       if (view === "trends" || view === "executive") tasks.push(loadTrends())
+      if (view === "trends") tasks.push(loadComparison())
       if (view === "roster-insights" || view === "executive") tasks.push(loadRoster())
       if (view === "executive") tasks.push(api<{ events: typeof alerts }>(apiBase, sessionToken, "/api/me/alerts?limit=5").then((p) => { if (!cancelled) setAlerts(p.events || []) }))
       if (view === "executive" && isAdmin) tasks.push(api<typeof automation>(apiBase, sessionToken, "/api/admin/automation/runs?limit=1&days=30").then((p) => { if (!cancelled) setAutomation(p) }))
@@ -140,14 +144,14 @@ export function InsightsWorkspace({ view, apiBase, sessionToken, isAdmin, demoMo
       if (!cancelled) { const failed = results.find((result) => result.status === "rejected") as PromiseRejectedResult | undefined; if (failed) setError(failed.reason instanceof Error ? failed.reason.message : "Some insights could not be loaded."); setLoading(false) }
     }
     void load()
-    return () => { cancelled = true; trendRequestId.current += 1; rosterRequestId.current += 1; healthRequestId.current += 1; layoutRequestId.current += 1 }
-  }, [view, apiBase, sessionToken, demoMode, isAdmin, companyId, trendDays, memberActivityDays, loadHealth, loadTrends, loadRoster, loadLayout])
+    return () => { cancelled = true; trendRequestId.current += 1; comparisonRequestId.current += 1; rosterRequestId.current += 1; healthRequestId.current += 1; layoutRequestId.current += 1 }
+  }, [view, apiBase, sessionToken, demoMode, isAdmin, companyId, trendDays, memberActivityDays, loadHealth, loadTrends, loadComparison, loadRoster, loadLayout])
 
   const dailySeries: ChartSeries[] = useMemo(() => [{ label: trends?.company.companyName || model?.company.name || "Selected company", values: (trends?.history || []).map((point) => ({ label: point.day, value: point.dailyIncome })) }], [trends, model])
   const weeklySeries: ChartSeries[] = useMemo(() => [{ label: trends?.company.companyName || model?.company.name || "Selected company", values: (trends?.history || []).map((point) => ({ label: point.day, value: point.weeklyIncome })) }], [trends, model])
   const ratingSeries: ChartSeries[] = useMemo(() => [{ label: "Star rating", values: (trends?.history || []).map((point) => ({ label: point.day, value: point.rating })) }], [trends])
   const rosterSeries: ChartSeries[] = useMemo(() => [{ label: "Employees", values: (trends?.history || []).map((point) => ({ label: point.day, value: point.employeeCount })) }], [trends])
-  const comparison = useMemo(() => { const points = trends?.history || []; if (points.length < 2) return null; const periodMs = Number(comparisonDays) * 86400000; const latestDay = Date.parse(`${points[points.length - 1].day}T00:00:00Z`); const recent = points.filter((point) => { const delta = latestDay - Date.parse(`${point.day}T00:00:00Z`); return delta >= 0 && delta < periodMs }); const previous = points.filter((point) => { const delta = latestDay - Date.parse(`${point.day}T00:00:00Z`); return delta >= periodMs && delta < periodMs * 2 }); return { recentAverage: average(recent.map((point) => point.dailyIncome)), previousAverage: average(previous.map((point) => point.dailyIncome)), recentCount: recent.length, previousCount: previous.length } }, [trends, comparisonDays])
+  const comparison = useMemo(() => { const points = comparisonHistory; if (points.length < 2) return null; const periodMs = Number(comparisonDays) * 86400000; const latestDay = Date.parse(`${points[points.length - 1].day}T00:00:00Z`); const recent = points.filter((point) => { const delta = latestDay - Date.parse(`${point.day}T00:00:00Z`); return delta >= 0 && delta < periodMs }); const previous = points.filter((point) => { const delta = latestDay - Date.parse(`${point.day}T00:00:00Z`); return delta >= periodMs && delta < periodMs * 2 }); return { recentAverage: average(recent.map((point) => point.dailyIncome)), previousAverage: average(previous.map((point) => point.dailyIncome)), recentCount: recent.length, previousCount: previous.length } }, [comparisonHistory, comparisonDays])
   const findings: Finding[] = useMemo(() => {
     const result: Finding[] = []
     const points = trends?.history || []
