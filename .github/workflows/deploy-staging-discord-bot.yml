@@ -1,0 +1,39 @@
+name: Deploy staging Discord bot
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Deploy only the staging bot Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 6c03b978ed9a59adc3f61c715bdad45c
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          boundary="----staging-bot-${GITHUB_RUN_ID}"
+          metadata='{"main_module":"worker.js","compatibility_date":"2026-10-11"}'
+          status=$(curl --silent --show-error --output /tmp/cf-response.json --write-out '%{http_code}' \
+            -X PUT "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/naughty-company-bot-staging?bindings_inherit=true" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -F "metadata=${metadata};type=application/json" \
+            -F "worker.js=@bot/staging-worker.js;type=application/javascript+module")
+          if [[ "$status" != "200" ]]; then
+            echo "Cloudflare staging deployment failed (HTTP ${status}). Response details suppressed to avoid leaking sensitive configuration."
+            exit 1
+          fi
+          if ! jq -e '.success == true' /tmp/cf-response.json >/dev/null; then
+            echo "Cloudflare rejected the staging deployment; response details suppressed."
+            exit 1
+          fi
+          echo "Staging Worker upload accepted. Production Worker was not targeted."
+          rm -f /tmp/cf-response.json
+          curl --fail --silent --show-error https://naughty-company-bot-staging.kboone801.workers.dev/health | jq -e '.ok == true and .database == true and .encryption == true and .discordConfigured == true' >/dev/null
+          echo "Staging health check passed with database, encryption, and Discord configuration present."
