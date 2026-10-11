@@ -192,7 +192,7 @@ async function replyFor(i, env) {
       const employeeList = Array.isArray(data.employees) ? data.employees : Array.isArray(employeeRoot.employees) ? employeeRoot.employees : Array.isArray(employeeRoot.company_employees) ? employeeRoot.company_employees : [];
       const stockRoot = Array.isArray(data.stock) ? data.stock : data.stock && Array.isArray(data.stock.stock) ? data.stock.stock : data.stock && typeof data.stock === "object" ? Object.values(data.stock).filter(value => value && typeof value === "object") : [];
       const stockQuantity = stockRoot.reduce((sum, item) => { const value = [item.in_stock, item.quantity, item.amount].find(n => typeof n === "number" && Number.isFinite(n)); return sum + (value || 0); }, 0);
-      const safeName = String(data.companyName || company.company_name || "Your company").replace(/@/g, "@\\u200b").slice(0, 90);
+      const safeName = String(data.companyName || company.company_name || "Your company").replace(/@/g, "@\u200b").slice(0, 90);
       const lines = [
         "**Company overview | " + safeName + "**",
         "Type: " + String(data.companyType || company.company_type || "Not available").slice(0, 60),
@@ -204,7 +204,7 @@ async function replyFor(i, env) {
         "Stock items: " + (stockRoot.length || "Not reported") + " | Total quantity: " + (stockRoot.length ? stockQuantity.toLocaleString("en-US") : "Not available"),
         "Snapshot updated: " + String(data.fetchedAt || company.fetched_at || "Not available")
       ];
-      return privateReply(lines.join("\\n"));
+      return privateReply(lines.join("\n"));
     } catch { return privateReply("Company overview is temporarily unavailable. Please try again later."); }
   }
   if (name === "employees") {
