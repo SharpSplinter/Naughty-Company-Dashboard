@@ -231,7 +231,8 @@ async function replyFor(i, env) {
       const safeName = String(data.companyName || company.company_name || "Your company").replace(/@/g, "@\u200b").slice(0, 90);
       const dailyIncome = numeric(income.daily);
       const weeklyIncome = numeric(income.weekly);
-      const dailyStockCost = findNumber(root, ["daily_stock_cost", "stock_cost_daily", "daily_stock_expense", "stock_expense_daily", "daily_stock_purchases", "stock_purchases_daily", "daily_cost_of_stock"]);
+      const stockPurchaseFields = ["stock_purchased_today", "stock_purchases_today", "purchased_today", "daily_stock_cost", "stock_cost_daily", "daily_stock_expense", "stock_expense_daily", "daily_stock_purchases", "stock_purchases_daily", "daily_cost_of_stock"];
+      const dailyStockCost = findNumber(data.stock, stockPurchaseFields) ?? findNumber(root, stockPurchaseFields);
       const dailyExpensesKnown = adBudget != null && hasWages && dailyStockCost != null;
       const dailyExpenses = (adBudget || 0) + (hasWages ? totalWages : 0) + (dailyStockCost || 0);
       const dailyProfit = dailyExpensesKnown && dailyIncome != null ? dailyIncome - dailyExpenses : null;
@@ -252,6 +253,7 @@ async function replyFor(i, env) {
         "Stock quantity: " + (stockRoot.length ? stockQuantity.toLocaleString("en-US") : "Not available"),
         "Stock change vs previous day: Not available (no saved daily stock baseline)",
         "Stock unit price: " + (stockRoot.length === 1 ? money(numeric(stockRoot[0].price, stockRoot[0].sell_price, stockRoot[0].selling_price, stockRoot[0].price_per_unit, stockRoot[0].cost, stockRoot[0].unit_cost, stockRoot[0].cost_per_unit)) : "See item-level stock data in dashboard"),
+        "Stock purchased today: " + (dailyStockCost == null ? "Not available (daily purchase-cost data not supplied)" : money(dailyStockCost)),
         "Stock total value: " + (stockRoot.length && pricedStockCount === stockRoot.length ? money(stockValue) : "Not available (stock price data incomplete)"),
         "Snapshot updated: " + String(data.fetchedAt || company.fetched_at || "Not available"),
         "Snapshot age: " + snapshotAgeLabel(data.fetchedAt || company.fetched_at)
