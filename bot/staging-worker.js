@@ -244,13 +244,28 @@ async function replyFor(i, env) {
       const data = await res.json(), roster = Array.isArray(data.roster) ? data.roster : [];
       const summary = data.summary && typeof data.summary === "object" ? data.summary : {};
       if (!roster.length) return privateReply(String(data.message || "No employee roster is available yet."));
-      const lines = roster.slice(0, 12).map((e, n) => {
+      const lines = roster.map((e, n) => {
         const label = String(e.name || e.employeeName || e.employee_name || ("Employee " + (n + 1))).slice(0, 70);
         const position = String(e.positionName || e.position_name || e.position?.name || e.position || "Position not reported").slice(0, 60);
         const wage = e.wage ?? e.salary ?? e.wages;
         return "- **" + label + "**  |  " + position + (wage == null ? "" : "  |  Wage: $" + Number(wage).toLocaleString("en-US"));
       });
-      return privateReply("**Employee roster: " + String(company.name || company.company_name || company.company_id).slice(0, 80) + "**\n" + lines.join("\n") + (roster.length > 12 ? "\n...and " + (roster.length - 12) + " more. Open the dashboard for the full roster." : "") + (summary.employeeCount == null ? "" : "\n\nEmployees: " + summary.employeeCount));
+      const companyLabel = String(company.name || company.company_name || company.company_id).slice(0, 80);
+      const chunks = [];
+      let current = "**Employee roster: " + companyLabel + "**\n";
+      for (const line of lines) {
+        if ((current + line + "\n").length > 1750 && current.trim()) {
+          chunks.push(current.trimEnd());
+          current = "**Employee roster: " + companyLabel + " (continued)**\n";
+        }
+        current += line + "\n";
+      }
+      if (summary.employeeCount == null) current = current.trimEnd();
+      else current += "\nEmployees: " + summary.employeeCount;
+      if (current.trim()) chunks.push(current.trimEnd());
+      const response = privateReply(chunks[0] || "No employee roster is available yet.");
+      if (chunks.length > 1) response.followups = chunks.slice(1);
+      return response;
     } catch { return privateReply("Employee data is temporarily unavailable. Please try again later."); }
   }
   if (name === "trends") {
@@ -326,12 +341,30 @@ async function replyFor(i, env) {
 }
 export default {
   async scheduled(_controller, env, ctx) { ctx.waitUntil(pollPrivateAlerts(env)); },
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
     if (req.method === "GET" && url.pathname === "/health") return json({ ok: true, service: "naughty-company-bot-staging", database: !!env.BOT_DB, encryption: !!env.BOT_ENCRYPTION_KEY, discordConfigured: !!env.DISCORD_TOKEN, dashboardBinding: !!env.DASHBOARD_API, privateAlertDelivery: true });
     if (req.method !== "POST") return json({ ok: false, error: "not_found" }, 404);
     if (!await signed(req, env)) return json({ ok: false, error: "invalid_request_signature" }, 401);
     let interaction; try { interaction = await req.json(); } catch { return json({ ok: false, error: "invalid_json" }, 400); }
-    try { await ensureBotSchema(env); return json(await replyFor(interaction, env)); } catch { return json({ type: 4, data: { content: "The request could not be completed. Please try again later.", flags: 64 } }); }
+    try {
+      await ensureBotSchema(env);
+      const reply = await replyFor(interaction, env);
+      const followups = Array.isArray(reply.followups) ? reply.followups : [];
+      delete reply.followups;
+      if (followups.length && interaction.application_id && interaction.token && ctx?.waitUntil) {
+        ctx.waitUntil((async () => {
+          await new Promise(resolve => setTimeout(resolve, 800));
+          const endpoint = "https://discord.com/api/v10/webhooks/" + encodeURIComponent(interaction.application_id) + "/" + encodeURIComponent(interaction.token);
+          for (const content of followups) {
+            try {
+              const sent = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content, flags: 64, allowed_mentions: { parse: [] } }) });
+              if (!sent.ok) break;
+            } catch { break; }
+          }
+        })());
+      }
+      return json(reply);
+    } catch { return json({ type: 4, data: { content: "The request could not be completed. Please try again later.", flags: 64 } }); }
   }
 };
