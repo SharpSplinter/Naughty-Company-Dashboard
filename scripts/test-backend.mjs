@@ -125,6 +125,15 @@ try {
     assert.equal(normalizeWebhookUrl("https://[::1]/alert"), null)
     for (const address of ["0.0.0.0", "0.1.2.3", "100.64.0.1", "100.127.255.254", "192.0.0.1", "192.0.2.1", "198.18.0.1", "198.51.100.1", "203.0.113.1", "224.0.0.1", "240.0.0.1"]) assert.equal(normalizeWebhookUrl(`https://${address}/alert`), null, `${address} must not be accepted as a public webhook host`)
     assert.equal(normalizeWebhookUrl("https://8.8.8.8/alert"), "https://8.8.8.8/alert")
+    // WHATWG URL parsing canonicalizes shortened, integer, octal, and hexadecimal IPv4 forms.
+    for (const host of ["127.1", "2130706433", "0x7f000001", "0177.0.0.1", "0x7f.0.0.1", "10.1", "0x0a000001"]) {
+      assert.equal(normalizeWebhookUrl(`https://${host}/alert`), null, `${host} must not bypass private-address checks`)
+    }
+    for (const host of ["256.1.1.1", "1.2.3.4.5", "999999999999", "1..2.3"]) {
+      assert.equal(normalizeWebhookUrl(`https://${host}/alert`), null, `${host} is not a valid public IPv4 host`)
+    }
+    assert.equal(normalizeWebhookUrl("https://hooks.example.com:8443/alert"), null)
+    assert.equal(normalizeWebhookUrl("https://hooks.example.com:443/alert"), "https://hooks.example.com/alert")
   })
 
   await test("webhook delivery never follows redirects to unvalidated destinations", () => {
