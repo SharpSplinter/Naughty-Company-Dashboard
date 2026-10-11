@@ -158,7 +158,7 @@ try {
     assert.match(workerSource, /Naughty Company Dashboard daily summary/)
     assert.match(workerSource, /Discord is connected and ready for alerts and summaries/)
     assert.match(workerSource, /const webhookTestPath = url\.pathname === "\/api\/me\/automation-webhook\/test"/)
-    assert.match(workerSource, /sendWebhookTest\(env, session\.player_id\)/)
+    assert.match(workerSource, /sendWebhookTest\\(env, session\\.player_id, kind\\)/)
     const uiSource = readFileSync(join(root, "src/components/floor/alerts-panel.tsx"), "utf8")
     assert.match(uiSource, /Test connection/)
     assert.match(uiSource, /automation-webhook\/test/)
