@@ -250,7 +250,7 @@ async function replyFor(i, env) {
         const history = Array.isArray(data.stockHistory) ? data.stockHistory : [];
         const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
         const recent = history.filter(snapshot => snapshot && typeof snapshot.day === "string" && snapshot.day >= cutoff && snapshot.day < currentSnapshotDay && Array.isArray(snapshot.stock));
-        if (!recent.length) return currentOrderCost * 7;
+        if (!recent.length) return currentOrderCost;
         // Use each saved daily snapshot's on_order quantities as the available weekly order history.
         // Item costs come from the current stock payload; do not substitute retail price for cost.
         const costByItem = new Map(stockRoot.map(item => [String(item.id ?? item.name ?? ""), Math.max(0, numeric(item.cost) || 0)]));

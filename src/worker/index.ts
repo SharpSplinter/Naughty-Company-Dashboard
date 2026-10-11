@@ -2191,13 +2191,14 @@ export default {
       const directorStockHistory = (stockSnapshots.results ?? []).map((snapshot) => ({ day: snapshot.snapshot_day, stock: JSON.parse(snapshot.stock_json) as unknown, fetchedAt: snapshot.fetched_at })).reverse()
       // The dashboard's Charts history is the source used by its own stock-delta display.
       // It is scoped to the authenticated player and selected company, unlike faction-only snapshots.
-      let stockHistory = directorStockHistory
+      let stockHistory: Array<{ day: string; stock: unknown; fetchedAt: string }> = directorStockHistory
+      await requireDb(env).prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
       const chartRow = await requireDb(env).prepare("SELECT data_json FROM user_page_data WHERE player_id = ? AND page_key = ?").bind(session.player_id, "charts").first<{ data_json: string }>()
       if (chartRow?.data_json) {
         try {
           const chartData = JSON.parse(chartRow.data_json) as { companies?: Array<{ companyId?: string | number; history?: Array<{ day?: string; stockQuantity?: number | null; fetchedAt?: string; period?: number }> }> }
           const chartCompany = chartData.companies?.find((item) => String(item.companyId) === String(id))
-          const dashboardHistory = (chartCompany?.history ?? []).filter((point) => typeof point.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(point.day) && typeof point.stockQuantity === "number" && Number.isFinite(point.stockQuantity)).map((point) => ({ day: point.day as string, stock: [{ in_stock: point.stockQuantity as number }], fetchedAt: typeof point.fetchedAt === "string" ? point.fetchedAt : null }))
+          const dashboardHistory = (chartCompany?.history ?? []).filter((point) => typeof point.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(point.day) && typeof point.stockQuantity === "number" && Number.isFinite(point.stockQuantity)).map((point) => ({ day: point.day as string, stock: [{ in_stock: point.stockQuantity as number }], fetchedAt: typeof point.fetchedAt === "string" ? point.fetchedAt : "" }))
           if (dashboardHistory.length) stockHistory = dashboardHistory.slice(-40)
         } catch { /* Preserve the optional director snapshot fallback if imported chart data is malformed. */ }
       }
