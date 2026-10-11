@@ -669,7 +669,7 @@ function buildWebhookPayload(endpoint: string, payload: Record<string, unknown>)
   return { content: "Naughty Company Dashboard notification", allowed_mentions: { parse: [] } }
 }
 
-async function sendWebhookTest(env: WorkerEnv, ownerPlayerId: string): Promise<{ delivered: boolean; statusCode?: number; detail: string }> {
+async function sendWebhookTest(env: WorkerEnv, ownerPlayerId: string, kind: "connection" | "alert" | "summary" = "connection"): Promise<{ delivered: boolean; statusCode?: number; detail: string }> {
   const db = requireDb(env)
   try {
     const hook = await db.prepare("SELECT ciphertext, iv FROM automation_webhooks WHERE owner_player_id = ? AND enabled = 1").bind(ownerPlayerId).first<{ ciphertext: string; iv: string }>()
@@ -680,10 +680,15 @@ async function sendWebhookTest(env: WorkerEnv, ownerPlayerId: string): Promise<{
     let statusCode: number | undefined
     let detail = ""
     try {
-      const payload = buildWebhookPayload(endpoint, { source: "Naughty Company Dashboard", event: "automation.test" })
+      const now = new Date().toISOString()
+      const sampleAlert: WebhookAlert = { eventId: "test-alert", ruleId: "test-rule", ruleType: "income_drop", severity: "warning", title: "Sample automation alert", message: "This is a sample alert to verify that Naughty Company Dashboard alert formatting is reaching Discord correctly. No real alert was created.", companyId: "sample-company", createdAt: now }
+      const source = { source: "Naughty Company Dashboard", event: kind === "alert" ? "automation.alert" : kind === "summary" ? "automation.daily_digest" : "automation.test" }
+      const eventPayload = kind === "alert" ? { ...source, alert: sampleAlert } : kind === "summary" ? { ...source, digest: { generatedAt: now, eventCount: 2, alerts: [sampleAlert, { ...sampleAlert, eventId: "test-alert-2", severity: "critical", title: "Sample critical alert", message: "Second sample item included to preview how a daily summary groups multiple alerts." }] } } : source
+      const payload = buildWebhookPayload(endpoint, eventPayload)
       const response = await fetch(endpoint, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", "user-agent": "Naughty-Company-Dashboard/1.0" }, body: JSON.stringify(payload), signal: controller.signal })
       statusCode = response.status
-      detail = response.ok ? "Test message delivered. Check your Discord channel." : `Webhook endpoint returned HTTP ${response.status}.`
+      const label = kind === "alert" ? "Sample alert" : kind === "summary" ? "Sample daily summary" : "Connection test"
+      detail = response.ok ? `${label} delivered. Check your Discord channel.` : `Webhook endpoint returned HTTP ${response.status}.`
     } catch (error) { detail = error instanceof Error && error.name === "AbortError" ? "Webhook test timed out after 5 seconds." : "Webhook test failed. Check the saved endpoint and try again." }
     finally { clearTimeout(timeout) }
     const delivered = statusCode !== undefined && statusCode >= 200 && statusCode < 300
@@ -1083,7 +1088,10 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
     return jsonResponse({ configured: true, saved: true, updatedAt: now }, 200, origin)
   }
   if (webhookTestPath && request.method === "POST") {
-    const result = await sendWebhookTest(env, session.player_id)
+    const body: unknown = await request.json().catch(() => ({}))
+    const requestedKind = isRecord(body) ? body.kind : undefined
+    const kind: "connection" | "alert" | "summary" = requestedKind === "alert" || requestedKind === "summary" ? requestedKind : "connection"
+    const result = await sendWebhookTest(env, session.player_id, kind)
     return jsonResponse({ delivery: result }, 200, origin)
   }
   if (webhookPath && request.method === "DELETE") {
