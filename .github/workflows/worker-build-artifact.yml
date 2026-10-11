@@ -33,3 +33,8 @@ jobs:
           path: worker-dist/index.js
           if-no-files-found: error
           retention-days: 1
+      - name: Emit compressed transfer chunks
+        shell: bash
+        run: |
+          set -o pipefail
+          gzip -9 -c worker-dist/index.js | base64 -w0 | fold -w 2800 | sed 's/^/NCD_WORKER_BUNDLE_PART=/'
