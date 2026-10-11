@@ -86,6 +86,19 @@ try {
     assert.match(source, /await deliverAutomationDigest\(env, owner\.ownerPlayerId, events\.results \?\? \[\]\)/)
   })
 
+  await test("scheduled automation records stale-rule and digest delivery failures for dashboard visibility", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    assert.match(workerSource, /let staleRuleFailures = 0/)
+    assert.match(workerSource, /let digestFailures = 0/)
+    assert.match(workerSource, /stale-data rule evaluation\(s\) failed/)
+    assert.match(workerSource, /daily digest delivery group\(s\) failed/)
+    assert.match(workerSource, /error_summary AS errorSummary FROM automation_runs ORDER BY started_at DESC LIMIT 1/)
+    assert.match(workerSource, /async function deliverDailyAutomationDigests\(env: WorkerEnv, now = new Date\(\)\): Promise<number>/)
+    const uiSource = readFileSync(join(root, "src/components/floor/alerts-panel.tsx"), "utf8")
+    assert.match(uiSource, /errorSummary\?: string \| null/)
+    assert.match(uiSource, /Run details: \{latestRun.errorSummary\}/)
+  })
+
   await test("combined webhook mode sends alerts immediately and includes owners in daily summaries", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     assert.match(workerSource, /!\["instant", "both"\]\.includes\(preferences\.digestMode\)/)
