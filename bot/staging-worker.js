@@ -29,7 +29,7 @@ async function replyFor(i, env) {
     if (!apiKey || apiKey.length > 256) return privateReply("Enter a valid limited-access Torn API key and try again.");
     try {
       const response = await fetch("https://naughty-company-api.kboone801.workers.dev/api/auth/sign-in", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ apiKey }) });
-      if (!response.ok) return privateReply("Linking failed. Check the key and dashboard account eligibility, then try again.");
+      if (!response.ok) return privateReply(`Dashboard sign-in failed (HTTP ${response.status}). No credentials or response details are exposed. Share only this status code so the staging issue can be diagnosed.`);
       const session = await response.json(); if (typeof session.token !== "string" || !session.player) return privateReply("Linking failed. Please try again later.");
       const sealed = await seal(session.token, env), playerId = String(session.player.id || session.player.player_id || "");
       if (!playerId) return privateReply("Linking failed because the dashboard did not return a player ID.");
