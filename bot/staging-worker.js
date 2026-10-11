@@ -14,7 +14,18 @@ async function replyFor(i, env) {
   const name = i.data?.name, user = i.member?.user?.id || i.user?.id;
   if (i.type === 1) return { type: 1 };
   if (i.type === 5 && i.data?.custom_id === "link_submit") {
-    const apiKey = (i.data.components || []).flatMap(x => x.components || []).find(x => x.custom_id === "api_key")?.value?.trim();
+    const findInputValue = (items) => {
+      for (const item of items || []) {
+        if (item?.custom_id === "api_key" && typeof item.value === "string") return item.value;
+        const nested = findInputValue([
+          ...(Array.isArray(item?.components) ? item.components : []),
+          ...(item?.component ? [item.component] : [])
+        ]);
+        if (nested !== undefined) return nested;
+      }
+      return undefined;
+    };
+    const apiKey = findInputValue(i.data.components || [])?.trim();
     if (!apiKey || apiKey.length > 256) return privateReply("Enter a valid limited-access Torn API key and try again.");
     try {
       const response = await fetch("https://naughty-company-api.kboone801.workers.dev/api/auth/sign-in", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ apiKey }) });
