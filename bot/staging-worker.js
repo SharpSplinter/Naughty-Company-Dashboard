@@ -199,24 +199,59 @@ async function replyFor(i, env) {
       const profile = data.profile && typeof data.profile === "object" ? data.profile : {};
       const root = profile.company && typeof profile.company === "object" ? profile.company : profile.profile && typeof profile.profile === "object" ? profile.profile : profile;
       const income = root.income && typeof root.income === "object" ? root.income : {};
-      const profit = root.profit && typeof root.profit === "object" ? root.profit : {};
       const money = value => typeof value === "number" && Number.isFinite(value) ? "$" + Math.round(value).toLocaleString("en-US") : "Not available";
-      const dailyProfit = [profit.daily, root.daily_profit, root.dailyProfit, root.profit_daily].find(value => typeof value === "number" && Number.isFinite(value));
-      const rating = [root.company_rating, root.star_rating, root.rating, root.stars].find(value => typeof value === "number" && Number.isFinite(value));
+      const numeric = (...values) => values.find(value => typeof value === "number" && Number.isFinite(value));
+      const findNumber = (obj, keys, depth = 0) => {
+        if (!obj || typeof obj !== "object" || depth > 5) return null;
+        for (const key of keys) if (typeof obj[key] === "number" && Number.isFinite(obj[key])) return obj[key];
+        for (const value of Object.values(obj)) { const found = findNumber(value, keys, depth + 1); if (found !== null) return found; }
+        return null;
+      };
+      const rating = numeric(root.company_rating, root.star_rating, root.rating, root.stars);
       const employeeRoot = data.employees && typeof data.employees === "object" ? data.employees : {};
       const employeeList = Array.isArray(data.employees) ? data.employees : Array.isArray(employeeRoot.employees) ? employeeRoot.employees : Array.isArray(employeeRoot.company_employees) ? employeeRoot.company_employees : [];
+      const totalWages = employeeList.reduce((sum, employee) => {
+        const wage = numeric(employee.wage, employee.salary, employee.wages);
+        return sum + (wage == null ? 0 : wage);
+      }, 0);
+      const hasWages = employeeList.length > 0 && employeeList.some(employee => numeric(employee.wage, employee.salary, employee.wages) != null);
+      const adBudget = findNumber(root, ["advertisement_budget", "advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"]);
       const stockRoot = Array.isArray(data.stock) ? data.stock : data.stock && Array.isArray(data.stock.stock) ? data.stock.stock : data.stock && typeof data.stock === "object" ? Object.values(data.stock).filter(value => value && typeof value === "object") : [];
-      const stockQuantity = stockRoot.reduce((sum, item) => { const value = [item.in_stock, item.quantity, item.amount].find(n => typeof n === "number" && Number.isFinite(n)); return sum + (value || 0); }, 0);
+      const stockQuantity = stockRoot.reduce((sum, item) => sum + (numeric(item.in_stock, item.quantity, item.amount) || 0), 0);
+      const stockValue = stockRoot.reduce((sum, item) => {
+        const quantity = numeric(item.in_stock, item.quantity, item.amount);
+        const price = numeric(item.price, item.sell_price, item.selling_price, item.price_per_unit, item.cost, item.unit_cost, item.cost_per_unit);
+        return sum + (quantity != null && price != null ? quantity * price : 0);
+      }, 0);
+      const pricedStockCount = stockRoot.filter(item => numeric(item.in_stock, item.quantity, item.amount) != null && numeric(item.price, item.sell_price, item.selling_price, item.price_per_unit, item.cost, item.unit_cost, item.cost_per_unit) != null).length;
+      const performance = root.company_performance && typeof root.company_performance === "object" ? root.company_performance : root.performance && typeof root.performance === "object" ? root.performance : root;
+      const popularity = findNumber(performance, ["popularity", "company_popularity"]);
+      const efficiency = findNumber(performance, ["efficiency", "company_efficiency"]);
+      const environment = findNumber(performance, ["environment", "company_environment"]);
       const safeName = String(data.companyName || company.company_name || "Your company").replace(/@/g, "@\u200b").slice(0, 90);
+      const dailyIncome = numeric(income.daily);
+      const weeklyIncome = numeric(income.weekly);
+      const dailyExpensesKnown = adBudget != null && hasWages && pricedStockCount === stockRoot.length && stockRoot.length > 0;
+      const dailyExpenses = (adBudget || 0) + (hasWages ? totalWages : 0) + stockValue;
+      const dailyProfit = dailyExpensesKnown && dailyIncome != null ? dailyIncome - dailyExpenses : null;
+      const weeklyProfit = dailyExpensesKnown && weeklyIncome != null ? weeklyIncome - (dailyExpenses * 7) : null;
       const lines = [
         "**Company overview | " + safeName + "**",
         "Type: " + String(data.companyType || company.company_type || "Not available").slice(0, 60),
-        "Daily income: " + money(income.daily),
-        "Weekly income: " + money(income.weekly),
-        "Daily profit: " + money(dailyProfit),
+        "Daily income: " + money(dailyIncome),
+        "Weekly income: " + money(weeklyIncome),
+        "Daily profit (income − ad budget − wages − stock costs): " + money(dailyProfit),
+        "Weekly profit (weekly income − 7× daily expenses): " + money(weeklyProfit),
+        "Advertisement budget: " + money(adBudget),
+        "Total employee wages: " + (hasWages ? money(totalWages) : "Not available"),
+        "Company Performance | Popularity: " + (popularity == null ? "Not available" : String(popularity)) + " · Efficiency: " + (efficiency == null ? "Not available" : String(efficiency)) + " · Environment: " + (environment == null ? "Not available" : String(environment)),
         "Star rating: " + (rating == null ? "Not available" : String(rating)),
         "Employees in latest payload: " + (employeeList.length || "Not reported"),
-        "Stock items: " + (stockRoot.length || "Not reported") + " | Total quantity: " + (stockRoot.length ? stockQuantity.toLocaleString("en-US") : "Not available"),
+        "Stock items: " + (stockRoot.length || "Not reported"),
+        "Stock quantity: " + (stockRoot.length ? stockQuantity.toLocaleString("en-US") : "Not available"),
+        "Stock change vs previous day: Not available (no saved daily stock baseline)",
+        "Stock unit price: " + (stockRoot.length === 1 ? money(numeric(stockRoot[0].price, stockRoot[0].sell_price, stockRoot[0].selling_price, stockRoot[0].price_per_unit, stockRoot[0].cost, stockRoot[0].unit_cost, stockRoot[0].cost_per_unit)) : "See item-level stock data in dashboard"),
+        "Stock total value: " + (stockRoot.length && pricedStockCount === stockRoot.length ? money(stockValue) : "Not available (stock price data incomplete)"),
         "Snapshot updated: " + String(data.fetchedAt || company.fetched_at || "Not available"),
         "Snapshot age: " + snapshotAgeLabel(data.fetchedAt || company.fetched_at)
       ];
