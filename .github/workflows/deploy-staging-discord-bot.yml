@@ -26,18 +26,20 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"
-          printf '%s' '{"main_module":"worker.js","compatibility_date":"2026-10-11"}' > /tmp/cf-metadata.json
+          printf '%s' '{"main_module":"worker.js","compatibility_date":"2026-10-11","keep_bindings":["d1","secret_text","plain_text"]}' > /tmp/cf-metadata.json
           status=$(curl --silent --show-error --output /tmp/cf-response.json --write-out '%{http_code}' \
-            -X PUT "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/naughty-company-bot-staging?bindings_inherit=true" \
+            -X PUT "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/naughty-company-bot-staging" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
             -F "metadata=@/tmp/cf-metadata.json;type=application/json" \
             -F "worker.js=@bot/staging-worker.js;type=application/javascript+module")
           if [[ "$status" != "200" ]]; then
-            echo "Cloudflare staging deployment failed (HTTP ${status}). Response details suppressed."
+            echo "Cloudflare staging deployment failed (HTTP ${status}). Safe error summary:"
+            jq -r '[.errors[]? | {code, message}] | .[:3]' /tmp/cf-response.json 2>/dev/null || echo "No structured error details."
             exit 1
           fi
           if ! jq -e '.success == true' /tmp/cf-response.json >/dev/null; then
-            echo "Cloudflare rejected staging deployment; response details suppressed."
+            echo "Cloudflare rejected staging deployment. Safe error summary:"
+            jq -r '[.errors[]? | {code, message}] | .[:3]' /tmp/cf-response.json 2>/dev/null || echo "No structured error details."
             exit 1
           fi
           echo "Staging Worker upload accepted. Production Worker was not targeted."
