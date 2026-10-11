@@ -39,6 +39,7 @@ jobs:
             {"name":"unlink","description":"Remove your dashboard account link"},
             {"name":"company","description":"List your saved dashboard companies"},
             {"name":"employees","description":"View your latest company employee roster"},
+            {"name":"overview","description":"Show income, profit, stars, employees and stock for your latest company snapshot"},
             {"name":"trends","description":"Summarize your latest 30-day company trend"},
             {"name":"alerts","description":"View your recent dashboard alerts"}
           ]

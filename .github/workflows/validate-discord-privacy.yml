@@ -2,6 +2,7 @@ name: Validate Discord privacy and dashboard linking
 on:
   push:
     branches:
+      - main
       - feature/staging-discord-link-company
     paths:
       - 'src/worker/index.ts'
@@ -28,3 +29,7 @@ jobs:
       - run: npm run build
       - name: Validate staging bot syntax
         run: node --check bot/staging-worker.js
+      - name: Assert overview command is implemented and registered
+        run: |
+          grep -q 'name === "overview"' bot/staging-worker.js
+          grep -q '"name":"overview"' .github/workflows/register-staging-discord-ping.yml
