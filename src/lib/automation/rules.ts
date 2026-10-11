@@ -70,8 +70,14 @@ export function normalizeWebhookUrl(value: unknown): string | null {
     if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")) return null
     const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "")
     if (!host || host.includes(":") || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal") || host.endsWith(".test") || host === "metadata.google.internal") return null
-    if (/^(?:0|10|127|169\.254|192\.168)\./.test(host) || /^172\.(?:1[6-9]|2\d|3[01])\./.test(host)) return null
-    if (/^[0-9.]+$/.test(host) && !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(host)) return null
+    if (/^[0-9.]+$/.test(host)) {
+      if (!/^(?:\d{1,3}\.){3}\d{1,3}$/.test(host)) return null
+      const octets = host.split(".").map(Number)
+      if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return null
+      const [a, b, c] = octets
+      // Webhooks must not target special-use, private, link-local, shared, multicast, or reserved IPv4 space.
+      if (a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || (a === 192 && b === 0 && c === 0) || (a === 192 && b === 0 && c === 2) || (a === 192 && b === 88 && c === 99) || (a === 198 && (b === 18 || b === 19)) || (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113) || a >= 224) return null
+    } else if (/^[0-9]+$/.test(host)) return null
     return url.toString()
   } catch { return null }
 }
