@@ -713,7 +713,15 @@ async function deliverAutomationDigest(env: WorkerEnv, ownerPlayerId: string, al
       await db.prepare("INSERT INTO automation_delivery_log (delivery_id, owner_player_id, event_id, status, status_code, detail, created_at, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), ownerPlayerId, alert.eventId, delivered ? "delivered" : "failed", statusCode ?? null, detail, now, delivered ? now : null).run()
     }
     await db.prepare("UPDATE automation_webhooks SET last_delivered_at = CASE WHEN ? = 1 THEN ? ELSE last_delivered_at END, last_error = ?, updated_at = ? WHERE owner_player_id = ?").bind(Number(delivered), now, delivered ? null : detail, now, ownerPlayerId).run()
-  } catch { /* Delivery failures remain visible in the run and can be retried on the next scheduled pass. */ }
+  } catch {
+    // Keep failures visible even when decrypting the webhook or recording individual deliveries fails.
+    // Avoid surfacing raw exception text because it may contain provider-specific endpoint details.
+    try {
+      const failedAt = new Date().toISOString()
+      await db.prepare("UPDATE automation_webhooks SET last_error = ?, updated_at = ? WHERE owner_player_id = ?")
+        .bind("Daily digest could not be completed. Check the configured endpoint and encryption settings.", failedAt, ownerPlayerId).run()
+    } catch { /* The database itself may be unavailable; the next scheduled pass can retry. */ }
+  }
 }
 
 async function deliverDailyAutomationDigests(env: WorkerEnv, now = new Date()): Promise<void> {

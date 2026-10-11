@@ -101,6 +101,8 @@ try {
     assert.match(source, /await deliverAutomationDigest\(env, owner\.ownerPlayerId, events\.results \?\? \[\]\)/)
     assert.match(source, /for \(const alert of eligible\) \{\s*await db\.prepare\("INSERT INTO automation_delivery_log/)
     assert.match(source, /e\.owner_player_id = \? AND e\.created_at <= \? AND CASE e\.severity/)
+    assert.match(source, /Daily digest could not be completed\. Check the configured endpoint and encryption settings\./)
+    assert.match(source, /UPDATE automation_webhooks SET last_error = \?, updated_at = \? WHERE owner_player_id = \?/)
   })
 
   await test("webhook digest preferences are independent from browser notification delivery", () => {
