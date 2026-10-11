@@ -244,11 +244,19 @@ async function replyFor(i, env) {
       const data = await res.json(), roster = Array.isArray(data.roster) ? data.roster : [];
       const summary = data.summary && typeof data.summary === "object" ? data.summary : {};
       if (!roster.length) return privateReply(String(data.message || "No employee roster is available yet."));
+      const metric = value => typeof value === "number" && Number.isFinite(value) ? value.toLocaleString("en-US", { maximumFractionDigits: 2 }) : "N/A";
+      const percent = value => typeof value === "number" && Number.isFinite(value) ? metric(value) + "%" : "N/A";
       const lines = roster.map((e, n) => {
         const label = String(e.name || e.employeeName || e.employee_name || ("Employee " + (n + 1))).slice(0, 70);
         const position = String(e.positionName || e.position_name || e.position?.name || e.position || "Position not reported").slice(0, 60);
         const wage = e.wage ?? e.salary ?? e.wages;
-        return "- **" + label + "**  |  " + position + (wage == null ? "" : "  |  Wage: $" + Number(wage).toLocaleString("en-US"));
+        const base = "- **" + label + "**  |  " + position + (wage == null ? "" : "  |  Wage: $" + Number(wage).toLocaleString("en-US"));
+        const work = "  MAN " + metric(e.manualLabor ?? e.manual_labor ?? e.stats?.MAN ?? e.stats?.manual_labor) + " · INT " + metric(e.intelligence ?? e.stats?.INT ?? e.stats?.intelligence) + " · END " + metric(e.endurance ?? e.stats?.END ?? e.stats?.endurance);
+        const performance = "  Effectiveness " + percent(e.effectiveness ?? e.total_effectiveness) + " · Addiction " + percent(e.addictionEffectiveness ?? e.addiction_effectiveness) + " · Inactivity " + percent(e.inactivityEffectiveness ?? e.inactivity_effectiveness);
+        const lastAction = e.lastAction || e.last_action?.relative || "Not reported";
+        const status = e.status || e.last_action?.status;
+        const activity = "  Last action: " + String(lastAction) + (status && String(status).toLowerCase() !== String(lastAction).toLowerCase() ? " (" + String(status) + ")" : "");
+        return [base, work, performance, activity].join("\n");
       });
       const companyLabel = String(company.name || company.company_name || company.company_id).slice(0, 80);
       const chunks = [];
