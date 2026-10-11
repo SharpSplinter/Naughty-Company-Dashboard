@@ -44,6 +44,18 @@ jobs:
           fi
           echo "Staging Worker upload accepted. Production Worker was not targeted."
           rm -f /tmp/cf-response.json /tmp/cf-metadata.json
+          schedule_status=$(curl --silent --show-error --output /tmp/cf-schedule-response.json --write-out '%{http_code}' \
+            -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/naughty-company-bot-staging/schedules" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data '{"schedules":[{"cron":"* * * * *"}]}' )
+          if [[ "$schedule_status" != "200" ]] || ! jq -e '.success == true' /tmp/cf-schedule-response.json >/dev/null; then
+            echo "Could not configure the staging private-alert poll schedule (HTTP $schedule_status)."
+            jq -r '[.errors[]? | {code, message}]' /tmp/cf-schedule-response.json 2>/dev/null || true
+            exit 1
+          fi
+          rm -f /tmp/cf-schedule-response.json
+          echo "Staging private-alert poll schedule configured (every minute)."
           health=$(curl --fail --silent --show-error https://naughty-company-bot-staging.kboone801.workers.dev/health)
           printf 'Staging health flags: %s\n' "$(printf '%s' "$health" | jq -c '{ok, database, encryption, discordConfigured, dashboardBinding}')"
           printf '%s' "$health" | jq -e '.ok == true and .database == true and .encryption == true and .discordConfigured == true and .dashboardBinding == true' >/dev/null

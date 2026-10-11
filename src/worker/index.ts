@@ -590,6 +590,21 @@ async function ensureAutomationSchema(env: WorkerEnv): Promise<void> {
     last_delivered_at TEXT,
     last_error TEXT
   )`).run()
+  await db.prepare(`CREATE TABLE IF NOT EXISTS discord_account_links (
+    owner_player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
+    discord_user_id TEXT NOT NULL UNIQUE,
+    alerts_enabled INTEGER NOT NULL DEFAULT 0 CHECK (alerts_enabled IN (0, 1)),
+    linked_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`).run()
+  await db.prepare(`CREATE TABLE IF NOT EXISTS discord_link_codes (
+    code TEXT PRIMARY KEY,
+    owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+    ciphertext TEXT NOT NULL,
+    iv TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT
+  )`).run()
   await db.prepare(`CREATE TABLE IF NOT EXISTS automation_delivery_log (
     delivery_id TEXT PRIMARY KEY,
     owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
@@ -675,6 +690,7 @@ async function sendWebhookTest(env: WorkerEnv, ownerPlayerId: string, kind: "con
     const hook = await db.prepare("SELECT ciphertext, iv FROM automation_webhooks WHERE owner_player_id = ? AND enabled = 1").bind(ownerPlayerId).first<{ ciphertext: string; iv: string }>()
     if (!hook) return { delivered: false, detail: "Save a webhook URL before sending a test message." }
     const endpoint = await decryptKey(env, hook.ciphertext, hook.iv)
+    if (isDiscordChannelWebhook(endpoint)) return { delivered: false, detail: "Discord channel webhooks are disabled for privacy. Link the Discord bot to receive private direct messages." }
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 5000)
     let statusCode: number | undefined
@@ -710,6 +726,7 @@ async function deliverAutomationWebhook(env: WorkerEnv, ownerPlayerId: string, a
     if (!options.ignoreDigestMode && preferences?.digestMode !== undefined && !["instant", "both"].includes(preferences.digestMode)) return { attempted: false, delivered: false, detail: preferences.digestMode === "off" ? "Webhook delivery is disabled by notification preferences." : "Alert is queued for daily digest delivery." }
     if (!options.ignoreQuietHours && isWithinQuietHours(preferences)) return { attempted: false, delivered: false, detail: "Alert is within configured quiet hours." }
     const endpoint = await decryptKey(env, hook.ciphertext, hook.iv)
+    if (isDiscordChannelWebhook(endpoint)) return { attempted: true, delivered: false, detail: "Discord channel webhooks are disabled for privacy. Link the Discord bot to receive private direct messages." }
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 5000)
     let statusCode: number | undefined
@@ -811,7 +828,10 @@ async function deliverDailyAutomationDigests(env: WorkerEnv, now = new Date()): 
   return failedOwners
 }
 
-function validateWebhookUrl(value: unknown): string | null { return normalizeWebhookUrl(value) }
+function isDiscordChannelWebhook(value: string): boolean {
+  try { const url = new URL(value); return /(^|\.)discord(?:app)?\.com$/i.test(url.hostname) && url.pathname.startsWith("/api/webhooks/") } catch { return false }
+}
+function validateWebhookUrl(value: unknown): string | null { const url = normalizeWebhookUrl(value); return url && !isDiscordChannelWebhook(url) ? url : null }
 
 async function createAlertEvent(env: WorkerEnv, rule: AlertRuleRow, input: AlertEventInput): Promise<boolean> {
   const db = requireDb(env)
@@ -1098,12 +1118,73 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
   const webhookPath = url.pathname === "/api/me/automation-webhook"
   const webhookTestPath = url.pathname === "/api/me/automation-webhook/test"
   const deliveriesPath = url.pathname === "/api/me/automation-webhook/deliveries"
+  const discordLinkPath = url.pathname === "/api/me/discord-link"
+  const discordLinkCodePath = url.pathname === "/api/me/discord-link-code"
+  const discordRedeemPath = url.pathname === "/api/discord/link/redeem"
   const retryMatch = url.pathname.match(/^\/api\/me\/automation-webhook\/retry\/([a-f0-9-]{36})$/i)
-  if (!rulesPath && !alertsPath && !preferencesPath && !webhookPath && !webhookTestPath && !deliveriesPath && !retryMatch) return null
+  if (!rulesPath && !alertsPath && !preferencesPath && !webhookPath && !webhookTestPath && !deliveriesPath && !retryMatch && !discordLinkPath && !discordLinkCodePath && !discordRedeemPath) return null
+  if (discordRedeemPath && request.method === "POST") {
+    await ensureAutomationSchema(env)
+    const db = requireDb(env)
+    const body: unknown = await request.json().catch(() => null)
+    const code = isRecord(body) && typeof body.code === "string" ? body.code.trim().toLowerCase() : ""
+    const discordUserId = isRecord(body) && typeof body.discordUserId === "string" ? body.discordUserId.trim() : ""
+    if (!/^[a-f0-9]{48}$/.test(code) || !/^\d{17,20}$/.test(discordUserId)) return jsonResponse({ error: "Enter a valid dashboard link code from the dashboard." }, 400, origin)
+    const now = new Date().toISOString()
+    const row = await db.prepare("SELECT owner_player_id AS ownerPlayerId, ciphertext, iv, expires_at AS expiresAt, used_at AS usedAt FROM discord_link_codes WHERE code = ?").bind(code).first<{ ownerPlayerId: string; ciphertext: string; iv: string; expiresAt: string; usedAt: string | null }>()
+    if (!row || row.usedAt || row.expiresAt <= now) return jsonResponse({ error: "That dashboard link code has expired or was already used. Generate a new code in the dashboard." }, 400, origin)
+    const otherOwner = await db.prepare("SELECT owner_player_id AS ownerPlayerId FROM discord_account_links WHERE discord_user_id = ? AND owner_player_id <> ?").bind(discordUserId, row.ownerPlayerId).first<{ ownerPlayerId: string }>()
+    if (otherOwner) return jsonResponse({ error: "That Discord account is already linked to another dashboard account." }, 409, origin)
+    const consumed = await db.prepare("UPDATE discord_link_codes SET used_at = ? WHERE code = ? AND used_at IS NULL AND expires_at > ?").bind(now, code, now).run()
+    if (!(consumed.meta?.changes ?? 0)) return jsonResponse({ error: "That dashboard link code has already been used. Generate a new code in the dashboard." }, 409, origin)
+    try {
+      const token = await decryptKey(env, row.ciphertext, row.iv)
+      await db.prepare("INSERT INTO discord_account_links (owner_player_id, discord_user_id, alerts_enabled, linked_at, updated_at) VALUES (?, ?, 0, ?, ?) ON CONFLICT(owner_player_id) DO UPDATE SET discord_user_id = excluded.discord_user_id, linked_at = excluded.linked_at, updated_at = excluded.updated_at").bind(row.ownerPlayerId, discordUserId, now, now).run()
+      return jsonResponse({ token, playerId: row.ownerPlayerId }, 200, origin)
+    } catch { return jsonResponse({ error: "The dashboard link could not be completed. Generate a new code and try again." }, 503, origin) }
+  }
   const session = await authenticate(request, env)
   if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
   await ensureAutomationSchema(env)
   const db = requireDb(env)
+  if (discordLinkPath && request.method === "GET") {
+    const row = await db.prepare("SELECT discord_user_id AS discordUserId, alerts_enabled AS alertsEnabled, linked_at AS linkedAt FROM discord_account_links WHERE owner_player_id = ?").bind(session.player_id).first<{ discordUserId: string; alertsEnabled: number; linkedAt: string }>()
+    return jsonResponse({ linked: Boolean(row), alertsEnabled: Boolean(row?.alertsEnabled), linkedAt: row?.linkedAt ?? null }, 200, origin)
+  }
+  if (discordLinkPath && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    if (!isRecord(body)) return jsonResponse({ error: "Provide Discord link settings." }, 400, origin)
+    const existing = await db.prepare("SELECT discord_user_id AS discordUserId FROM discord_account_links WHERE owner_player_id = ?").bind(session.player_id).first<{ discordUserId: string }>()
+    if (typeof body.alertsEnabled === "boolean") {
+      if (!existing) return jsonResponse({ error: "Link your Discord account before enabling private alerts." }, 409, origin)
+      await db.prepare("UPDATE discord_account_links SET alerts_enabled = ?, updated_at = ? WHERE owner_player_id = ?").bind(Number(body.alertsEnabled), new Date().toISOString(), session.player_id).run()
+      return jsonResponse({ linked: true, alertsEnabled: body.alertsEnabled }, 200, origin)
+    }
+    const discordUserId = typeof body.discordUserId === "string" ? body.discordUserId.trim() : ""
+    if (!/^\d{17,20}$/.test(discordUserId)) return jsonResponse({ error: "A valid Discord user ID is required." }, 400, origin)
+    const otherOwner = await db.prepare("SELECT owner_player_id AS ownerPlayerId FROM discord_account_links WHERE discord_user_id = ? AND owner_player_id <> ?").bind(discordUserId, session.player_id).first<{ ownerPlayerId: string }>()
+    if (otherOwner) return jsonResponse({ error: "That Discord account is already linked to another dashboard account." }, 409, origin)
+    const now = new Date().toISOString()
+    await db.prepare("INSERT INTO discord_account_links (owner_player_id, discord_user_id, alerts_enabled, linked_at, updated_at) VALUES (?, ?, 0, ?, ?) ON CONFLICT(owner_player_id) DO UPDATE SET discord_user_id = excluded.discord_user_id, linked_at = excluded.linked_at, updated_at = excluded.updated_at").bind(session.player_id, discordUserId, now, now).run()
+    return jsonResponse({ linked: true, alertsEnabled: false, linkedAt: now }, 200, origin)
+  }
+  if (discordLinkPath && request.method === "DELETE") {
+    await db.prepare("DELETE FROM discord_account_links WHERE owner_player_id = ?").bind(session.player_id).run()
+    await db.prepare("DELETE FROM discord_link_codes WHERE owner_player_id = ?").bind(session.player_id).run()
+    return jsonResponse({ linked: false, alertsEnabled: false }, 200, origin)
+  }
+  if (discordLinkCodePath && request.method === "POST") {
+    const token = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
+    if (!token) return jsonResponse({ error: "Sign in again before generating a Discord link code." }, 401, origin)
+    const bytes = crypto.getRandomValues(new Uint8Array(24))
+    const code = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("")
+    let encrypted: { ciphertext: string; iv: string }
+    try { encrypted = await encryptKey(env, token) } catch { return jsonResponse({ error: "Secure link-code storage is not configured." }, 503, origin) }
+    const now = new Date(), expiresAt = new Date(now.getTime() + 5 * 60 * 1000).toISOString()
+    await db.prepare("DELETE FROM discord_link_codes WHERE expires_at <= ? OR used_at IS NOT NULL").bind(now.toISOString()).run()
+    await db.prepare("INSERT INTO discord_link_codes (code, owner_player_id, ciphertext, iv, expires_at, used_at) VALUES (?, ?, ?, ?, ?, NULL)").bind(code, session.player_id, encrypted.ciphertext, encrypted.iv, expiresAt).run()
+    return jsonResponse({ code, expiresAt, expiresInSeconds: 300 }, 200, origin)
+  }
   if (preferencesPath && request.method === "GET") {
     const now = new Date().toISOString()
     await db.prepare("INSERT OR IGNORE INTO automation_preferences (owner_player_id, updated_at) VALUES (?, ?)").bind(session.player_id, now).run()
