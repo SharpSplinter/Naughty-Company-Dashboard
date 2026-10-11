@@ -116,7 +116,10 @@ async function replyFor(i, env) {
       const historyRes = await dashboardFetch(env, "/api/me/companies/" + encodeURIComponent(company.company_id) + "/history?days=30", { headers, signal: AbortSignal.timeout(8000) });
       if (historyRes.status === 401 || historyRes.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
       if (!historyRes.ok) return privateReply("Trend data is temporarily unavailable. Please try again later.");
-      const data = await historyRes.json(), s = data.summary || {}, latest = (Array.isArray(data.history) ? data.history : []).slice(-1)[0] || {};
+      const data = await historyRes.json(), s = data.summary || {}, history = Array.isArray(data.history) ? data.history : [], latest = history.slice(-1)[0] || {}, first = history[0] || {};
+      const firstMs = Date.parse(first.fetchedAt || ""), latestMs = Date.parse(latest.fetchedAt || "");
+      const coverageDays = Number.isFinite(firstMs) && Number.isFinite(latestMs) ? Math.max(0, (latestMs - firstMs) / 86400000) : 0;
+      const coverageNote = history.length < 7 || coverageDays < 20 ? "Coverage note: Limited history; these snapshots may not represent the full 30 days." : "Coverage: " + String(first.fetchedAt || "earliest snapshot unavailable") + " to " + String(latest.fetchedAt || "latest snapshot unavailable");
       const money = v => typeof v === "number" && Number.isFinite(v) ? "$" + Math.round(v).toLocaleString("en-US") : "Not available";
       const change = v => typeof v === "number" && Number.isFinite(v) ? (v > 0 ? "+" : "") + money(v) : "Not available";
       return privateReply("**30-day trend  |  " + String(company.company_name || "Your company").slice(0, 90) + "**\nSnapshots: " + Number(s.snapshotCount || 0) + "\nDaily income change: " + change(s.dailyIncomeChange) + (s.dailyIncomeChangePercent == null ? "" : " (" + Number(s.dailyIncomeChangePercent).toFixed(1) + "%)") + "\nWeekly income change: " + change(s.weeklyIncomeChange) + "\nLatest employee count: " + (latest.employeeCount == null ? "Not available" : latest.employeeCount) + "\nLatest snapshot: " + String(latest.fetchedAt || s.latestSnapshotAt || "Not available"));
