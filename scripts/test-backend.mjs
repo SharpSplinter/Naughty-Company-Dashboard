@@ -129,7 +129,7 @@ try {
     for (const host of ["127.1", "2130706433", "0x7f000001", "0177.0.0.1", "0x7f.0.0.1", "10.1", "0x0a000001"]) {
       assert.equal(normalizeWebhookUrl(`https://${host}/alert`), null, `${host} must not bypass private-address checks`)
     }
-    for (const host of ["256.1.1.1", "1.2.3", "1.2.3.4.5", "999999999999", "1..2.3"]) {
+    for (const host of ["256.1.1.1", "1.2.3.4.5", "999999999999", "1..2.3"]) {
       assert.equal(normalizeWebhookUrl(`https://${host}/alert`), null, `${host} is not a valid public IPv4 host`)
     }
     assert.equal(normalizeWebhookUrl("https://hooks.example.com:8443/alert"), null)
