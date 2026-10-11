@@ -1,0 +1,77 @@
+name: Live Discord privacy API smoke test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-discord-api-smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe production Discord API routes without exposing credentials
+        env:
+          TORN_API_KEY: ${{ secrets.TORN_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          const base = "https://naughty-company-api.kboone801.workers.dev";
+          const apiKey = process.env.TORN_API_KEY;
+          if (!apiKey) { console.error("Required repository secret TORN_API_KEY is missing."); process.exit(1); }
+          let failed = false;
+          let token = "";
+          async function probe(label, path, init, expected) {
+            try {
+              const response = await fetch(`${base}${path}`, init);
+              console.log(`${label}: HTTP ${response.status} (expected ${expected})`);
+              if (typeof expected === "number" && response.status !== expected) failed = true;
+              if (Array.isArray(expected) && !expected.includes(response.status)) failed = true;
+              return response;
+            } catch {
+              console.error(`${label}: network error (details suppressed)`);
+              failed = true;
+              return null;
+            }
+          }
+          try {
+            const loginResponse = await fetch(`${base}/api/auth/sign-in`, {
+              method: "POST",
+              headers: { "content-type": "application/json", accept: "application/json" },
+              body: JSON.stringify({ apiKey })
+            });
+            console.log(`POST /api/auth/sign-in: HTTP ${loginResponse.status}`);
+            const login = await loginResponse.json().catch(() => null);
+            if (!loginResponse.ok || typeof login?.token !== "string") {
+              console.error("Authentication failed; response body suppressed.");
+              process.exit(1);
+            }
+            token = login.token;
+            const authHeaders = { authorization: `Bearer ${token}`, accept: "application/json" };
+            await probe("GET /api/me/discord-link", "/api/me/discord-link", { headers: authHeaders }, 200);
+            const codeResponse = await probe("POST /api/me/discord-link-code", "/api/me/discord-link-code", { method: "POST", headers: { ...authHeaders, "content-type": "application/json" }, body: "{}" }, 200);
+            if (codeResponse?.ok) {
+              const codeBody = await codeResponse.json().catch(() => null);
+              console.log(`One-time link-code creation response shape: ${codeBody && (typeof codeBody.code === "string" || typeof codeBody.linkCode === "string") ? "code field present (value hidden)" : "unexpected or unrecognized shape"}`);
+              if (!(codeBody && (typeof codeBody.code === "string" || typeof codeBody.linkCode === "string"))) failed = true;
+            }
+            await probe("GET /api/me/alerts?limit=1", "/api/me/alerts?limit=1", { headers: authHeaders }, 200);
+          } catch {
+            console.error("Authenticated route checks failed; sensitive response details suppressed.");
+            failed = true;
+          } finally {
+            if (token) {
+              try {
+                const out = await fetch(`${base}/api/auth/sign-out`, { method: "POST", headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
+                console.log(`POST /api/auth/sign-out: HTTP ${out.status}`);
+                if (!out.ok) failed = true;
+              } catch { console.error("Sign-out request failed; details suppressed."); failed = true; }
+            }
+          }
+          const invalidRedeem = await probe("POST /api/discord/link/redeem (invalid code, expected rejection)", "/api/discord/link/redeem", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ code: "invalid-live-smoke-probe", discordUserId: "123456789012345678" }) }, [400, 401, 403, 404, 409, 422]);
+          if (!invalidRedeem) failed = true;
+          if (failed) process.exit(1);
+          console.log("Live Discord API smoke test passed. No secret, session token, or one-time code value was printed.");
+          NODE
