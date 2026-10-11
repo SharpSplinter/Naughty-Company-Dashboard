@@ -2,6 +2,9 @@ name: Live browser and authenticated API validation
 
 on:
   workflow_dispatch:
+  schedule:
+    # Keep production health visible even when no code is being shipped.
+    - cron: "23 */6 * * *"
 
 permissions:
   contents: read
@@ -11,6 +14,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
+      - name: Check production Worker health
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          const url = 'https://naughty-company-api.kboone801.workers.dev/health';
+          let response = null;
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              response = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10000) });
+              if (response.ok) break;
+            } catch {}
+            if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 2000));
+          }
+          const body = await response?.json().catch(() => null);
+          console.log(`WORKER GET /health -> ${response?.status ?? 'network error'}; database=${body?.database ?? 'unknown'}`);
+          if (!response?.ok || body?.ok !== true || body?.database !== 'ok') process.exit(1);
+          NODE
       - name: Checkout workflow source
         uses: actions/checkout@v4
       - name: Set up Node
