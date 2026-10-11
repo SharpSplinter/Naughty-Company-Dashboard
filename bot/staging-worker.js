@@ -72,6 +72,19 @@ async function pollPrivateAlerts(env) {
   }
 }
 
+function snapshotAgeLabel(value) {
+  const timestamp = Date.parse(value || "");
+  if (!Number.isFinite(timestamp)) return "age unavailable";
+  const hours = Math.max(0, Math.floor((Date.now() - timestamp) / 3600000));
+  if (hours < 1) return "under 1 hour old";
+  if (hours < 48) return hours + " hour(s) old";
+  return Math.floor(hours / 24) + " day(s) old";
+}
+function requestedCompanyId(interaction) {
+  const options = Array.isArray(interaction?.data?.options) ? interaction.data.options : [];
+  const option = options.find(item => item && item.name === "company_id");
+  return option && typeof option.value === "string" ? option.value : null;
+}
 async function replyFor(i, env) {
   const name = i.data?.name, user = i.member?.user?.id || i.user?.id;
   if (i.type === 1) return { type: 1 };
@@ -175,7 +188,9 @@ async function replyFor(i, env) {
       const companiesData = await companiesRes.json();
       const companies = Array.isArray(companiesData.companies) ? companiesData.companies : [];
       if (!companies.length) return privateReply("No saved companies are available yet. Open the dashboard and refresh company data.");
-      const company = companies[0];
+      const selectedCompanyId = requestedCompanyId(i);
+      const company = selectedCompanyId ? companies.find(item => String(item.company_id) === selectedCompanyId) : companies[0];
+      if (!company) return privateReply("That company ID is not in your saved company list. Run /company and copy one of the listed IDs.");
       const detailRes = await dashboardFetch(env, "/api/me/companies/" + encodeURIComponent(company.company_id), { headers, signal: AbortSignal.timeout(8000) });
       if (detailRes.status === 401 || detailRes.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
       if (detailRes.status === 404) return privateReply("No saved snapshot exists for " + String(company.company_name || "this company") + " yet. Refresh it in the dashboard first.");
@@ -202,8 +217,11 @@ async function replyFor(i, env) {
         "Star rating: " + (rating == null ? "Not available" : String(rating)),
         "Employees in latest payload: " + (employeeList.length || "Not reported"),
         "Stock items: " + (stockRoot.length || "Not reported") + " | Total quantity: " + (stockRoot.length ? stockQuantity.toLocaleString("en-US") : "Not available"),
-        "Snapshot updated: " + String(data.fetchedAt || company.fetched_at || "Not available")
+        "Snapshot updated: " + String(data.fetchedAt || company.fetched_at || "Not available"),
+        "Snapshot age: " + snapshotAgeLabel(data.fetchedAt || company.fetched_at)
       ];
+      const snapshotMs = Date.parse(data.fetchedAt || company.fetched_at || "");
+      if (Number.isFinite(snapshotMs) && Date.now() - snapshotMs > 36 * 3600000) lines.push("⚠️ This company snapshot may be stale. Refresh it in the dashboard.");
       return privateReply(lines.join("\n"));
     } catch { return privateReply("Company overview is temporarily unavailable. Please try again later."); }
   }
@@ -236,8 +254,10 @@ async function replyFor(i, env) {
       const companiesRes = await dashboardFetch(env, "/api/me/companies", { headers, signal: AbortSignal.timeout(8000) });
       if (companiesRes.status === 401 || companiesRes.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
       if (!companiesRes.ok) return privateReply("Company data is temporarily unavailable. Please try again later.");
-      const companiesData = await companiesRes.json(), company = (Array.isArray(companiesData.companies) ? companiesData.companies : [])[0];
-      if (!company) return privateReply("No saved company data is available yet. Refresh company data in the dashboard first.");
+      const companiesData = await companiesRes.json(), companies = Array.isArray(companiesData.companies) ? companiesData.companies : [];
+      const selectedCompanyId = requestedCompanyId(i);
+      const company = selectedCompanyId ? companies.find(item => String(item.company_id) === selectedCompanyId) : companies[0];
+      if (!company) return privateReply(selectedCompanyId ? "That company ID is not in your saved company list. Run /company and copy one of the listed IDs." : "No saved company data is available yet. Refresh company data in the dashboard first.");
       const historyRes = await dashboardFetch(env, "/api/me/companies/" + encodeURIComponent(company.company_id) + "/history?days=30", { headers, signal: AbortSignal.timeout(8000) });
       if (historyRes.status === 401 || historyRes.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
       if (!historyRes.ok) return privateReply("Trend data is temporarily unavailable. Please try again later.");
@@ -268,7 +288,11 @@ async function replyFor(i, env) {
         const rating = typeof company.starRating === "number" && Number.isFinite(company.starRating) ? String(company.starRating) + " stars" : "rating n/a";
         return (index + 1) + ". **" + name + "** (" + type + ")\n   Weekly income: " + money(company.weeklyIncome) + " | " + rating;
       });
-      return privateReply("**Global company rankings**\nTop 5 by weekly income\n" + lines.join("\n") + "\nSnapshot: " + String(data.generatedAt || "timestamp unavailable") + "\nIncome data updates daily at 18:10 UTC.");
+      const generatedAt = data.generatedAt || "";
+      const rankingAge = snapshotAgeLabel(generatedAt);
+      const rankingMs = Date.parse(generatedAt);
+      const freshnessNote = Number.isFinite(rankingMs) && Date.now() - rankingMs > 36 * 3600000 ? "\n⚠️ Ranking snapshot may be stale; compare its timestamp before relying on it." : "";
+      return privateReply("**Global company rankings**\nTop 5 by weekly income\n" + lines.join("\n") + "\nSnapshot: " + String(generatedAt || "timestamp unavailable") + "\nSnapshot age: " + rankingAge + "\nCompany income source updates daily at 18:10 UTC; this ranking timestamp is shown separately." + freshnessNote);
     } catch { return privateReply("Company rankings are temporarily unavailable. Please try again later."); }
   }
   if (name === "alerts") {
