@@ -207,7 +207,7 @@ async function replyFor(i, env) {
           const chartHistory = charts.history && typeof charts.history === "object" ? charts.history : charts;
           const chartCompanies = Array.isArray(chartHistory.companies) ? chartHistory.companies : [];
           const chartCompany = chartCompanies.find(item => item && String(item.companyId) === String(company.company_id));
-          const dashboardSnapshots = Array.isArray(chartCompany && chartCompany.history) ? chartCompany.history.filter(point => point && typeof point.day === "string" && Number.isFinite(Number(point.stockQuantity))).map(point => ({ day: point.day, stock: [{ in_stock: Number(point.stockQuantity) }], fetchedAt: point.fetchedAt || "" })) : [];
+          const dashboardSnapshots = Array.isArray(chartCompany && chartCompany.history) ? chartCompany.history.filter(point => point && typeof point.day === "string" && point.stockQuantity != null && Number.isFinite(Number(point.stockQuantity))).map(point => ({ day: point.day, stock: [{ in_stock: Number(point.stockQuantity) }], fetchedAt: point.fetchedAt || "" })) : [];
           if (dashboardSnapshots.length) data.stockHistory = dashboardSnapshots;
           const storage = backup.storage && typeof backup.storage === "object" ? backup.storage : {};
           const directorSnapshots = Array.isArray(storage.directorSnapshots) ? storage.directorSnapshots.filter(item => item && String(item.companyId) === String(company.company_id) && typeof item.snapshotDay === "string" && item.stock != null).map(item => ({ day: item.snapshotDay, stock: item.stock, fetchedAt: item.fetchedAt || "" })) : [];
@@ -216,7 +216,8 @@ async function replyFor(i, env) {
             // The production API may not yet expose the saved Charts baseline on this route.
             // If Charts has no earlier daily point, fall back to the same company's saved director snapshots.
             const baselineDay = new Date(Date.now() - 18 * 60 * 60 * 1000).toISOString().slice(0, 10);
-            const hasEarlierChartPoint = dashboardSnapshots.some(point => point.day < baselineDay);
+            const chartHistoryForBaseline = dashboardSnapshots.length ? dashboardSnapshots : (Array.isArray(data.stockHistory) ? data.stockHistory : []);
+            const hasEarlierChartPoint = chartHistoryForBaseline.some(point => point && typeof point.day === "string" && point.day < baselineDay);
             if (!hasEarlierChartPoint) data.stockHistory = directorSnapshots;
           }
         }
@@ -243,12 +244,30 @@ async function replyFor(i, env) {
       const adBudget = numeric(data.adBudget) ?? findNumber(root, ["advertisement_budget", "advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"]);
       const stockRoot = Array.isArray(data.stock) ? data.stock : data.stock && Array.isArray(data.stock.stock) ? data.stock.stock : data.stock && typeof data.stock === "object" ? Object.values(data.stock).filter(value => value && typeof value === "object") : [];
       const stockQuantity = stockRoot.reduce((sum, item) => sum + (numeric(item.in_stock, item.quantity, item.amount) || 0), 0);
-      // Torn's company stock tables mark non-orderable stock as "Cannot be ordered".
-      // In the dashboard payload, only stock rows with a positive unit cost can be ordered.
-      // This capability-based check works across company types, including mixed-stock companies.
-      const orderableStock = stockRoot.filter(item => (numeric(item.cost, item.unit_cost, item.cost_per_unit) || 0) > 0);
-      const hasOrderableStock = orderableStock.length > 0;
+      // Torn Wiki Company List: stock marked "Cannot be ordered" is produced/service output,
+      // not supplier inventory. Exclude those items from order and purchase-cost calculations.
+      // This item-level capability list also handles companies with a mix of produced and orderable stock.
       const stockItemName = item => String(item.name || item.item_name || item.itemName || item.title || item.product_name || item.product || (item.id != null ? "Item " + item.id : "Stock item"));
+      const normalizeStockName = value => String(value || "").trim().toLocaleLowerCase("en-US");
+      const nonOrderableStockNames = new Set([
+        "Day Pass", "Ticket", "Per Hour", "Venue Hire", "Computer Repair",
+        "Private Surveillance Contract", "Insurance Fraud Contract", "Corporate Surveillance Contract",
+        "Bushel of Crops", "Sheep", "Cow", "Gallon of Milk", "Chicken", "Box of Eggs", "Firework",
+        "Membership Fee", "Admission", "Lap Dance", "Tips", "Special",
+        "Standard Treatment", "Full Treatment", "Luxury Treatment",
+        "Local Logistics contract", "National Logistics contract", "Global Logistics contract",
+        "Meat", "Inspection", "Service", "Oil Change", "Minor Repair", "Moderate Repair", "Major Repair",
+        "Entry Fee", "Beer", "Wine", "Cocktail", "Shot", "Soft Drink", "Oil (Barrel)",
+        "Trailer Commission", "Apartment Commission", "Semi-Detached Commission", "Detached Commission",
+        "Beach House Commission", "Chalet Commission", "Villa Commission", "Penthouse Commission", "Mansion Commission",
+        "Cider", "Coffee", "Starter Course", "Main Course", "Dessert Course",
+        "Website", "Application", "Game", "Commercial Contract"
+      ].map(normalizeStockName));
+      const orderableStock = stockRoot.filter(item => {
+        if (nonOrderableStockNames.has(normalizeStockName(stockItemName(item)))) return false;
+        return (numeric(item.cost, item.unit_cost, item.cost_per_unit) || 0) > 0 || (numeric(item.on_order) || 0) > 0;
+      });
+      const hasOrderableStock = orderableStock.length > 0;
       const stockQuantityLabel = stockRoot.length ? stockRoot.map(item => stockItemName(item) + ": " + (numeric(item.in_stock, item.quantity, item.amount) == null ? "Not available" : numeric(item.in_stock, item.quantity, item.amount).toLocaleString("en-US"))).join("; ") : "Not available";
       const stockHistory = Array.isArray(data.stockHistory) ? data.stockHistory : [];
       const currentSnapshotDay = new Date(Date.now() - 18 * 60 * 60 * 1000).toISOString().slice(0, 10);
