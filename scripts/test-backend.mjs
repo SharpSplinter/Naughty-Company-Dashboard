@@ -83,7 +83,7 @@ try {
     assert.match(source, /digest_mode = 'daily'/)
     assert.match(source, /deliverDailyAutomationDigests\(env\)/)
     assert.match(source, /isWithinQuietHours\(preferences\)/)
-    assert.match(source, /ignoreDigestMode: true, ignoreQuietHours: true/)
+    assert.match(source, /await deliverAutomationDigest\(env, owner\.ownerPlayerId, events\.results \?\? \[\]\)/)
   })
 
   await test("historical period comparisons fetch enough prior history independent of chart range", () => {
