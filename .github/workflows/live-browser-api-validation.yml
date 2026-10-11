@@ -53,13 +53,31 @@ jobs:
             for (const url of urls) {
               const page = await browser.newPage();
               const pageErrors = [];
-              page.on('pageerror', () => pageErrors.push('pageerror'));
+              const consoleErrors = [];
+              const failedRequests = [];
+              const badResponses = [];
+              page.on('pageerror', () => pageErrors.push('uncaught page error'));
+              page.on('console', (message) => {
+                if (message.type() === 'error') consoleErrors.push(message.text().slice(0, 240));
+              });
+              page.on('requestfailed', (request) => {
+                if (['document', 'script', 'stylesheet', 'xhr', 'fetch'].includes(request.resourceType())) {
+                  failedRequests.push(`${request.resourceType()} ${new URL(request.url()).pathname}: ${request.failure()?.errorText ?? 'request failed'}`.slice(0, 240));
+                }
+              });
+              page.on('response', (response) => {
+                const request = response.request();
+                if (response.status() >= 400 && ['document', 'script', 'stylesheet', 'xhr', 'fetch'].includes(request.resourceType())) {
+                  badResponses.push(`${response.status()} ${request.resourceType()} ${new URL(response.url()).pathname}`.slice(0, 240));
+                }
+              });
               const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 }).catch(() => null);
               const status = response?.status() ?? 0;
               const title = await page.title().catch(() => '');
               const rootExists = await page.locator('#root, [data-reactroot], main').count().catch(() => 0);
-              console.log(`BROWSER ${new URL(url).host} -> HTTP ${status}; title=${JSON.stringify(title)}; appRoot=${rootExists > 0}; pageErrors=${pageErrors.length}`);
-              if (!response?.ok() || !title || rootExists < 1 || pageErrors.length) failed = true;
+              console.log(`BROWSER ${new URL(url).host} -> HTTP ${status}; title=${JSON.stringify(title)}; appRoot=${rootExists > 0}; pageErrors=${pageErrors.length}; consoleErrors=${consoleErrors.length}; failedRequests=${failedRequests.length}; badResponses=${badResponses.length}`);
+              for (const detail of [...consoleErrors, ...failedRequests, ...badResponses]) console.error(`BROWSER DETAIL ${new URL(url).host}: ${detail}`);
+              if (!response?.ok() || !title || rootExists < 1 || pageErrors.length || consoleErrors.length || failedRequests.length || badResponses.length) failed = true;
               await page.close();
             }
           } finally { await browser.close(); }
