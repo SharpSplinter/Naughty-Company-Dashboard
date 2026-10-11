@@ -1,0 +1,52 @@
+name: Register staging Discord bot commands
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: register-staging-discord-commands
+  cancel-in-progress: false
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Register commands in the test guild only
+        env:
+          DISCORD_TOKEN: \${{ secrets.DISCORD_TOKEN }}
+          DISCORD_APPLICATION_ID: "1558700958983389254"
+          DISCORD_TEST_GUILD_ID: "1525623497999515770"
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DISCORD_TOKEN"
+          payload=$(cat <<'JSON'
+          [
+            {"name":"ping","description":"Check whether the bot is responding"},
+            {"name":"help","description":"Show bot commands and privacy guidance"},
+            {"name":"link","description":"Securely link your dashboard account"},
+            {"name":"status","description":"Check your dashboard account link"},
+            {"name":"unlink","description":"Remove your dashboard account link"},
+            {"name":"company","description":"List your saved dashboard companies"},
+            {"name":"employees","description":"View your latest company employee roster"},
+            {"name":"trends","description":"Summarize your latest 30-day company trend"},
+            {"name":"alerts","description":"View your recent dashboard alerts"}
+          ]
+          JSON
+          )
+          status=$(curl --silent --show-error --output /tmp/discord-response.json --write-out '%{http_code}' \
+            -X PUT "https://discord.com/api/v10/applications/$DISCORD_APPLICATION_ID/guilds/$DISCORD_TEST_GUILD_ID/commands" \
+            -H "Authorization: Bot $DISCORD_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$payload")
+          if [[ "$status" != "200" ]]; then
+            echo "Discord command registration failed (HTTP $status)."
+            jq -r '[.message // "Unknown Discord API error", (.errors // {})] | .[:2]' /tmp/discord-response.json 2>/dev/null || true
+            exit 1
+          fi
+          jq -r '["Registered staging test-guild commands:", (.[] | "• /" + .name)] | .[]' /tmp/discord-response.json
+          rm -f /tmp/discord-response.json
