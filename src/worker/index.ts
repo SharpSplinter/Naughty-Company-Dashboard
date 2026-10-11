@@ -786,7 +786,7 @@ async function deliverDailyAutomationDigests(env: WorkerEnv, now = new Date()): 
   for (const owner of owners.results ?? []) {
     if (isWithinQuietHours(owner, now)) continue
     const minimumRank = severityRank(owner.minimumSeverity)
-    const events = await db.prepare("SELECT e.event_id AS eventId, e.rule_id AS ruleId, e.rule_type AS ruleType, e.severity, e.title, e.message, e.company_id AS companyId, e.created_at AS createdAt FROM alert_events e WHERE e.owner_player_id = ? AND e.created_at <= ? AND CASE e.severity WHEN 'critical' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END >= ? AND NOT EXISTS (SELECT 1 FROM automation_delivery_log d WHERE d.owner_player_id = e.owner_player_id AND d.event_id = e.event_id AND d.status = 'delivered') ORDER BY e.created_at ASC LIMIT 50").bind(owner.ownerPlayerId, cutoff, minimumRank).all<WebhookAlert>()
+    const events = await db.prepare("SELECT e.event_id AS eventId, e.rule_id AS ruleId, e.rule_type AS ruleType, e.severity, e.title, e.message, e.company_id AS companyId, e.created_at AS createdAt FROM alert_events e WHERE e.owner_player_id = ? AND e.created_at <= ? AND CASE e.severity WHEN 'critical' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END >= ? AND NOT EXISTS (SELECT 1 FROM automation_delivery_log d WHERE d.owner_player_id = e.owner_player_id AND d.event_id = e.event_id AND d.status = 'delivered' AND d.detail LIKE 'Daily digest%') ORDER BY e.created_at ASC LIMIT 50").bind(owner.ownerPlayerId, cutoff, minimumRank).all<WebhookAlert>()
     await deliverAutomationDigest(env, owner.ownerPlayerId, events.results ?? [])
   }
 }
