@@ -31,7 +31,7 @@ jobs:
             -X PUT "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/naughty-company-bot-staging" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
             -F "metadata=@/tmp/cf-metadata.json;type=application/json" \
-            -F "worker.js=@bot/staging-worker.js;type=application/javascript+module")
+            -F "worker.js=@bot/staging-worker.js;filename=worker.js;type=application/javascript+module")
           if [[ "$status" != "200" ]]; then
             echo "Cloudflare staging deployment failed (HTTP ${status}). Safe error summary:"
             jq -r '[.errors[]? | {code, message}] | .[:3]' /tmp/cf-response.json 2>/dev/null || echo "No structured error details."
