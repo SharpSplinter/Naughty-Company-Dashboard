@@ -83,7 +83,7 @@ try {
     assert.match(source, /digest_mode = 'daily'/)
     assert.match(source, /deliverDailyAutomationDigests\(env\)/)
     assert.match(source, /isWithinQuietHours\(preferences\)/)
-    assert.match(source, /ignoreDigestMode: true, ignoreQuietHours: true/)
+    assert.match(source, /await deliverAutomationDigest\(env, owner\.ownerPlayerId, events\.results \?\? \[\]\)/)
   })
 
   await test("historical period comparisons fetch enough prior history independent of chart range", () => {
@@ -92,6 +92,24 @@ try {
     assert.match(source, /Number\(comparisonDays\) === 7 \? "30" : Number\(comparisonDays\) === 30 \? "90" : "365"/)
     assert.match(source, /if \(view === "trends"\) tasks\.push\(loadComparison\(\)\)/)
     assert.match(source, /const comparison = useMemo\(\(\) => \{ const points = comparisonHistory/)
+  })
+
+  await test("daily webhook digest batches eligible alerts into one owner-scoped delivery", () => {
+    const source = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    assert.match(source, /event: "automation\.daily_digest"/)
+    assert.match(source, /eventCount: eligible\.length, alerts: eligible/)
+    assert.match(source, /await deliverAutomationDigest\(env, owner\.ownerPlayerId, events\.results \?\? \[\]\)/)
+    assert.match(source, /for \(const alert of eligible\) \{\s*await db\.prepare\("INSERT INTO automation_delivery_log/)
+    assert.match(source, /e\.owner_player_id = \? AND e\.created_at <= \? AND CASE e\.severity/)
+  })
+
+  await test("webhook digest preferences are independent from browser notification delivery", () => {
+    const source = readFileSync(join(root, "src/components/floor/alerts-panel.tsx"), "utf8")
+    assert.match(source, /digestMode: "instant" \| "daily" \| "off"/)
+    assert.match(source, /Daily webhook digest/)
+    assert.match(source, /Webhook delivery mode/)
+    assert.match(source, /browserNotificationsEnabled: enabled \}\)\)/)
+    assert.doesNotMatch(source, /preferences\.browserNotificationsEnabled \|\| preferences\.digestMode === "off"/)
   })
 
   await test("accepts only public HTTPS webhook destinations", () => {
