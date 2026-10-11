@@ -80,10 +80,19 @@ try {
   await test("automatic alert delivery honors preferences and scheduled digests", () => {
     const source = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     assert.match(source, /await deliverAutomationWebhook\(env, rule\.owner_player_id/)
-    assert.match(source, /digest_mode = 'daily'/)
+    assert.match(source, /digest_mode IN \(\'daily\', \'both\'\)/)
     assert.match(source, /deliverDailyAutomationDigests\(env\)/)
     assert.match(source, /isWithinQuietHours\(preferences\)/)
     assert.match(source, /await deliverAutomationDigest\(env, owner\.ownerPlayerId, events\.results \?\? \[\]\)/)
+  })
+
+  await test("combined webhook mode sends alerts immediately and includes owners in daily summaries", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    assert.match(workerSource, /!\["instant", "both"\]\.includes\(preferences\.digestMode\)/)
+    assert.match(workerSource, /WHERE digest_mode IN \('daily', 'both'\)/)
+    assert.match(workerSource, /digest_mode IN \('instant', 'daily', 'both', 'off'\)/)
+    const uiSource = readFileSync(join(root, "src/components/floor/alerts-panel.tsx"), "utf8")
+    assert.match(uiSource, /Instant alerts \+ daily summary/)
   })
 
   await test("historical period comparisons fetch enough prior history independent of chart range", () => {
@@ -108,7 +117,7 @@ try {
 
   await test("webhook digest preferences are independent from browser notification delivery", () => {
     const source = readFileSync(join(root, "src/components/floor/alerts-panel.tsx"), "utf8")
-    assert.match(source, /digestMode: "instant" \| "daily" \| "off"/)
+    assert.match(source, /digestMode: "instant" \| "daily" \| "both" \| "off"/)
     assert.match(source, /Daily webhook digest/)
     assert.match(source, /Webhook delivery mode/)
     assert.match(source, /browserNotificationsEnabled: enabled \}\)\)/)
