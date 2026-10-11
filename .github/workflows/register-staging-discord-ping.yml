@@ -38,7 +38,7 @@ jobs:
             {"name":"status","description":"Check your dashboard account link"},
             {"name":"unlink","description":"Remove your dashboard account link"},
             {"name":"company","description":"List your saved dashboard companies"},
-            {"name":"employees","description":"View your latest company employee roster"},
+            {"name":"employees","description":"View a saved company's employee roster","options":[{"type":3,"name":"company_id","description":"Optional company ID from /company (defaults to first saved company)","required":false}]},
             {"name":"overview","description":"Show income, profit, stars, employees and stock for a saved company","options":[{"type":3,"name":"company_id","description":"Optional company ID from /company (defaults to first saved company)","required":false}]},
             {"name":"rankings","description":"View top global companies by weekly income"},
             {"name":"trends","description":"Summarize a saved company's 30-day trend","options":[{"type":3,"name":"company_id","description":"Optional company ID from /company (defaults to first saved company)","required":false}]},
