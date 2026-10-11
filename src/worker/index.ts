@@ -2187,6 +2187,8 @@ export default {
       const row = await requireDb(env).prepare("SELECT company_id, company_name, company_type, profile_json, employees_json, fetched_at FROM companies WHERE player_id = ? AND company_id = ?").bind(session.player_id, String(id)).first<Record<string, unknown>>()
       if (!row) return jsonResponse({ error: "No saved data for this company yet. Refresh it from the saved company key first." }, 404, origin)
       const financials = await requireDb(env).prepare("SELECT stock_json FROM company_financials WHERE player_id = ? AND company_id = ?").bind(session.player_id, String(id)).first<{ stock_json: string }>()
+      const stockSnapshots = await requireDb(env).prepare("SELECT snapshot_day, stock_json, fetched_at FROM faction_director_snapshots WHERE player_id = ? AND company_id = ? AND stock_json IS NOT NULL ORDER BY snapshot_day DESC LIMIT 40").bind(session.player_id, String(id)).all<{ snapshot_day: string; stock_json: string; fetched_at: string }>()
+      const stockHistory = (stockSnapshots.results ?? []).map((snapshot) => ({ day: snapshot.snapshot_day, stock: JSON.parse(snapshot.stock_json) as unknown, fetchedAt: snapshot.fetched_at })).reverse()
       const snapshots = await requireDb(env).prepare("SELECT profile_json, fetched_at FROM company_snapshots WHERE player_id = ? AND company_id = ? AND fetched_at >= ? ORDER BY fetched_at ASC").bind(session.player_id, String(id), new Date(Date.now() - 40 * DAY * 1000).toISOString()).all<{ profile_json: string; fetched_at: string }>()
       const incomeHistory = (snapshots.results ?? []).map((snapshot) => {
         const saved = JSON.parse(snapshot.profile_json) as Record<string, unknown>
@@ -2194,7 +2196,7 @@ export default {
         const income = isRecord(profile.income) ? profile.income : {}
         return { fetchedAt: snapshot.fetched_at, dailyIncome: typeof income.daily === "number" && Number.isFinite(income.daily) ? income.daily : null }
       }).filter((snapshot) => snapshot.dailyIncome !== null)
-      return jsonResponse({ companyId: row.company_id, companyName: row.company_name, companyType: row.company_type, profile: JSON.parse(String(row.profile_json)), employees: JSON.parse(String(row.employees_json)), stock: financials ? JSON.parse(financials.stock_json) : null, incomeHistory, fetchedAt: row.fetched_at }, 200, origin)
+      return jsonResponse({ companyId: row.company_id, companyName: row.company_name, companyType: row.company_type, profile: JSON.parse(String(row.profile_json)), employees: JSON.parse(String(row.employees_json)), stock: financials ? JSON.parse(financials.stock_json) : null, stockHistory, incomeHistory, fetchedAt: row.fetched_at }, 200, origin)
     }
     if (url.pathname === "/api/company/refresh" && request.method === "POST") {
       const session = await authenticate(request, env)

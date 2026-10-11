@@ -218,6 +218,14 @@ async function replyFor(i, env) {
       const adBudget = numeric(data.adBudget) ?? findNumber(root, ["advertisement_budget", "advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"]);
       const stockRoot = Array.isArray(data.stock) ? data.stock : data.stock && Array.isArray(data.stock.stock) ? data.stock.stock : data.stock && typeof data.stock === "object" ? Object.values(data.stock).filter(value => value && typeof value === "object") : [];
       const stockQuantity = stockRoot.reduce((sum, item) => sum + (numeric(item.in_stock, item.quantity, item.amount) || 0), 0);
+      const stockHistory = Array.isArray(data.stockHistory) ? data.stockHistory : [];
+      const currentSnapshotDay = new Date(Date.now() - 18 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const priorStockSnapshot = stockHistory.filter(snapshot => snapshot && typeof snapshot.day === "string" && snapshot.day < currentSnapshotDay).sort((a, b) => String(a.day).localeCompare(String(b.day))).at(-1);
+      const priorStockRoot = priorStockSnapshot ? (Array.isArray(priorStockSnapshot.stock) ? priorStockSnapshot.stock : priorStockSnapshot.stock && Array.isArray(priorStockSnapshot.stock.stock) ? priorStockSnapshot.stock.stock : []) : [];
+      const priorStockQuantity = priorStockSnapshot && priorStockRoot.length && priorStockRoot.every(item => numeric(item.in_stock, item.quantity, item.amount) != null) ? priorStockRoot.reduce((sum, item) => sum + numeric(item.in_stock, item.quantity, item.amount), 0) : null;
+      const stockDifference = priorStockQuantity == null ? null : stockQuantity - priorStockQuantity;
+      const stockOnOrder = stockRoot.reduce((sum, item) => sum + (numeric(item.on_order) || 0), 0);
+      const stockCost = stockRoot.reduce((sum, item) => sum + (numeric(item.cost) || 0), 0);
       const stockValue = stockRoot.reduce((sum, item) => {
         const quantity = numeric(item.in_stock, item.quantity, item.amount);
         const price = numeric(item.unitPrice, item.price, item.sell_price, item.selling_price, item.price_per_unit, item.cost, item.unit_cost, item.cost_per_unit);
@@ -255,7 +263,9 @@ async function replyFor(i, env) {
         "Employees in latest payload: " + (employeeList.length || "Not reported"),
         "Stock items: " + (stockRoot.length || "Not reported"),
         "Stock quantity: " + (stockRoot.length ? stockQuantity.toLocaleString("en-US") : "Not available"),
-        "Stock change vs previous day: Not available (no saved daily stock baseline)",
+        "Stock change vs previous daily snapshot: " + (stockDifference == null ? "Not available (no saved daily stock baseline)" : (stockDifference > 0 ? "+" : "") + stockDifference.toLocaleString("en-US")),
+        "Stock on order: " + (stockRoot.length ? stockOnOrder.toLocaleString("en-US") : "Not available"),
+        "Stock cost field total: " + (stockRoot.some(item => numeric(item.cost) != null) ? money(stockCost) : "Not reported by Torn"),
         "Stock unit price: " + (stockRoot.length === 1 ? money(numeric(stockRoot[0].unitPrice, stockRoot[0].price, stockRoot[0].sell_price, stockRoot[0].selling_price, stockRoot[0].price_per_unit, stockRoot[0].cost, stockRoot[0].unit_cost, stockRoot[0].cost_per_unit)) : "See item-level stock data in dashboard"),
         "Stock purchased today: " + (dailyStockCost == null ? "Not available (daily purchase-cost data not supplied)" : money(dailyStockCost)),
         "Stock total value: " + (stockRoot.length && pricedStockCount === stockRoot.length ? money(stockValue) : "Not available (stock price data incomplete)"),
