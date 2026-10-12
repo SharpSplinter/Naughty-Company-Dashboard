@@ -270,9 +270,11 @@ async function replyFor(i, env) {
       const hasOrderableStock = orderableStock.length > 0;
       const stockQuantityLabel = stockRoot.length ? stockRoot.map(item => stockItemName(item) + ": " + (numeric(item.in_stock, item.quantity, item.amount) == null ? "Not available" : numeric(item.in_stock, item.quantity, item.amount).toLocaleString("en-US"))).join("; ") : "Not available";
       const stockHistory = Array.isArray(data.stockHistory) ? data.stockHistory : [];
-      // Match the dashboard's daily stock delta: compare the two latest saved daily
-      // snapshot points. Do not subtract an older baseline from the live company
-      // payload, which can be a different day (especially just after 00:00 UTC).
+      // Match the dashboard's Stock Difference exactly: current live stock minus
+      // the latest saved daily snapshot strictly before the current snapshot day.
+      // The live payload may refresh after midnight UTC, but must not become a new
+      // daily baseline until the scheduled snapshot is captured.
+      const currentSnapshotDay = new Date(Date.now() - 18 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const orderedStockSnapshots = stockHistory
         .filter(snapshot => snapshot && typeof snapshot.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(snapshot.day))
         .sort((a, b) => String(a.day).localeCompare(String(b.day)));
@@ -282,11 +284,11 @@ async function replyFor(i, env) {
         const quantities = items.map(item => numeric(item && item.in_stock, item && item.quantity, item && item.amount));
         return quantities.every(value => value != null) ? quantities.reduce((sum, value) => sum + value, 0) : null;
       };
-      const latestStockSnapshot = orderedStockSnapshots.at(-1);
-      const previousStockSnapshot = orderedStockSnapshots.length > 1 ? orderedStockSnapshots.at(-2) : null;
-      const latestSnapshotQuantity = latestStockSnapshot ? stockSnapshotQuantity(latestStockSnapshot) : null;
+      const previousStockSnapshot = orderedStockSnapshots.filter(snapshot => snapshot.day < currentSnapshotDay && stockSnapshotQuantity(snapshot) != null).at(-1);
       const previousSnapshotQuantity = previousStockSnapshot ? stockSnapshotQuantity(previousStockSnapshot) : null;
-      const stockDifference = latestSnapshotQuantity == null || previousSnapshotQuantity == null ? null : latestSnapshotQuantity - previousSnapshotQuantity;
+      const currentStockQuantities = stockRoot.map(item => numeric(item && item.in_stock, item && item.quantity, item && item.amount));
+      const currentStockQuantity = currentStockQuantities.length && currentStockQuantities.every(value => value != null) ? currentStockQuantities.reduce((sum, value) => sum + value, 0) : null;
+      const stockDifference = currentStockQuantity == null || previousSnapshotQuantity == null ? null : currentStockQuantity - previousSnapshotQuantity;
       const stockOnOrder = orderableStock.reduce((sum, item) => sum + (numeric(item.on_order) || 0), 0);
       const stockCost = orderableStock.reduce((sum, item) => sum + (numeric(item.cost) || 0), 0);
       const stockValue = stockRoot.reduce((sum, item) => {
