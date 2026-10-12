@@ -89,9 +89,12 @@ try {
   await test("official daily stock deltas require two cutoff-aligned immutable snapshots", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const floorSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
-    assert.match(workerSource, /capturedAt\.getTime\(\) - 18 \* 60 \* 60 \* 1000/)
-    assert.match(workerSource, /capturedAt\.getUTCHours\(\) === 18 && capturedAt\.getUTCMinutes\(\) >= 10/)
+    assert.match(workerSource, /sourceTimestamp \* 1000/)
+    assert.match(workerSource, /options\.allowInitialBaseline/)
+    assert.match(workerSource, /options\.allowDailySnapshot === true/)
+    assert.match(workerSource, /scheduledAt\.getUTCHours\(\) === 18 && scheduledAt\.getUTCMinutes\(\) === 10/)
     assert.match(workerSource, /ON CONFLICT\(player_id, company_id, snapshot_day\) DO NOTHING/)
+    assert.match(workerSource, /persistFactionDirectorSnapshot\(env, profile, stock\)/)
     assert.match(floorSource, /currentOfficialStockSnapshot = officialStockSnapshots\.find\(\(point\) => point\.day === currentSnapshotDay\)/)
     assert.match(floorSource, /currentOfficialStockSnapshot\.stockQuantity - previousStockSnapshot\.stockQuantity/)
     assert.doesNotMatch(floorSource, /currentStockQuantity - previousStockSnapshot\.stockQuantity/)
@@ -268,13 +271,15 @@ try {
     const client = new TornApiClient({ apiKey: "test", fetcher: async (input) => {
       requestedUrl = String(input)
       return new Response(JSON.stringify({
+        timestamp: 1791845111,
         employees: [{ id: 1, name: "Employee" }],
         stock: [{ id: 173, name: "Oil (Barrel)" }],
         profile: { id: 77, name: "Sample Oil Rig", type: { id: 28, name: "Oil Rig" } },
       }))
     } })
     const response = await client.getCompanySelections()
-    assert.equal(requestedUrl, "https://api.torn.com/v2/company?selections=employees%2Cstock%2Cprofile")
+    assert.equal(requestedUrl, "https://api.torn.com/v2/company?selections=timestamp%2Cprofile%2Cstock%2Cemployees")
+    assert.equal(response.timestamp, 1791845111)
     assert.equal(response.profile.profile.id, 77)
     assert.equal(response.employees.employees.length, 1)
     assert.equal(response.stock.stock.length, 1)
@@ -282,14 +287,29 @@ try {
 
   await test("normalizes Torn combined company responses that retain OpenAPI response wrappers", async () => {
     const client = new TornApiClient({ apiKey: "test", fetcher: async () => new Response(JSON.stringify({
+      timestamp: 1791845000,
       profile: { profile: { id: 78, name: "Wrapped Company", type: { id: 28, name: "Oil Rig" } } },
       employees: { employees: [{ id: 2, name: "Wrapped Employee" }] },
       stock: { stock: [{ id: 173, name: "Oil (Barrel)" }] },
     })) })
     const response = await client.getCompanySelections()
+    assert.equal(response.timestamp, 1791845000)
     assert.equal(response.profile.profile.id, 78)
     assert.equal(response.employees.employees.length, 1)
     assert.equal(response.stock.stock.length, 1)
+  })
+
+  await test("rejects malformed stock in a combined company response instead of caching it", async () => {
+    for (const stock of [null, { stock: "not-an-array" }, { items: [] }]) {
+      const client = new TornApiClient({ apiKey: "test", fetcher: async () => new Response(JSON.stringify({
+        timestamp: 1791845111,
+        profile: { id: 79, name: "Malformed Stock Co" },
+        employees: [],
+        stock,
+      })) })
+      await assert.rejects(() => client.getCompanySelections(), (error) =>
+        error instanceof TornApiClientError && error.status === 502)
+    }
   })
 
   await test("uses the OpenAPI faction member, user job-by-ID, and company profile-by-ID endpoints", async () => {
