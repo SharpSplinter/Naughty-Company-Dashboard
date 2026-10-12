@@ -70,6 +70,9 @@ jobs:
           main = "src/worker/index.ts"
           compatibility_date = "2026-10-08"
 
+          [triggers]
+          crons = ["10 18 * * *", "10 0 * * *"]
+
           [observability]
           enabled = true
 
