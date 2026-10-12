@@ -55,6 +55,15 @@ try {
     console.log("PASS", name)
   }
 
+  await test("daily director snapshots are written only by scheduled lock-ins and legacy rows are excluded", () => {
+    const source = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    assert.match(source, /snapshot_kind IN \(\'initialization\', \'lock-in\'\)/)
+    assert.match(source, /if \(snapshotAt\) await persistFactionDirectorSnapshot\(env, profile, stock, \"lock-in\", snapshotAt\)/)
+    assert.match(source, /refreshRankingProfiles\(env, new Date\(controller\.scheduledTime\)\)/)
+    assert.doesNotMatch(source, /if \(profile\) await persistFactionDirectorSnapshot\(env, profile\)/)
+    assert.doesNotMatch(source, /await persistFactionDirectorSnapshot\(env, profile, stock\)\s*await saveCompanyApiKey/)
+  })
+
   await test("evaluates income increase thresholds without dividing by zero", () => {
     assert.deepEqual(evaluateIncomeIncrease(100, 120, 15), { changePercent: 20 })
     assert.equal(evaluateIncomeIncrease(100, 105, 10), null)
