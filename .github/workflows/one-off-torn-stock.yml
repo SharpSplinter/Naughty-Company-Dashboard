@@ -1,0 +1,59 @@
+name: One-off live Torn company stock read
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-stock-read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Fetch live Torn company stock without exposing API key
+        env:
+          TORN_API_KEY: ${{ secrets.TORN_API_KEY }}
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          const apiKey = process.env.TORN_API_KEY;
+          if (!apiKey) {
+            console.error('TORN_API_KEY repository secret is missing.');
+            process.exit(1);
+          }
+          const url = new URL('https://api.torn.com/company/');
+          url.searchParams.set('selections', 'profile,stock');
+          url.searchParams.set('key', apiKey);
+          const response = await fetch(url, { headers: { accept: 'application/json' } });
+          const body = await response.json().catch(() => null);
+          if (!response.ok || !body || body.error) {
+            console.error(JSON.stringify({
+              http_status: response.status,
+              torn_error: body?.error ? {
+                code: body.error.code,
+                error: body.error.error
+              } : null,
+              response_json_received: body !== null
+            }));
+            process.exit(1);
+          }
+          const profile = body.company ?? body.profile ?? {};
+          const stock = Array.isArray(body.stock) ? body.stock : [];
+          console.log(JSON.stringify({
+            source: 'Torn API /company/ selections=profile,stock',
+            http_status: response.status,
+            captured_at: new Date().toISOString(),
+            company_id: profile.id ?? body.id ?? null,
+            company_name: profile.name ?? body.name ?? null,
+            stock: stock.map(item => ({
+              id: item.id ?? null,
+              name: item.name ?? null,
+              in_stock: item.in_stock ?? null,
+              on_order: item.on_order ?? null,
+              price: item.price ?? null,
+              sold_amount: item.sold_amount ?? null,
+              sold_worth: item.sold_worth ?? null
+            }))
+          }, null, 2));
+          NODE
