@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Inspect Knotty Oil saved snapshot metadata only
+      - name: Inspect Knotty Oil stock snapshot fields only
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: "6c03b978ed9a59adc3f61c715bdad45c"
@@ -26,7 +26,7 @@ jobs:
           response_file="$(mktemp)"
           request_file="$(mktemp)"
           trap 'rm -f "$response_file" "$request_file"' EXIT
-          jq -n --arg sql "SELECT 'faction_director_snapshots' AS source, snapshot_day AS day, fetched_at, company_id, json_type(stock_json) AS stock_json_type, length(stock_json) AS stock_json_length FROM faction_director_snapshots WHERE instr(profile_json, 'Knotty Oil') > 0 OR instr(stock_json, 'Knotty Oil') > 0 ORDER BY snapshot_day DESC LIMIT 30" '{sql: $sql}' > "$request_file"
+          jq -n --arg sql "SELECT p.player_name, c.company_name, s.company_id, s.snapshot_day, s.fetched_at, j.key AS stock_field, j.type AS field_type, CASE WHEN j.type IN ('integer','real','text') THEN j.value ELSE NULL END AS field_value FROM faction_director_snapshots s JOIN players p ON p.player_id = s.player_id LEFT JOIN companies c ON c.player_id = s.player_id AND c.company_id = s.company_id JOIN json_each(s.stock_json) j WHERE s.company_id = '96639' AND s.snapshot_day IN ('2026-10-11','2026-10-12') ORDER BY s.snapshot_day, j.key" '{sql: $sql}' > "$request_file"
           status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
             --request POST \
             --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
@@ -35,8 +35,8 @@ jobs:
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${STAGING_D1_DATABASE_ID}/query")"
           unset CLOUDFLARE_API_TOKEN
           if [[ "$status" != "200" ]] || ! jq -e '.success == true' "$response_file" >/dev/null; then
-            echo "::error::Cloudflare D1 saved-snapshot metadata query failed (HTTP $status). Response body suppressed."
+            echo "::error::Cloudflare D1 stock-field query failed (HTTP $status). Response body suppressed."
             exit 1
           fi
-          echo "Read-only saved-snapshot metadata results:"
-          jq -c '[.result[]?.results[]? | {source: .source, day: .day, fetched_at: .fetched_at, company_id: .company_id, stock_json_type: .stock_json_type, stock_json_length: .stock_json_length}]' "$response_file"
+          echo "Read-only stock snapshot fields for company 96639 on Oct 11 and Oct 12:"
+          jq -c '[.result[]?.results[]? | {player_name: .player_name, company_name: .company_name, company_id: .company_id, snapshot_day: .snapshot_day, fetched_at: .fetched_at, stock_field: .stock_field, field_type: .field_type, field_value: .field_value}]' "$response_file"
