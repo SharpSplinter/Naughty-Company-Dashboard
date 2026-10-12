@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Inspect Knotty Oil chart-history metadata only
+      - name: Inspect Knotty Oil saved snapshot metadata only
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: "6c03b978ed9a59adc3f61c715bdad45c"
@@ -26,7 +26,7 @@ jobs:
           response_file="$(mktemp)"
           request_file="$(mktemp)"
           trap 'rm -f "$response_file" "$request_file"' EXIT
-          jq -n --arg sql "SELECT p.player_name, u.page_key, u.updated_at, json_type(u.data_json) AS json_type, (SELECT group_concat(key, ',') FROM json_each(u.data_json)) AS top_level_keys, instr(u.data_json, 'Knotty Oil') > 0 AS contains_knotty_oil FROM user_page_data u JOIN players p ON p.player_id = u.player_id WHERE u.page_key = 'charts' AND instr(u.data_json, 'Knotty Oil') > 0 ORDER BY u.updated_at DESC LIMIT 20" '{sql: $sql}' > "$request_file"
+          jq -n --arg sql "SELECT 'faction_director_snapshots' AS source, snapshot_day AS day, fetched_at, company_id, json_type(stock_json) AS stock_json_type, length(stock_json) AS stock_json_length FROM faction_director_snapshots WHERE instr(profile_json, 'Knotty Oil') > 0 OR instr(stock_json, 'Knotty Oil') > 0 ORDER BY snapshot_day DESC LIMIT 30" '{sql: $sql}' > "$request_file"
           status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
             --request POST \
             --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
@@ -35,8 +35,8 @@ jobs:
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${STAGING_D1_DATABASE_ID}/query")"
           unset CLOUDFLARE_API_TOKEN
           if [[ "$status" != "200" ]] || ! jq -e '.success == true' "$response_file" >/dev/null; then
-            echo "::error::Cloudflare D1 chart-history metadata query failed (HTTP $status). Response body suppressed."
+            echo "::error::Cloudflare D1 saved-snapshot metadata query failed (HTTP $status). Response body suppressed."
             exit 1
           fi
-          echo "Read-only chart-history metadata results (no tokens, keys, or full page JSON):"
-          jq -c '[.result[]?.results[]? | {player_name: .player_name, page_key: .page_key, updated_at: .updated_at, json_type: .json_type, top_level_keys: .top_level_keys, contains_knotty_oil: .contains_knotty_oil}]' "$response_file"
+          echo "Read-only saved-snapshot metadata results:"
+          jq -c '[.result[]?.results[]? | {source: .source, day: .day, fetched_at: .fetched_at, company_id: .company_id, stock_json_type: .stock_json_type, stock_json_length: .stock_json_length}]' "$response_file"
