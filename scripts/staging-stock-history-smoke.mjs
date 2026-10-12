@@ -38,7 +38,7 @@ try {
   await query("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?)", [playerId, companyId, "Staging Stock Test Co", "Test", JSON.stringify({}), JSON.stringify([]), nowIso]);
   await query("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)", [playerId, companyId, JSON.stringify(currentStock), nowIso]);
   for (const snapshot of snapshots) {
-    await query("INSERT INTO faction_director_snapshots (player_id, company_id, snapshot_day, profile_json, stock_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?)", [playerId, companyId, snapshot.day, JSON.stringify({}), JSON.stringify(snapshot.stock), `${snapshot.day}T18:10:00.000Z`]);
+    await query("INSERT INTO faction_director_snapshots (player_id, company_id, snapshot_day, profile_json, stock_json, fetched_at, snapshot_kind) VALUES (?, ?, ?, ?, ?, ?, 'lock-in')", [playerId, companyId, snapshot.day, JSON.stringify({}), JSON.stringify(snapshot.stock), `${snapshot.day}T18:10:00.000Z`]);
   }
 
   const response = await fetch(`${apiUrl}/api/me/companies/${companyId}`, {
