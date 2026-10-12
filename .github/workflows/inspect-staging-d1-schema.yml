@@ -24,12 +24,14 @@ jobs:
             exit 1
           fi
           response_file="$(mktemp)"
-          trap 'rm -f "$response_file"' EXIT
+          request_file="$(mktemp)"
+          trap 'rm -f "$response_file" "$request_file"' EXIT
+          jq -n --arg sql "SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name" '{sql: $sql}' > "$request_file"
           status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
             --request POST \
             --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
             --header "Content-Type: application/json" \
-            --data '{"sql":"SELECT name, sql FROM sqlite_master WHERE type = ''table'' ORDER BY name"}' \
+            --data-binary "@$request_file" \
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${STAGING_D1_DATABASE_ID}/query")"
           unset CLOUDFLARE_API_TOKEN
           if [[ "$status" != "200" ]] || ! jq -e '.success == true' "$response_file" >/dev/null; then
