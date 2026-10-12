@@ -86,6 +86,25 @@ try {
     assert.match(source, /await deliverAutomationDigest\(env, owner\.ownerPlayerId, events\.results \?\? \[\]\)/)
   })
 
+  await test("official daily stock deltas require two cutoff-aligned immutable snapshots", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const floorSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
+    assert.match(workerSource, /capturedAt\.getTime\(\) - 18 \* 60 \* 60 \* 1000/)
+    assert.match(workerSource, /capturedAt\.getUTCHours\(\) === 18 && capturedAt\.getUTCMinutes\(\) >= 10/)
+    assert.match(workerSource, /ON CONFLICT\(player_id, company_id, snapshot_day\) DO NOTHING/)
+    assert.match(floorSource, /currentOfficialStockSnapshot = officialStockSnapshots\.find\(\(point\) => point\.day === currentSnapshotDay\)/)
+    assert.match(floorSource, /currentOfficialStockSnapshot\.stockQuantity - previousStockSnapshot\.stockQuantity/)
+    assert.doesNotMatch(floorSource, /currentStockQuantity - previousStockSnapshot\.stockQuantity/)
+  })
+
+  await test("ranking refresh schedules run at both daily UTC checkpoints and reject malformed caches", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const wranglerSource = readFileSync(join(root, "wrangler.toml"), "utf8")
+    assert.match(wranglerSource, /crons = \["10 18 \* \* \*", "10 0 \* \* \*"\]/)
+    assert.match(workerSource, /validIdRows < Math\.ceil\(records\.length \* 0\.95\)/)
+    assert.match(workerSource, /uniqueIds\.size !== companies\.length/)
+  })
+
   await test("scheduled automation records stale-rule and digest delivery failures for dashboard visibility", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     assert.match(workerSource, /let staleRuleFailures = 0/)
