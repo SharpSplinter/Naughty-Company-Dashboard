@@ -204,13 +204,19 @@ async function replyFor(i, env) {
           const backup = await backupRes.json();
           const pages = backup && backup.pages && typeof backup.pages === "object" ? backup.pages : {};
           const charts = pages.charts && typeof pages.charts === "object" ? pages.charts : {};
+          // GET /api/me/data-backup wraps the stored charts page as pages.charts.history,
+          // while imported/older backups may place the company array directly on pages.charts.
           const chartHistory = charts.history && typeof charts.history === "object" ? charts.history : charts;
-          const chartCompanies = Array.isArray(chartHistory.companies) ? chartHistory.companies : [];
-          const chartCompany = chartCompanies.find(item => item && String(item.companyId) === String(company.company_id));
-          const dashboardSnapshots = Array.isArray(chartCompany && chartCompany.history) ? chartCompany.history.filter(point => point && typeof point.day === "string" && point.stockQuantity != null && Number.isFinite(Number(point.stockQuantity))).map(point => ({ day: point.day, stock: [{ in_stock: Number(point.stockQuantity) }], fetchedAt: point.fetchedAt || "" })) : [];
+          const chartCompanies = Array.isArray(chartHistory.companies) ? chartHistory.companies : Array.isArray(charts.companies) ? charts.companies : [];
+          const companyId = String(company.company_id ?? company.companyId ?? company.id ?? "");
+          const chartCompany = chartCompanies.find(item => item && String(item.companyId ?? item.company_id ?? item.id ?? "") === companyId);
+          const dashboardSnapshots = Array.isArray(chartCompany && chartCompany.history) ? chartCompany.history.filter(point => point && typeof point.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(point.day) && point.stockQuantity != null && Number.isFinite(Number(point.stockQuantity))).map(point => ({ day: point.day, stock: [{ in_stock: Number(point.stockQuantity) }], fetchedAt: point.fetchedAt || "" })) : [];
           if (dashboardSnapshots.length) data.stockHistory = dashboardSnapshots;
           const storage = backup.storage && typeof backup.storage === "object" ? backup.storage : {};
-          const directorSnapshots = Array.isArray(storage.directorSnapshots) ? storage.directorSnapshots.filter(item => item && String(item.companyId) === String(company.company_id) && typeof item.snapshotDay === "string" && item.stock != null).map(item => ({ day: item.snapshotDay, stock: item.stock, fetchedAt: item.fetchedAt || "" })) : [];
+          const pageDirectorSnapshots = Array.isArray(charts.directorSnapshots) ? charts.directorSnapshots : [];
+          const storedDirectorSnapshots = Array.isArray(storage.directorSnapshots) ? storage.directorSnapshots : [];
+          const directorSnapshotSource = storedDirectorSnapshots.length ? storedDirectorSnapshots : pageDirectorSnapshots;
+          const directorSnapshots = directorSnapshotSource.filter(item => item && String(item.companyId ?? item.company_id ?? "") === companyId && typeof (item.snapshotDay ?? item.day) === "string" && (item.stock ?? item.stockJson) != null).map(item => ({ day: item.snapshotDay ?? item.day, stock: item.stock ?? item.stockJson, fetchedAt: item.fetchedAt || "" }));
           if (directorSnapshots.length) {
             data.stockOrderHistory = directorSnapshots;
             // The production API may not yet expose the saved Charts baseline on this route.
