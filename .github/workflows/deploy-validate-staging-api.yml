@@ -1,0 +1,100 @@
+name: Deploy and validate timestamp safeguards on staging API
+
+on:
+  push:
+    branches:
+      - staging/validate-timestamp-snapshot-safeguards
+    paths:
+      - "src/worker/**"
+      - "src/lib/**"
+      - "scripts/test-backend.mjs"
+      - ".github/workflows/deploy-validate-staging-api.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: naughty-company-staging-api-validation
+  cancel-in-progress: false
+
+jobs:
+  deploy-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out validation branch
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Run type-check and backend regression suite
+        run: |
+          npm run typecheck
+          npm test
+      - name: Verify staging settings and staging-only D1 binding
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: "6c03b978ed9a59adc3f61c715bdad45c"
+          STAGING_WORKER: naughty-company-api-staging
+          STAGING_D1_ID: "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          response="$(mktemp)"
+          status="$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$STAGING_WORKER/settings")"
+          if [[ "$status" != "200" ]] || ! jq -e '.success == true' "$response" >/dev/null; then
+            echo "::error::Could not verify staging Worker settings (HTTP $status)."
+            rm -f "$response"
+            exit 1
+          fi
+          jq -e --arg id "$STAGING_D1_ID" '.result.bindings | any(.type == "d1" and .name == "DB" and .id == $id) and any(.type == "secret_text" and .name == "KEY_ENCRYPTION_SECRET")' "$response" >/dev/null || {
+            echo "::error::Staging DB or encryption secret binding did not match expected staging configuration."
+            rm -f "$response"
+            exit 1
+          }
+          echo "Verified staging-only D1 binding and existing encryption-secret binding."
+          rm -f "$response"
+      - name: Build staging-specific Wrangler config
+        shell: bash
+        run: |
+          cat > wrangler.staging-validation.toml <<'EOF'
+          name = "naughty-company-api-staging"
+          main = "src/worker/index.ts"
+          compatibility_date = "2026-10-08"
+
+          [observability]
+          enabled = true
+
+          [[d1_databases]]
+          binding = "DB"
+          database_name = "naughty-company-dashboard-staging"
+          database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"
+          migrations_dir = "migrations/auth"
+          EOF
+      - name: Deploy only to staging Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: "6c03b978ed9a59adc3f61c715bdad45c"
+        run: npx wrangler deploy --config wrangler.staging-validation.toml --keep-vars
+      - name: Verify staging health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(mktemp)"
+          status="$(curl --silent --show-error --output "$response" --write-out '%{http_code}' --max-time 20 https://naughty-company-api-staging.kboone801.workers.dev/health || true)"
+          if [[ "$status" != "200" ]] || ! jq -e '.ok == true' "$response" >/dev/null; then
+            echo "::error::Staging health check did not return ok=true (HTTP ${status:-unknown})."
+            jq -c '{ok, error, database}' "$response" 2>/dev/null || true
+            rm -f "$response"
+            exit 1
+          fi
+          jq -c '{ok, database, encryption}' "$response"
+          rm -f "$response"
