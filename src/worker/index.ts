@@ -1739,7 +1739,12 @@ export default {
           selectedCompanyData = await validateCompanyKey(secondaryCompanyKey)
           selectedCompanyApiKey = secondaryCompanyKey
         }
-        if (selectedCompanyData) await persistCompanyConnection(env, player.id, selectedCompanyApiKey, selectedCompanyData)
+        if (selectedCompanyData) {
+          await persistCompanyConnection(env, player.id, selectedCompanyApiKey, selectedCompanyData)
+          // Establish a one-time eligible baseline during account/API initialization.
+          // The writer is idempotent and will not replace an existing initialization or lock-in.
+          await persistFactionDirectorSnapshot(env, selectedCompanyData.profile, selectedCompanyData.stock, "initialization", new Date(now))
+        }
         const companyKey = await companyKeyMeta(env, player.id)
         const token = randomToken()
         const expiresAt = Math.floor(Date.now() / 1000) + 30 * DAY
