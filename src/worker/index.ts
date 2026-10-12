@@ -312,6 +312,14 @@ async function fetchGlobalCompanyRankings(apiKey: string): Promise<{ companies: 
     const rating = numberField(row, "rating", "stars", "star_rating")
     return [{ companyId: String(companyId), companyName: row.name || row.companyname || `Company #${companyId}`, companyType: row.companytypename || row.typename || (typeId === null ? "Unknown" : typeNames.get(typeId) || `Type #${typeId}`), companyTypeId: typeId, starRating: rating, weeklyIncome, dailyIncome, averageDailyIncome: weeklyIncome === null ? null : weeklyIncome / 7, directorName: "", playerId: "torn-global", fetchedAt: new Date().toISOString() }]
   }).sort((a, b) => (Number(b.weeklyIncome ?? -1) - Number(a.weeklyIncome ?? -1)))
+  const validIdRows = companies.length
+  if (validIdRows === 0 || validIdRows < Math.ceil(records.length * 0.95)) {
+    throw Object.assign(new Error("Torn returned an incomplete or malformed company ranking snapshot; the existing cache was preserved."), { status: 502 })
+  }
+  const uniqueIds = new Set(companies.map((company) => String(company.companyId)))
+  if (uniqueIds.size !== companies.length) {
+    throw Object.assign(new Error("Torn returned duplicate company IDs; the existing ranking cache was preserved."), { status: 502 })
+  }
   return { companies, snapshotFetchedAt: new Date().toISOString() }
 }
 async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string, force = false): Promise<void> {
@@ -376,13 +384,23 @@ async function persistFactionDirectorSnapshot(env: WorkerEnv, profile: unknown, 
   const income = isRecord(root.income) ? root.income : {}
   const dailyIncome = typeof income.daily === "number" ? income.daily : null
   const weeklyIncome = typeof income.weekly === "number" ? income.weekly : null
-  const now = new Date().toISOString()
-  const day = now.slice(0, 10)
+  const capturedAt = new Date()
+  const now = capturedAt.toISOString()
+  // Reporting days roll over at 18:00 UTC, not at midnight UTC.
+  const day = new Date(capturedAt.getTime() - 18 * 60 * 60 * 1000).toISOString().slice(0, 10)
   const db = requireDb(env)
   await db.prepare("INSERT INTO faction_member_cache (player_id, player_name, faction_id, checked_at, is_director, company_id, company_name, company_type, company_type_id, company_rating, daily_income, weekly_income, profile_json, updated_at) VALUES (?, ?, '8317', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET is_director = 1, company_id = excluded.company_id, company_name = excluded.company_name, company_type = excluded.company_type, company_type_id = excluded.company_type_id, company_rating = excluded.company_rating, daily_income = excluded.daily_income, weekly_income = excluded.weekly_income, profile_json = excluded.profile_json, updated_at = excluded.updated_at")
     .bind(playerId, typeof director.name === "string" ? director.name : `Player #${playerId}`, now, companyId, name, typeName, typeId, rating, dailyIncome, weeklyIncome, asJson(profile), now).run()
-  await db.prepare("INSERT INTO faction_director_snapshots (player_id, company_id, snapshot_day, profile_json, stock_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id, snapshot_day) DO NOTHING")
-    .bind(playerId, companyId, day, asJson(profile), stock === null || stock === undefined ? null : asJson(stock), now).run()
+  // Create an initial baseline for a newly linked company, then lock one immutable
+  // daily record during the 18:10 UTC snapshot window. Ordinary refreshes update
+  // live/cache tables above but must not manufacture intraday historical points.
+  const existing = await db.prepare("SELECT snapshot_day FROM faction_director_snapshots WHERE player_id = ? AND company_id = ? LIMIT 1")
+    .bind(playerId, companyId).first<{ snapshot_day: string }>()
+  const isDailySnapshotWindow = capturedAt.getUTCHours() === 18 && capturedAt.getUTCMinutes() >= 10 && capturedAt.getUTCMinutes() < 20
+  if (!existing || isDailySnapshotWindow) {
+    await db.prepare("INSERT INTO faction_director_snapshots (player_id, company_id, snapshot_day, profile_json, stock_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id, snapshot_day) DO NOTHING")
+      .bind(playerId, companyId, day, asJson(profile), stock === null || stock === undefined ? null : asJson(stock), now).run()
+  }
 }
 async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[] }> {
   const client = new TornApiClient({ apiKey })
