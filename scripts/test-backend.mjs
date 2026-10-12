@@ -411,7 +411,7 @@ try {
       assert.equal(companyKeys.get("777").last_four, apiKeys.get("777").last_four)
       assert.equal([...companyApiKeys.values()][0].last_four, apiKeys.get("777").last_four)
       assert.equal(companies.get("777:77").company_name, "Test Company")
-      assert.equal(companySnapshots.has("777:77"), true)
+      assert.equal(companySnapshots.has("777:77"), false) // On-demand sign-in must not create a daily history snapshot.
 
       // A returning director with a saved login credential is auto-connected if the primary company record is missing.
       companyKeys.clear()

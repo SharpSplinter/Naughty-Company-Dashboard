@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - feature/staging-discord-link-company
+      - feature/overview-financials-stock-performance
     paths:
       - 'bot/staging-worker.js'
       - '.github/workflows/deploy-staging-discord-bot.yml'
@@ -26,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"
-          printf '%s' '{"main_module":"worker.js","compatibility_date":"2026-10-11","keep_bindings":["d1","secret_text","plain_text"],"bindings":[{"type":"service","name":"DASHBOARD_API","service":"naughty-company-api","environment":"production"}]}' > /tmp/cf-metadata.json
+          printf '%s' '{"main_module":"worker.js","compatibility_date":"2026-10-11","keep_bindings":["d1","secret_text","plain_text"],"bindings":[{"type":"service","name":"DASHBOARD_API","service":"naughty-company-api-staging","environment":"production"}]}' > /tmp/cf-metadata.json
           status=$(curl --silent --show-error --output /tmp/cf-response.json --write-out '%{http_code}' \
             -X PUT "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/naughty-company-bot-staging" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \

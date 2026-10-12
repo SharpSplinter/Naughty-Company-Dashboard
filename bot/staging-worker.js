@@ -62,7 +62,7 @@ async function pollPrivateAlerts(env) {
         const title = String(event.title || "Dashboard alert").slice(0, 150);
         const message = String(event.message || "").replace(/\s+/g, " ").slice(0, 900);
         const company = event.companyName ? String(event.companyName).slice(0, 100) : event.companyId ? "Company ID " + String(event.companyId) : "Your company";
-        const content = "🔔 Naughty Company Dashboard alert\n[" + severity + "] " + title + "\n" + message + "\nCompany: " + company + "\n" + String(event.createdAt);
+        const content = "Ã°ÂÂÂ Naughty Company Dashboard alert\n[" + severity + "] " + title + "\n" + message + "\nCompany: " + company + "\n" + String(event.createdAt);
         let delivered = false;
         try { delivered = await sendPrivateDiscordMessage(env, link.discordUserId, content); } catch {}
         const attempts = Number(prior?.attempts || 0) + 1, status = delivered ? "delivered" : "failed";
@@ -196,32 +196,161 @@ async function replyFor(i, env) {
       if (detailRes.status === 404) return privateReply("No saved snapshot exists for " + String(company.company_name || "this company") + " yet. Refresh it in the dashboard first.");
       if (!detailRes.ok) return privateReply("Company overview is temporarily unavailable. Please try again later.");
       const data = await detailRes.json();
+      // The dashboard's saved Charts history is the source used by its own stock-delta display.
+      // Fetch the authenticated backup read-only so staging can match that history without a production API deployment.
+      try {
+        const backupRes = await dashboardFetch(env, "/api/me/data-backup", { headers, signal: AbortSignal.timeout(8000) });
+        if (backupRes.ok) {
+          const backup = await backupRes.json();
+          const pages = backup && backup.pages && typeof backup.pages === "object" ? backup.pages : {};
+          const charts = pages.charts && typeof pages.charts === "object" ? pages.charts : {};
+          // GET /api/me/data-backup wraps the stored charts page as pages.charts.history,
+          // while imported/older backups may place the company array directly on pages.charts.
+          const chartHistory = charts.history && typeof charts.history === "object" ? charts.history : charts;
+          const chartCompanies = Array.isArray(chartHistory.companies) ? chartHistory.companies : Array.isArray(charts.companies) ? charts.companies : [];
+          const companyId = String(company.company_id ?? company.companyId ?? company.id ?? "");
+          const chartCompany = chartCompanies.find(item => item && String(item.companyId ?? item.company_id ?? item.id ?? "") === companyId);
+          const dashboardSnapshots = Array.isArray(chartCompany && chartCompany.history) ? chartCompany.history.filter(point => point && typeof point.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(point.day) && point.stockQuantity != null && Number.isFinite(Number(point.stockQuantity))).map(point => ({ day: point.day, stock: [{ in_stock: Number(point.stockQuantity) }], fetchedAt: point.fetchedAt || "" })) : [];
+          if (dashboardSnapshots.length) data.stockHistory = dashboardSnapshots;
+          const storage = backup.storage && typeof backup.storage === "object" ? backup.storage : {};
+          const pageDirectorSnapshots = Array.isArray(charts.directorSnapshots) ? charts.directorSnapshots : [];
+          const storedDirectorSnapshots = Array.isArray(storage.directorSnapshots) ? storage.directorSnapshots : [];
+          const directorSnapshotSource = storedDirectorSnapshots.length ? storedDirectorSnapshots : pageDirectorSnapshots;
+          const directorSnapshots = directorSnapshotSource.filter(item => item && String(item.companyId ?? item.company_id ?? "") === companyId && typeof (item.snapshotDay ?? item.day) === "string" && (item.stock ?? item.stockJson) != null).map(item => ({ day: item.snapshotDay ?? item.day, stock: item.stock ?? item.stockJson, fetchedAt: item.fetchedAt || "" }));
+          if (directorSnapshots.length) {
+            data.stockOrderHistory = directorSnapshots;
+            // The production API may not yet expose the saved Charts baseline on this route.
+            // If Charts has no earlier daily point, fall back to the same company's saved director snapshots.
+            const baselineDay = new Date(Date.now() - 18 * 60 * 60 * 1000).toISOString().slice(0, 10);
+            const chartHistoryForBaseline = dashboardSnapshots.length ? dashboardSnapshots : (Array.isArray(data.stockHistory) ? data.stockHistory : []);
+            const hasEarlierChartPoint = chartHistoryForBaseline.some(point => point && typeof point.day === "string" && point.day < baselineDay);
+            if (!hasEarlierChartPoint) data.stockHistory = directorSnapshots;
+          }
+        }
+      } catch { /* History is optional; preserve the current overview if backup retrieval fails. */ }
       const profile = data.profile && typeof data.profile === "object" ? data.profile : {};
       const root = profile.company && typeof profile.company === "object" ? profile.company : profile.profile && typeof profile.profile === "object" ? profile.profile : profile;
       const income = root.income && typeof root.income === "object" ? root.income : {};
-      const profit = root.profit && typeof root.profit === "object" ? root.profit : {};
       const money = value => typeof value === "number" && Number.isFinite(value) ? "$" + Math.round(value).toLocaleString("en-US") : "Not available";
-      const dailyProfit = [profit.daily, root.daily_profit, root.dailyProfit, root.profit_daily].find(value => typeof value === "number" && Number.isFinite(value));
-      const rating = [root.company_rating, root.star_rating, root.rating, root.stars].find(value => typeof value === "number" && Number.isFinite(value));
+      const numeric = (...values) => values.find(value => typeof value === "number" && Number.isFinite(value));
+      const findNumber = (obj, keys, depth = 0) => {
+        if (!obj || typeof obj !== "object" || depth > 5) return null;
+        for (const key of keys) if (typeof obj[key] === "number" && Number.isFinite(obj[key])) return obj[key];
+        for (const value of Object.values(obj)) { const found = findNumber(value, keys, depth + 1); if (found !== null) return found; }
+        return null;
+      };
+      const rating = numeric(root.company_rating, root.star_rating, root.rating, root.stars);
       const employeeRoot = data.employees && typeof data.employees === "object" ? data.employees : {};
       const employeeList = Array.isArray(data.employees) ? data.employees : Array.isArray(employeeRoot.employees) ? employeeRoot.employees : Array.isArray(employeeRoot.company_employees) ? employeeRoot.company_employees : [];
+      const totalWages = employeeList.reduce((sum, employee) => {
+        const wage = numeric(employee.wage, employee.salary, employee.wages);
+        return sum + (wage == null ? 0 : wage);
+      }, 0);
+      const hasWages = employeeList.length > 0 && employeeList.some(employee => numeric(employee.wage, employee.salary, employee.wages) != null);
+      const adBudget = numeric(data.adBudget) ?? findNumber(root, ["advertisement_budget", "advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"]);
       const stockRoot = Array.isArray(data.stock) ? data.stock : data.stock && Array.isArray(data.stock.stock) ? data.stock.stock : data.stock && typeof data.stock === "object" ? Object.values(data.stock).filter(value => value && typeof value === "object") : [];
-      const stockQuantity = stockRoot.reduce((sum, item) => { const value = [item.in_stock, item.quantity, item.amount].find(n => typeof n === "number" && Number.isFinite(n)); return sum + (value || 0); }, 0);
+      const stockQuantity = stockRoot.reduce((sum, item) => sum + (numeric(item.in_stock, item.quantity, item.amount) || 0), 0);
+      // Torn Wiki Company List: stock marked "Cannot be ordered" is produced/service output,
+      // not supplier inventory. Exclude those items from order and purchase-cost calculations.
+      // This item-level capability list also handles companies with a mix of produced and orderable stock.
+      const stockItemName = item => String(item.name || item.item_name || item.itemName || item.title || item.product_name || item.product || (item.id != null ? "Item " + item.id : "Stock item"));
+      const normalizeStockName = value => String(value || "").trim().toLocaleLowerCase("en-US");
+      const nonOrderableStockNames = new Set([
+        "Day Pass", "Ticket", "Per Hour", "Venue Hire", "Computer Repair",
+        "Private Surveillance Contract", "Insurance Fraud Contract", "Corporate Surveillance Contract",
+        "Bushel of Crops", "Sheep", "Cow", "Gallon of Milk", "Chicken", "Box of Eggs", "Firework",
+        "Membership Fee", "Admission", "Lap Dance", "Tips", "Special",
+        "Standard Treatment", "Full Treatment", "Luxury Treatment",
+        "Local Logistics contract", "National Logistics contract", "Global Logistics contract",
+        "Meat", "Inspection", "Service", "Oil Change", "Minor Repair", "Moderate Repair", "Major Repair",
+        "Entry Fee", "Beer", "Wine", "Cocktail", "Shot", "Soft Drink", "Oil (Barrel)",
+        "Trailer Commission", "Apartment Commission", "Semi-Detached Commission", "Detached Commission",
+        "Beach House Commission", "Chalet Commission", "Villa Commission", "Penthouse Commission", "Mansion Commission",
+        "Cider", "Coffee", "Starter Course", "Main Course", "Dessert Course",
+        "Website", "Application", "Game", "Commercial Contract"
+      ].map(normalizeStockName));
+      const orderableStock = stockRoot.filter(item => {
+        if (nonOrderableStockNames.has(normalizeStockName(stockItemName(item)))) return false;
+        return (numeric(item.cost, item.unit_cost, item.cost_per_unit) || 0) > 0 || (numeric(item.on_order) || 0) > 0;
+      });
+      const hasOrderableStock = orderableStock.length > 0;
+      const stockQuantityLabel = stockRoot.length ? stockRoot.map(item => stockItemName(item) + ": " + (numeric(item.in_stock, item.quantity, item.amount) == null ? "Not available" : numeric(item.in_stock, item.quantity, item.amount).toLocaleString("en-US"))).join("; ") : "Not available";
+      const stockHistory = Array.isArray(data.stockHistory) ? data.stockHistory : [];
+      // Match the dashboard's Stock Difference exactly: current live stock minus
+      // the latest saved daily snapshot strictly before the current snapshot day.
+      // The live payload may refresh after midnight UTC, but must not become a new
+      // daily baseline until the scheduled snapshot is captured.
+      const currentSnapshotDay = new Date(Date.now() - 18 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const orderedStockSnapshots = stockHistory
+        .filter(snapshot => snapshot && typeof snapshot.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(snapshot.day))
+        .sort((a, b) => String(a.day).localeCompare(String(b.day)));
+      const stockSnapshotQuantity = snapshot => {
+        const items = Array.isArray(snapshot && snapshot.stock) ? snapshot.stock : snapshot && snapshot.stock && Array.isArray(snapshot.stock.stock) ? snapshot.stock.stock : [];
+        if (!items.length) return null;
+        const quantities = items.map(item => numeric(item && item.in_stock, item && item.quantity, item && item.amount));
+        return quantities.every(value => value != null) ? quantities.reduce((sum, value) => sum + value, 0) : null;
+      };
+      const previousStockSnapshot = orderedStockSnapshots.filter(snapshot => snapshot.day < currentSnapshotDay && stockSnapshotQuantity(snapshot) != null).at(-1);
+      const previousSnapshotQuantity = previousStockSnapshot ? stockSnapshotQuantity(previousStockSnapshot) : null;
+      const currentStockQuantities = stockRoot.map(item => numeric(item && item.in_stock, item && item.quantity, item && item.amount));
+      const currentStockQuantity = currentStockQuantities.length && currentStockQuantities.every(value => value != null) ? currentStockQuantities.reduce((sum, value) => sum + value, 0) : null;
+      const stockDifference = currentStockQuantity == null || previousSnapshotQuantity == null ? null : currentStockQuantity - previousSnapshotQuantity;
+      const stockOnOrder = orderableStock.reduce((sum, item) => sum + (numeric(item.on_order) || 0), 0);
+      const stockCost = orderableStock.reduce((sum, item) => sum + (numeric(item.cost) || 0), 0);
+      const stockValue = stockRoot.reduce((sum, item) => {
+        const quantity = numeric(item.in_stock, item.quantity, item.amount);
+        const price = numeric(item.unitPrice, item.price, item.sell_price, item.selling_price, item.price_per_unit, item.cost, item.unit_cost, item.cost_per_unit);
+        return sum + (quantity != null && price != null ? quantity * price : 0);
+      }, 0);
+      const pricedStockCount = stockRoot.filter(item => numeric(item.in_stock, item.quantity, item.amount) != null && numeric(item.unitPrice, item.price, item.sell_price, item.selling_price, item.price_per_unit, item.cost, item.unit_cost, item.cost_per_unit) != null).length;
+      const performance = root.company_performance && typeof root.company_performance === "object" ? root.company_performance : root.performance && typeof root.performance === "object" ? root.performance : root;
+      const popularity = findNumber(performance, ["popularity", "company_popularity"]);
+      const efficiency = findNumber(performance, ["efficiency", "company_efficiency"]);
+      const environment = findNumber(performance, ["environment", "company_environment"]);
       const safeName = String(data.companyName || company.company_name || "Your company").replace(/@/g, "@\u200b").slice(0, 90);
+      const dailyIncome = numeric(income.daily);
+      const weeklyIncome = numeric(income.weekly);
+      const stockPurchaseFields = ["stock_purchased_today", "stock_purchases_today", "purchased_today", "daily_stock_cost", "stock_cost_daily", "daily_stock_expense", "stock_expense_daily", "daily_stock_purchases", "stock_purchases_daily", "daily_cost_of_stock"];
+      const suppliedDailyStockCost = findNumber(data.stock, stockPurchaseFields) ?? findNumber(root, stockPurchaseFields);
+      const currentOrderCost = orderableStock.reduce((sum, item) => sum + Math.max(0, numeric(item.cost) || 0) * Math.max(0, numeric(item.on_order) || 0), 0);
+      // Outstanding on-order inventory is not proof of stock purchased today. Never count it as a daily expense.
+      const dailyStockCost = hasOrderableStock ? suppliedDailyStockCost : 0;
+      const weeklyStockPurchaseFields = ["stock_purchased_this_week", "stock_purchases_this_week", "weekly_stock_cost", "stock_cost_weekly", "weekly_stock_expense", "stock_expense_weekly", "weekly_stock_purchases", "stock_purchases_weekly", "weekly_cost_of_stock"];
+      const suppliedWeeklyStockCost = findNumber(data.stock, weeklyStockPurchaseFields) ?? findNumber(root, weeklyStockPurchaseFields);
+      const weeklyStockCost = hasOrderableStock ? suppliedWeeklyStockCost : 0;
+      const coreExpensesKnown = adBudget != null && hasWages;
+      const dailyExpensesBeforeStock = (adBudget || 0) + (hasWages ? totalWages : 0);
+      // If orderable inventory exists but purchase expense data is absent, profit is unknown rather than understated/overstated.
+      const dailyProfit = coreExpensesKnown && dailyIncome != null && dailyStockCost != null ? dailyIncome - dailyExpensesBeforeStock - dailyStockCost : null;
+      const weeklyProfit = coreExpensesKnown && weeklyIncome != null && weeklyStockCost != null ? weeklyIncome - (dailyExpensesBeforeStock * 7) - weeklyStockCost : null;
       const lines = [
         "**Company overview | " + safeName + "**",
         "Type: " + String(data.companyType || company.company_type || "Not available").slice(0, 60),
-        "Daily income: " + money(income.daily),
-        "Weekly income: " + money(income.weekly),
+        "Daily income: " + money(dailyIncome),
+        "Weekly income: " + money(weeklyIncome),
         "Daily profit: " + money(dailyProfit),
+        "Weekly profit: " + money(weeklyProfit),
+        "Advertisement budget: " + money(adBudget),
+        "Total employee wages: " + (hasWages ? money(totalWages) : "Not available"),
+        "Company Performance | Popularity: " + (popularity == null ? "Not available" : String(popularity)) + " · Efficiency: " + (efficiency == null ? "Not available" : String(efficiency)) + " · Environment: " + (environment == null ? "Not available" : String(environment)),
         "Star rating: " + (rating == null ? "Not available" : String(rating)),
         "Employees in latest payload: " + (employeeList.length || "Not reported"),
-        "Stock items: " + (stockRoot.length || "Not reported") + " | Total quantity: " + (stockRoot.length ? stockQuantity.toLocaleString("en-US") : "Not available"),
+        ...(stockRoot.length ? ["Stock quantity by item: " + stockQuantityLabel] : ["Stock quantity: Not available"]),
+        "Stock change vs previous daily snapshot: " + (stockDifference == null ? "Not available (no saved daily stock baseline)" : (stockDifference > 0 ? "+" : "") + stockDifference.toLocaleString("en-US")),
+        ...(hasOrderableStock ? [
+          "Stock on order: " + stockOnOrder.toLocaleString("en-US"),
+          "Stock cost field total: " + (orderableStock.some(item => numeric(item.cost) != null) ? money(stockCost) : "Not reported by Torn"),
+          "Current stock-order cost: " + money(currentOrderCost),
+          "Stock purchased today: " + (dailyStockCost == null ? "Not available (daily purchase-cost data not supplied)" : money(dailyStockCost)),
+          "Stock purchased this week: " + (weeklyStockCost == null ? "Not available (weekly purchase-cost data not supplied)" : money(weeklyStockCost))
+        ] : []),
+        "Stock unit price: " + (stockRoot.length === 1 ? money(numeric(stockRoot[0].unitPrice, stockRoot[0].price, stockRoot[0].sell_price, stockRoot[0].selling_price, stockRoot[0].price_per_unit, stockRoot[0].cost, stockRoot[0].unit_cost, stockRoot[0].cost_per_unit)) : "See item-level stock data in dashboard"),
+        "Stock total value: " + (stockRoot.length && pricedStockCount === stockRoot.length ? money(stockValue) : "Not available (stock price data incomplete)"),
         "Snapshot updated: " + String(data.fetchedAt || company.fetched_at || "Not available"),
         "Snapshot age: " + snapshotAgeLabel(data.fetchedAt || company.fetched_at)
       ];
       const snapshotMs = Date.parse(data.fetchedAt || company.fetched_at || "");
-      if (Number.isFinite(snapshotMs) && Date.now() - snapshotMs > 36 * 3600000) lines.push("⚠️ This company snapshot may be stale. Refresh it in the dashboard.");
+      if (Number.isFinite(snapshotMs) && Date.now() - snapshotMs > 36 * 3600000) lines.push("Ã¢ÂÂ Ã¯Â¸Â This company snapshot may be stale. Refresh it in the dashboard.");
       return privateReply(lines.join("\n"));
     } catch { return privateReply("Company overview is temporarily unavailable. Please try again later."); }
   }
@@ -314,7 +443,7 @@ async function replyFor(i, env) {
       const generatedAt = data.generatedAt || "";
       const rankingAge = snapshotAgeLabel(generatedAt);
       const rankingMs = Date.parse(generatedAt);
-      const freshnessNote = Number.isFinite(rankingMs) && Date.now() - rankingMs > 36 * 3600000 ? "\n⚠️ Ranking snapshot may be stale; compare its timestamp before relying on it." : "";
+      const freshnessNote = Number.isFinite(rankingMs) && Date.now() - rankingMs > 36 * 3600000 ? "\nÃ¢ÂÂ Ã¯Â¸Â Ranking snapshot may be stale; compare its timestamp before relying on it." : "";
       return privateReply("**Global company rankings**\nTop 5 by weekly income\n" + lines.join("\n") + "\nSnapshot: " + String(generatedAt || "timestamp unavailable") + "\nSnapshot age: " + rankingAge + "\nCompany income source updates daily at 18:10 UTC; this ranking timestamp is shown separately." + freshnessNote);
     } catch { return privateReply("Company rankings are temporarily unavailable. Please try again later."); }
   }
