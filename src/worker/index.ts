@@ -991,36 +991,125 @@ async function evaluateStaleDataRules(env: WorkerEnv): Promise<number> {
 }
 
 async function runScheduledAutomation(controller: { scheduledTime: number; cron: string }, env: WorkerEnv): Promise<void> {
-  if (!env.DB) return
-  const db = requireDb(env)
-  try { await ensureAutomationSchema(env) } catch {
-    await Promise.allSettled([refreshRankingProfiles(env, controller.scheduledTime), refreshFactionDirectoryFromAnyKey(env, 35), refreshGlobalRankingCache(env)])
+  const scheduledAt = new Date(controller.scheduledTime).toISOString()
+  const cron = controller.cron || "scheduled"
+  const log = (event: string, fields: Record<string, unknown> = {}) => {
+    // Structured, secret-free diagnostics for scheduled execution and failure analysis.
+    console.log(JSON.stringify({ component: "scheduled-automation", event, cron, scheduledAt, loggedAt: new Date().toISOString(), ...fields }))
+  }
+  const errorSummary = (error: unknown): string => {
+    const raw = error instanceof Error ? error.message : String(error ?? "Unknown error")
+    return raw.replace(/ApiKey\s+\S+/gi, "ApiKey [redacted]").replace(/\b[a-f0-9]{32,}\b/gi, "[redacted]").slice(0, 300)
+  }
+  log("handler_enter", { hasDatabaseBinding: Boolean(env.DB) })
+  if (!env.DB) {
+    log("handler_abort", { reason: "database_binding_missing" })
     return
   }
+  const db = requireDb(env)
+  log("schema_initialization_start")
+  try {
+    await ensureAutomationSchema(env)
+    log("schema_initialization_complete", { outcome: "succeeded" })
+  } catch (error) {
+    const detail = errorSummary(error)
+    log("schema_initialization_complete", { outcome: "failed", error: detail, fallback: "refresh_tasks_only" })
+    const fallbackTasks: Array<[string, () => Promise<unknown>]> = [
+      ["ranking_profiles", () => refreshRankingProfiles(env, controller.scheduledTime)],
+      ["faction_directory", () => refreshFactionDirectoryFromAnyKey(env, 35)],
+      ["global_ranking_cache", () => refreshGlobalRankingCache(env)],
+    ]
+    const fallbackResults = await Promise.all(fallbackTasks.map(async ([name, run]) => {
+      const taskStartedAt = new Date().toISOString()
+      log("task_start", { task: name, phase: "schema_failure_fallback" })
+      try {
+        const value = await run()
+        log("task_complete", { task: name, phase: "schema_failure_fallback", outcome: "succeeded", durationMs: Date.now() - Date.parse(taskStartedAt), result: name === "ranking_profiles" ? value : undefined })
+        return { task: name, outcome: "succeeded" }
+      } catch (taskError) {
+        const taskErrorDetail = errorSummary(taskError)
+        log("task_complete", { task: name, phase: "schema_failure_fallback", outcome: "failed", durationMs: Date.now() - Date.parse(taskStartedAt), error: taskErrorDetail })
+        return { task: name, outcome: "failed", error: taskErrorDetail }
+      }
+    }))
+    log("schema_failure_fallback_complete", { schemaError: detail, tasks: fallbackResults, runRecordWritten: false, reason: "automation_schema_unavailable" })
+    return
+  }
+
   const runId = crypto.randomUUID()
-  const startedAt = new Date(controller.scheduledTime).toISOString()
-  await db.prepare("INSERT INTO automation_runs (run_id, trigger_name, status, started_at) VALUES (?, ?, 'running', ?)").bind(runId, controller.cron || "scheduled", startedAt).run()
+  const startedAt = scheduledAt
+  log("run_record_insert_start", { runId })
+  try {
+    await db.prepare("INSERT INTO automation_runs (run_id, trigger_name, status, started_at) VALUES (?, ?, 'running', ?)").bind(runId, cron, startedAt).run()
+    log("run_record_insert_complete", { runId, outcome: "succeeded" })
+  } catch (error) {
+    log("run_record_insert_complete", { runId, outcome: "failed", error: errorSummary(error) })
+    throw error
+  }
+
   const isWeeklyLock = new Date(controller.scheduledTime).getUTCDay() === 0
-  const tasks: Promise<unknown>[] = [refreshRankingProfiles(env, controller.scheduledTime), refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35), refreshGlobalRankingCache(env)]
-  if (isWeeklyLock) tasks.push(captureWeeklyFactionStarCounts(env, startedAt))
-  const results = await Promise.allSettled(tasks)
+  const scheduledTasks: Array<[string, () => Promise<unknown>]> = [
+    ["ranking_profiles", () => refreshRankingProfiles(env, controller.scheduledTime)],
+    ["faction_directory", () => refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35)],
+    ["global_ranking_cache", () => refreshGlobalRankingCache(env)],
+  ]
+  if (isWeeklyLock) scheduledTasks.push(["weekly_faction_star_counts", () => captureWeeklyFactionStarCounts(env, startedAt)])
+  const taskResults = await Promise.all(scheduledTasks.map(async ([name, run]) => {
+    const taskStartedAt = Date.now()
+    log("task_start", { task: name, phase: "scheduled" })
+    try {
+      const value = await run()
+      log("task_complete", { task: name, phase: "scheduled", outcome: "succeeded", durationMs: Date.now() - taskStartedAt, result: name === "ranking_profiles" ? value : undefined })
+      return { status: "fulfilled" as const, value, task: name }
+    } catch (error) {
+      const detail = errorSummary(error)
+      log("task_complete", { task: name, phase: "scheduled", outcome: "failed", durationMs: Date.now() - taskStartedAt, error: detail })
+      return { status: "rejected" as const, reason: error, task: name }
+    }
+  }))
   let staleRuleFailures = 0
   let digestFailures = 0
-  try { staleRuleFailures = await evaluateStaleDataRules(env) } catch { staleRuleFailures = 1 }
-  try { digestFailures = await deliverDailyAutomationDigests(env) } catch { digestFailures = 1 }
-  const refresh = results[0]
-  const refreshSummary = refresh.status === "fulfilled" ? refresh.value as { companiesChecked?: number; companiesFailed?: number } : { companiesChecked: 0, companiesFailed: 0 }
-  const failures = results.filter((item) => item.status === "rejected").map((item) => item.status === "rejected" ? (item.reason instanceof Error ? item.reason.message : "A scheduled task failed.") : "")
+  const auxiliaryTasks: Array<[string, () => Promise<number | void>]> = [
+    ["stale_data_rule_evaluation", async () => { staleRuleFailures = await evaluateStaleDataRules(env); return staleRuleFailures }],
+    ["daily_digest_delivery", async () => { digestFailures = await deliverDailyAutomationDigests(env); return digestFailures }],
+  ]
+  await Promise.all(auxiliaryTasks.map(async ([name, run]) => {
+    const taskStartedAt = Date.now()
+    log("task_start", { task: name, phase: "scheduled" })
+    try {
+      const result = await run()
+      log("task_complete", { task: name, phase: "scheduled", outcome: "succeeded", durationMs: Date.now() - taskStartedAt, result })
+    } catch (error) {
+      if (name === "stale_data_rule_evaluation") staleRuleFailures = 1
+      if (name === "daily_digest_delivery") digestFailures = 1
+      log("task_complete", { task: name, phase: "scheduled", outcome: "failed", durationMs: Date.now() - taskStartedAt, error: errorSummary(error) })
+    }
+  }))
+
+  const refresh = taskResults.find((item) => item.task === "ranking_profiles")
+  const refreshSummary = refresh?.status === "fulfilled" ? refresh.value as { companiesChecked?: number; companiesFailed?: number } : { companiesChecked: 0, companiesFailed: 0 }
+  const failures = taskResults.filter((item) => item.status === "rejected").map((item) => item.status === "rejected" ? errorSummary(item.reason) : "")
   const companiesChecked = Number(refreshSummary.companiesChecked ?? 0)
-  const companiesFailed = Number(refreshSummary.companiesFailed ?? 0) + (refresh.status === "rejected" ? 1 : 0)
-  const alerts = await db.prepare("SELECT COUNT(*) AS count FROM alert_events WHERE created_at >= ?").bind(startedAt).first<{ count: number }>().catch(() => null)
-  const allTasksFailed = results.every((item) => item.status === "rejected")
+  const companiesFailed = Number(refreshSummary.companiesFailed ?? 0) + (refresh?.status === "rejected" ? 1 : 0)
+  const alerts = await db.prepare("SELECT COUNT(*) AS count FROM alert_events WHERE created_at >= ?").bind(startedAt).first<{ count: number }>().catch((error) => {
+    log("alert_count_query_failed", { runId, error: errorSummary(error) })
+    return null
+  })
+  const allTasksFailed = taskResults.every((item) => item.status === "rejected")
   const hasFailures = failures.length > 0 || companiesFailed > 0 || staleRuleFailures > 0 || digestFailures > 0
   const status = allTasksFailed ? "failed" : (hasFailures ? "partial" : "succeeded")
   const finishedAt = new Date().toISOString()
   const summary = [...failures, ...(companiesFailed ? [`${companiesFailed} company refresh(es) failed.`] : []), ...(staleRuleFailures ? [`${staleRuleFailures} stale-data rule evaluation(s) failed.`] : []), ...(digestFailures ? [`${digestFailures} daily digest delivery group(s) failed.`] : [])].join(" ").slice(0, 500) || null
-  await db.prepare("UPDATE automation_runs SET status = ?, finished_at = ?, companies_checked = ?, companies_failed = ?, alerts_created = ?, error_summary = ? WHERE run_id = ?")
-    .bind(status, finishedAt, companiesChecked, companiesFailed, Number(alerts?.count ?? 0), summary, runId).run()
+  log("run_record_update_start", { runId, status, companiesChecked, companiesFailed, alertsCreated: Number(alerts?.count ?? 0), hasErrorSummary: Boolean(summary) })
+  try {
+    await db.prepare("UPDATE automation_runs SET status = ?, finished_at = ?, companies_checked = ?, companies_failed = ?, alerts_created = ?, error_summary = ? WHERE run_id = ?")
+      .bind(status, finishedAt, companiesChecked, companiesFailed, Number(alerts?.count ?? 0), summary, runId).run()
+    log("run_record_update_complete", { runId, outcome: "succeeded", status, durationMs: Date.parse(finishedAt) - controller.scheduledTime })
+  } catch (error) {
+    log("run_record_update_complete", { runId, outcome: "failed", intendedStatus: status, error: errorSummary(error) })
+    throw error
+  }
+  log("handler_complete", { runId, status, companiesChecked, companiesFailed, taskCount: taskResults.length })
 }
 
 async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
