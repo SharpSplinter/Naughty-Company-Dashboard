@@ -97,6 +97,16 @@ try {
     assert.doesNotMatch(floorSource, /currentStockQuantity - previousStockSnapshot\.stockQuantity/)
   })
 
+  await test("company stock refreshes preserve current values and append historical stock snapshots", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const migrationSource = readFileSync(join(root, "migrations/auth/0002_company_financial_history.sql"), "utf8")
+    assert.equal((workerSource.match(/INSERT INTO company_financial_snapshots \(player_id, company_id, stock_json, fetched_at\)/g) ?? []).length, 2)
+    assert.match(workerSource, /ON CONFLICT\(player_id, company_id\) DO UPDATE SET stock_json = excluded\.stock_json, fetched_at = excluded\.fetched_at/)
+    assert.match(migrationSource, /CREATE TABLE IF NOT EXISTS company_financial_snapshots/)
+    assert.match(migrationSource, /company_financial_snapshots_owner_idx/)
+    assert.doesNotMatch(migrationSource, /DROP TABLE|DELETE FROM company_financials/i)
+  })
+
   await test("ranking refresh schedules run at both daily UTC checkpoints and reject malformed caches", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const wranglerSource = readFileSync(join(root, "wrangler.toml"), "utf8")
