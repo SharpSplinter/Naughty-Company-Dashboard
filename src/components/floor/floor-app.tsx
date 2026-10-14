@@ -572,7 +572,7 @@ export function FloorApp() {
   const hasCurrentOfficialStock = currentStockQuantity !== null && Number.isFinite(currentSnapshotFetchedAt) && currentSnapshotFetchedAt >= currentSnapshotBoundary
   if (hasCurrentOfficialStock) {
     const existingToday = officialStockSnapshots.findIndex((point) => point.day === currentSnapshotDay)
-    const todayPoint = { day: currentSnapshotDay, period: currentSnapshotBoundary, capturedAt: currentSnapshotFetchedAt, stockQuantity: currentStockQuantity } as SnapshotHistoryPoint
+    const todayPoint = { day: currentSnapshotDay, period: currentSnapshotBoundary, capturedAt: currentSnapshotFetchedAt, stockQuantity: currentStockQuantity } as (typeof officialStockSnapshots)[number]
     if (existingToday >= 0) officialStockSnapshots[existingToday] = { ...officialStockSnapshots[existingToday], ...todayPoint }
     else officialStockSnapshots.push(todayPoint)
     officialStockSnapshots.sort((a, b) => a.day.localeCompare(b.day))
