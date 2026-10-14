@@ -154,6 +154,7 @@ async function persistCompanyConnection(env: WorkerEnv, playerId: string, apiKey
   await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(playerId, String(validated.companyId), asJson(profile), employeesJson, now).run()
   if (validated.stock !== null && validated.stock !== undefined) {
     await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(playerId, String(validated.companyId), asJson(validated.stock), now).run()
+    await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)").bind(playerId, String(validated.companyId), asJson(validated.stock), now).run()
     try { await persistFactionDirectorSnapshot(env, profile, validated.stock) } catch { /* The company snapshot is already persisted. */ }
   }
 }
@@ -513,6 +514,7 @@ async function refreshRankingProfiles(env: WorkerEnv): Promise<{ companiesChecke
       await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, employees_json = excluded.employees_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), String(root.name ?? `Company #${companyId}`), typeof type.name === "string" ? type.name : null, asJson(profile), employees, now).run()
       await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(profile), employees, now).run()
       await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), asJson(stock), now).run()
+      await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(stock), now).run()
       await persistFactionDirectorSnapshot(env, profile, stock)
       companiesChecked += 1
       await evaluateAutomationForCompany(env, keyRow.player_id, String(companyId)).catch(() => undefined)
