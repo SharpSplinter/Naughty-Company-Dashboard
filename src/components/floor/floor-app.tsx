@@ -535,7 +535,20 @@ export function FloorApp() {
     ? rankByIncome(company, factionAllRows)
     : rankByIncome(company, companyPeerRows)
   const currentGlobalCompanyRank = currentRankingCompany ? rankByIncome(currentRankingCompany, companyPeerRows) : null
-  const chartSeriesFor = (metric: SnapshotMetric): ChartSeries[] => buildChartSeriesFor(metric, currentChartCompany, ownCompareData, result, model, selectedComparePlayerId, compareData, currentGlobalCompanyRank, currentStar)
+  const chartSeriesFor = (metric: SnapshotMetric): ChartSeries[] => {
+    const series = buildChartSeriesFor(metric, currentChartCompany, ownCompareData, result, model, selectedComparePlayerId, compareData, currentGlobalCompanyRank, currentStar)
+    // Current stock comes from the saved company refresh; only plot it after the official daily boundary.
+    if (metric === "stockQuantity" && currentStockQuantity !== null && model?.fetchedAt) {
+      const reportingDay = new Date(Date.now() - 18 * 3600000).toISOString().slice(0, 10)
+      const boundary = Date.parse(`${reportingDay}T18:10:00.000Z`)
+      if (Date.parse(model.fetchedAt) >= boundary && series[0]) {
+        const values = new Map(series[0].values.map((point) => [point.label, point.value]))
+        values.set(reportingDay, currentStockQuantity)
+        series[0] = { ...series[0], values: Array.from(values, ([label, value]) => ({ label, value })).sort((a, b) => a.label.localeCompare(b.label)) }
+      }
+    }
+    return series
+  }
   const activePageTitle = activeView === "executive" ? "Executive Overview" : activeView === "health" ? "API Health & Data Freshness" : activeView === "trends" ? "Historical Trends and Comparisons" : activeView === "member-insights" ? "Member Activity" : activeView === "roster-insights" ? "Roster Insights" : activeView === "performance-insights" ? "Performance & Staffing Insights" : activeView === "layout" ? "Customizable Dashboard Layout" : activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "dashboard-members" ? "Dashboard Members" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : activeView === "data-sharing" ? "Data Sharing" : activeView === "alerts" ? "Automation Center" : activeView === "admin" ? "Administration" : "Settings"
   const activePageGroup = activeView === "member-insights" || activeView === "dashboard-members" || activeView === "catalog" || activeView === "trends" || activeView === "performance-insights" ? "References" : activeView === "roster-insights" || activeView === "overview" || activeView === "employees" || activeView === "charts" || activeView === "executive" || activeView === "layout" ? "Company" : activeView === "alerts" || activeView === "health" || activeView === "connect" || activeView === "data-transfer" || activeView === "data-sharing" ? "Settings" : activeView === "type-rankings" || activeView === "faction-rankings" ? "Rankings" : activeView === "admin" ? "Administration" : "Workspace"
   const liveProfileRecord = getObject(result?.profile)
@@ -551,8 +564,19 @@ export function FloorApp() {
   const currentStockQuantity = currentStockRows.length && currentStockRows.every((item) => item.quantity !== null) ? currentStockRows.reduce((sum, item) => sum + (item.quantity ?? 0), 0) : null
   const currentSnapshotDay = new Date(Date.now() - 18 * 3600000).toISOString().slice(0, 10)
   const officialStockSnapshots = (currentChartCompany?.history ?? [])
-    .filter((point) => point.stockQuantity !== null && /^\d{4}-\d{2}-\d{2}$/.test(point.day) && point.day <= currentSnapshotDay)
+    .filter((point) => point.stockQuantity !== null && /^\\d{4}-\\d{2}-\\d{2}$/.test(point.day) && point.day <= currentSnapshotDay)
     .sort((a, b) => a.day.localeCompare(b.day))
+  // Use today's live stock only when its persisted company snapshot crossed the official 18:10 UTC boundary.
+  const currentSnapshotFetchedAt = model?.fetchedAt ? Date.parse(model.fetchedAt) : Number.NaN
+  const currentSnapshotBoundary = Date.parse(`${currentSnapshotDay}T18:10:00.000Z`)
+  const hasCurrentOfficialStock = currentStockQuantity !== null && Number.isFinite(currentSnapshotFetchedAt) && currentSnapshotFetchedAt >= currentSnapshotBoundary
+  if (hasCurrentOfficialStock) {
+    const existingToday = officialStockSnapshots.findIndex((point) => point.day === currentSnapshotDay)
+    const todayPoint = { day: currentSnapshotDay, period: currentSnapshotBoundary, capturedAt: currentSnapshotFetchedAt, stockQuantity: currentStockQuantity } as SnapshotHistoryPoint
+    if (existingToday >= 0) officialStockSnapshots[existingToday] = { ...officialStockSnapshots[existingToday], ...todayPoint }
+    else officialStockSnapshots.push(todayPoint)
+    officialStockSnapshots.sort((a, b) => a.day.localeCompare(b.day))
+  }
   const currentOfficialStockSnapshot = officialStockSnapshots.find((point) => point.day === currentSnapshotDay)
   const previousStockSnapshot = officialStockSnapshots.filter((point) => point.day < currentSnapshotDay).at(-1)
   const stockDifference = currentOfficialStockSnapshot?.stockQuantity != null && previousStockSnapshot?.stockQuantity != null
@@ -954,7 +978,7 @@ export function FloorApp() {
                 {snapshotSourceCreatedAt && <p className="snapshot-source-note">Imported backup created {new Date(snapshotSourceCreatedAt).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}. Dates are UTC.</p>}
                 {snapshotHistoryError && <div className="error-banner" role="alert">{snapshotHistoryError}</div>}
                 {snapshotHistoryLoading ? <div className="empty-state">Loading company history…</div> : <>
-                  {currentChartCompany && <div className="snapshot-summary-grid"><article className="snapshot-summary-card"><div className="snapshot-company-heading"><div><strong>{currentChartCompany.name}</strong><span>Company #{currentChartCompany.companyId} · {currentChartCompany.typeName}</span></div><span className="star-rating">{currentChartCompany.history.at(-1)?.rating == null ? "—" : `${currentChartCompany.history.at(-1)?.rating} ★`}</span></div><div className="snapshot-metric-grid"><span><small>DAILY INCOME</small><strong>{formatMoney(model?.company.dailyIncome ?? currentChartCompany.history.at(-1)?.dailyIncome ?? null)}</strong></span><span><small>WEEKLY INCOME</small><strong>{formatMoney(model?.company.weeklyIncome ?? currentChartCompany.history.at(-1)?.weeklyIncome ?? null)}</strong></span><span><small>DAILY PROFIT</small><strong>{formatMoney(currentChartCompany.history.at(-1)?.dailyProfit ?? null)}</strong></span><span><small>WEEKLY PROFIT</small><strong>{formatMoney(currentChartCompany.history.at(-1)?.weeklyProfit ?? null)}</strong></span><span><small>COMPANY RANK</small><strong>{currentChartCompany.history.at(-1)?.companyRank == null ? "—" : `#${currentChartCompany.history.at(-1)?.companyRank}${currentChartCompany.history.at(-1)?.companyRankTotal == null ? "" : ` / ${currentChartCompany.history.at(-1)?.companyRankTotal}`}`}</strong></span><span><small>STOCK QUANTITY</small><strong>{currentChartCompany.history.at(-1)?.stockQuantity == null ? "—" : formatNumber(currentChartCompany.history.at(-1)?.stockQuantity)}</strong></span></div><p className="snapshot-date-range">{currentChartCompany.history[0]?.day || "—"} to {currentChartCompany.history.at(-1)?.day || "—"} · {currentChartCompany.history.length} imported daily records, plus any newer live samples</p></article></div>}
+                  {currentChartCompany && <div className="snapshot-summary-grid"><article className="snapshot-summary-card"><div className="snapshot-company-heading"><div><strong>{currentChartCompany.name}</strong><span>Company #{currentChartCompany.companyId} · {currentChartCompany.typeName}</span></div><span className="star-rating">{currentChartCompany.history.at(-1)?.rating == null ? "—" : `${currentChartCompany.history.at(-1)?.rating} ★`}</span></div><div className="snapshot-metric-grid"><span><small>DAILY INCOME</small><strong>{formatMoney(model?.company.dailyIncome ?? currentChartCompany.history.at(-1)?.dailyIncome ?? null)}</strong></span><span><small>WEEKLY INCOME</small><strong>{formatMoney(model?.company.weeklyIncome ?? currentChartCompany.history.at(-1)?.weeklyIncome ?? null)}</strong></span><span><small>DAILY PROFIT</small><strong>{formatMoney(currentChartCompany.history.at(-1)?.dailyProfit ?? null)}</strong></span><span><small>WEEKLY PROFIT</small><strong>{formatMoney(currentChartCompany.history.at(-1)?.weeklyProfit ?? null)}</strong></span><span><small>COMPANY RANK</small><strong>{currentChartCompany.history.at(-1)?.companyRank == null ? "—" : `#${currentChartCompany.history.at(-1)?.companyRank}${currentChartCompany.history.at(-1)?.companyRankTotal == null ? "" : ` / ${currentChartCompany.history.at(-1)?.companyRankTotal}`}`}</strong></span><span><small>STOCK QUANTITY</small><strong>{(currentStockQuantity ?? currentChartCompany.history.at(-1)?.stockQuantity) == null ? "—" : formatNumber(currentStockQuantity ?? currentChartCompany.history.at(-1)?.stockQuantity)}</strong></span></div><p className="snapshot-date-range">{currentChartCompany.history[0]?.day || "—"} to {currentChartCompany.history.at(-1)?.day || "—"} · {currentChartCompany.history.length} imported daily records, plus any newer live samples</p></article></div>}
                   {!currentChartCompany && <div className="empty-state">No imported archive matches the currently selected company. Live company readings will still appear below when available.</div>}
                   <LineChart title="Daily company income" money series={chartSeriesFor("dailyIncome")} />
                   <LineChart title="Weekly company income" money series={chartSeriesFor("weeklyIncome")} />
