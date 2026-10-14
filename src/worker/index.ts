@@ -1379,8 +1379,25 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
       const income = isRecord(root.income) ? root.income : {}
       const day = String(row.fetchedAt ?? "").slice(0, 10)
       if (!day) continue
-      byDay.set(day, { day, fetchedAt: row.fetchedAt, snapshotId: row.snapshotId, dailyIncome: dailyIncomeFromProfile(profile), weeklyIncome: numericField(income.weekly), rating: ratingFromProfile(profile), employeeCount: rosterCount(employees), employeeCapacity: isRecord(root.employees) ? numericField(root.employees.capacity) : null })
+      byDay.set(day, { day, fetchedAt: row.fetchedAt, snapshotId: row.snapshotId, dailyIncome: dailyIncomeFromProfile(profile), weeklyIncome: numericField(income.weekly), rating: ratingFromProfile(profile), employeeCount: rosterCount(employees), employeeCapacity: isRecord(root.employees) ? numericField(root.employees.capacity) : null, stockQuantity: null })
     }
+    const stockCutoffDay = cutoff ? cutoff.slice(0, 10) : null
+    const stockQuery = db.prepare(`SELECT snapshot_day AS day, stock_json AS stockJson FROM faction_director_snapshots WHERE player_id = ? AND company_id = ?${stockCutoffDay ? " AND snapshot_day >= ?" : ""} ORDER BY snapshot_day ASC`)
+    const stockRaw = await (stockCutoffDay ? stockQuery.bind(session.player_id, companyId, stockCutoffDay) : stockQuery.bind(session.player_id, companyId)).all<{ day: string; stockJson: string | null }>()
+    const stockByDay = new Map<string, number>()
+    for (const row of stockRaw.results ?? []) {
+      if (!row.stockJson) continue
+      const stock = parseStoredJson(row.stockJson)
+      const stockRows = Array.isArray(stock) ? stock : isRecord(stock) && Array.isArray(stock.stock) ? stock.stock : []
+      if (!stockRows.length) continue
+      const quantity = stockRows.reduce((sum, item) => {
+        if (!isRecord(item)) return sum
+        const value = [item.in_stock, item.quantity, item.amount].find((candidate) => typeof candidate === "number" && Number.isFinite(candidate)) as number | undefined
+        return sum + (value ?? 0)
+      }, 0)
+      stockByDay.set(row.day, quantity)
+    }
+    for (const point of byDay.values()) point.stockQuantity = stockByDay.get(String(point.day)) ?? null
     const history = Array.from(byDay.values()).sort((a, b) => String(a.day).localeCompare(String(b.day)))
     const first = history[0] ?? null, latest = history.at(-1) ?? null
     const delta = (key: string) => first && latest && typeof first[key] === "number" && typeof latest[key] === "number" ? Number(latest[key]) - Number(first[key]) : null
