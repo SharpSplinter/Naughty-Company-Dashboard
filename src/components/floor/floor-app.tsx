@@ -578,7 +578,8 @@ export function FloorApp() {
     officialStockSnapshots.sort((a, b) => a.day.localeCompare(b.day))
   }
   const currentOfficialStockSnapshot = officialStockSnapshots.find((point) => point.day === currentSnapshotDay)
-  const previousStockSnapshot = officialStockSnapshots.filter((point) => point.day < currentSnapshotDay).at(-1)
+  const previousSnapshotDay = new Date(Date.parse(`${currentSnapshotDay}T12:00:00.000Z`) - 86400000).toISOString().slice(0, 10)
+  const previousStockSnapshot = officialStockSnapshots.find((point) => point.day === previousSnapshotDay)
   const stockDifference = currentOfficialStockSnapshot?.stockQuantity != null && previousStockSnapshot?.stockQuantity != null
     ? currentOfficialStockSnapshot.stockQuantity - previousStockSnapshot.stockQuantity
     : null
