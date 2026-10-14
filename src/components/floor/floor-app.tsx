@@ -564,7 +564,7 @@ export function FloorApp() {
   const currentStockQuantity = currentStockRows.length && currentStockRows.every((item) => item.quantity !== null) ? currentStockRows.reduce((sum, item) => sum + (item.quantity ?? 0), 0) : null
   const currentSnapshotDay = new Date(Date.now() - 18 * 3600000).toISOString().slice(0, 10)
   const officialStockSnapshots = (currentChartCompany?.history ?? [])
-    .filter((point) => point.stockQuantity !== null && /^\\d{4}-\\d{2}-\\d{2}$/.test(point.day) && point.day <= currentSnapshotDay)
+    .filter((point) => point.stockQuantity !== null && /^\d{4}-\d{2}-\d{2}$/.test(point.day) && point.day <= currentSnapshotDay)
     .sort((a, b) => a.day.localeCompare(b.day))
   // Use today's live stock only when its persisted company snapshot crossed the official 18:10 UTC boundary.
   const currentSnapshotFetchedAt = model?.fetchedAt ? Date.parse(model.fetchedAt) : Number.NaN
