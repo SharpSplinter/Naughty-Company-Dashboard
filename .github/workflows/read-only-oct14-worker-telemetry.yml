@@ -23,8 +23,6 @@ jobs:
             echo "::error::CLOUDFLARE_API_TOKEN secret is missing or empty."
             exit 1
           fi
-
-          # Fixed historical window: 2026-10-14 18:00:00 through 18:10:00 UTC.
           FROM_MS=1792000800000
           TO_MS=1792001400000
 
@@ -56,7 +54,6 @@ jobs:
 
             echo "=== Worker: $worker | HTTP $http_status ==="
             if [[ "$http_status" != "200" ]] || ! jq -e '.success == true' "$output_file" >/dev/null; then
-              # Do not print response headers, credentials, or arbitrary response content.
               jq -r 'if (.errors | type) == "array" then .errors[] | .message // "Cloudflare API query failed" else "Cloudflare API query failed; response body suppressed." end' "$output_file" 2>/dev/null || true
               rm -f "$output_file"
               return 1
@@ -67,12 +64,13 @@ jobs:
               "Returned events: \($events|length)",
               (if ($events|length) == 0 then "No matching events in this window."
                else ($events[] |
-                 [
-                   (.timestamp // .datetime // .time // "timestamp-unavailable" | tostring),
-                   (.message // .event.message // .logs.message // "message-unavailable" | tostring),
-                   (.level // .event.level // .logs.level // "level-unavailable" | tostring)
-                 ] | @tsv)
-               end)
+                 "timestamp=\(.timestamp // .datetime // .time // "unavailable" | tostring)",
+                 "fields=\(keys | join(","))",
+                 "metadata=\((.["$metadata"] // .metadata // {}) | {service, scriptName, origin, requestId, trigger, outcome})",
+                 "logs_shape=\((.logs // null) | if type == "array" then map(if type == "object" then keys else type end) elif type == "object" then keys else type end)",
+                 "event_shape=\((.event // null) | if type == "array" then map(if type == "object" then keys else type end) elif type == "object" then keys else type end)",
+                 "message_fields=\((to_entries | map(select(.key|test("message|level|event";"i")) | .key)) | join(","))"
+               ) end)
             ' "$output_file"
             rm -f "$output_file"
           }
