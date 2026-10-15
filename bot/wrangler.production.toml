@@ -1,0 +1,19 @@
+name = "naughty-company-bot"
+main = "production-worker.js"
+compatibility_date = "2026-10-11"
+
+[observability]
+enabled = true
+
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "BOT_DB"
+database_name = "naughty-company-bot-production"
+database_id = "46f7536d-f69c-4304-8b44-615901c60b7c"
+
+[[services]]
+binding = "DASHBOARD_API"
+service = "naughty-company-api"
+environment = "production"
