@@ -85,6 +85,11 @@ async function request(url, method, body) {
 const existing = await request(base, "GET");
 if (!Array.isArray(existing)) throw new Error("Discord returned an unexpected guild-command list.");
 
+if (process.argv.includes("--check-token")) {
+  console.log("Discord token is valid for application " + APP_ID + " and guild " + GUILD_ID + "; command-registration endpoint is accessible.");
+  process.exit(0);
+}
+
 for (const command of commands) {
   const current = existing.find(item => item.name === command.name && (item.type === undefined || item.type === 1));
   if (current && current.id) {

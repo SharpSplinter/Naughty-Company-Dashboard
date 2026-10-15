@@ -1,6 +1,7 @@
 name: Deploy Production Discord Bot
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -51,7 +52,7 @@ jobs:
           grep -Fq 'name: "configure"' bot/register-commands.mjs
   deploy-production:
     needs: validate
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -68,6 +69,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Validate Discord token before production deployment
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+        run: node bot/register-commands.mjs --check-token
       - name: Deploy only the production Worker
         uses: cloudflare/wrangler-action@v3
         with:
