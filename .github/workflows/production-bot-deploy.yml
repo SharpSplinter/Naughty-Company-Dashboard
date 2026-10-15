@@ -10,6 +10,7 @@ on:
       - "bot/wrangler.production.toml"
       - "bot/register-commands.mjs"
       - "bot/configure-production-endpoint.mjs"
+      - "bot/migrations/0001_bot_schema.sql"
       - ".github/workflows/production-bot-deploy.yml"
   pull_request:
     branches:
@@ -19,6 +20,7 @@ on:
       - "bot/wrangler.production.toml"
       - "bot/register-commands.mjs"
       - "bot/configure-production-endpoint.mjs"
+      - "bot/migrations/0001_bot_schema.sql"
       - ".github/workflows/production-bot-deploy.yml"
 
 permissions:
@@ -51,6 +53,9 @@ jobs:
           ! grep -qi 'staging' bot/wrangler.production.toml
           grep -Fq 'naughty-company-bot-production' bot/wrangler.production.toml
           grep -Fq 'DISCORD_PUBLIC_KEY = "' bot/wrangler.production.toml
+          test -f bot/migrations/0001_bot_schema.sql
+          grep -Fq 'CREATE TABLE IF NOT EXISTS discord_links' bot/migrations/0001_bot_schema.sql
+          grep -Fq 'CREATE TABLE IF NOT EXISTS alert_preferences' bot/migrations/0001_bot_schema.sql
           grep -Fq 'naughty-company-bot.kboone801.workers.dev' bot/configure-production-endpoint.mjs
           grep -Fq 'name: "global"' bot/register-commands.mjs
           grep -Fq 'name: "faction"' bot/register-commands.mjs
@@ -79,6 +84,10 @@ jobs:
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
         run: node bot/register-commands.mjs --check-token
+      - name: Initialize production bot database schema
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler d1 execute naughty-company-bot-production --remote --file bot/migrations/0001_bot_schema.sql --config bot/wrangler.production.toml
       - name: Deploy only the production Worker
         uses: cloudflare/wrangler-action@v3
         with:
