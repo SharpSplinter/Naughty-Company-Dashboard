@@ -1,4 +1,5 @@
 name = "naughty-company-bot"
+account_id = "6c03b978ed9a59adc3f61c715bdad45c"
 main = "production-worker.js"
 compatibility_date = "2026-10-11"
 
