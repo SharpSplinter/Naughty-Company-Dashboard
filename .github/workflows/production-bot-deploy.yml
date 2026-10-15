@@ -1,0 +1,80 @@
+name: Deploy Production Discord Bot
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "bot/production-worker.js"
+      - "bot/wrangler.production.toml"
+      - "bot/register-commands.mjs"
+      - ".github/workflows/production-bot-deploy.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "bot/production-worker.js"
+      - "bot/wrangler.production.toml"
+      - "bot/register-commands.mjs"
+      - ".github/workflows/production-bot-deploy.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: naughty-company-bot-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate production Worker syntax
+        run: node --check bot/production-worker.js
+      - name: Validate command registration script
+        run: node --check bot/register-commands.mjs
+      - name: Validate production-only target
+        run: |
+          grep -Fq 'name = "naughty-company-bot"' bot/wrangler.production.toml
+          ! grep -qi 'staging' bot/wrangler.production.toml
+          grep -Fq 'naughty-company-bot-production' bot/wrangler.production.toml
+          grep -Fq 'name: "global"' bot/register-commands.mjs
+          grep -Fq 'name: "faction"' bot/register-commands.mjs
+          grep -Fq 'name: "full"' bot/register-commands.mjs
+          grep -Fq 'name: "configure"' bot/register-commands.mjs
+  deploy-production:
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require production deployment and Discord registration credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::Missing CLOUDFLARE_API_TOKEN repository secret."; exit 1; }
+          test -n "$DISCORD_TOKEN" || { echo "::error::Missing DISCORD_TOKEN repository Actions secret. Cloudflare Worker secrets are not shared with Actions."; exit 1; }
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Deploy only the production Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: deploy --config bot/wrangler.production.toml
+      - name: Register the updated guild slash commands
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+        run: node bot/register-commands.mjs
