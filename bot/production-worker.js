@@ -105,7 +105,7 @@ function requestedCompanyId(interaction) {
   return value === undefined || value === null || String(value).trim() === "" ? null : String(value);
 }
 function safeText(value, max = 90) {
-  return String(value ?? "").replace(/@/g, "@\\u200b").replace(/\\s+/g, " ").slice(0, max);
+  return String(value ?? "").replace(/@/g, "@" + String.fromCharCode(8203)).replace(/\s+/g, " ").slice(0, max);
 }
 function money(value) {
   return typeof value === "number" && Number.isFinite(value) ? "$" + Math.round(value).toLocaleString("en-US") : "Not available";
@@ -115,20 +115,21 @@ function numberLabel(value) {
 }
 function chunkedPrivateReply(title, lines, maxLength = 1750) {
   const chunks = [];
-  let current = title + "\\n";
+  let current = title + "\n";
   for (const item of lines) {
     const line = String(item).slice(0, 1600);
     if (current.length + line.length + 1 > maxLength && current.trim() !== title) {
       chunks.push(current.trimEnd());
-      current = title + " (continued)\\n";
+      current = title + " (continued)\n";
     }
-    current += line + "\\n";
+    current += line + "\n";
   }
   if (current.trim()) chunks.push(current.trimEnd());
   const reply = privateReply(chunks[0] || title);
   if (chunks.length > 1) reply.followups = chunks.slice(1);
   return reply;
 }
+
 function severityRank(value) {
   const severity = String(value || "info").toLowerCase();
   if (["critical", "high", "error", "fatal"].includes(severity)) return 3;
@@ -141,7 +142,7 @@ function isDuringQuietHours(preferences) {
   const startText = typeof preferences.quietHoursStart === "string" ? preferences.quietHoursStart : "22:00";
   const endText = typeof preferences.quietHoursEnd === "string" ? preferences.quietHoursEnd : "08:00";
   const minutes = value => {
-    const match = String(value).match(/^(\\d{2}):(\\d{2})$/);
+    const match = String(value).match(/^(\d{2}):(\d{2})$/);
     return match ? Number(match[1]) * 60 + Number(match[2]) : null;
   };
   const start = minutes(startText), end = minutes(endText);
@@ -220,7 +221,7 @@ async function replyFor(i, env) {
   }
   if (i.type !== 2) return privateReply("Unsupported interaction.");
   if (name === "ping") return privateReply("Pong! Naughty Company Bot is responding.");
-  if (name === "help") return privateReply("**Naughty Company Bot**\n/link: link with a limited-access Torn API key\n/link-code: finish linking with a code from the dashboard\n/status: check your link\n/unlink: remove your link\n/company: list saved companies\n/overview: show income, profit, stars, employees and stock\n/employees: view your latest company roster\n/trends: summarize the latest 30-day company trend\n/rankings: view the top global companies by weekly income\n/alerts: view recent dashboard alerts\n/ping: test bot response\n\nReplies are private. Enter your key only in the /link form.");
+  if (name === "help") return privateReply("**Naughty Company Bot**\n/link: link with a limited-access Torn API key\n/link-code: finish linking with a code from the dashboard\n/status: check your link\n/unlink: remove your link\n/company: list saved companies\n/overview: show income, profit, stars, employees and stock\n/employees brief|full: view employee roster details\n/trends: summarize the latest 30-day company trend\n/rankings global|faction: company rankings and star-income comparisons\n/alerts enable|disable|configure|status: control private alerts\n/ping: test bot response\n\nReplies are private. Enter your key only in the /link form.");
   if (!user) return privateReply("Unable to identify your Discord account.");
   if (name === "link") return { type: 9, data: { custom_id: "link_submit", title: "Link dashboard account", components: [{ type: 18, label: "Limited-access Torn API key", component: { type: 4, custom_id: "api_key", style: 1, min_length: 8, max_length: 256, required: true, placeholder: "Paste your limited-access API key here" } }] } };
   if (name === "link-code") return { type: 9, data: { custom_id: "link_code_submit", title: "Link from dashboard", components: [{ type: 18, label: "Dashboard link code", component: { type: 4, custom_id: "link_code", style: 1, min_length: 48, max_length: 48, required: true, placeholder: "Paste the one-time dashboard code" } }] } };
@@ -321,17 +322,17 @@ async function replyFor(i, env) {
         if (!full) return base;
         const status = safeText(e.status || "Not reported", 60) || "Not reported";
         const lastSeen = safeText(e.lastAction || e.lastSeenOnline || e.last_seen_online || "Not reported", 60) || "Not reported";
-        return base + "\\n  Addiction effectiveness: " + numberLabel(e.addictionEffectiveness) +
+        return base + "\n  Addiction effectiveness: " + numberLabel(e.addictionEffectiveness) +
           "  |  Inactivity effectiveness: " + numberLabel(e.inactivityEffectiveness) +
-          "\\n  Status: " + status + "  |  Last seen / online: " + lastSeen;
+          "\n  Status: " + status + "  |  Last seen / online: " + lastSeen;
       });
       const companyLabel = safeText(company.company_name || company.name || company.company_id, 80);
       const title = "**" + (full ? "Full employee roster: " : "Employee roster: ") + companyLabel + "**";
-      if (summary.employeeCount != null) lines.push("\\nEmployees in snapshot: " + summary.employeeCount);
+      if (summary.employeeCount != null) lines.push("\nEmployees in snapshot: " + summary.employeeCount);
       return chunkedPrivateReply(title, lines);
     } catch { return privateReply("Employee data is temporarily unavailable. Please try again later."); }
   }
-  if (name === "trends") {
+    if (name === "trends") {
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
     try {
