@@ -1977,7 +1977,7 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       if (url.searchParams.get("scope") === "global") {
-        // Refresh a stale shared snapshot on demand. The server-side 24-hour cache
+        // Refresh a stale shared snapshot on demand. The server-side six-hour cache
         // and database lease ensure concurrent dashboard users do not fan out to Torn.
         try {
           const userKey = await savedKey(env, session.player_id).catch(() => null)
