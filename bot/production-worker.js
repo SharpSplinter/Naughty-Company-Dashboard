@@ -417,13 +417,27 @@ async function replyFor(i, env) {
         return bv - av;
       });
       if (!companies.length) return privateReply("No global company ranking snapshot is available yet. Try again after the dashboard ranking cache refreshes.");
-      const ownId = String(own.company_id ?? own.companyId ?? "");
-      const ownName = safeText(ownRoot.name || own.company_name || own.companyName || "Your company", 90);
-      let ownRankIndex = companies.findIndex(c => String(c.companyId ?? c.company_id ?? "") === ownId);
-      if (ownRankIndex < 0) {
-        const normalizedName = ownName.toLocaleLowerCase();
-        ownRankIndex = companies.findIndex(c => safeText(c.companyName || c.company_name || "", 90).toLocaleLowerCase() === normalizedName &&
-          (!ownTypeRoot.id || String(c.companyTypeId) === String(ownTypeRoot.id)));
+      // Resolve the linked company's identity from all known dashboard profile shapes.
+      // The dashboard's player ID is not necessarily its company ID, so never use it
+      // as a company identifier unless the company endpoint explicitly supplies it.
+      const ownIdCandidates = [
+        own.company_id, own.companyId, own.id,
+        ownRoot.company_id, ownRoot.companyId, ownRoot.id,
+        ownProfile.company_id, ownProfile.companyId
+      ].filter(v => v !== null && v !== undefined && String(v).trim() !== "").map(String);
+      const ownName = safeText(ownRoot.name || ownRoot.company_name || ownRoot.companyName ||
+        own.company_name || own.companyName || ownProfile.company_name || ownProfile.companyName || "Your company", 90);
+      const ownNameKey = ownName.trim().toLocaleLowerCase();
+      let ownRankIndex = companies.findIndex(c => {
+        const id = c.companyId ?? c.company_id ?? c.id;
+        return id !== null && id !== undefined && ownIdCandidates.includes(String(id));
+      });
+      if (ownRankIndex < 0 && ownNameKey !== "your company") {
+        ownRankIndex = companies.findIndex(c => {
+          const name = safeText(c.companyName || c.company_name || c.name || "", 90).trim().toLocaleLowerCase();
+          const typeMatches = !ownTypeRoot.id || c.companyTypeId == null || String(c.companyTypeId) === String(ownTypeRoot.id);
+          return name === ownNameKey && typeMatches;
+        });
       }
       let ownIncome = ownRankIndex >= 0 && typeof companies[ownRankIndex].weeklyIncome === "number" ? companies[ownRankIndex].weeklyIncome :
         (typeof ownIncomeRoot.weekly === "number" ? ownIncomeRoot.weekly : typeof own.weekly_income === "number" ? own.weekly_income : null);
