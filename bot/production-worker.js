@@ -425,6 +425,7 @@ async function replyFor(i, env) {
         ownRoot.company_id, ownRoot.companyId, ownRoot.id,
         ownProfile.company_id, ownProfile.companyId
       ].filter(v => v !== null && v !== undefined && String(v).trim() !== "").map(String);
+      const ownId = ownIdCandidates[0] || "";
       const ownName = safeText(ownRoot.name || ownRoot.company_name || ownRoot.companyName ||
         own.company_name || own.companyName || ownProfile.company_name || ownProfile.companyName || "Your company", 90);
       const ownNameKey = ownName.trim().toLocaleLowerCase();
