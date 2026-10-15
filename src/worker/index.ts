@@ -333,7 +333,9 @@ async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string, force 
   const cached = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
   const nowMs = Date.now()
   const cacheAge = cached?.fetchedAt ? nowMs - Date.parse(cached.fetchedAt) : Number.POSITIVE_INFINITY
-  const maxAgeMs = 24 * 60 * 60 * 1000
+  // Refresh the shared ranking cache after six hours when a request arrives.
+  // This only updates the live cache; immutable daily history remains on its existing schedule.
+  const maxAgeMs = 6 * 60 * 60 * 1000
   if (!force && Number.isFinite(cacheAge) && cacheAge >= 0 && cacheAge < maxAgeMs) return
 
   const nowSeconds = Math.floor(nowMs / 1000)
