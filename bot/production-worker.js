@@ -454,7 +454,7 @@ async function replyFor(i, env) {
           ? companies[ownRankIndex].weeklyIncome : null);
       let ownRating = ownRankIndex >= 0 && typeof companies[ownRankIndex].starRating === "number" ? companies[ownRankIndex].starRating :
         (typeof ownRoot.rating === "number" ? ownRoot.rating : typeof ownRoot.star_rating === "number" ? ownRoot.star_rating : null);
-      let ownTypeId = ownRankIndex >= 0 ? companies[ownRankIndex].companyTypeId : (ownTypeRoot.id ?? null);
+      let ownTypeId = ownRankIndex >= 0 ? (companies[ownRankIndex].companyTypeId ?? companies[ownRankIndex].company_type_id ?? companies[ownRankIndex].type_id ?? companies[ownRankIndex].typeId ?? null) : (ownTypeRoot.id ?? ownTypeRoot.type_id ?? ownTypeRoot.typeId ?? null);
       let ownType = ownRankIndex >= 0 ? companies[ownRankIndex].companyType : (own.company_type || ownTypeRoot.name || "Unknown");
       if (ownRankIndex >= 0 && ownIncome !== null) {
         // Re-rank against snapshot peers using the live income, and label the slot as estimated.
@@ -472,28 +472,44 @@ async function replyFor(i, env) {
           ownRankIndex = companies.findIndex(c => safeText(c.companyName || c.company_name || c.name || "", 90).trim().toLocaleLowerCase() === ownNameKey);
         }
       }
+      // Global ranking output is scoped to the exact company type ID when available.
+      // This keeps ranks and nearby companies comparable, instead of mixing unrelated company types.
+      const typeIdOf = c => c.companyTypeId ?? c.company_type_id ?? c.type_id ?? c.typeId ?? null;
+      const typeNameKey = String(ownType || "").trim().toLocaleLowerCase();
+      const rankingCompanies = companies.filter(c => {
+        const rowTypeId = typeIdOf(c);
+        if (ownTypeId !== null && ownTypeId !== undefined) return rowTypeId !== null && rowTypeId !== undefined && String(rowTypeId) === String(ownTypeId);
+        return String(c.companyType || c.company_type || "").trim().toLocaleLowerCase() === typeNameKey;
+      });
+      ownRankIndex = rankingCompanies.findIndex(c => {
+        const id = c.companyId ?? c.company_id ?? c.id;
+        return id !== null && id !== undefined && ownIdCandidates.includes(String(id));
+      });
+      if (ownRankIndex < 0 && ownNameKey !== "your company") {
+        ownRankIndex = rankingCompanies.findIndex(c => safeText(c.companyName || c.company_name || c.name || "", 90).trim().toLocaleLowerCase() === ownNameKey);
+      }
       if (ownRankIndex < 0) {
         const virtual = { companyId: ownId, companyName: ownName, companyType: ownType, companyTypeId: ownTypeId, starRating: ownRating, weeklyIncome: ownIncome, dailyIncome: typeof ownIncomeRoot.daily === "number" ? ownIncomeRoot.daily : null, _ownOnly: true };
-        const insertion = typeof ownIncome === "number" ? companies.findIndex(c => !(typeof c.weeklyIncome === "number") || c.weeklyIncome < ownIncome) : -1;
-        ownRankIndex = insertion >= 0 ? insertion : companies.length;
-        if (insertion >= 0) companies.splice(insertion, 0, virtual); else companies.push(virtual);
+        const insertion = typeof ownIncome === "number" ? rankingCompanies.findIndex(c => !(typeof c.weeklyIncome === "number") || c.weeklyIncome < ownIncome) : -1;
+        ownRankIndex = insertion >= 0 ? insertion : rankingCompanies.length;
+        if (insertion >= 0) rankingCompanies.splice(insertion, 0, virtual); else rankingCompanies.push(virtual);
       }
       const aroundStart = Math.max(0, ownRankIndex - 6);
-      const aroundEnd = Math.min(companies.length, ownRankIndex + 1 + 4);
-      const nearby = companies.slice(aroundStart, aroundEnd);
+      const aroundEnd = Math.min(rankingCompanies.length, ownRankIndex + 1 + 4);
+      const nearby = rankingCompanies.slice(aroundStart, aroundEnd);
       const lines = nearby.map((company, index) => {
         const rank = aroundStart + index + 1;
-        const isOwn = String(company.companyId ?? company.company_id ?? "") === ownId;
+        const isOwn = (company.companyId ?? company.company_id ?? company.id) !== null &&
+          (company.companyId ?? company.company_id ?? company.id) !== undefined
+          ? ownIdCandidates.includes(String(company.companyId ?? company.company_id ?? company.id))
+          : safeText(company.companyName || company.company_name || company.name || "", 90).trim().toLocaleLowerCase() === ownNameKey;
         const stars = typeof company.starRating === "number" && Number.isFinite(company.starRating) ? company.starRating + " stars" : "stars not reported";
-        const name = safeText(company.companyName || company.company_name || "Company", 80);
-        return (isOwn ? "➡️ " : "") + "**#" + rank + " " + name + "** (" + safeText(company.companyType || "Unknown type", 40) + ")  |  " + stars + "\n   Weekly income: " + money(company.weeklyIncome) + (isOwn ? "  ← your company" : "");
+        const name = safeText(company.companyName || company.company_name || company.name || "Company", 80);
+        return (isOwn ? "➡️ " : "") + "**#" + rank + " " + name + "** (" + safeText(company.companyType || ownType || "Unknown type", 40) + ")  |  " + stars + "\n   Weekly income: " + money(company.weeklyIncome) + (isOwn ? "  ← your company" : "");
       });
       const currentIncome = typeof ownIncome === "number" ? ownIncome : null;
       const currentStars = typeof ownRating === "number" ? ownRating : null;
-      const sameType = companies.filter(c => {
-        if (ownTypeId !== null && ownTypeId !== undefined && c.companyTypeId !== null && c.companyTypeId !== undefined) return String(c.companyTypeId) === String(ownTypeId);
-        return String(c.companyType || "").trim().toLocaleLowerCase() === String(ownType || "").trim().toLocaleLowerCase();
-      }).filter(c => typeof c.weeklyIncome === "number" && Number.isFinite(c.weeklyIncome) && typeof c.starRating === "number" && Number.isFinite(c.starRating) && !c._ownOnly);
+      const sameType = rankingCompanies.filter(c => typeof c.weeklyIncome === "number" && Number.isFinite(c.weeklyIncome) && typeof c.starRating === "number" && Number.isFinite(c.starRating) && !c._ownOnly);
       const benchmarks = [];
       if (currentStars !== null && currentIncome !== null) {
         const above = sameType.filter(c => c.starRating > currentStars).sort((a,b) => a.starRating-b.starRating || a.weeklyIncome-b.weeklyIncome);
@@ -514,12 +530,16 @@ async function replyFor(i, env) {
         benchmarks.push("Star-level income comparisons are unavailable because your current weekly income or star rating was not reported.");
       }
       const generatedAt = data.generatedAt || "timestamp unavailable";
-      const rankLabel = companies[ownRankIndex]?._ownOnly ? "estimated slot among " + companies.length + " companies" : "rank #" + (ownRankIndex + 1) + " of " + companies.length;
+      const rankLabel = rankingCompanies[ownRankIndex]?._ownOnly ? "estimated slot among " + rankingCompanies.length + " Type #" + String(ownTypeId ?? ownType) + " companies" : "rank #" + (ownRankIndex + 1) + " of " + rankingCompanies.length + " Type #" + String(ownTypeId ?? ownType) + " companies";
       const incomeFreshnessNote = liveWeeklyIncome !== null
-        ? "\nYour income uses the latest company profile; other companies use the global snapshot, so your position is estimated against that snapshot."
+        ? "\nYour income uses the latest company profile; other companies use the global snapshot, so your same-type position is estimated against that snapshot."
+        : "\nYour position is based on the saved global snapshot, filtered to your company type.";
+      const snapshotTime = Date.parse(generatedAt);
+      const staleSnapshotNote = Number.isFinite(snapshotTime) && Date.now() - snapshotTime > 36 * 3600000
+        ? "\n⚠️ This ranking snapshot is over 36 hours old. The dashboard refreshes its shared ranking cache on its normal schedule/on-demand stale-cache path; no extra historical snapshot was created by this command."
         : "";
-      return chunkedPrivateReply("**Global company rankings**\nYour company: " + ownName + "  |  " + rankLabel + "  |  Weekly income: " + money(currentIncome) +
-        "\nSnapshot: " + generatedAt + " (" + snapshotAgeLabel(generatedAt) + ")\nNearby ranks: 6 above and 4 below, where available." + incomeFreshnessNote, [
+      return chunkedPrivateReply("**Global company rankings by company type**\nYour company: " + ownName + "  |  " + rankLabel + "  |  Weekly income: " + money(currentIncome) +
+        "\nSnapshot: " + generatedAt + " (" + snapshotAgeLabel(generatedAt) + ")\nNearby ranks: 6 above and 4 below, within your company type." + incomeFreshnessNote + staleSnapshotNote, [
           ...lines,
           "\n**Observed same-type star-income benchmarks**",
           ...benchmarks,
