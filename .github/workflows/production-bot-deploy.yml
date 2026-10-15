@@ -9,6 +9,7 @@ on:
       - "bot/production-worker.js"
       - "bot/wrangler.production.toml"
       - "bot/register-commands.mjs"
+      - "bot/configure-production-endpoint.mjs"
       - ".github/workflows/production-bot-deploy.yml"
   pull_request:
     branches:
@@ -17,6 +18,7 @@ on:
       - "bot/production-worker.js"
       - "bot/wrangler.production.toml"
       - "bot/register-commands.mjs"
+      - "bot/configure-production-endpoint.mjs"
       - ".github/workflows/production-bot-deploy.yml"
 
 permissions:
@@ -41,11 +43,15 @@ jobs:
         run: node --check bot/production-worker.js
       - name: Validate command registration script
         run: node --check bot/register-commands.mjs
+      - name: Validate production endpoint sync script
+        run: node --check bot/configure-production-endpoint.mjs
       - name: Validate production-only target
         run: |
           grep -Fq 'name = "naughty-company-bot"' bot/wrangler.production.toml
           ! grep -qi 'staging' bot/wrangler.production.toml
           grep -Fq 'naughty-company-bot-production' bot/wrangler.production.toml
+          grep -Fq 'DISCORD_PUBLIC_KEY = "' bot/wrangler.production.toml
+          grep -Fq 'naughty-company-bot.kboone801.workers.dev' bot/configure-production-endpoint.mjs
           grep -Fq 'name: "global"' bot/register-commands.mjs
           grep -Fq 'name: "faction"' bot/register-commands.mjs
           grep -Fq 'name: "full"' bot/register-commands.mjs
@@ -79,6 +85,10 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 6c03b978ed9a59adc3f61c715bdad45c
           command: deploy --config bot/wrangler.production.toml
+      - name: Set Discord interactions endpoint to production
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+        run: node bot/configure-production-endpoint.mjs
       - name: Register the updated guild slash commands
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
