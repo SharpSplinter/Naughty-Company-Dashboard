@@ -113,6 +113,7 @@ try {
     assert.match(wranglerSource, /crons = \["10 18 \* \* \*", "10 0 \* \* \*"\]/)
     assert.match(workerSource, /validIdRows < Math\.ceil\(records\.length \* 0\.95\)/)
     assert.match(workerSource, /uniqueIds\.size !== companies\.length/)
+    assert.match(workerSource, /const maxAgeMs = 6 \* 60 \* 60 \* 1000/)
   })
 
   await test("scheduled automation records stale-rule and digest delivery failures for dashboard visibility", () => {
