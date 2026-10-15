@@ -444,12 +444,34 @@ async function replyFor(i, env) {
           return name === ownNameKey && typeMatches;
         });
       }
-      let ownIncome = ownRankIndex >= 0 && typeof companies[ownRankIndex].weeklyIncome === "number" ? companies[ownRankIndex].weeklyIncome :
-        (typeof ownIncomeRoot.weekly === "number" ? ownIncomeRoot.weekly : typeof own.weekly_income === "number" ? own.weekly_income : null);
+      // The linked company's current profile is authoritative for its income.
+      // The global ranking snapshot can lag behind the live company payload.
+      const liveWeeklyIncome = typeof ownIncomeRoot.weekly === "number" && Number.isFinite(ownIncomeRoot.weekly)
+        ? ownIncomeRoot.weekly
+        : typeof own.weekly_income === "number" && Number.isFinite(own.weekly_income) ? own.weekly_income : null;
+      let ownIncome = liveWeeklyIncome !== null ? liveWeeklyIncome :
+        (ownRankIndex >= 0 && typeof companies[ownRankIndex].weeklyIncome === "number" && Number.isFinite(companies[ownRankIndex].weeklyIncome)
+          ? companies[ownRankIndex].weeklyIncome : null);
       let ownRating = ownRankIndex >= 0 && typeof companies[ownRankIndex].starRating === "number" ? companies[ownRankIndex].starRating :
         (typeof ownRoot.rating === "number" ? ownRoot.rating : typeof ownRoot.star_rating === "number" ? ownRoot.star_rating : null);
       let ownTypeId = ownRankIndex >= 0 ? companies[ownRankIndex].companyTypeId : (ownTypeRoot.id ?? null);
       let ownType = ownRankIndex >= 0 ? companies[ownRankIndex].companyType : (own.company_type || ownTypeRoot.name || "Unknown");
+      if (ownRankIndex >= 0 && ownIncome !== null) {
+        // Re-rank against snapshot peers using the live income, and label the slot as estimated.
+        companies[ownRankIndex] = { ...companies[ownRankIndex], weeklyIncome: ownIncome, _liveOwnIncome: true };
+        companies.sort((a,b) => {
+          const av = typeof a.weeklyIncome === "number" && Number.isFinite(a.weeklyIncome) ? a.weeklyIncome : -Infinity;
+          const bv = typeof b.weeklyIncome === "number" && Number.isFinite(b.weeklyIncome) ? b.weeklyIncome : -Infinity;
+          return bv - av;
+        });
+        ownRankIndex = companies.findIndex(c => {
+          const id = c.companyId ?? c.company_id ?? c.id;
+          return id !== null && id !== undefined && ownIdCandidates.includes(String(id));
+        });
+        if (ownRankIndex < 0 && ownNameKey !== "your company") {
+          ownRankIndex = companies.findIndex(c => safeText(c.companyName || c.company_name || c.name || "", 90).trim().toLocaleLowerCase() === ownNameKey);
+        }
+      }
       if (ownRankIndex < 0) {
         const virtual = { companyId: ownId, companyName: ownName, companyType: ownType, companyTypeId: ownTypeId, starRating: ownRating, weeklyIncome: ownIncome, dailyIncome: typeof ownIncomeRoot.daily === "number" ? ownIncomeRoot.daily : null, _ownOnly: true };
         const insertion = typeof ownIncome === "number" ? companies.findIndex(c => !(typeof c.weeklyIncome === "number") || c.weeklyIncome < ownIncome) : -1;
@@ -493,8 +515,11 @@ async function replyFor(i, env) {
       }
       const generatedAt = data.generatedAt || "timestamp unavailable";
       const rankLabel = companies[ownRankIndex]?._ownOnly ? "estimated slot among " + companies.length + " companies" : "rank #" + (ownRankIndex + 1) + " of " + companies.length;
+      const incomeFreshnessNote = liveWeeklyIncome !== null
+        ? "\nYour income uses the latest company profile; other companies use the global snapshot, so your position is estimated against that snapshot."
+        : "";
       return chunkedPrivateReply("**Global company rankings**\nYour company: " + ownName + "  |  " + rankLabel + "  |  Weekly income: " + money(currentIncome) +
-        "\nSnapshot: " + generatedAt + " (" + snapshotAgeLabel(generatedAt) + ")\nNearby ranks: 6 above and 4 below, where available.", [
+        "\nSnapshot: " + generatedAt + " (" + snapshotAgeLabel(generatedAt) + ")\nNearby ranks: 6 above and 4 below, where available." + incomeFreshnessNote, [
           ...lines,
           "\n**Observed same-type star-income benchmarks**",
           ...benchmarks,
