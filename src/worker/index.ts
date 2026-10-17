@@ -136,7 +136,7 @@ async function saveCompanyApiKey(env: WorkerEnv, playerId: string, companyId: nu
   const now = new Date().toISOString()
   await requireDb(env).prepare("INSERT INTO company_api_keys (player_id, company_id, ciphertext, iv, last_four, company_name, company_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, company_name = excluded.company_name, company_type = excluded.company_type, updated_at = excluded.updated_at").bind(playerId, String(companyId), encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), typeof root.name === "string" ? root.name : `Company #${companyId}`, typeof type.name === "string" ? type.name : null, now, now).run()
 }
-async function persistCompanyConnection(env: WorkerEnv, playerId: string, apiKey: string, validated: { companyId: number; profile: unknown; employees: unknown; stock: unknown }): Promise<void> {
+async function persistCompanyConnection(env: WorkerEnv, playerId: string, apiKey: string, validated: { companyId: number; profile: unknown; employees: unknown; stock: unknown }, captureHistory = true): Promise<void> {
   // Store the same credential in both legacy and per-company slots, with the
   // per-company record updated last so it becomes the active primary key.
   await saveCompanyKey(env, playerId, apiKey)
@@ -151,11 +151,13 @@ async function persistCompanyConnection(env: WorkerEnv, playerId: string, apiKey
   const employeesJson = validated.employees ? asJson(validated.employees) : existing?.employees_json ?? "{}"
   const now = new Date().toISOString()
   await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, employees_json = excluded.employees_json, fetched_at = excluded.fetched_at").bind(playerId, String(validated.companyId), companyName, companyType, asJson(profile), employeesJson, now).run()
-  await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(playerId, String(validated.companyId), asJson(profile), employeesJson, now).run()
+  if (captureHistory) await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(playerId, String(validated.companyId), asJson(profile), employeesJson, now).run()
   if (validated.stock !== null && validated.stock !== undefined) {
     await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(playerId, String(validated.companyId), asJson(validated.stock), now).run()
-    await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)").bind(playerId, String(validated.companyId), asJson(validated.stock), now).run()
-    try { await persistFactionDirectorSnapshot(env, profile, validated.stock) } catch { /* The company snapshot is already persisted. */ }
+    if (captureHistory) {
+      await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)").bind(playerId, String(validated.companyId), asJson(validated.stock), now).run()
+      try { await persistFactionDirectorSnapshot(env, profile, validated.stock) } catch { /* The company snapshot is already persisted. */ }
+    }
   }
 }
 async function ensurePrimaryCompanyConnection(env: WorkerEnv, playerId: string): Promise<{ saved: boolean; companyId?: string }> {
@@ -1383,7 +1385,7 @@ async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
       if (!apiKey) throw new Error("No saved credential is available for this company.")
       const validated = await validateCompanyKey(apiKey)
       if (String(validated.companyId) !== job.target_company_id) throw new Error("The saved credential returned a different company ID. No data was changed.")
-      await persistCompanyConnection(env, job.target_player_id, apiKey, validated)
+      await persistCompanyConnection(env, job.target_player_id, apiKey, validated, false)
       const root = companyProfileRoot(validated.profile)
       result = { companyId: String(validated.companyId), companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}` }
     } else if (job.job_type === "global-refresh") {
@@ -1980,7 +1982,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
       if (!apiKey) return jsonResponse({ error: "No saved credential is available for this account. Ask the member to reconnect; never request their key in chat." }, 409, origin)
       const validated = await validateCompanyKey(apiKey)
       if (requestedCompanyId && String(validated.companyId) !== requestedCompanyId) throw new Error("The saved credential returned a different company ID. No data was changed.")
-      if (isRepair) await persistCompanyConnection(env, targetId, apiKey, validated)
+      if (isRepair) await persistCompanyConnection(env, targetId, apiKey, validated, false)
       const root = companyProfileRoot(validated.profile)
       const summary = { playerId: targetId, companyId: String(validated.companyId), companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}`, profileValid: true, employeesAvailable: validated.employees !== null, stockAvailable: validated.stock !== null, repaired: isRepair, checkedAt: new Date().toISOString() }
       await writeAdminAudit(env, session, isRepair ? "connection.repaired" : "connection.tested", "member", targetId, "succeeded", isRepair ? "Company connection validated and saved." : "Saved company connection test passed.", { companyId: String(validated.companyId) })
