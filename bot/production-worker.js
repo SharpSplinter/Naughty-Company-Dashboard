@@ -176,58 +176,14 @@ async function replyFor(i, env) {
     } catch { return privateReply("Dashboard linking is temporarily unavailable. Generate a new code and try again."); }
   }
   if (i.type === 5 && i.data?.custom_id === "link_submit") {
-    const findInputValue = (items) => {
-      for (const item of items || []) {
-        if (item?.custom_id === "api_key" && typeof item.value === "string") return item.value;
-        const nested = findInputValue([
-          ...(Array.isArray(item?.components) ? item.components : []),
-          ...(item?.component ? [item.component] : [])
-        ]);
-        if (nested !== undefined) return nested;
-      }
-      return undefined;
-    };
-    const apiKey = findInputValue(i.data.components || [])?.trim();
-    if (!apiKey || apiKey.length > 256) return privateReply("Enter a valid limited-access Torn API key and try again.");
-    try {
-      if (!env.DASHBOARD_API) return privateReply("Dashboard connection is not configured for production. Please contact an administrator.");
-      const response = await env.DASHBOARD_API.fetch(new Request("https://naughty-company-api/api/auth/sign-in", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ apiKey }) }));
-      if (!response.ok) {
-        const requestId = response.headers.get("cf-ray") || response.headers.get("x-request-id") || null;
-        const contentType = response.headers.get("content-type") || null;
-        const server = response.headers.get("server") || null;
-        let responseUrl = null;
-        try {
-          const resolved = new URL(response.url);
-          responseUrl = resolved.origin + resolved.pathname;
-        } catch {}
-        console.warn(JSON.stringify({
-          event: "dashboard_sign_in_failed",
-          endpoint: "/api/auth/sign-in",
-          status: response.status,
-          requestId,
-          contentType,
-          server,
-          redirected: response.redirected,
-          responseUrl
-        }));
-        const diagnostic = requestId ? ` Request ID: ${requestId}.` : "";
-        return privateReply(`Dashboard sign-in failed (HTTP ${response.status}).${diagnostic} No credentials or response details are exposed. Share only the status and request ID for production diagnosis.`);
-      }
-      const session = await response.json(); if (typeof session.token !== "string" || !session.player) return privateReply("Linking failed. Please try again later.");
-      const playerId = String(session.player.id || session.player.player_id || "");
-      if (!playerId) return privateReply("Linking failed because the dashboard did not return a player ID.");
-      const registered = await dashboardFetch(env, "/api/me/discord-link", { method: "POST", headers: { authorization: "Bearer " + session.token, "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ discordUserId: user }), signal: AbortSignal.timeout(8000) });
-      if (!registered.ok && registered.status !== 404) return privateReply("The dashboard could not confirm this Discord link yet. Please try again later; no alert details were shared.");
-      await storeBotLink(user, playerId, session.token, env);
-      return privateReply("Dashboard account linked securely. Your Torn API key was not stored. Use /status to check your link. Enable Discord alerts in the dashboard to receive private alert DMs.");
-    } catch { return privateReply("Linking is temporarily unavailable. Please try again later."); }
+    // Reject stale API-key modal submissions; the supported flow uses a short-lived dashboard code.
+    return privateReply("Direct API-key entry in Discord is disabled. Open the dashboard, generate a one-time Discord link code, then use /link-code.");
   }
   if (i.type !== 2) return privateReply("Unsupported interaction.");
   if (name === "ping") return privateReply("Pong! Naughty Company Bot is responding.");
-  if (name === "help") return privateReply("**Naughty Company Bot**\n/link: link with a limited-access Torn API key\n/link-code: finish linking with a code from the dashboard\n/status: check your link\n/unlink: remove your link\n/company: list saved companies\n/overview: show income, profit, stars, employees and stock\n/employees brief|full: view employee roster details\n/trends: summarize the latest 30-day company trend\n/rankings global|faction: company rankings and star-income comparisons\n/alerts enable|disable|configure|status: control private alerts\n/ping: test bot response\n\nReplies are private. Enter your key only in the /link form.");
+  if (name === "help") return privateReply("**Naughty Company Bot**\n/link: get dashboard-linking instructions\n/link-code: redeem a five-minute, one-use code from your dashboard\n/status: check your link\n/unlink: remove your link\n/company list|overview|income|profit|stars|ads|stock|employees|wages|alerts|trends: inspect your connected company\n/rankings companies|company|compare|faction: browse cached rankings\n/alerts enable|disable|configure|status|settings|recent|acknowledge|rules: manage private alerts\n/bot status: check service health\n/ping: test bot response\n\nAccount-specific replies are private by default. The bot never needs your Torn API key in Discord.");
   if (!user) return privateReply("Unable to identify your Discord account.");
-  if (name === "link") return { type: 9, data: { custom_id: "link_submit", title: "Link dashboard account", components: [{ type: 18, label: "Limited-access Torn API key", component: { type: 4, custom_id: "api_key", style: 1, min_length: 8, max_length: 256, required: true, placeholder: "Paste your limited-access API key here" } }] } };
+  if (name === "link") return privateReply("**Secure dashboard linking**\n1. Open https://naughty-company-dashboard.pages.dev and sign in.\n2. Open the Automation Center’s Discord linking section and generate a one-time link code. It expires after five minutes.\n3. Run /link-code and submit that code in the private form.\n\nNever post a Torn API key in a Discord channel. This bot uses the dashboard’s one-time code flow.");
   if (name === "link-code") return { type: 9, data: { custom_id: "link_code_submit", title: "Link from dashboard", components: [{ type: 18, label: "Dashboard link code", component: { type: 4, custom_id: "link_code", style: 1, min_length: 48, max_length: 48, required: true, placeholder: "Paste the one-time dashboard code" } }] } };
   if (name === "status") { const row = await env.BOT_DB.prepare("SELECT dashboard_player_id,updated_at FROM discord_links WHERE discord_user_id=?1").bind(user).first(); return privateReply(row ? "Your dashboard account is linked. Player ID: " + row.dashboard_player_id + ". Last linked: " + row.updated_at + "." : "No dashboard account is linked. Run /link to connect one."); }
   if (name === "unlink") {
@@ -238,7 +194,7 @@ async function replyFor(i, env) {
     await env.BOT_DB.prepare("DELETE FROM discord_alert_deliveries WHERE discord_user_id=?").bind(user).run();
     return privateReply("Your dashboard link and private alert delivery link have been removed.");
   }
-  if (name === "company") {
+  if (name === "company" && commandOptions(i).subcommand === "list") {
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token,token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first(); if (!row) return privateReply("Link your dashboard first with /link.");
     try {
       const token = await unseal(row.encrypted_session_token, row.token_iv, env), res = await dashboardFetch(env, "/api/me/companies", { headers: { authorization: "Bearer " + token, accept: "application/json" } });
@@ -249,7 +205,7 @@ async function replyFor(i, env) {
       return privateReply("**Your saved companies**\n" + companies.slice(0,8).map(c => "- **" + String(c.company_name || "Company").slice(0,100) + "** (" + String(c.company_type || "type unknown").slice(0,40) + ")  |  ID " + String(c.company_id || "n/a")).join("\n"));
     } catch { return privateReply("Company data is temporarily unavailable. Please try again later."); }
   }
-  if (name === "overview") {
+  if (name === "overview" || (name === "company" && commandOptions(i).subcommand === "overview")) {
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
     try {
@@ -298,7 +254,7 @@ async function replyFor(i, env) {
       return privateReply(lines.join("\n"));
     } catch { return privateReply("Company overview is temporarily unavailable. Please try again later."); }
   }
-  if (name === "employees") {
+  if (name === "employees" || (name === "company" && commandOptions(i).subcommand === "employees")) {
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
     try {
@@ -317,7 +273,7 @@ async function replyFor(i, env) {
       const data = await res.json(), roster = Array.isArray(data.roster) ? data.roster : [];
       const summary = data.summary && typeof data.summary === "object" ? data.summary : {};
       if (!roster.length) return privateReply(String(data.message || "No employee roster is available yet."));
-      const full = commandOptions(i).subcommand === "full";
+      const full = name === "employees" ? commandOptions(i).subcommand === "full" : optionValue(i, "detail") === "full";
       const lines = roster.map((e, n) => {
         const label = safeText(e.name || e.employeeName || e.employee_name || ("Employee " + (n + 1)), 70) || ("Employee " + (n + 1));
         const position = safeText(e.positionName || e.position_name || e.position?.name || e.position || "Position not reported", 60);
@@ -336,7 +292,7 @@ async function replyFor(i, env) {
       return chunkedPrivateReply(title, lines);
     } catch { return privateReply("Employee data is temporarily unavailable. Please try again later."); }
   }
-    if (name === "trends") {
+    if (name === "trends" || (name === "company" && commandOptions(i).subcommand === "trends")) {
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
     try {
@@ -349,7 +305,10 @@ async function replyFor(i, env) {
       const selectedCompanyId = requestedCompanyId(i);
       const company = selectedCompanyId ? companies.find(item => String(item.company_id) === selectedCompanyId) : companies[0];
       if (!company) return privateReply(selectedCompanyId ? "That company ID is not in your saved company list. Run /company and copy one of the listed IDs." : "No saved company data is available yet. Refresh company data in the dashboard first.");
-      const historyRes = await dashboardFetch(env, "/api/me/companies/" + encodeURIComponent(company.company_id) + "/history?days=30", { headers, signal: AbortSignal.timeout(8000) });
+      const requestedPeriod = String(optionValue(i, "period") || "30");
+      const days = ["7", "30", "90", "365", "all"].includes(requestedPeriod) ? requestedPeriod : "30";
+      const requestedMetric = String(optionValue(i, "metric") || "overview");
+      const historyRes = await dashboardFetch(env, "/api/me/companies/" + encodeURIComponent(company.company_id) + "/history?days=" + encodeURIComponent(days), { headers, signal: AbortSignal.timeout(8000) });
       if (historyRes.status === 401 || historyRes.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
       if (!historyRes.ok) return privateReply("Trend data is temporarily unavailable. Please try again later.");
       const data = await historyRes.json(), s = data.summary || {}, history = Array.isArray(data.history) ? data.history : [], latest = history.slice(-1)[0] || {}, first = history[0] || {};
@@ -358,7 +317,23 @@ async function replyFor(i, env) {
       const coverageNote = history.length < 7 || coverageDays < 20 ? "Coverage note: Limited history; these snapshots may not represent the full 30 days." : "Coverage: " + String(first.fetchedAt || "earliest snapshot unavailable") + " to " + String(latest.fetchedAt || "latest snapshot unavailable");
       const money = v => typeof v === "number" && Number.isFinite(v) ? "$" + Math.round(v).toLocaleString("en-US") : "Not available";
       const change = v => typeof v === "number" && Number.isFinite(v) ? (v > 0 ? "+" : "") + money(v) : "Not available";
-      return privateReply("**30-day trend  |  " + String(company.company_name || "Your company").slice(0, 90) + "**\nSnapshots: " + Number(s.snapshotCount || 0) + "\nDaily income change: " + change(s.dailyIncomeChange) + (s.dailyIncomeChangePercent == null ? "" : " (" + Number(s.dailyIncomeChangePercent).toFixed(1) + "%)") + "\nWeekly income change: " + change(s.weeklyIncomeChange) + "\nLatest employee count: " + (latest.employeeCount == null ? "Not available" : latest.employeeCount) + "\nLatest snapshot: " + String(latest.fetchedAt || s.latestSnapshotAt || "Not available"));
+      const title = "**" + (days === "all" ? "All-history" : days + "-day") + " trend  |  " + String(company.company_name || "Your company").slice(0, 90) + "**";
+      const summaryLines = ["Snapshots: " + Number(s.snapshotCount || 0)];
+      if (requestedMetric === "overview" || requestedMetric === "income") {
+        summaryLines.push("Daily income change: " + change(s.dailyIncomeChange) + (s.dailyIncomeChangePercent == null ? "" : " (" + Number(s.dailyIncomeChangePercent).toFixed(1) + "%)"));
+        summaryLines.push("Weekly income change: " + change(s.weeklyIncomeChange));
+      }
+      if (requestedMetric === "overview" || requestedMetric === "stars") summaryLines.push("Star-rating change: " + change(s.ratingChange));
+      if (requestedMetric === "overview" || requestedMetric === "employees") summaryLines.push("Employee-count change: " + change(s.employeeCountChange) + " | latest: " + (latest.employeeCount == null ? "Not available" : latest.employeeCount));
+      if (requestedMetric === "overview" || requestedMetric === "stock") {
+        const stockHistory = history.filter(point => typeof point.stockQuantity === "number");
+        const stockDelta = stockHistory.length > 1 ? stockHistory[stockHistory.length - 1].stockQuantity - stockHistory[stockHistory.length - 2].stockQuantity : null;
+        summaryLines.push("Latest stock quantity: " + (typeof latest.stockQuantity === "number" ? latest.stockQuantity.toLocaleString("en-US") : "Not available"));
+        summaryLines.push("Stock change vs prior saved point: " + (typeof stockDelta === "number" ? (stockDelta > 0 ? "+" : "") + stockDelta.toLocaleString("en-US") : "Not available"));
+      }
+      summaryLines.push("Latest snapshot: " + String(latest.fetchedAt || s.latestSnapshotAt || "Not available"));
+      if (history.length < 7 || coverageDays < 20) summaryLines.push("Coverage note: Limited history; the selected window may be incomplete.");
+      return privateReply(title + "\n" + summaryLines.join("\n"));
     } catch { return privateReply("Trend data is temporarily unavailable. Please try again later."); }
   }
   if (name === "rankings") {
