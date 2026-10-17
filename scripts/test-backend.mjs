@@ -124,6 +124,9 @@ try {
 
   await test("stock difference uses saved daily trend records instead of imported chart archive", () => {
     const uiSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    assert.match(workerSource, /PARTITION BY date\(fetched_at, '-18 hours'\)/)
+    assert.match(workerSource, /fetchedAtMs - 18 \* 60 \* 60 \* 1000/)
     assert.ok(uiSource.includes("/api/me/companies/\u0024{encodeURIComponent(companyId)}/history?days=7"))
     assert.match(uiSource, /const officialStockSnapshots = officialStockHistory/)
     assert.match(uiSource, /const stockDifference = currentOfficialStockSnapshot\?\.stockQuantity != null && previousStockSnapshot\?\.stockQuantity != null/)
@@ -1247,7 +1250,7 @@ try {
           return null
         },
         async all() {
-          if (normalized.includes("row_number() over (partition by substr(fetched_at, 1, 10)")) {
+          if (normalized.includes("row_number() over (partition by date(fetched_at, '-18 hours')")) {
             assert.deepEqual(values.slice(0, 2), ["777", "123"], "history queries must filter by authenticated owner and selected company")
             assert.equal(values.length, 3, "a selected range must bind its cutoff")
             return { results: [

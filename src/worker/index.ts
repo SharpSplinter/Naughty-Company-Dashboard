@@ -1563,7 +1563,8 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
     const range = ["7", "30", "90", "365", "all"].includes(requested) ? requested : "90"
     const cutoff = range === "all" ? null : new Date(Date.now() - Number(range) * DAY * 1000).toISOString()
     const cutoffSql = cutoff ? " AND fetched_at >= ?" : ""
-    const historyQuery = db.prepare(`SELECT snapshotId, profileJson, employeesJson, fetchedAt FROM (SELECT snapshot_id AS snapshotId, profile_json AS profileJson, employees_json AS employeesJson, fetched_at AS fetchedAt, ROW_NUMBER() OVER (PARTITION BY substr(fetched_at, 1, 10) ORDER BY fetched_at DESC, snapshot_id DESC) AS dayRank FROM company_snapshots WHERE player_id = ? AND company_id = ?${cutoffSql}) WHERE dayRank = 1 ORDER BY fetchedAt ASC LIMIT 2000`)
+    // Company reporting dates roll over at 18:00 UTC. Align profile snapshots to the same reporting day used by faction_director_snapshots.
+    const historyQuery = db.prepare(`SELECT snapshotId, profileJson, employeesJson, fetchedAt FROM (SELECT snapshot_id AS snapshotId, profile_json AS profileJson, employees_json AS employeesJson, fetched_at AS fetchedAt, ROW_NUMBER() OVER (PARTITION BY date(fetched_at, '-18 hours') ORDER BY fetched_at DESC, snapshot_id DESC) AS dayRank FROM company_snapshots WHERE player_id = ? AND company_id = ?${cutoffSql}) WHERE dayRank = 1 ORDER BY fetchedAt ASC LIMIT 2000`)
     const raw = await (cutoff ? historyQuery.bind(session.player_id, companyId, cutoff) : historyQuery.bind(session.player_id, companyId)).all<Record<string, unknown>>()
     const byDay = new Map<string, Record<string, unknown>>()
     for (const row of raw.results ?? []) {
@@ -1571,7 +1572,8 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
       const employees = parseStoredJson(row.employeesJson)
       const root = companyProfileRoot(profile)
       const income = isRecord(root.income) ? root.income : {}
-      const day = String(row.fetchedAt ?? "").slice(0, 10)
+      const fetchedAtMs = Date.parse(String(row.fetchedAt ?? ""))
+      const day = Number.isFinite(fetchedAtMs) ? new Date(fetchedAtMs - 18 * 60 * 60 * 1000).toISOString().slice(0, 10) : ""
       if (!day) continue
       byDay.set(day, { day, fetchedAt: row.fetchedAt, snapshotId: row.snapshotId, dailyIncome: dailyIncomeFromProfile(profile), weeklyIncome: numericField(income.weekly), rating: ratingFromProfile(profile), employeeCount: rosterCount(employees), employeeCapacity: isRecord(root.employees) ? numericField(root.employees.capacity) : null, stockQuantity: null })
     }
