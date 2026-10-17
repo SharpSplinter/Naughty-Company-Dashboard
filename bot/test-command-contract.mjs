@@ -63,6 +63,9 @@ assert.match(worker, /\/api\/discord\/link\/redeem/, "one-time dashboard link-co
 assert.match(worker, /expires after five minutes/, "link instructions must disclose code expiry");
 assert.match(worker, /\/api\/me\/companies\/.*\/history\?days=/, "trends must use owner-scoped saved history");
 assert.match(worker, /\/api\/rankings\?scope=global&typeId=/, "global rankings must read the existing shared cache");
+assert.match(worker, /advertisement_budget/, "ad budget parsing must follow dashboard field aliases");
+assert.match(worker, /advertising_budget_daily/, "ad budget parsing must recognize daily advertising budget");
+assert.match(worker, /daily_ad_budget/, "ad budget parsing must recognize daily ad budget");
 assert.doesNotMatch(worker, /\/api\/company\/refresh/, "read commands must not trigger company refreshes");
 assert.doesNotMatch(worker, /company_snapshots|GLOBAL_RANKINGS_QUEUE/, "read commands must not write snapshot or ranking-run state");
 console.log("PASS Discord command contract: " + commands.length + " top-level commands; private replies, one-time linking, owner-scoped reads, and no refresh/snapshot actions.");
