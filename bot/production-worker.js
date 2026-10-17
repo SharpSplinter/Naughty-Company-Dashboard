@@ -338,7 +338,6 @@ async function replyFor(i, env) {
           "\nTotal employee wages: " + moneyValue(costBreakdown.wages) + " (" + wageCoverage + ")" +
           "\nStock order expense (unit cost × on_order): " + moneyValue(costBreakdown.stockCosts) +
           "\nTotal cost breakdown: " + moneyValue(costBreakdown.total) +
-          "\nOn-hand inventory is not charged as a new purchase. Daily profit subtracts this cost breakdown from daily income; weekly estimates apply daily advertising and wages across seven days and count current pending stock orders once. Missing inputs remain unavailable." +
           (reportedCostLines.length ? "\nReported cost fields:\n" + reportedCostLines.join("\n") : "") +
           "\nSource window: " + periodLabel + "\nSnapshot: " + fetchedAt);
       }
@@ -422,7 +421,6 @@ async function replyFor(i, env) {
         "Weekly income: " + money(weeklyIncome),
         "Daily profit: " + dailyProfit,
         "Weekly profit: " + weeklyProfit,
-        "Cost breakdown: advertising " + money(costBreakdown.adBudget) + " + wages " + money(costBreakdown.wages) + " + stock orders " + money(costBreakdown.stockCosts) + " = " + money(costBreakdown.total),
         "Employee wage coverage: " + wageCoverage,
         "Stock items: " + (stockRoot.length || "Not reported") + " | Total quantity: " + (stockRoot.length ? stockQuantity.toLocaleString("en-US") : "Not available"),
         "Snapshot updated: " + String(data.fetchedAt || company.fetched_at || "Not available"),
