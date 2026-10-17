@@ -616,7 +616,10 @@ async function processGlobalRankingQueueMessage(env: WorkerEnv, runId: string): 
   const leaseUntil = nowSeconds + 45
   const claim = await db.prepare("UPDATE global_rankings_refresh_runs SET lease_until = ?, updated_at = ? WHERE run_id = ? AND status = 'running' AND lease_until < ?")
     .bind(leaseUntil, new Date().toISOString(), runId, nowSeconds).run()
-  if (claim.meta?.changes === 0) return "busy"
+  if (claim.meta?.changes === 0) {
+    const current = await db.prepare("SELECT status FROM global_rankings_refresh_runs WHERE run_id = ?").bind(runId).first<{ status: string }>()
+    return current?.status === "running" ? "busy" : "complete"
+  }
   let run = await db.prepare("SELECT run_id, source, status, types_json, type_index, page_offset, expected_total, companies_seen, snapshot_fetched_at, admin_job_id, lease_until, started_at, updated_at FROM global_rankings_refresh_runs WHERE run_id = ?")
     .bind(runId).first<GlobalRankingRunRow>()
   if (!run || run.status !== "running") return "complete"
