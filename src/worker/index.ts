@@ -136,7 +136,7 @@ async function saveCompanyApiKey(env: WorkerEnv, playerId: string, companyId: nu
   const now = new Date().toISOString()
   await requireDb(env).prepare("INSERT INTO company_api_keys (player_id, company_id, ciphertext, iv, last_four, company_name, company_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, company_name = excluded.company_name, company_type = excluded.company_type, updated_at = excluded.updated_at").bind(playerId, String(companyId), encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), typeof root.name === "string" ? root.name : `Company #${companyId}`, typeof type.name === "string" ? type.name : null, now, now).run()
 }
-async function persistCompanyConnection(env: WorkerEnv, playerId: string, apiKey: string, validated: { companyId: number; profile: unknown; employees: unknown; stock: unknown }): Promise<void> {
+async function persistCompanyConnection(env: WorkerEnv, playerId: string, apiKey: string, validated: { companyId: number; profile: unknown; employees: unknown; stock: unknown }, captureHistory = true): Promise<void> {
   // Store the same credential in both legacy and per-company slots, with the
   // per-company record updated last so it becomes the active primary key.
   await saveCompanyKey(env, playerId, apiKey)
@@ -151,11 +151,13 @@ async function persistCompanyConnection(env: WorkerEnv, playerId: string, apiKey
   const employeesJson = validated.employees ? asJson(validated.employees) : existing?.employees_json ?? "{}"
   const now = new Date().toISOString()
   await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, employees_json = excluded.employees_json, fetched_at = excluded.fetched_at").bind(playerId, String(validated.companyId), companyName, companyType, asJson(profile), employeesJson, now).run()
-  await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(playerId, String(validated.companyId), asJson(profile), employeesJson, now).run()
+  if (captureHistory) await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(playerId, String(validated.companyId), asJson(profile), employeesJson, now).run()
   if (validated.stock !== null && validated.stock !== undefined) {
     await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(playerId, String(validated.companyId), asJson(validated.stock), now).run()
-    await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)").bind(playerId, String(validated.companyId), asJson(validated.stock), now).run()
-    try { await persistFactionDirectorSnapshot(env, profile, validated.stock) } catch { /* The company snapshot is already persisted. */ }
+    if (captureHistory) {
+      await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)").bind(playerId, String(validated.companyId), asJson(validated.stock), now).run()
+      try { await persistFactionDirectorSnapshot(env, profile, validated.stock) } catch { /* The company snapshot is already persisted. */ }
+    }
   }
 }
 async function ensurePrimaryCompanyConnection(env: WorkerEnv, playerId: string): Promise<{ saved: boolean; companyId?: string }> {
@@ -590,7 +592,7 @@ async function persistFactionDirectorSnapshot(env: WorkerEnv, profile: unknown, 
       .bind(playerId, companyId, day, asJson(profile), stock === null || stock === undefined ? null : asJson(stock), now).run()
   }
 }
-async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[] }> {
+async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20, captureSnapshots = true, forceRefresh = false): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[] }> {
   const client = new TornApiClient({ apiKey })
   const memberPayload = await client.getFactionMembers()
   const rawMembers = Array.isArray(memberPayload.members) ? memberPayload.members : isRecord(memberPayload.members) ? Object.values(memberPayload.members) : []
@@ -605,7 +607,7 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
     const name = typeof item.name === "string" ? item.name : `Player #${id}`
     const cached = await db.prepare("SELECT checked_at FROM faction_member_cache WHERE player_id = ?").bind(id).first<{ checked_at: string | null }>()
     const checked = cached?.checked_at ? Date.parse(cached.checked_at) : 0
-    if (checked && now - checked < 12 * 60 * 60 * 1000) continue
+    if (!forceRefresh && checked && now - checked < 12 * 60 * 60 * 1000) continue
     if (processed >= limit) { pending += 1; continue }
     processed += 1
     const checkedAt = new Date().toISOString()
@@ -634,7 +636,7 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
       const weeklyIncome = typeof income.weekly === "number" ? income.weekly : null
       await db.prepare("INSERT INTO faction_member_cache (player_id, player_name, faction_id, checked_at, is_director, company_id, company_name, company_type, company_type_id, company_rating, daily_income, weekly_income, job_json, profile_json, updated_at) VALUES (?, ?, '8317', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, faction_id = excluded.faction_id, checked_at = excluded.checked_at, is_director = 1, company_id = excluded.company_id, company_name = excluded.company_name, company_type = excluded.company_type, company_type_id = excluded.company_type_id, company_rating = excluded.company_rating, daily_income = excluded.daily_income, weekly_income = excluded.weekly_income, job_json = excluded.job_json, profile_json = COALESCE(excluded.profile_json, faction_member_cache.profile_json), updated_at = excluded.updated_at")
         .bind(id, name, checkedAt, companyId, companyName, companyType, companyTypeId, rating, dailyIncome, weeklyIncome, asJson(jobPayload), profile === null ? null : asJson(profile), checkedAt).run()
-      if (profile) await persistFactionDirectorSnapshot(env, profile)
+      if (profile && captureSnapshots) await persistFactionDirectorSnapshot(env, profile)
     } catch {
       await db.prepare("INSERT INTO faction_member_cache (player_id, player_name, faction_id, checked_at, is_director, updated_at) VALUES (?, ?, '8317', ?, 0, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, checked_at = excluded.checked_at, updated_at = excluded.updated_at")
         .bind(id, name, checkedAt, checkedAt).run()
@@ -1200,9 +1202,176 @@ async function runScheduledAutomation(controller: { scheduledTime: number; cron:
     .bind(status, finishedAt, companiesChecked, companiesFailed, Number(alerts?.count ?? 0), summary, runId).run()
 }
 
+type AdminRefreshEndpoint = "company-profile" | "company-employees" | "company-stock" | "global-company-rankings" | "faction-directory"
+type AdminEndpointRefreshConfig = { endpoints: AdminRefreshEndpoint[]; scope: "all" | "selected"; targetPlayerIds: string[] }
+
+const ADMIN_REFRESH_ENDPOINTS: AdminRefreshEndpoint[] = [
+  "company-profile", "company-employees", "company-stock", "global-company-rankings", "faction-directory",
+]
+
+async function ensureAdminJobPayloadSchema(env: WorkerEnv): Promise<void> {
+  const db = requireDb(env)
+  const columns = await db.prepare("PRAGMA table_info(admin_jobs)").all<{ name: string }>()
+  if ((columns.results ?? []).some((column) => column.name === "job_payload_json")) return
+  try {
+    await db.prepare("ALTER TABLE admin_jobs ADD COLUMN job_payload_json TEXT").run()
+  } catch (error) {
+    const refreshed = await db.prepare("PRAGMA table_info(admin_jobs)").all<{ name: string }>()
+    if (!(refreshed.results ?? []).some((column) => column.name === "job_payload_json")) throw error
+  }
+}
+
+async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefreshConfig): Promise<Record<string, unknown>> {
+  const db = requireDb(env)
+  const userEndpoints = config.endpoints.filter((endpoint) => endpoint === "company-profile" || endpoint === "company-employees" || endpoint === "company-stock")
+  const endpointStats: Record<string, { attempted: number; succeeded: number; failed: number }> = {}
+  for (const endpoint of config.endpoints) endpointStats[endpoint] = { attempted: 0, succeeded: 0, failed: 0 }
+  const failures: Array<{ endpoint: string; playerId?: string; companyId?: string; error: string }> = []
+  const globalResults: Record<string, unknown> = {}
+  let globalSuccesses = 0
+  let globalFailures = 0
+
+  for (const endpoint of config.endpoints.filter((item) => item === "global-company-rankings" || item === "faction-directory")) {
+    try {
+      if (endpoint === "global-company-rankings") {
+        // Refresh the live ranking cache from /company/{typeId}/companies lists.
+        // /company/snapshot is verification-only and is not called here.
+        await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_cache (cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1), companies_json TEXT NOT NULL, fetched_at TEXT NOT NULL)").run()
+        const before = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
+        await refreshGlobalRankingCache(env, undefined, true)
+        const after = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
+        if (!after?.fetchedAt || after.fetchedAt === before?.fetchedAt) {
+          throw new Error("Global company ranking refresh did not write a new cache snapshot. Another refresh may still hold the refresh lock.")
+        }
+        globalResults[endpoint] = { message: "Shared rankings cache refreshed from type-specific company lists.", fetchedAt: after.fetchedAt }
+      } else {
+        const row = await db.prepare("SELECT player_id, ciphertext, iv FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string; ciphertext: string; iv: string }>()
+        if (!row) throw new Error("No saved Torn API key is available for the faction-directory refresh.")
+        const apiKey = await decryptKey(env, row.ciphertext, row.iv)
+        globalResults[endpoint] = await syncFactionDirectorDirectory(env, apiKey, 35, false, true)
+      }
+      endpointStats[endpoint].attempted += 1
+      endpointStats[endpoint].succeeded += 1
+      globalSuccesses += 1
+    } catch (error) {
+      endpointStats[endpoint].attempted += 1
+      endpointStats[endpoint].failed += 1
+      globalFailures += 1
+      failures.push({ endpoint, error: error instanceof Error ? error.message.slice(0, 180) : "Refresh failed." })
+    }
+  }
+
+  const targetIds = config.scope === "selected" ? config.targetPlayerIds : []
+  let keyQuery
+  if (config.scope === "selected") {
+    if (!targetIds.length && userEndpoints.length) throw new Error("Select at least one dashboard user for a selected-user refresh.")
+    if (targetIds.length) {
+      const placeholders = targetIds.map(() => "?").join(",")
+      keyQuery = db.prepare("SELECT player_id, company_id, ciphertext, iv, company_name, company_type FROM company_api_keys WHERE player_id IN (" + placeholders + ") ORDER BY player_id, company_id").bind(...targetIds)
+    } else {
+      keyQuery = db.prepare("SELECT player_id, company_id, ciphertext, iv, company_name, company_type FROM company_api_keys WHERE 1 = 0")
+    }
+  } else {
+    keyQuery = db.prepare("SELECT player_id, company_id, ciphertext, iv, company_name, company_type FROM company_api_keys ORDER BY player_id, company_id")
+  }
+  const keyRows = await keyQuery.all<{ player_id: string; company_id: string; ciphertext: string; iv: string; company_name: string | null; company_type: string | null }>()
+  const connections = keyRows.results ?? []
+  const usersWithConnections = new Set(connections.map((row) => row.player_id))
+  const selectedWithoutConnection = config.scope === "selected" ? targetIds.filter((id) => !usersWithConnections.has(id)).length : 0
+
+  for (const keyRow of connections) {
+    let client: TornApiClient | null = null
+    try {
+      const apiKey = await decryptKey(env, keyRow.ciphertext, keyRow.iv)
+      client = new TornApiClient({ apiKey })
+    } catch (error) {
+      for (const endpoint of userEndpoints) {
+        endpointStats[endpoint].attempted += 1
+        endpointStats[endpoint].failed += 1
+        failures.push({ endpoint, playerId: keyRow.player_id, companyId: keyRow.company_id, error: error instanceof Error ? error.message.slice(0, 180) : "Saved credential could not be read." })
+      }
+      continue
+    }
+
+    const existing = await db.prepare("SELECT company_name, company_type, profile_json, employees_json FROM companies WHERE player_id = ? AND company_id = ?")
+      .bind(keyRow.player_id, keyRow.company_id)
+      .first<{ company_name: string; company_type: string | null; profile_json: string; employees_json: string }>()
+    let nextProfileJson = existing?.profile_json ?? "{}"
+    let nextEmployeesJson = existing?.employees_json ?? "{}"
+    let nextCompanyName = existing?.company_name || keyRow.company_name || ("Company #" + keyRow.company_id)
+    let nextCompanyType: string | null = existing?.company_type ?? keyRow.company_type ?? null
+    let liveProfileUpdated = false
+    let liveEmployeesUpdated = false
+    let liveStock: unknown = undefined
+
+    for (const endpoint of userEndpoints) {
+      endpointStats[endpoint].attempted += 1
+      try {
+        if (!client) throw new Error("A saved company credential is unavailable.")
+        if (endpoint === "company-profile") {
+          const profile = await client.getCompanyProfile()
+          const returnedId = companyIdFromPayload(profile)
+          if (!returnedId || String(returnedId) !== keyRow.company_id) {
+            throw new Error("The saved company key returned a different or invalid company ID; no profile data was changed.")
+          }
+          const root = companyProfileRoot(profile)
+          const type = isRecord(root.type) ? root.type : {}
+          nextProfileJson = asJson(profile)
+          nextCompanyName = typeof root.name === "string" && root.name.trim() ? root.name : nextCompanyName
+          nextCompanyType = typeof type.name === "string" ? type.name : nextCompanyType
+          liveProfileUpdated = true
+        } else if (endpoint === "company-employees") {
+          nextEmployeesJson = asJson(await client.getCompanyEmployees())
+          liveEmployeesUpdated = true
+        } else if (endpoint === "company-stock") {
+          liveStock = await client.getCompanyStock()
+        }
+        endpointStats[endpoint].succeeded += 1
+      } catch (error) {
+        endpointStats[endpoint].failed += 1
+        failures.push({ endpoint, playerId: keyRow.player_id, companyId: keyRow.company_id, error: error instanceof Error ? error.message.slice(0, 180) : "Endpoint refresh failed." })
+      }
+    }
+
+    const fetchedAt = new Date().toISOString()
+    if (liveProfileUpdated || liveEmployeesUpdated) {
+      await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, employees_json = excluded.employees_json, fetched_at = excluded.fetched_at")
+        .bind(keyRow.player_id, keyRow.company_id, nextCompanyName, nextCompanyType, nextProfileJson, nextEmployeesJson, fetchedAt).run()
+    }
+    if (liveStock !== undefined) {
+      await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at")
+        .bind(keyRow.player_id, keyRow.company_id, asJson(liveStock), fetchedAt).run()
+    }
+    // Never append immutable history from these on-demand live refresh jobs.
+  }
+
+  const attemptedCalls = Object.values(endpointStats).reduce((sum, stats) => sum + stats.attempted, 0)
+  const succeededCalls = Object.values(endpointStats).reduce((sum, stats) => sum + stats.succeeded, 0)
+  const failedCalls = Object.values(endpointStats).reduce((sum, stats) => sum + stats.failed, 0)
+  if (attemptedCalls === 0 || succeededCalls === 0 && failedCalls > 0) {
+    const reason = connections.length === 0 && userEndpoints.length
+      ? "No saved company API connections matched this user scope."
+      : "Every selected refresh endpoint failed."
+    throw new Error((reason + " " + failures.slice(0, 3).map((failure) => failure.endpoint + ": " + failure.error).join(" ")).slice(0, 220))
+  }
+  return {
+    scope: config.scope,
+    selectedUsers: config.scope === "selected" ? targetIds.length : null,
+    companyConnectionsFound: connections.length,
+    selectedUsersWithoutCompanyKey: selectedWithoutConnection,
+    endpoints: endpointStats,
+    successfulEndpointCalls: succeededCalls,
+    failedEndpointCalls: failedCalls,
+    globalResults,
+    failures: failures.slice(0, 30),
+    partialFailure: failedCalls > 0 || globalFailures > 0 || (userEndpoints.length > 0 && connections.length === 0) || selectedWithoutConnection > 0,
+    globalSuccesses,
+  }
+}
+
 async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
   const db = requireDb(env)
-  const job = await db.prepare("SELECT job_type, target_player_id, target_company_id FROM admin_jobs WHERE job_id = ?").bind(jobId).first<{ job_type: string; target_player_id: string | null; target_company_id: string | null }>()
+  const job = await db.prepare("SELECT job_type, target_player_id, target_company_id, job_payload_json FROM admin_jobs WHERE job_id = ?").bind(jobId).first<{ job_type: string; target_player_id: string | null; target_company_id: string | null; job_payload_json: string | null }>()
   if (!job) return
   const started = new Date().toISOString()
   await db.prepare("UPDATE admin_jobs SET status = 'running', started_at = ? WHERE job_id = ? AND status = 'queued'").bind(started, jobId).run()
@@ -1216,13 +1385,24 @@ async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
       if (!apiKey) throw new Error("No saved credential is available for this company.")
       const validated = await validateCompanyKey(apiKey)
       if (String(validated.companyId) !== job.target_company_id) throw new Error("The saved credential returned a different company ID. No data was changed.")
-      await persistCompanyConnection(env, job.target_player_id, apiKey, validated)
+      await persistCompanyConnection(env, job.target_player_id, apiKey, validated, false)
       const root = companyProfileRoot(validated.profile)
       result = { companyId: String(validated.companyId), companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}` }
     } else if (job.job_type === "global-refresh") {
-      await refreshRankingProfiles(env)
+      const rankings = await refreshRankingProfiles(env)
       await refreshFactionDirectoryFromAnyKey(env, 35)
-      result = { message: "Company ranking profiles and faction directory refreshed. Global company rankings remain locked to the 18:10 UTC capture; the 00:10 UTC official snapshot is verification-only." }
+      result = { ...rankings, message: "Company ranking profiles and faction directory refreshed. Global company rankings remain locked to the 18:10 UTC capture; the 00:10 UTC official snapshot is verification-only." }
+    } else if (job.job_type === "endpoint-refresh") {
+      const rawConfig = parseStoredJson(job.job_payload_json)
+      if (!isRecord(rawConfig) || !Array.isArray(rawConfig.endpoints) || (rawConfig.scope !== "all" && rawConfig.scope !== "selected")) {
+        throw new Error("Endpoint refresh job is missing a valid saved configuration.")
+      }
+      const endpoints = Array.from(new Set(rawConfig.endpoints.filter((item): item is AdminRefreshEndpoint => typeof item === "string" && ADMIN_REFRESH_ENDPOINTS.includes(item as AdminRefreshEndpoint))))
+      if (!endpoints.length) throw new Error("Endpoint refresh job has no supported endpoints.")
+      const targetPlayerIds = Array.isArray(rawConfig.targetPlayerIds)
+        ? Array.from(new Set(rawConfig.targetPlayerIds.filter((item): item is string => typeof item === "string" && /^\d+$/.test(item))))
+        : []
+      result = await runAdminEndpointRefresh(env, { endpoints, scope: rawConfig.scope, targetPlayerIds })
     } else {
       throw new Error("Unsupported administrative job type.")
     }
@@ -1699,6 +1879,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
     return jsonResponse({ error: "Administrator access is required." }, 403, origin)
   }
   const db = requireDb(env)
+  await ensureAdminJobPayloadSchema(env)
   await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
   await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
   const memberMatch = url.pathname.match(/^\/api\/admin\/members\/(\d+)(?:\/(status|connection-test|connection-repair))?$/)
@@ -1801,7 +1982,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
       if (!apiKey) return jsonResponse({ error: "No saved credential is available for this account. Ask the member to reconnect; never request their key in chat." }, 409, origin)
       const validated = await validateCompanyKey(apiKey)
       if (requestedCompanyId && String(validated.companyId) !== requestedCompanyId) throw new Error("The saved credential returned a different company ID. No data was changed.")
-      if (isRepair) await persistCompanyConnection(env, targetId, apiKey, validated)
+      if (isRepair) await persistCompanyConnection(env, targetId, apiKey, validated, false)
       const root = companyProfileRoot(validated.profile)
       const summary = { playerId: targetId, companyId: String(validated.companyId), companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}`, profileValid: true, employeesAvailable: validated.employees !== null, stockAvailable: validated.stock !== null, repaired: isRepair, checkedAt: new Date().toISOString() }
       await writeAdminAudit(env, session, isRepair ? "connection.repaired" : "connection.tested", "member", targetId, "succeeded", isRepair ? "Company connection validated and saved." : "Saved company connection test passed.", { companyId: String(validated.companyId) })
@@ -1812,13 +1993,37 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
     }
   }
   if (url.pathname === "/api/admin/jobs" && request.method === "GET") {
-    const rows = await db.prepare("SELECT job_id AS jobId, job_type AS jobType, target_player_id AS targetPlayerId, target_company_id AS targetCompanyId, status, requested_by AS requestedBy, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt, result_json AS resultJson, error_message AS errorMessage FROM admin_jobs ORDER BY created_at DESC LIMIT ?").bind(limit).all<Record<string, unknown>>()
-    return jsonResponse({ jobs: (rows.results ?? []).map((row) => ({ ...row, result: parseStoredJson(row.resultJson), resultJson: undefined })) }, 200, origin)
+    const rows = await db.prepare("SELECT job_id AS jobId, job_type AS jobType, target_player_id AS targetPlayerId, target_company_id AS targetCompanyId, job_payload_json AS jobPayloadJson, status, requested_by AS requestedBy, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt, result_json AS resultJson, error_message AS errorMessage FROM admin_jobs ORDER BY created_at DESC LIMIT ?").bind(limit).all<Record<string, unknown>>()
+    return jsonResponse({ jobs: (rows.results ?? []).map((row) => ({ ...row, refreshConfig: parseStoredJson(row.jobPayloadJson), result: parseStoredJson(row.resultJson), jobPayloadJson: undefined, resultJson: undefined })) }, 200, origin)
   }
   if (url.pathname === "/api/admin/jobs" && request.method === "POST") {
     const body: unknown = await request.json().catch(() => null)
-    if (!isRecord(body) || (body.jobType !== "global-refresh" && body.jobType !== "company-refresh")) return jsonResponse({ error: "Choose a supported administrative job type." }, 400, origin)
+    if (!isRecord(body) || (body.jobType !== "global-refresh" && body.jobType !== "company-refresh" && body.jobType !== "endpoint-refresh")) return jsonResponse({ error: "Choose a supported administrative job type." }, 400, origin)
     if (!await readAdminBoolean(env, "manualRefreshEnabled", true)) return jsonResponse({ error: "Manual refresh operations are disabled in global settings." }, 409, origin)
+    let refreshConfig: AdminEndpointRefreshConfig | null = null
+    if (body.jobType === "endpoint-refresh") {
+      if (!Array.isArray(body.endpoints) || !body.endpoints.length || body.endpoints.length > ADMIN_REFRESH_ENDPOINTS.length) {
+        return jsonResponse({ error: "Choose one or more supported endpoint refresh targets." }, 400, origin)
+      }
+      const endpoints = Array.from(new Set(body.endpoints.filter((item): item is AdminRefreshEndpoint => typeof item === "string" && ADMIN_REFRESH_ENDPOINTS.includes(item as AdminRefreshEndpoint))))
+      if (endpoints.length !== body.endpoints.length) return jsonResponse({ error: "One or more selected refresh endpoints are unsupported." }, 400, origin)
+      const scope = body.scope === "selected" ? "selected" : body.scope === "all" ? "all" : null
+      if (!scope) return jsonResponse({ error: "Choose whether to refresh all users or selected users." }, 400, origin)
+      const userEndpoints = endpoints.some((endpoint) => endpoint === "company-profile" || endpoint === "company-employees" || endpoint === "company-stock")
+      const rawIds = Array.isArray(body.targetPlayerIds) ? body.targetPlayerIds : []
+      if (rawIds.length > 100) return jsonResponse({ error: "Select no more than 100 dashboard users per job. Run another job for additional users." }, 400, origin)
+      const targetPlayerIds = Array.from(new Set(rawIds.map((value) => positiveId(value)).filter((value): value is string => Boolean(value))))
+      if (scope === "selected" && userEndpoints && (!targetPlayerIds.length || targetPlayerIds.length !== new Set(rawIds).size)) {
+        return jsonResponse({ error: "Selected-user refreshes require valid dashboard user IDs." }, 400, origin)
+      }
+      if (scope === "all" && targetPlayerIds.length) return jsonResponse({ error: "Do not include selected user IDs when the refresh scope is all users." }, 400, origin)
+      if (scope === "selected" && userEndpoints) {
+        const placeholders = targetPlayerIds.map(() => "?").join(",")
+        const found = await db.prepare("SELECT player_id FROM players WHERE player_id IN (" + placeholders + ")").bind(...targetPlayerIds).all<{ player_id: string }>()
+        if ((found.results ?? []).length !== targetPlayerIds.length) return jsonResponse({ error: "One or more selected dashboard users do not exist." }, 404, origin)
+      }
+      refreshConfig = { endpoints, scope, targetPlayerIds: scope === "selected" ? targetPlayerIds : [] }
+    }
     const targetPlayerId = body.jobType === "company-refresh" ? positiveId(body.targetPlayerId) : null
     const targetCompanyId = body.jobType === "company-refresh" ? positiveId(body.targetCompanyId) : null
     if (body.jobType === "company-refresh" && (!targetPlayerId || !targetCompanyId)) return jsonResponse({ error: "Select a member and one of their saved company IDs for a company refresh." }, 400, origin)
@@ -1826,12 +2031,13 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
       const target = await db.prepare("SELECT player_id FROM players WHERE player_id = ?").bind(targetPlayerId).first<{ player_id: string }>()
       if (!target) return jsonResponse({ error: "That dashboard member does not exist." }, 404, origin)
     }
-    const duplicate = await db.prepare("SELECT job_id FROM admin_jobs WHERE status IN ('queued','running') AND job_type = ? AND COALESCE(target_player_id,'') = ? AND COALESCE(target_company_id,'') = ? LIMIT 1").bind(body.jobType, targetPlayerId ? String(targetPlayerId) : "", targetCompanyId ? String(targetCompanyId) : "").first<{ job_id: string }>()
+    const payloadJson = refreshConfig ? asJson(refreshConfig) : null
+    const duplicate = await db.prepare("SELECT job_id FROM admin_jobs WHERE status IN ('queued','running') AND job_type = ? AND COALESCE(target_player_id,'') = ? AND COALESCE(target_company_id,'') = ? AND COALESCE(job_payload_json,'') = COALESCE(?, '') LIMIT 1").bind(body.jobType, targetPlayerId ? String(targetPlayerId) : "", targetCompanyId ? String(targetCompanyId) : "", payloadJson).first<{ job_id: string }>()
     if (duplicate) return jsonResponse({ error: "An equivalent refresh job is already queued or running.", jobId: duplicate.job_id }, 409, origin)
     const jobId = randomToken().slice(0, 20)
     const now = new Date().toISOString()
-    await db.prepare("INSERT INTO admin_jobs (job_id, job_type, target_player_id, target_company_id, status, requested_by, created_at) VALUES (?, ?, ?, ?, 'queued', ?, ?)").bind(jobId, body.jobType, targetPlayerId ? String(targetPlayerId) : null, targetCompanyId ? String(targetCompanyId) : null, session.player_id, now).run()
-    await writeAdminAudit(env, session, "job.queued", "job", jobId, "succeeded", `Queued ${body.jobType}.`, { targetPlayerId: targetPlayerId ? String(targetPlayerId) : null, targetCompanyId: targetCompanyId ? String(targetCompanyId) : null })
+    await db.prepare("INSERT INTO admin_jobs (job_id, job_type, target_player_id, target_company_id, job_payload_json, status, requested_by, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)").bind(jobId, body.jobType, targetPlayerId ? String(targetPlayerId) : null, targetCompanyId ? String(targetCompanyId) : null, payloadJson, session.player_id, now).run()
+    await writeAdminAudit(env, session, "job.queued", "job", jobId, "succeeded", "Queued " + body.jobType + ".", refreshConfig ? { endpoints: refreshConfig.endpoints, scope: refreshConfig.scope, targetPlayerCount: refreshConfig.targetPlayerIds.length } : { targetPlayerId: targetPlayerId ? String(targetPlayerId) : null, targetCompanyId: targetCompanyId ? String(targetCompanyId) : null })
     const task = runAdminJob(env, jobId)
     if (ctx?.waitUntil) ctx.waitUntil(task)
     else await task

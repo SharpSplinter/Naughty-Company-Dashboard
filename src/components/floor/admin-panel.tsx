@@ -3,10 +3,20 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 type AdminTab = "overview" | "members" | "operations" | "history" | "settings" | "audit"
 type AdminSettings = { maintenanceMode: boolean; manualRefreshEnabled: boolean; historyImportEnabled: boolean }
 type AdminMember = { playerId: string; playerName: string; createdAt?: string | null; updatedAt?: string | null; companyId: string | null; companyName: string | null; companyType: string | null; companyTypeId?: number | string | null; disabled: boolean; disabledAt?: string | null; disableReason?: string | null; loginKeySaved: boolean; companyKeyCount: number; snapshotCount: number }
-type AdminJob = { jobId: string; jobType: string; targetPlayerId?: string | null; targetCompanyId?: string | null; status: string; createdAt: string; startedAt?: string | null; finishedAt?: string | null; errorMessage?: string | null; result?: unknown }
+type AdminJob = { jobId: string; jobType: string; targetPlayerId?: string | null; targetCompanyId?: string | null; status: string; createdAt: string; startedAt?: string | null; finishedAt?: string | null; errorMessage?: string | null; result?: unknown; refreshConfig?: AdminRefreshConfig | null }
 type AutomationRun = { runId: string; triggerName: string; status: string; startedAt: string; finishedAt?: string | null; companiesChecked: number; companiesFailed: number; alertsCreated: number; errorSummary?: string | null }
 type AutomationRange = "7" | "30" | "90" | "365" | "all"
 type AutomationStatusFilter = "all" | "succeeded" | "partial" | "failed" | "running"
+type AdminRefreshEndpoint = "company-profile" | "company-employees" | "company-stock" | "global-company-rankings" | "faction-directory"
+type AdminRefreshScope = "all" | "selected"
+type AdminRefreshConfig = { endpoints?: string[]; scope?: AdminRefreshScope; targetPlayerIds?: string[] }
+const REFRESH_ENDPOINT_OPTIONS: Array<{ value: AdminRefreshEndpoint; label: string; endpoint: string; description: string; userScoped: boolean }> = [
+  { value: "company-profile", label: "Company profile", endpoint: "GET /company/profile", description: "Company name, type, rating, income, and profile fields.", userScoped: true },
+  { value: "company-employees", label: "Employees", endpoint: "GET /company/employees", description: "Current employee roster and employee details.", userScoped: true },
+  { value: "company-stock", label: "Stock and financial data", endpoint: "GET /company/stock", description: "Current stock quantities and available financial fields.", userScoped: true },
+  { value: "global-company-rankings", label: "Shared global company rankings", endpoint: "GET /company/{typeId}/companies", description: "Refresh the shared live rankings cache from company-type lists. Does not create history.", userScoped: false },
+  { value: "faction-directory", label: "Faction and director directory", endpoint: "GET /faction/members + /user/{id}/job", description: "Refresh the shared faction/director directory batch.", userScoped: false },
+]
 type AutomationInsights = { totalRuns: number; succeededRuns: number; failedRuns: number; partialRuns: number; runningRuns: number; completedRuns: number; successRate: number | null; avgDurationSeconds: number | null; companiesFailed: number; alertsCreated: number; latestRunAt?: string | null; recurringFailures: Array<{ errorSummary: string; occurrences: number }> }
 type AuditEvent = { id: number; actorPlayerId: string; actorPlayerName: string; action: string; targetType?: string | null; targetId?: string | null; outcome: string; summary: string; createdAt: string; details?: unknown }
 type MemberDetail = { member: AdminMember & { disabledAt?: string | null }; connections: { companies: Array<{ companyId: string; companyName?: string | null; companyType?: string | null; lastFour?: string; keyUpdatedAt?: string; fetchedAt?: string | null }>; loginKeySaved: boolean; legacyCompanyKeySaved: boolean }; history: { companySnapshots: number; directorSnapshots: number; pageRecords: number; financialRecords: number } }
@@ -75,6 +85,16 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   const [selectedMemberId, setSelectedMemberId] = useState("")
   const [memberDetail, setMemberDetail] = useState<MemberDetail | null>(null)
   const [jobs, setJobs] = useState<AdminJob[]>([])
+  const [refreshEndpoints, setRefreshEndpoints] = useState<AdminRefreshEndpoint[]>(["company-profile", "company-employees", "company-stock"])
+  const [refreshScope, setRefreshScope] = useState<AdminRefreshScope>("all")
+  const [refreshMemberSearchInput, setRefreshMemberSearchInput] = useState("")
+  const [refreshMemberSearch, setRefreshMemberSearch] = useState("")
+  const [refreshCandidates, setRefreshCandidates] = useState<AdminMember[]>([])
+  const [refreshCandidateTotal, setRefreshCandidateTotal] = useState(0)
+  const [refreshMemberOffset, setRefreshMemberOffset] = useState(0)
+  const [refreshSelectedUserIds, setRefreshSelectedUserIds] = useState<string[]>([])
+  const [refreshCandidatesLoading, setRefreshCandidatesLoading] = useState(false)
+  const [endpointRefreshBusy, setEndpointRefreshBusy] = useState(false)
   const [automationRuns, setAutomationRuns] = useState<AutomationRun[]>([])
   const [automationInsights, setAutomationInsights] = useState<AutomationInsights | null>(null)
   const [automationRange, setAutomationRange] = useState<AutomationRange>("30")
@@ -138,6 +158,16 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load automation insights.") }
   }, [apiBase, sessionToken, automationRange])
 
+  const loadRefreshCandidates = useCallback(async (query: string, offset: number) => {
+    setRefreshCandidatesLoading(true)
+    try {
+      const payload = await adminFetch<{ members: AdminMember[]; total: number }>(apiBase, sessionToken, `/api/admin/members?limit=50&offset=${offset}&q=${encodeURIComponent(query)}`)
+      setRefreshCandidates(payload.members || [])
+      setRefreshCandidateTotal(payload.total || 0)
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load refresh targets.") }
+    finally { setRefreshCandidatesLoading(false) }
+  }, [apiBase, sessionToken])
+
   const loadMembers = useCallback(async (query: string) => {
     setError("")
     try {
@@ -153,6 +183,7 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
 
   useEffect(() => { void refreshAll() }, [refreshAll])
   useEffect(() => { if (tab === "operations") void loadAutomationRuns() }, [tab, loadAutomationRuns])
+  useEffect(() => { if (tab === "operations") void loadRefreshCandidates(refreshMemberSearch, refreshMemberOffset) }, [tab, loadRefreshCandidates, refreshMemberSearch, refreshMemberOffset])
   useEffect(() => {
     if (!selectedMemberId || !members.some((m) => m.playerId === selectedMemberId)) return
     void loadMemberDetail(selectedMemberId)
@@ -208,6 +239,39 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
       setTab("operations")
       await loadJobs()
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not queue the refresh.") }
+  }
+
+  async function queueEndpointRefresh() {
+    if (!actionsArmed || endpointRefreshBusy || !settings.manualRefreshEnabled) return
+    if (!refreshEndpoints.length) { setError("Select at least one endpoint to refresh."); return }
+    const usesUserScope = REFRESH_ENDPOINT_OPTIONS.some((option) => option.userScoped && refreshEndpoints.includes(option.value))
+    if (usesUserScope && refreshScope === "selected" && refreshSelectedUserIds.length === 0) {
+      setError("Select at least one dashboard user, or switch the scope to all connected users.")
+      return
+    }
+    if (usesUserScope && refreshScope === "selected" && refreshSelectedUserIds.length > 100) {
+      setError("A job can target at most 100 users. Remove some selections or queue another job.")
+      return
+    }
+    const endpointSummary = REFRESH_ENDPOINT_OPTIONS.filter((option) => refreshEndpoints.includes(option.value)).map((option) => option.label).join(", ")
+    const targetSummary = usesUserScope ? (refreshScope === "all" ? "all dashboard users with saved company API connections" : refreshSelectedUserIds.length + " selected dashboard users") : "shared/global data only"
+    if (!window.confirm("Run a live endpoint refresh?\n\nEndpoints: " + endpointSummary + "\nScope: " + targetSummary + "\n\nThis updates current dashboard data only. It will not create historical snapshots or call /company/snapshot.")) return
+    try {
+      setEndpointRefreshBusy(true); setError(""); setNotice("")
+      const payload = await adminFetch<{ jobId: string; status: string }>(apiBase, sessionToken, "/api/admin/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          jobType: "endpoint-refresh",
+          endpoints: refreshEndpoints,
+          scope: usesUserScope ? refreshScope : "all",
+          targetPlayerIds: usesUserScope && refreshScope === "selected" ? refreshSelectedUserIds : [],
+        }),
+      })
+      setNotice("Endpoint refresh job " + payload.jobId + " was queued.")
+      setTab("operations")
+      await loadJobs()
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not queue the endpoint refresh.") }
+    finally { setEndpointRefreshBusy(false) }
   }
 
   async function saveSettings() {
@@ -307,8 +371,40 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
 
     {tab === "operations" && <div className="admin-section-stack">
       <div className="admin-section-heading"><div><h2>Refresh and maintenance jobs</h2><p>Jobs are tracked in D1, prevent equivalent concurrent requests, and report final outcomes.</p></div><button type="button" className="secondary-button" onClick={() => void loadJobs()}>Refresh job list ↻</button></div>
+      <section className="panel admin-subpanel">
+        <div className="panel-heading"><div><h3>Admin endpoint refresh</h3><p>Select the live Torn endpoints and exactly which dashboard users should receive the refresh.</p></div><span className={settings.manualRefreshEnabled ? "admin-status good" : "admin-status danger"}>{settings.manualRefreshEnabled ? "Enabled by policy" : "Disabled by policy"}</span></div>
+        <div className="admin-settings-list">{REFRESH_ENDPOINT_OPTIONS.map((option) => <label className="admin-setting-row" key={option.value}>
+          <span><strong>{option.label}</strong><small>{option.endpoint}</small><small>{option.description}</small></span>
+          <input type="checkbox" checked={refreshEndpoints.includes(option.value)} disabled={!actionsArmed || !settings.manualRefreshEnabled || endpointRefreshBusy} onChange={(event) => setRefreshEndpoints((current) => event.target.checked ? [...current, option.value] : current.filter((value) => value !== option.value))} />
+        </label>)}</div>
+        <div className="admin-detail-actions"><span className="field-hint">Selected endpoints: {refreshEndpoints.length}/{REFRESH_ENDPOINT_OPTIONS.length}</span><button type="button" className="text-button" disabled={!actionsArmed || endpointRefreshBusy} onClick={() => setRefreshEndpoints(REFRESH_ENDPOINT_OPTIONS.map((option) => option.value))}>Select all endpoints</button><button type="button" className="text-button" disabled={!actionsArmed || endpointRefreshBusy || !refreshEndpoints.length} onClick={() => setRefreshEndpoints([])}>Clear</button></div>
+        <div className="admin-insight-subheading"><h4>Target dashboard users</h4><p>Applies to company profile, employee, and stock refreshes. Shared/global refreshes run once independently of user scope.</p></div>
+        <div className="admin-detail-actions">
+          <label className="admin-inline-choice"><input type="radio" name="admin-refresh-scope" value="all" checked={refreshScope === "all"} disabled={!actionsArmed || endpointRefreshBusy} onChange={() => setRefreshScope("all")} /> All connected dashboard users</label>
+          <label className="admin-inline-choice"><input type="radio" name="admin-refresh-scope" value="selected" checked={refreshScope === "selected"} disabled={!actionsArmed || endpointRefreshBusy} onChange={() => setRefreshScope("selected")} /> Select users</label>
+        </div>
+        {refreshScope === "selected" && REFRESH_ENDPOINT_OPTIONS.some((option) => option.userScoped && refreshEndpoints.includes(option.value)) && <div className="admin-refresh-user-picker">
+          <form className="admin-search-row" onSubmit={(event) => { event.preventDefault(); const query = refreshMemberSearchInput.trim(); setRefreshMemberSearch(query); setRefreshMemberOffset(0); void loadRefreshCandidates(query, 0) }}>
+            <input value={refreshMemberSearchInput} onChange={(event) => setRefreshMemberSearchInput(event.target.value)} placeholder="Search user name or Torn ID" aria-label="Search refresh target users" />
+            <button className="secondary-button" type="submit" disabled={refreshCandidatesLoading}>Search</button>
+          </form>
+          <div className="admin-detail-actions"><span className="field-hint">{refreshSelectedUserIds.length}/100 users selected · {refreshCandidateTotal.toLocaleString()} matches</span><button type="button" className="text-button" disabled={!actionsArmed || !refreshSelectedUserIds.length || endpointRefreshBusy} onClick={() => setRefreshSelectedUserIds([])}>Clear selection</button></div>
+          {refreshCandidatesLoading ? <p className="field-hint">Loading users…</p> : <div className="admin-refresh-user-list">{refreshCandidates.map((member) => {
+            const selected = refreshSelectedUserIds.includes(member.playerId)
+            const noCompanyKey = member.companyKeyCount < 1
+            return <label className="admin-setting-row" key={member.playerId}>
+              <span><strong>{member.playerName}</strong><small>Torn ID #{member.playerId} · {member.companyKeyCount} saved company key(s){member.disabled ? " · access disabled" : ""}</small></span>
+              <input type="checkbox" checked={selected} disabled={!actionsArmed || endpointRefreshBusy || noCompanyKey || (!selected && refreshSelectedUserIds.length >= 100)} onChange={(event) => setRefreshSelectedUserIds((current) => event.target.checked ? [...current, member.playerId].slice(-100) : current.filter((id) => id !== member.playerId))} />
+            </label>
+          })}{!refreshCandidates.length && <div className="empty-state">No dashboard users match this search.</div>}</div>}
+          <div className="admin-detail-actions"><button type="button" className="secondary-button" disabled={refreshCandidatesLoading || refreshMemberOffset <= 0} onClick={() => setRefreshMemberOffset((offset) => Math.max(0, offset - 50))}>Previous</button><span className="field-hint">{refreshCandidateTotal ? refreshMemberOffset + 1 : 0}–{Math.min(refreshMemberOffset + refreshCandidates.length, refreshCandidateTotal)} of {refreshCandidateTotal}</span><button type="button" className="secondary-button" disabled={refreshCandidatesLoading || refreshMemberOffset + 50 >= refreshCandidateTotal} onClick={() => setRefreshMemberOffset((offset) => offset + 50)}>Next</button></div>
+          <p className="field-hint">For per-company endpoints, only accounts with saved company API connections can be selected. Up to 100 users can be included in one job.</p>
+        </div>}
+        <p className="field-hint">These are live updates only. No daily history snapshots are added. The official <code>/company/snapshot</code> endpoint stays reserved for scheduled verification and is not used to refresh global rankings.</p>
+        <button className="primary-button" type="button" disabled={!actionsArmed || !settings.manualRefreshEnabled || endpointRefreshBusy || !refreshEndpoints.length || (REFRESH_ENDPOINT_OPTIONS.some((option) => option.userScoped && refreshEndpoints.includes(option.value)) && refreshScope === "selected" && !refreshSelectedUserIds.length)} onClick={() => void queueEndpointRefresh()}>{endpointRefreshBusy ? "Queueing refresh…" : "Queue selected endpoint refresh ↻"}</button>
+      </section>
       <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Manual refresh</h3><p>Global refresh updates ranking profiles, one faction-directory batch, and the global ranking cache.</p></div><span className={settings.manualRefreshEnabled ? "admin-status good" : "admin-status danger"}>{settings.manualRefreshEnabled ? "Enabled by policy" : "Disabled by policy"}</span></div><button className="primary-button" type="button" disabled={!actionsArmed || !settings.manualRefreshEnabled} onClick={() => void queueJob("global-refresh")}>Queue global refresh ↻</button><p className="field-hint">Company-specific refresh is available from a member's detail panel. Work is performed server-side and does not depend on the browser remaining open.</p></section>
-      <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Job history</h3><p>Most recent tracked jobs and failures.</p></div><span className="count-chip">{jobs.length} jobs</span></div>{jobs.length ? <div className="table-scroll"><table className="admin-table"><thead><tr><th>JOB</th><th>TARGET</th><th>STATUS</th><th>CREATED</th><th>RESULT / ERROR</th></tr></thead><tbody>{jobs.map((job) => <tr key={job.jobId}><td><strong>{prettyStatus(job.jobType)}</strong><small>{job.jobId}</small></td><td>{job.targetPlayerId ? `#${job.targetPlayerId}` : "Global"}{job.targetCompanyId ? <small>Company #{job.targetCompanyId}</small> : null}</td><td><span className={`admin-status ${job.status === "completed" ? "good" : job.status === "failed" ? "danger" : "warning"}`}>{job.status}</span></td><td>{prettyDate(job.createdAt)}</td><td>{job.errorMessage || (job.result && typeof job.result === "object" ? JSON.stringify(job.result) : job.status === "completed" ? "Completed" : "Waiting for result")}</td></tr>)}</tbody></table></div> : <div className="empty-state">No administrative jobs have been queued yet.</div>}</section>
+      <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Job history</h3><p>Most recent tracked jobs and failures.</p></div><span className="count-chip">{jobs.length} jobs</span></div>{jobs.length ? <div className="table-scroll"><table className="admin-table"><thead><tr><th>JOB</th><th>TARGET</th><th>STATUS</th><th>CREATED</th><th>RESULT / ERROR</th></tr></thead><tbody>{jobs.map((job) => <tr key={job.jobId}><td><strong>{prettyStatus(job.jobType)}</strong><small>{job.jobId}</small></td><td>{job.refreshConfig ? <><strong>{job.refreshConfig.scope === "all" ? "All connected users" : `${job.refreshConfig.targetPlayerIds?.length || 0} selected user(s)`}</strong><small>{(job.refreshConfig.endpoints || []).map((endpoint) => REFRESH_ENDPOINT_OPTIONS.find((option) => option.value === endpoint)?.label || endpoint).join(", ")}</small></> : job.targetPlayerId ? `#${job.targetPlayerId}` : "Global"}{job.targetCompanyId ? <small>Company #{job.targetCompanyId}</small> : null}</td><td><span className={`admin-status ${job.status === "completed" ? "good" : job.status === "failed" ? "danger" : "warning"}`}>{job.status}</span></td><td>{prettyDate(job.createdAt)}</td><td>{job.errorMessage || (job.result && typeof job.result === "object" ? JSON.stringify(job.result) : job.status === "completed" ? "Completed" : "Waiting for result")}</td></tr>)}</tbody></table></div> : <div className="empty-state">No administrative jobs have been queued yet.</div>}</section>
       <section className="panel admin-subpanel admin-automation-insights">
         <div className="panel-heading"><div><h3>Automation Insights</h3><p>Execution reliability, runtime, and recurring failure patterns for scheduled Worker runs.</p></div><div className="admin-insight-controls"><label>Time window<select value={automationRange} onChange={(event) => setAutomationRange(event.target.value as AutomationRange)}><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last 12 months</option><option value="all">All time</option></select></label><label>Run status<select value={automationStatusFilter} onChange={(event) => setAutomationStatusFilter(event.target.value as AutomationStatusFilter)}><option value="all">All outcomes</option><option value="succeeded">Succeeded</option><option value="partial">Partial</option><option value="failed">Failed</option><option value="running">Running</option></select></label><button type="button" className="secondary-button" onClick={() => void loadAutomationRuns()}>Refresh insights ↻</button></div></div>
         <div className="admin-metric-grid admin-automation-metrics">
