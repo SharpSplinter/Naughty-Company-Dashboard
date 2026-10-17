@@ -384,6 +384,7 @@ async function fetchGlobalCompanyRankings(apiKey: string): Promise<{ companies: 
   return { companies, snapshotFetchedAt }
 }
 
+// Verification-only source: never use /company/snapshot to populate the live global ranking cache.
 async function fetchOfficialCompanySnapshot(apiKey: string): Promise<{ companies: Record<string, unknown>[]; snapshotFetchedAt: string }> {
   const response = await fetch("https://api.torn.com/v2/company/snapshot", {
     headers: { Authorization: `ApiKey ${apiKey}`, Accept: "text/csv, text/plain, application/json" },
@@ -448,7 +449,7 @@ async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string, force 
       const row = await db.prepare("SELECT player_id FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string }>()
       if (row) key = (await savedKey(env, row.player_id)) ?? undefined
     }
-    if (!key) return
+    if (!key) throw Object.assign(new Error("No saved Torn API key is available to refresh the global company rankings cache."), { status: 503 })
     const snapshot = await fetchGlobalCompanyRankings(key)
     await db.prepare("INSERT INTO global_rankings_cache (cache_id, companies_json, fetched_at) VALUES (1, ?, ?) ON CONFLICT(cache_id) DO UPDATE SET companies_json = excluded.companies_json, fetched_at = excluded.fetched_at").bind(asJson(snapshot.companies), snapshot.snapshotFetchedAt).run()
   } finally {
@@ -2180,7 +2181,7 @@ export default {
         const companies = requestedTypeId !== null
           ? snapshotCompanies.filter((company) => Number(company.companyTypeId) === requestedTypeId)
           : requestedType ? snapshotCompanies.filter((company) => String(company.companyType ?? "").trim().toLocaleLowerCase() === requestedType) : snapshotCompanies
-        return jsonResponse({ companies, generatedAt: cached?.fetchedAt ?? "", source: "Daily cached Torn API v2 company snapshot", scope: "all-torn", companyType: requestedType || null, companyTypeId: requestedTypeId, incomeDataUpdatesAt: "18:10 UTC daily", starRatingUpdatesAt: "18:10 UTC Sundays", cacheAvailable: Boolean(cached) }, 200, origin, { "cache-control": "private, max-age=300" })
+        return jsonResponse({ companies, generatedAt: cached?.fetchedAt ?? "", source: "Daily cached Torn API v2 /company/{typeId}/companies lists", scope: "all-torn", companyType: requestedType || null, companyTypeId: requestedTypeId, incomeDataUpdatesAt: "18:10 UTC daily", starRatingUpdatesAt: "18:10 UTC Sundays", cacheAvailable: Boolean(cached) }, 200, origin, { "cache-control": "private, max-age=300" })
       }
       // Faction view is intentionally private to the signed-in dashboard user.
       // Do not scan/render every connected user's companies here.
