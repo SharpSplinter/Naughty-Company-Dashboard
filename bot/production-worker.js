@@ -476,17 +476,52 @@ async function replyFor(i, env) {
     try {
       const token = await unseal(row.encrypted_session_token, row.token_iv, env);
       const headers = { authorization: "Bearer " + token, accept: "application/json" };
+      if (subcommand === "companies") {
+        const typeId = optionValue(i, "company_type_id");
+        if (!Number.isInteger(typeId) || typeId <= 0) return privateReply("Choose a valid positive company type ID.");
+        const page = Math.max(1, Number(optionValue(i, "page") || 1));
+        const sort = String(optionValue(i, "sort") || "weekly_income");
+        const res = await dashboardFetch(env, "/api/rankings?scope=global&typeId=" + encodeURIComponent(String(typeId)), { headers, signal: AbortSignal.timeout(12000) });
+        if (res.status === 401 || res.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
+        if (!res.ok) return privateReply("Global company rankings are temporarily unavailable. Please try again later.");
+        const data = await res.json();
+        const companies = (Array.isArray(data.companies) ? data.companies : []).slice();
+        if (!companies.length) return privateReply("No cached global companies were found for type ID " + typeId + ". The dashboard ranking cache may not include that type yet.");
+        const valueOf = company => sort === "stars" ? company.starRating : sort === "daily_income" ? company.dailyIncome : company.weeklyIncome;
+        companies.sort((a, b) => {
+          const av = valueOf(a), bv = valueOf(b);
+          if (typeof av !== "number" || !Number.isFinite(av)) return typeof bv === "number" && Number.isFinite(bv) ? 1 : 0;
+          if (typeof bv !== "number" || !Number.isFinite(bv)) return -1;
+          return bv - av;
+        });
+        const pageSize = 10, start = (page - 1) * pageSize, visible = companies.slice(start, start + pageSize);
+        if (!visible.length) return privateReply("That page is beyond the " + companies.length + " cached companies for type ID " + typeId + ".");
+        const sortLabel = sort === "stars" ? "star rating" : sort === "daily_income" ? "daily income" : "weekly income";
+        const lines = visible.map((company, index) => {
+          const companyName = safeText(company.companyName || company.company_name || company.name || "Company", 90);
+          const stars = typeof company.starRating === "number" ? String(company.starRating) + "★" : "stars not reported";
+          return "#" + (start + index + 1) + " **" + companyName + "** | " + stars + " | Daily: " + money(company.dailyIncome) + " | Weekly: " + money(company.weeklyIncome);
+        });
+        return chunkedPrivateReply("**Global company rankings | type ID " + typeId + "**\nSorted by " + sortLabel + " | Page " + page + " of " + Math.max(1, Math.ceil(companies.length / pageSize)) + "\nSource: " + String(data.source || "daily global ranking cache") + "\nSnapshot: " + String(data.generatedAt || "timestamp unavailable") + "\nTotal cached companies: " + companies.length, lines);
+      }
       if (subcommand === "faction") {
         const res = await dashboardFetch(env, "/api/faction/directors", { headers, signal: AbortSignal.timeout(12000) });
         if (res.status === 401 || res.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
         if (!res.ok) return privateReply("Faction director data is temporarily unavailable. Please try again later.");
         const data = await res.json();
-        const directors = (Array.isArray(data.directors) ? data.directors : []).slice().sort((a,b) => {
-          const av = typeof a.weeklyIncome === "number" ? a.weeklyIncome : -Infinity;
-          const bv = typeof b.weeklyIncome === "number" ? b.weeklyIncome : -Infinity;
+        const allDirectors = (Array.isArray(data.directors) ? data.directors : []).slice();
+        const sort = String(optionValue(i, "sort") || "weekly_income");
+        const rankValue = company => sort === "stars" ? company.starRating : sort === "daily_income" ? company.dailyIncome : company.weeklyIncome;
+        allDirectors.sort((a,b) => {
+          const av = rankValue(a), bv = rankValue(b);
+          if (typeof av !== "number" || !Number.isFinite(av)) return typeof bv === "number" && Number.isFinite(bv) ? 1 : 0;
+          if (typeof bv !== "number" || !Number.isFinite(bv)) return -1;
           return bv - av;
         });
-        if (!directors.length) return privateReply("No faction director companies are in the cached directory yet. Refresh the faction directory in the dashboard first.");
+        if (!allDirectors.length) return privateReply("No faction director companies are in the cached directory yet. Refresh the faction directory in the dashboard first.");
+        const page = Math.max(1, Number(optionValue(i, "page") || 1)), pageSize = 10, start = (page - 1) * pageSize;
+        const directors = allDirectors.slice(start, start + pageSize);
+        if (!directors.length) return privateReply("That page is beyond the " + allDirectors.length + " cached faction companies.");
         const lines = directors.map((company, index) => {
           const name = safeText(company.companyName || ("Company #" + (company.companyId || "unknown")), 80);
           const type = safeText(company.companyType || "Type not reported", 45);
@@ -495,20 +530,21 @@ async function replyFor(i, env) {
           const daily = typeof company.dailyIncome === "number" && Number.isFinite(company.dailyIncome) ? company.dailyIncome : null;
           const averageDaily = weekly === null ? null : weekly / 7;
           const stars = typeof company.starRating === "number" && Number.isFinite(company.starRating) ? String(company.starRating) : "Not reported";
-          return (index + 1) + ". **" + name + "** (" + type + ")\n   Director: " + director +
+          return "#" + (start + index + 1) + ". **" + name + "** (" + type + ")\n   Director: " + director +
             "  |  Weekly: " + money(weekly) + "  |  Daily: " + money(daily) +
             "  |  Avg/day (weekly / 7): " + money(averageDaily) + "  |  Stars: " + stars;
         });
         const sourceAt = data.generatedAt || directors.map(d => d.fetchedAt).filter(Boolean).sort().at(-1) || "timestamp unavailable";
-        return chunkedPrivateReply("**Faction company rankings by weekly income**\nCompanies: " + directors.length + "  |  Snapshot: " + sourceAt, lines);
+        return chunkedPrivateReply("**Faction company rankings**\nSorted by " + (sort === "stars" ? "star rating" : sort === "daily_income" ? "daily income" : "weekly income") + " | Page " + page + " of " + Math.max(1, Math.ceil(allDirectors.length / pageSize)) + "\nCompanies: " + allDirectors.length + "  |  Snapshot: " + sourceAt, lines);
       }
-      if (subcommand !== "global") return privateReply("Choose /rankings global or /rankings faction.");
+      if (!["global", "company", "compare"].includes(subcommand)) return privateReply("Choose /rankings companies, /rankings company, /rankings compare, or /rankings faction.");
       const ownRes = await dashboardFetch(env, "/api/me/companies", { headers, signal: AbortSignal.timeout(8000) });
       if (ownRes.status === 401 || ownRes.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
       if (!ownRes.ok) return privateReply("Your company data is temporarily unavailable. Please try again later.");
       const ownData = await ownRes.json(), ownCompanies = Array.isArray(ownData.companies) ? ownData.companies : [];
-      const own = ownCompanies[0];
-      if (!own) return privateReply("No saved company is available. Open the dashboard and refresh company data first.");
+      const requestedOwnId = requestedCompanyId(i);
+      const own = requestedOwnId ? ownCompanies.find(company => String(company.company_id) === requestedOwnId) : ownCompanies[0];
+      if (!own) return privateReply(requestedOwnId ? "That company ID is not connected to your dashboard account." : "No saved company is available. Open the dashboard and refresh company data first.");
       const ownDetailRes = await dashboardFetch(env, "/api/me/companies/" + encodeURIComponent(own.company_id), { headers, signal: AbortSignal.timeout(8000) });
       let ownProfile = {}, ownRoot = {}, ownIncomeRoot = {}, ownTypeRoot = {};
       if (ownDetailRes.ok) {
