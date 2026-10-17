@@ -153,6 +153,8 @@ try {
     assert.match(refreshBody, /client\.getCompanyStock\(\)/)
     assert.match(refreshBody, /WHERE player_id IN \(/, "selected-user refreshes must scope the credential query")
     assert.match(refreshBody, /refreshGlobalRankingCache\(env, undefined, true\)/)
+    assert.match(refreshBody, /syncFactionDirectorDirectory\(env, apiKey, 35, false, true\)/, "manual directory refresh must force live lookup without writing director history")
+    assert.match(workerSource, /if \(profile && captureSnapshots\) await persistFactionDirectorSnapshot\(env, profile\)/)
     assert.doesNotMatch(refreshBody, /fetchOfficialCompanySnapshot/, "the official snapshot endpoint must not be used for a manual rankings refresh")
     assert.doesNotMatch(refreshBody, /https:\/\/api\.torn\.com\/v2\/company\/snapshot/, "manual rankings refresh must not fetch the official snapshot URL")
     assert.doesNotMatch(refreshBody, /INSERT INTO company_snapshots|INSERT INTO company_financial_snapshots|persistFactionDirectorSnapshot/, "manual endpoint refreshes must not append immutable historical snapshots")
