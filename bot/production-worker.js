@@ -197,6 +197,8 @@ async function replyFor(i, env) {
   if (name === "unlink") {
     const linked = await env.BOT_DB.prepare("SELECT encrypted_session_token AS cipher,token_iv AS iv FROM discord_links WHERE discord_user_id=?").bind(user).first();
     if (linked) { try { const token = await unseal(linked.cipher, linked.iv, env); await dashboardFetch(env, "/api/me/discord-link", { method: "DELETE", headers: { authorization: "Bearer " + token } }); } catch {} }
+    await env.BOT_DB.prepare("DELETE FROM alert_preferences WHERE discord_user_id=?").bind(user).run();
+    await env.BOT_DB.prepare("DELETE FROM alert_deliveries WHERE discord_user_id=?").bind(user).run();
     await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run();
     await env.BOT_DB.prepare("DELETE FROM discord_alert_state WHERE discord_user_id=?").bind(user).run();
     await env.BOT_DB.prepare("DELETE FROM discord_alert_deliveries WHERE discord_user_id=?").bind(user).run();
@@ -706,10 +708,54 @@ async function replyFor(i, env) {
         if (!res.ok) return privateReply(String(data.error || "Discord alert settings could not be updated."));
         return privateReply(enabled ? "✅ Private Discord alerts are enabled. New alerts will be sent by DM, respecting minimum-severity and quiet-hours settings." : "🔕 Private Discord alerts are disabled. Your dashboard link remains connected.");
       }
+      if (subcommand === "recent") {
+        const requestedLimit = Number(optionValue(i, "limit") || 8);
+        const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(10, requestedLimit)) : 8;
+        const res = await dashboardFetch(env, "/api/me/alerts?limit=" + limit, { headers, signal: AbortSignal.timeout(8000) });
+        if (res.status === 401 || res.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+        if (!res.ok) return privateReply("Recent alerts are temporarily unavailable. Please try again later.");
+        const data = await res.json(), events = Array.isArray(data.events) ? data.events : [];
+        if (!events.length) return privateReply("No recent dashboard alerts were found for your account.");
+        const lines = events.slice(0, limit).map(event =>
+          "- [" + safeText(String(event.severity || "info").toUpperCase(), 10) + "] **" + safeText(event.title || "Dashboard alert", 120) + "**" +
+          " (" + safeText(event.status || "unread", 20) + ")\n  " + safeText(event.message || "No details supplied", 220) +
+          "\n  Company: " + safeText(event.companyName || event.companyId || "Not specified", 70) +
+          " | Event ID: " + safeText(event.eventId || "", 50) + "\n  " + safeText(event.createdAt || "Time unavailable", 50));
+        return chunkedPrivateReply("**Recent dashboard alerts** | Showing " + events.length + " event(s)\nUse /alerts acknowledge with an event ID to acknowledge an alert.", lines);
+      }
+      if (subcommand === "acknowledge") {
+        const eventId = String(optionValue(i, "event_id") || "").trim();
+        if (!/^[a-f0-9-]{36}$/i.test(eventId)) return privateReply("That alert ID is not valid. Copy the full event ID from /alerts recent.");
+        const response = await dashboardFetch(env, "/api/me/alerts/" + encodeURIComponent(eventId) + "/acknowledge", {
+          method: "POST", headers: { ...headers, "content-type": "application/json" }, body: "{}",
+          signal: AbortSignal.timeout(8000)
+        });
+        const result = await response.json().catch(() => ({}));
+        if (response.status === 401 || response.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+        if (!response.ok) return privateReply(String(result.error || "The alert could not be acknowledged. Check the event ID and try again."));
+        return privateReply("✅ Alert acknowledged. Only the linked dashboard account’s own alert record was changed.");
+      }
+      if (subcommand === "rules") {
+        const response = await dashboardFetch(env, "/api/me/alert-rules", { headers, signal: AbortSignal.timeout(8000) });
+        if (response.status === 401 || response.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+        if (!response.ok) return privateReply("Alert rules are temporarily unavailable. Please try again later.");
+        const data = await response.json(), rules = Array.isArray(data.rules) ? data.rules : [];
+        if (!rules.length) return privateReply("No dashboard alert rules are configured. Set them up in the Automation Center.");
+        const lines = rules.slice(0, 25).map(rule => {
+          const enabled = rule.enabled === true || Number(rule.enabled) === 1;
+          const details = rule.ruleType === "stale_data" ? "stale after " + String(rule.staleAfterHours || "not set") + "h" :
+            rule.ruleType === "refresh_failure" ? "scheduled refresh failures" :
+            "threshold " + String(rule.thresholdPercent ?? "not set") + "%";
+          return "- **" + safeText(rule.ruleType || "Rule", 60) + "** " + (enabled ? "✅ enabled" : "⏸ disabled") +
+            " | " + details + " | cooldown " + String(rule.cooldownHours ?? "not set") + "h" +
+            (rule.companyName ? " | " + safeText(rule.companyName, 80) : "");
+        });
+        return chunkedPrivateReply("**Your dashboard alert rules** | " + rules.length + " rule(s)", lines);
+      }
       const prefsRes = await dashboardFetch(env, "/api/me/automation-preferences", { headers, signal: AbortSignal.timeout(8000) });
       const prefsData = prefsRes.ok ? await prefsRes.json() : {};
       const prefs = prefsData && typeof prefsData.preferences === "object" ? prefsData.preferences : {};
-      if (subcommand === "configure") {
+      if (subcommand === "configure" || subcommand === "settings") {
         const minSeverity = optionValue(i, "minimum_severity");
         const quietEnabled = optionValue(i, "quiet_hours_enabled");
         const quietStart = optionValue(i, "quiet_hours_start");
@@ -735,7 +781,7 @@ async function replyFor(i, env) {
           "** (" + String(saved.quietHoursStart || "22:00") + "–" + String(saved.quietHoursEnd || "08:00") + ", " + String(saved.timezone || "UTC") +
           "). Discord DMs are sent immediately when enabled and outside quiet hours.");
       }
-      if (subcommand !== "status") return privateReply("Choose /alerts enable, /alerts disable, /alerts configure, or /alerts status.");
+      if (subcommand !== "status") return privateReply("Choose an available /alerts subcommand, such as status, recent, settings, acknowledge, or rules.");
       const [linkRes, rulesRes] = await Promise.all([
         dashboardFetch(env, linkPath, { headers, signal: AbortSignal.timeout(8000) }),
         dashboardFetch(env, "/api/me/alert-rules", { headers, signal: AbortSignal.timeout(8000) })
