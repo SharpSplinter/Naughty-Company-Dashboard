@@ -590,7 +590,7 @@ async function persistFactionDirectorSnapshot(env: WorkerEnv, profile: unknown, 
       .bind(playerId, companyId, day, asJson(profile), stock === null || stock === undefined ? null : asJson(stock), now).run()
   }
 }
-async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20, captureSnapshots = true): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[] }> {
+async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20, captureSnapshots = true, forceRefresh = false): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[] }> {
   const client = new TornApiClient({ apiKey })
   const memberPayload = await client.getFactionMembers()
   const rawMembers = Array.isArray(memberPayload.members) ? memberPayload.members : isRecord(memberPayload.members) ? Object.values(memberPayload.members) : []
@@ -605,7 +605,7 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
     const name = typeof item.name === "string" ? item.name : `Player #${id}`
     const cached = await db.prepare("SELECT checked_at FROM faction_member_cache WHERE player_id = ?").bind(id).first<{ checked_at: string | null }>()
     const checked = cached?.checked_at ? Date.parse(cached.checked_at) : 0
-    if (checked && now - checked < 12 * 60 * 60 * 1000) continue
+    if (!forceRefresh && checked && now - checked < 12 * 60 * 60 * 1000) continue
     if (processed >= limit) { pending += 1; continue }
     processed += 1
     const checkedAt = new Date().toISOString()
@@ -1234,13 +1234,19 @@ async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefr
       if (endpoint === "global-company-rankings") {
         // Refresh the live ranking cache from /company/{typeId}/companies lists.
         // /company/snapshot is verification-only and is not called here.
+        await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_cache (cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1), companies_json TEXT NOT NULL, fetched_at TEXT NOT NULL)").run()
+        const before = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
         await refreshGlobalRankingCache(env, undefined, true)
-        globalResults[endpoint] = { message: "Shared rankings cache refreshed from type-specific company lists." }
+        const after = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
+        if (!after?.fetchedAt || after.fetchedAt === before?.fetchedAt) {
+          throw new Error("Global company ranking refresh did not write a new cache snapshot. Another refresh may still hold the refresh lock.")
+        }
+        globalResults[endpoint] = { message: "Shared rankings cache refreshed from type-specific company lists.", fetchedAt: after.fetchedAt }
       } else {
         const row = await db.prepare("SELECT player_id, ciphertext, iv FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string; ciphertext: string; iv: string }>()
         if (!row) throw new Error("No saved Torn API key is available for the faction-directory refresh.")
         const apiKey = await decryptKey(env, row.ciphertext, row.iv)
-        globalResults[endpoint] = await syncFactionDirectorDirectory(env, apiKey, 35, false)
+        globalResults[endpoint] = await syncFactionDirectorDirectory(env, apiKey, 35, false, true)
       }
       endpointStats[endpoint].attempted += 1
       endpointStats[endpoint].succeeded += 1
