@@ -9,6 +9,8 @@ on:
       - "bot/production-worker.js"
       - "bot/wrangler.production.toml"
       - "bot/register-commands.mjs"
+      - "bot/command-schema.mjs"
+      - "bot/test-command-contract.mjs"
       - "bot/configure-production-endpoint.mjs"
       - "bot/migrations/0001_bot_schema.sql"
       - ".github/workflows/production-bot-deploy.yml"
@@ -19,6 +21,8 @@ on:
       - "bot/production-worker.js"
       - "bot/wrangler.production.toml"
       - "bot/register-commands.mjs"
+      - "bot/command-schema.mjs"
+      - "bot/test-command-contract.mjs"
       - "bot/configure-production-endpoint.mjs"
       - "bot/migrations/0001_bot_schema.sql"
       - ".github/workflows/production-bot-deploy.yml"
@@ -45,6 +49,10 @@ jobs:
         run: node --check bot/production-worker.js
       - name: Validate command registration script
         run: node --check bot/register-commands.mjs
+      - name: Validate canonical command schema
+        run: node --check bot/command-schema.mjs
+      - name: Test Discord command contract and production safeguards
+        run: node bot/test-command-contract.mjs
       - name: Validate production endpoint sync script
         run: node --check bot/configure-production-endpoint.mjs
       - name: Validate production-only target
@@ -57,10 +65,10 @@ jobs:
           grep -Fq 'CREATE TABLE IF NOT EXISTS discord_links' bot/migrations/0001_bot_schema.sql
           grep -Fq 'CREATE TABLE IF NOT EXISTS alert_preferences' bot/migrations/0001_bot_schema.sql
           grep -Fq 'naughty-company-bot.kboone801.workers.dev' bot/configure-production-endpoint.mjs
-          grep -Fq 'name: "global"' bot/register-commands.mjs
-          grep -Fq 'name: "faction"' bot/register-commands.mjs
-          grep -Fq 'name: "full"' bot/register-commands.mjs
-          grep -Fq 'name: "configure"' bot/register-commands.mjs
+          grep -Fq 'sub("global"' bot/command-schema.mjs
+          grep -Fq 'sub("faction"' bot/command-schema.mjs
+          grep -Fq 'sub("full"' bot/command-schema.mjs
+          grep -Fq 'sub("configure"' bot/command-schema.mjs
   deploy-production:
     needs: validate
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
