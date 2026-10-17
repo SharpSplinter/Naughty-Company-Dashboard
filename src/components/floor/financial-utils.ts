@@ -10,19 +10,34 @@ export function firstNumeric(root: unknown, names: string[]): number | null {
   }
   return visit(root, 0)
 }
-export function stockCostTotal(value: unknown): number {
+export function stockCostTotal(value: unknown): number | null {
+  if (value === null || value === undefined || typeof value !== "object") return null
   let total = 0
+  let incomplete = false
   const visit = (item: unknown, depth: number) => {
-    if (!item || typeof item !== "object" || depth > 6) return
+    if (!item || typeof item !== "object" || depth > 7) return
     if (Array.isArray(item)) { item.forEach((child) => visit(child, depth + 1)); return }
     const row = item as Record<string, unknown>
-    const quantity = [row.quantity, row.amount, row.in_stock, row.stock].find((n) => typeof n === "number" && Number.isFinite(n)) as number | undefined
+    const hasOwn = (key: string) => Object.prototype.hasOwnProperty.call(row, key)
+    const onOrder = [row.on_order, row.onOrder].find((n) => typeof n === "number" && Number.isFinite(n)) as number | undefined
     const unitCost = [row.cost, row.unit_cost, row.cost_per_unit, row.purchase_price].find((n) => typeof n === "number" && Number.isFinite(n)) as number | undefined
-    if (quantity !== undefined && unitCost !== undefined) total += Math.max(0, quantity) * Math.max(0, unitCost)
-    for (const [key, child] of Object.entries(row)) if (!['quantity','amount','in_stock','cost','unit_cost','cost_per_unit','purchase_price'].includes(key)) visit(child, depth + 1)
+    const hasOrderField = ["on_order", "onOrder"].some(hasOwn)
+    const hasCostField = ["cost", "unit_cost", "cost_per_unit", "purchase_price"].some(hasOwn)
+    const hasInventoryField = ["in_stock", "quantity", "amount", "price", "rrp"].some(hasOwn)
+    const nonOrderable = typeof row.cost === "string" && /cannot be ordered/i.test(row.cost)
+    if (hasOrderField || (hasCostField && hasInventoryField)) {
+      if (onOrder === undefined) {
+        if (!nonOrderable && unitCost !== 0) incomplete = true
+      } else if (onOrder > 0) {
+        if (unitCost === undefined) incomplete = true
+        else total += Math.max(0, onOrder) * Math.max(0, unitCost)
+      }
+      return
+    }
+    for (const child of Object.values(row)) if (child && typeof child === "object") visit(child, depth + 1)
   }
   visit(value, 0)
-  return total
+  return incomplete ? null : total
 }
 export function stockPriceRows(stock: unknown): { name: string; quantity: number | null; price: number | null }[] {
   const found: { name: string; quantity: number | null; price: number | null }[] = []
@@ -41,10 +56,19 @@ export function stockPriceRows(stock: unknown): { name: string; quantity: number
 }
 export function financialCosts(profile: unknown, stock: unknown, normalized: CompanyDashboardModel) {
   const adBudget = firstNumeric(profile, ["advertisement_budget", "advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"])
-  const wages = normalized.employees.reduce((sum, employee) => sum + Math.max(0, employee.wage ?? 0), 0)
+  const expectedEmployeeCount = normalized.company.employeesHired
+  const knownWages = normalized.employees.filter((employee) => typeof employee.wage === "number" && Number.isFinite(employee.wage))
+  const rosterComplete = expectedEmployeeCount === null
+    ? normalized.employees.length > 0
+    : normalized.employees.length === expectedEmployeeCount
+  const wages = rosterComplete && knownWages.length === normalized.employees.length
+    ? knownWages.reduce((sum, employee) => sum + Math.max(0, employee.wage as number), 0)
+    : null
   const stockCosts = stockCostTotal(stock)
-  const hasStockCosts = stock !== null && stock !== undefined && stockCosts > 0
-  return { adBudget, wages, stockCosts, hasStockCosts, dailyCosts: (adBudget ?? 0) + wages + (hasStockCosts ? stockCosts : 0) }
+  const hasStockCosts = stockCosts !== null && stockCosts > 0
+  const dailyRecurringCosts = adBudget !== null && wages !== null ? adBudget + wages : null
+  const dailyCosts = dailyRecurringCosts !== null && stockCosts !== null ? dailyRecurringCosts + stockCosts : null
+  return { adBudget, wages, stockCosts, hasStockCosts, dailyRecurringCosts, dailyCosts }
 }
 
 
