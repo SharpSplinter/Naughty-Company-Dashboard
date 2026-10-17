@@ -65,10 +65,10 @@ jobs:
           grep -Fq 'CREATE TABLE IF NOT EXISTS discord_links' bot/migrations/0001_bot_schema.sql
           grep -Fq 'CREATE TABLE IF NOT EXISTS alert_preferences' bot/migrations/0001_bot_schema.sql
           grep -Fq 'naughty-company-bot.kboone801.workers.dev' bot/configure-production-endpoint.mjs
-          grep -Fq 'name: "global"' bot/command-schema.mjs
-          grep -Fq 'name: "faction"' bot/command-schema.mjs
-          grep -Fq 'name: "full"' bot/command-schema.mjs
-          grep -Fq 'name: "configure"' bot/command-schema.mjs
+          grep -Fq 'sub("global"' bot/command-schema.mjs
+          grep -Fq 'sub("faction"' bot/command-schema.mjs
+          grep -Fq 'sub("full"' bot/command-schema.mjs
+          grep -Fq 'sub("configure"' bot/command-schema.mjs
   deploy-production:
     needs: validate
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
