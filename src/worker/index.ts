@@ -505,9 +505,14 @@ async function verifyGlobalRankingsAgainstOfficialSnapshot(env: WorkerEnv, sched
       fetchOfficialCompanySnapshot(apiKey),
       db.prepare("SELECT companies_json AS companiesJson, fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ companiesJson: string; fetchedAt: string }>(),
     ])
-    const officialById = new Map(official.companies.map((company) => [String(company.companyId), company]))
+    const officialById = new Map<string, Record<string, unknown>>()
+    for (const company of official.companies) officialById.set(String(company.companyId), company)
     const rankingCompanies = cached ? JSON.parse(cached.companiesJson) as Record<string, unknown>[] : []
-    const rankingsById = new Map(rankingCompanies.map((company) => [String(company.companyId ?? ""), company]).filter(([id]) => Boolean(id)))
+    const rankingsById = new Map<string, Record<string, unknown>>()
+    for (const company of rankingCompanies) {
+      const id = String(company.companyId ?? "")
+      if (id) rankingsById.set(id, company)
+    }
     let matched = 0, typeMismatches = 0, ratingMismatches = 0, weeklyIncomeMismatches = 0
     for (const [id, officialCompany] of officialById) {
       const rankedCompany = rankingsById.get(id)
