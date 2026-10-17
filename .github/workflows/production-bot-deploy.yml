@@ -7,6 +7,8 @@ on:
       - main
     paths:
       - "bot/production-worker.js"
+      - "bot/formatting.mjs"
+      - "bot/test-formatting.mjs"
       - "bot/wrangler.production.toml"
       - "bot/register-commands.mjs"
       - "bot/command-schema.mjs"
@@ -19,6 +21,8 @@ on:
       - main
     paths:
       - "bot/production-worker.js"
+      - "bot/formatting.mjs"
+      - "bot/test-formatting.mjs"
       - "bot/wrangler.production.toml"
       - "bot/register-commands.mjs"
       - "bot/command-schema.mjs"
@@ -47,12 +51,16 @@ jobs:
           node-version: 20
       - name: Validate production Worker syntax
         run: node --check bot/production-worker.js
+      - name: Validate bot formatting helpers
+        run: node --check bot/formatting.mjs
       - name: Validate command registration script
         run: node --check bot/register-commands.mjs
       - name: Validate canonical command schema
         run: node --check bot/command-schema.mjs
       - name: Test Discord command contract and production safeguards
         run: node bot/test-command-contract.mjs
+      - name: Test bot money and count formatting
+        run: node bot/test-formatting.mjs
       - name: Validate production endpoint sync script
         run: node --check bot/configure-production-endpoint.mjs
       - name: Validate production-only target
