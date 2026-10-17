@@ -64,9 +64,9 @@ assert.match(worker, /\/api\/discord\/link\/redeem/, "one-time dashboard link-co
 assert.match(worker, /expires after five minutes/, "link instructions must disclose code expiry");
 assert.match(worker, /\/api\/me\/companies\/.*\/history\?days=/, "trends must use owner-scoped saved history");
 assert.match(worker, /\/api\/rankings\?scope=global&typeId=/, "global rankings must read the existing shared cache");
-assert.match(worker, /advertisement_budget/, "ad budget parsing must follow dashboard field aliases");
-assert.match(worker, /advertising_budget_daily/, "ad budget parsing must recognize daily advertising budget");
-assert.match(worker, /daily_ad_budget/, "ad budget parsing must recognize daily ad budget");
+assert.match(financials, /advertisement_budget/, "ad budget parsing must follow dashboard field aliases");
+assert.match(financials, /advertising_budget_daily/, "ad budget parsing must recognize daily advertising budget");
+assert.match(financials, /daily_ad_budget/, "ad budget parsing must recognize daily ad budget");
 assert.match(worker, /stockOrderExpenses\(data\.stock\)/, "profit estimates must use saved stock order data");
 assert.match(worker, /knownWageSummary\(wagesData\.summary\)/, "profit estimates must require known wage coverage");
 assert.match(financials, /on_order/, "stock expense must use on_order quantity");
