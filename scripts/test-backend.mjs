@@ -144,7 +144,7 @@ try {
     assert.match(adminRoutes, /session\.player_id !== ADMIN_PLAYER_ID/, "admin routes must remain behind administrator session authorization")
     assert.match(adminRoutes, /ensureAdminJobPayloadSchema\(env\)/)
     assert.match(adminRoutes, /"endpoint-refresh"/)
-    assert.match(adminRoutes, /targetPlayerIds\.length > 100/, "selected-user jobs must be bounded")
+    assert.match(adminRoutes, /rawIds\.length > 100/, "selected-user jobs must be bounded")
     assert.match(adminRoutes, /manualRefreshEnabled/, "global manual-refresh policy must be enforced")
     assert.match(workerSource, /job_payload_json AS jobPayloadJson/)
     assert.match(workerSource, /ALTER TABLE admin_jobs ADD COLUMN job_payload_json TEXT/)
