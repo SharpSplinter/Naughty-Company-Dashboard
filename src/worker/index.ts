@@ -525,6 +525,7 @@ async function completeLinkedAdminRankingJob(env: WorkerEnv, run: GlobalRankingR
     : { message: summary, status: "failed", refreshRunId: run.run_id }
   result.globalResults = globalResults
   delete result.pendingGlobalRankingRunId
+  delete result.dispatchGlobalRankingRun
   if (!succeeded) {
     result.partialFailure = true
     result.globalFailures = Math.max(0, Number(result.globalFailures ?? 0)) + 1
