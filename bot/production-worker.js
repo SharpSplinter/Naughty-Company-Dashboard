@@ -1,4 +1,5 @@
 import { money, numberLabel, countChangeLabel } from "./formatting.mjs";
+import { buildCostBreakdown, estimateDailyProfit, estimateWeeklyProfit, findAdvertisingBudget, knownWageSummary, stockOrderExpenses } from "./financials.mjs";
 
 const enc = new TextEncoder();
 const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
@@ -280,19 +281,8 @@ async function replyFor(i, env) {
       const dailyProfit = numeric(profit.daily, root.daily_profit, root.dailyProfit, root.profit_daily, typeof root.profit === "number" ? root.profit : undefined);
       const weeklyProfit = numeric(profit.weekly, root.weekly_profit, root.weeklyProfit, root.profit_weekly);
       const rating = numeric(root.company_rating, root.star_rating, root.starRating, root.rating, root.stars);
-      const adBudgetKeys = ["advertisement_budget", "advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"];
-      const findAdvertisingBudget = (value, depth = 0) => {
-        if (!value || typeof value !== "object" || Array.isArray(value) || depth > 5) return undefined;
-        for (const key of adBudgetKeys) {
-          if (typeof value[key] === "number" && Number.isFinite(value[key])) return value[key];
-        }
-        for (const nested of Object.values(value)) {
-          const found = findAdvertisingBudget(nested, depth + 1);
-          if (found !== undefined) return found;
-        }
-        return undefined;
-      };
       const advertisingBudget = findAdvertisingBudget(profile);
+      const stockOrderSummary = stockOrderExpenses(data.stock);
       const stockRows = Array.isArray(data.stock) ? data.stock : Array.isArray(data.stock?.stock) ? data.stock.stock :
         data.stock && typeof data.stock === "object" ? Object.values(data.stock).filter(value => value && typeof value === "object") : [];
       const stockQuantity = stockRows.reduce((sum, item) => {
@@ -317,10 +307,39 @@ async function replyFor(i, env) {
           "\nWeekly income change: " + moneyValue(summary.weeklyIncomeChange) + "\nSnapshot: " + fetchedAt);
       }
       if (subcommand === "profit") {
-        const costLines = Object.entries(expenses).filter(([key, value]) => /cost|wage|advert|expense/i.test(key) && typeof value === "number" && Number.isFinite(value))
+        const wagesRes = await dashboardFetch(env, "/api/me/member-insights?companyId=" + encodeURIComponent(companyId), { headers, signal: AbortSignal.timeout(8000) });
+        if (wagesRes.status === 401 || wagesRes.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+        let wageInfo = knownWageSummary(null);
+        if (wagesRes.ok) {
+          const wagesData = await wagesRes.json();
+          wageInfo = knownWageSummary(wagesData.summary);
+        }
+        const costBreakdown = buildCostBreakdown({
+          advertisingBudget,
+          wages: wageInfo.available ? wageInfo.total : null,
+          stockSummary: stockOrderSummary
+        });
+        const estimatedDaily = estimateDailyProfit(dailyIncome, costBreakdown);
+        const estimatedWeekly = estimateWeeklyProfit(weeklyIncome, costBreakdown);
+        const dailyProfitText = dailyProfit !== undefined
+          ? moneyValue(dailyProfit) + " (reported)"
+          : estimatedDaily === null ? "Not available" : moneyValue(estimatedDaily) + " (estimated from saved costs)";
+        const weeklyProfitText = weeklyProfit !== undefined
+          ? moneyValue(weeklyProfit) + " (reported)"
+          : estimatedWeekly === null ? "Not available" : moneyValue(estimatedWeekly) + " (estimated from saved costs)";
+        const wageCoverage = wageInfo.rosterCount === null
+          ? "wage coverage unavailable"
+          : String(wageInfo.knownCount ?? 0) + "/" + String(wageInfo.rosterCount) + " employee wages known";
+        const reportedCostLines = Object.entries(expenses).filter(([key, value]) => /cost|wage|advert|expense/i.test(key) && typeof value === "number" && Number.isFinite(value))
           .slice(0, 6).map(([key, value]) => safeText(key, 50) + ": " + moneyValue(value));
-        return privateReply("**Reported profit | " + companyName + "**\nDaily profit: " + moneyValue(dailyProfit) + "\nWeekly profit: " + moneyValue(weeklyProfit) +
-          (costLines.length ? "\nReported cost fields:\n" + costLines.join("\n") : "\nCost breakdown: Not available in the saved profile.") +
+        return privateReply("**Company profit | " + companyName + "**\nDaily income: " + moneyValue(dailyIncome) +
+          "\nDaily profit: " + dailyProfitText + "\nWeekly income: " + moneyValue(weeklyIncome) + "\nWeekly profit: " + weeklyProfitText +
+          "\n\n**Cost breakdown**\nAdvertising budget: " + moneyValue(costBreakdown.adBudget) +
+          "\nTotal employee wages: " + moneyValue(costBreakdown.wages) + " (" + wageCoverage + ")" +
+          "\nStock order expense (unit cost × on_order): " + moneyValue(costBreakdown.stockCosts) +
+          "\nTotal cost breakdown: " + moneyValue(costBreakdown.total) +
+          "\nOn-hand inventory is not charged as a new purchase. Daily profit subtracts this cost breakdown from daily income; weekly estimates apply daily advertising and wages across seven days and count current pending stock orders once. Missing inputs remain unavailable." +
+          (reportedCostLines.length ? "\nReported cost fields:\n" + reportedCostLines.join("\n") : "") +
           "\nSource window: " + periodLabel + "\nSnapshot: " + fetchedAt);
       }
       if (subcommand === "stars") {
@@ -371,21 +390,40 @@ async function replyFor(i, env) {
       const root = profile.company && typeof profile.company === "object" ? profile.company : profile.profile && typeof profile.profile === "object" ? profile.profile : profile;
       const income = root.income && typeof root.income === "object" ? root.income : {};
       const profit = root.profit && typeof root.profit === "object" ? root.profit : {};
-      const dailyProfit = [profit.daily, root.daily_profit, root.dailyProfit, root.profit_daily].find(value => typeof value === "number" && Number.isFinite(value));
+      const reportedDailyProfit = [profit.daily, root.daily_profit, root.dailyProfit, root.profit_daily, typeof root.profit === "number" ? root.profit : undefined].find(value => typeof value === "number" && Number.isFinite(value));
+      const reportedWeeklyProfit = [profit.weekly, root.weekly_profit, root.weeklyProfit, root.profit_weekly].find(value => typeof value === "number" && Number.isFinite(value));
+      const dailyIncome = [income.daily, root.daily_income, root.dailyIncome].find(value => typeof value === "number" && Number.isFinite(value));
+      const weeklyIncome = [income.weekly, root.weekly_income, root.weeklyIncome].find(value => typeof value === "number" && Number.isFinite(value));
       const rating = [root.company_rating, root.star_rating, root.rating, root.stars].find(value => typeof value === "number" && Number.isFinite(value));
       const employeeRoot = data.employees && typeof data.employees === "object" ? data.employees : {};
       const employeeList = Array.isArray(data.employees) ? data.employees : Array.isArray(employeeRoot.employees) ? employeeRoot.employees : Array.isArray(employeeRoot.company_employees) ? employeeRoot.company_employees : [];
       const stockRoot = Array.isArray(data.stock) ? data.stock : data.stock && Array.isArray(data.stock.stock) ? data.stock.stock : data.stock && typeof data.stock === "object" ? Object.values(data.stock).filter(value => value && typeof value === "object") : [];
       const stockQuantity = stockRoot.reduce((sum, item) => { const value = [item.in_stock, item.quantity, item.amount].find(n => typeof n === "number" && Number.isFinite(n)); return sum + (value || 0); }, 0);
+      const advertisingBudget = findAdvertisingBudget(profile);
+      const stockOrderSummary = stockOrderExpenses(data.stock);
+      const wagesRes = await dashboardFetch(env, "/api/me/member-insights?companyId=" + encodeURIComponent(company.company_id), { headers, signal: AbortSignal.timeout(8000) });
+      if (wagesRes.status === 401 || wagesRes.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+      let wageInfo = knownWageSummary(null);
+      if (wagesRes.ok) {
+        const wagesData = await wagesRes.json();
+        wageInfo = knownWageSummary(wagesData.summary);
+      }
+      const costBreakdown = buildCostBreakdown({ advertisingBudget, wages: wageInfo.available ? wageInfo.total : null, stockSummary: stockOrderSummary });
+      const estimatedDaily = estimateDailyProfit(dailyIncome, costBreakdown);
+      const estimatedWeekly = estimateWeeklyProfit(weeklyIncome, costBreakdown);
+      const dailyProfit = reportedDailyProfit !== undefined ? money(reportedDailyProfit) + " (reported)" : estimatedDaily === null ? "Not available" : money(estimatedDaily) + " (estimated)";
+      const weeklyProfit = reportedWeeklyProfit !== undefined ? money(reportedWeeklyProfit) + " (reported)" : estimatedWeekly === null ? "Not available" : money(estimatedWeekly) + " (estimated)";
+      const wageCoverage = wageInfo.rosterCount === null ? "coverage unavailable" : String(wageInfo.knownCount ?? 0) + "/" + String(wageInfo.rosterCount) + " wages known";
       const safeName = String(data.companyName || company.company_name || "Your company").replace(/@/g, "@\u200b").slice(0, 90);
       const lines = [
         "**Company overview | " + safeName + "**",
         "Type: " + String(data.companyType || company.company_type || "Not available").slice(0, 60),
-        "Daily income: " + money(income.daily),
-        "Weekly income: " + money(income.weekly),
-        "Daily profit: " + money(dailyProfit),
-        "Star rating: " + (rating == null ? "Not available" : String(rating)),
-        "Employees in latest payload: " + (employeeList.length || "Not reported"),
+        "Daily income: " + money(dailyIncome),
+        "Weekly income: " + money(weeklyIncome),
+        "Daily profit: " + dailyProfit,
+        "Weekly profit: " + weeklyProfit,
+        "Cost breakdown: advertising " + money(costBreakdown.adBudget) + " + wages " + money(costBreakdown.wages) + " + stock orders " + money(costBreakdown.stockCosts) + " = " + money(costBreakdown.total),
+        "Employee wage coverage: " + wageCoverage,
         "Stock items: " + (stockRoot.length || "Not reported") + " | Total quantity: " + (stockRoot.length ? stockQuantity.toLocaleString("en-US") : "Not available"),
         "Snapshot updated: " + String(data.fetchedAt || company.fetched_at || "Not available"),
         "Snapshot age: " + snapshotAgeLabel(data.fetchedAt || company.fetched_at)

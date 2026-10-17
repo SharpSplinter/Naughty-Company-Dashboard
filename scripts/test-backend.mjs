@@ -16,6 +16,7 @@ const sourceFiles = [
   "src/lib/torn/types.ts",
   "src/worker/index.ts",
   "src/components/floor/ranking-utils.ts",
+  "src/components/floor/financial-utils.ts",
 ].map((file) => resolve(root, file))
 
 try {
@@ -46,6 +47,7 @@ try {
   const { TornApiClient, TornApiClientError } = require(join(temp, "lib/torn/client.js"))
   const worker = require(join(temp, "worker/index.js")).default
   const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
+  const { financialCosts, stockCostTotal } = require(join(temp, "components/floor/financial-utils.js"))
   const { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isWithinQuietHours, normalizeWebhookUrl, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } = require(join(temp, "lib/automation/rules.js"))
 
   let passed = 0
@@ -67,6 +69,28 @@ try {
     assert.deepEqual(evaluateRosterChange(10, 8, 15), { changePercent: -20 })
     assert.deepEqual(evaluateRosterChange(0, 2, 15), { changePercent: 100 })
     assert.equal(evaluateRosterChange(10, 10, 15), null)
+  })
+
+  await test("stock purchase costs use on-order quantity and missing financial inputs remain unknown", () => {
+    assert.equal(stockCostTotal({ "Oil (Barrel)": { cost: 100, in_stock: 1177376, on_order: 0 } }), 0)
+    assert.equal(stockCostTotal({ Tealight: { cost: 4, in_stock: 1000, on_order: 5 } }), 20)
+    assert.equal(stockCostTotal({ Tealight: { cost: 4, in_stock: 1000 } }), null)
+    assert.equal(stockCostTotal(null), null)
+    const complete = financialCosts(
+      { advertising_budget: 500 },
+      { Tealight: { cost: 4, in_stock: 1000, on_order: 5 } },
+      { company: { employeesHired: 2 }, employees: [{ wage: 100 }, { wage: 200 }] },
+    )
+    assert.equal(complete.wages, 300)
+    assert.equal(complete.stockCosts, 20)
+    assert.equal(complete.dailyCosts, 820)
+    const missingWage = financialCosts(
+      { advertising_budget: 500 },
+      { Tealight: { cost: 4, in_stock: 1000, on_order: 5 } },
+      { company: { employeesHired: 2 }, employees: [{ wage: 100 }, { wage: null }] },
+    )
+    assert.equal(missingWage.wages, null)
+    assert.equal(missingWage.dailyCosts, null)
   })
 
   await test("handles quiet hours that cross midnight and all-day quiet windows", () => {
