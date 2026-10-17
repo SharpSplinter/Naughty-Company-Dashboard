@@ -277,50 +277,144 @@ function numberField(row: Record<string, string>, ...names: string[]): number | 
   return null
 }
 async function fetchGlobalCompanyRankings(apiKey: string): Promise<{ companies: Record<string, unknown>[]; snapshotFetchedAt: string }> {
-  const headers = { Authorization: `ApiKey ${apiKey}`, Accept: "text/csv, text/plain, application/json" }
-  const response = await fetch("https://api.torn.com/v2/company/snapshot", { headers, signal: AbortSignal.timeout(20000) })
+  const headers = { Authorization: `ApiKey ${apiKey}`, Accept: "application/json" }
+  const typesResponse = await fetch("https://api.torn.com/v2/torn/companies", { headers, signal: AbortSignal.timeout(20000) })
+  const typesBody = await typesResponse.text()
+  if (!typesResponse.ok || typesBody.trimStart().startsWith("{") && (() => { try { const parsed = JSON.parse(typesBody); return isRecord(parsed) && isRecord(parsed.error) } catch { return true } })()) {
+    let message = "Torn could not provide the company type catalog."
+    try { const payload = JSON.parse(typesBody); if (isRecord(payload) && isRecord(payload.error)) message = typeof payload.error.error === "string" ? payload.error.error : message } catch { /* Keep the fallback message. */ }
+    throw Object.assign(new Error(message), { status: typesResponse.status === 429 ? 429 : 502 })
+  }
+  let typePayload: unknown
+  try { typePayload = JSON.parse(typesBody) } catch { throw Object.assign(new Error("Torn returned malformed company type metadata."), { status: 502 }) }
+  const root = isRecord(typePayload)
+    ? (Array.isArray(typePayload.companies) || isRecord(typePayload.companies) ? typePayload.companies
+      : Array.isArray(typePayload.company_types) || isRecord(typePayload.company_types) ? typePayload.company_types : typePayload)
+    : typePayload
+  const typeEntries = Array.isArray(root) ? root : isRecord(root) ? Object.values(root) : []
+  const typesById = new Map<number, { id: number; name: string }>()
+  for (const entry of typeEntries) {
+    if (!isRecord(entry)) continue
+    const id = positiveId(entry.id ?? entry.type_id ?? entry.typeId ?? entry.company_type_id)
+    if (!id) continue
+    const typeId = Number(id)
+    const name = typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : `Type #${typeId}`
+    typesById.set(typeId, { id: typeId, name })
+  }
+  const types = Array.from(typesById.values()).sort((a, b) => a.id - b.id)
+  if (!types.length) throw Object.assign(new Error("Torn returned no valid company type IDs; the existing ranking cache was preserved."), { status: 502 })
+
+  const pageSize = 100
+  async function fetchTypeCompanies(type: { id: number; name: string }): Promise<Record<string, unknown>[]> {
+    const rows: Record<string, unknown>[] = []
+    let expectedTotal: number | null = null
+    for (let page = 0; page < 1000; page++) {
+      const offset = rows.length
+      const response = await fetch(`https://api.torn.com/v2/company/${type.id}/companies?offset=${offset}&limit=${pageSize}`, { headers, signal: AbortSignal.timeout(20000) })
+      const body = await response.text()
+      if (!response.ok) {
+        let message = `Torn could not provide companies for ${type.name} (type #${type.id}).`
+        try { const payload = JSON.parse(body); if (isRecord(payload) && isRecord(payload.error)) message = typeof payload.error.error === "string" ? payload.error.error : message } catch { /* Keep the fallback message. */ }
+        throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : response.status >= 500 ? 502 : 502 })
+      }
+      let payload: unknown
+      try { payload = JSON.parse(body) } catch { throw Object.assign(new Error(`Torn returned malformed company-list data for type #${type.id}.`), { status: 502 }) }
+      if (!isRecord(payload) || !Array.isArray(payload.companies)) throw Object.assign(new Error(`Torn returned no company list for type #${type.id}; the existing ranking cache was preserved.`), { status: 502 })
+      if (payload.companies.some((item) => !isRecord(item))) throw Object.assign(new Error(`Torn returned a malformed company row for type #${type.id}.`), { status: 502 })
+      const pageRows = payload.companies as Record<string, unknown>[]
+      const metadata = isRecord(payload._metadata) ? payload._metadata : {}
+      const metadataTotal = numericField(metadata.total)
+      if (metadataTotal !== null) {
+        if (expectedTotal !== null && expectedTotal !== metadataTotal) throw Object.assign(new Error(`Torn company-list total changed during type #${type.id} pagination.`), { status: 502 })
+        expectedTotal = metadataTotal
+      }
+      rows.push(...pageRows)
+      if (expectedTotal !== null) {
+        if (rows.length > expectedTotal) throw Object.assign(new Error(`Torn returned more companies than its declared total for type #${type.id}.`), { status: 502 })
+        if (rows.length === expectedTotal) break
+        if (pageRows.length === 0) throw Object.assign(new Error(`Torn returned an incomplete company list for type #${type.id}; the existing ranking cache was preserved.`), { status: 502 })
+      } else if (pageRows.length < pageSize) {
+        break
+      }
+      if (pageRows.length === 0) break
+      if (page === 999) throw Object.assign(new Error(`Torn company-list pagination exceeded its safety limit for type #${type.id}.`), { status: 502 })
+    }
+    if (expectedTotal !== null && rows.length !== expectedTotal) throw Object.assign(new Error(`Torn returned ${rows.length} of ${expectedTotal} companies for type #${type.id}; the existing ranking cache was preserved.`), { status: 502 })
+    return rows
+  }
+
+  const collected: { row: Record<string, unknown>; typeId: number; typeName: string }[] = []
+  // Limit concurrency to avoid hammering Torn while still paging every company type.
+  for (let index = 0; index < types.length; index += 4) {
+    const batch = types.slice(index, index + 4)
+    const pages = await Promise.all(batch.map(async (type) => ({ type, rows: await fetchTypeCompanies(type) })))
+    for (const page of pages) for (const row of page.rows) collected.push({ row, typeId: page.type.id, typeName: page.type.name })
+  }
+  if (!collected.length) throw Object.assign(new Error("Torn returned no companies for the scheduled ranking capture; the existing ranking cache was preserved."), { status: 502 })
+  const snapshotFetchedAt = new Date().toISOString()
+  const companies = collected.flatMap(({ row, typeId, typeName }) => {
+    const companyId = positiveId(row.id ?? row.company_id ?? row.companyId ?? row.ID)
+    if (!companyId) return []
+    const type = isRecord(row.type) ? row.type : {}
+    const income = isRecord(row.income) ? row.income : {}
+    const director = isRecord(row.director) ? row.director : {}
+    const typeNameFromRow = typeof type.name === "string" && type.name.trim() ? type.name.trim() : typeName
+    const typeIdFromRow = positiveId(type.id ?? row.company_type_id ?? row.companyTypeId)
+    const weeklyIncome = numericField(income.weekly ?? row.weekly_income ?? row.weeklyIncome)
+    const dailyIncome = numericField(income.daily ?? row.daily_income ?? row.dailyIncome)
+    return [{
+      companyId,
+      companyName: typeof row.name === "string" && row.name.trim() ? row.name : `Company #${companyId}`,
+      companyType: typeNameFromRow,
+      companyTypeId: typeIdFromRow === null ? typeId : Number(typeIdFromRow),
+      starRating: numericField(row.rating ?? row.stars ?? row.star_rating),
+      weeklyIncome,
+      dailyIncome,
+      averageDailyIncome: weeklyIncome === null ? null : weeklyIncome / 7,
+      directorName: typeof director.name === "string" ? director.name : "",
+      playerId: "torn-global",
+      fetchedAt: snapshotFetchedAt,
+    }]
+  }).sort((a, b) => Number(b.weeklyIncome ?? -1) - Number(a.weeklyIncome ?? -1))
+  if (!companies.length || companies.length < collected.length) {
+    throw Object.assign(new Error("Torn returned company rows without valid IDs; the existing ranking cache was preserved."), { status: 502 })
+  }
+  const uniqueIds = new Set(companies.map((company) => String(company.companyId)))
+  if (uniqueIds.size !== companies.length) throw Object.assign(new Error("Torn returned duplicate company IDs across company types; the existing ranking cache was preserved."), { status: 502 })
+  return { companies, snapshotFetchedAt }
+}
+
+async function fetchOfficialCompanySnapshot(apiKey: string): Promise<{ companies: Record<string, unknown>[]; snapshotFetchedAt: string }> {
+  const response = await fetch("https://api.torn.com/v2/company/snapshot", {
+    headers: { Authorization: `ApiKey ${apiKey}`, Accept: "text/csv, text/plain, application/json" },
+    signal: AbortSignal.timeout(20000),
+  })
   const body = await response.text()
   if (!response.ok || body.trimStart().startsWith("{")) {
-    let message = "Torn could not provide the all-company snapshot."
+    let message = "Torn could not provide the official all-company snapshot for verification."
     try { const payload = JSON.parse(body); if (isRecord(payload) && isRecord(payload.error)) message = typeof payload.error.error === "string" ? payload.error.error : message } catch { /* CSV response */ }
-    throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : response.status >= 500 ? 502 : 502 })
+    throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : 502 })
   }
   const csv = parseCsv(body)
-  if (csv.length < 2) throw Object.assign(new Error("Torn returned an empty company snapshot."), { status: 502 })
-  const typeNames = new Map<number, string>()
-  try {
-    const typeResponse = await fetch("https://api.torn.com/v2/torn/companies", { headers, signal: AbortSignal.timeout(10000) })
-    if (typeResponse.ok) {
-      const typePayload: unknown = await typeResponse.json()
-      const root = isRecord(typePayload) && isRecord(typePayload.companies) ? typePayload.companies : isRecord(typePayload) && isRecord(typePayload.company_types) ? typePayload.company_types : typePayload
-      const entries = Array.isArray(root) ? root : isRecord(root) ? Object.values(root) : []
-      for (const entry of entries) {
-        if (!isRecord(entry)) continue
-        const id = entry.id ?? entry.ID ?? entry.company_type
-        const name = entry.name ?? entry.title ?? entry.type_name
-        if ((typeof id === "number" || (typeof id === "string" && /^\d+$/.test(id))) && typeof name === "string") typeNames.set(Number(id), name)
-      }
-    }
-  } catch { /* The snapshot remains useful even if company-type metadata is unavailable. */ }
+  if (csv.length < 2) throw Object.assign(new Error("Torn returned an empty official company snapshot for verification."), { status: 502 })
   const headersRow = csv[0].map(normalizedColumn)
   const records = csv.slice(1).map((cells) => Object.fromEntries(headersRow.map((header, index) => [header, cells[index] ?? ""])))
   const companies = records.flatMap((row) => {
     const companyId = numberField(row, "id", "company_id", "companyId", "ID")
     if (!companyId) return []
-    const typeId = numberField(row, "company_type_id", "company_type", "companyType", "type_id", "type")
-    const weeklyIncome = numberField(row, "weekly_income", "weeklyIncome")
-    const dailyIncome = numberField(row, "daily_income", "dailyIncome")
-    const rating = numberField(row, "rating", "stars", "star_rating")
-    return [{ companyId: String(companyId), companyName: row.name || row.companyname || `Company #${companyId}`, companyType: row.companytypename || row.typename || (typeId === null ? "Unknown" : typeNames.get(typeId) || `Type #${typeId}`), companyTypeId: typeId, starRating: rating, weeklyIncome, dailyIncome, averageDailyIncome: weeklyIncome === null ? null : weeklyIncome / 7, directorName: "", playerId: "torn-global", fetchedAt: new Date().toISOString() }]
-  }).sort((a, b) => (Number(b.weeklyIncome ?? -1) - Number(a.weeklyIncome ?? -1)))
-  const validIdRows = companies.length
-  if (validIdRows === 0 || validIdRows < Math.ceil(records.length * 0.95)) {
-    throw Object.assign(new Error("Torn returned an incomplete or malformed company ranking snapshot; the existing cache was preserved."), { status: 502 })
-  }
+    const typeId = numberField(row, "type", "company_type_id", "company_type", "type_id")
+    return [{
+      companyId: String(companyId),
+      companyName: row.name || `Company #${companyId}`,
+      companyTypeId: typeId,
+      starRating: numberField(row, "rating", "stars", "star_rating"),
+      weeklyIncome: numberField(row, "weekly_income", "weeklyIncome"),
+      dailyIncome: numberField(row, "daily_income", "dailyIncome"),
+    }]
+  })
+  if (!companies.length || companies.length < Math.ceil(records.length * 0.95)) throw Object.assign(new Error("Torn returned an incomplete or malformed official company snapshot; no ranking data was changed."), { status: 502 })
   const uniqueIds = new Set(companies.map((company) => String(company.companyId)))
-  if (uniqueIds.size !== companies.length) {
-    throw Object.assign(new Error("Torn returned duplicate company IDs; the existing ranking cache was preserved."), { status: 502 })
-  }
+  if (uniqueIds.size !== companies.length) throw Object.assign(new Error("Torn returned duplicate company IDs in the official verification snapshot."), { status: 502 })
   return { companies, snapshotFetchedAt: new Date().toISOString() }
 }
 async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string, force = false): Promise<void> {
@@ -359,6 +453,96 @@ async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string, force 
     await db.prepare("INSERT INTO global_rankings_cache (cache_id, companies_json, fetched_at) VALUES (1, ?, ?) ON CONFLICT(cache_id) DO UPDATE SET companies_json = excluded.companies_json, fetched_at = excluded.fetched_at").bind(asJson(snapshot.companies), snapshot.snapshotFetchedAt).run()
   } finally {
     await db.prepare("UPDATE global_rankings_refresh_lock SET lease_until = 0 WHERE lock_id = 1 AND lease_until = ?").bind(leaseUntil).run().catch(() => undefined)
+  }
+}
+
+async function verifyGlobalRankingsAgainstOfficialSnapshot(env: WorkerEnv, scheduledTime: number): Promise<void> {
+  if (!env.DB) return
+  const db = requireDb(env)
+  await db.prepare(`CREATE TABLE IF NOT EXISTS global_rankings_verification (
+    verification_day TEXT PRIMARY KEY,
+    scheduled_at TEXT NOT NULL,
+    verified_at TEXT NOT NULL,
+    ranking_snapshot_at TEXT,
+    official_company_count INTEGER NOT NULL DEFAULT 0,
+    ranking_company_count INTEGER NOT NULL DEFAULT 0,
+    matched_company_count INTEGER NOT NULL DEFAULT 0,
+    missing_from_rankings INTEGER NOT NULL DEFAULT 0,
+    missing_from_official INTEGER NOT NULL DEFAULT 0,
+    type_mismatch_count INTEGER NOT NULL DEFAULT 0,
+    rating_mismatch_count INTEGER NOT NULL DEFAULT 0,
+    weekly_income_mismatch_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    error_message TEXT
+  )`).run()
+  const scheduledAt = new Date(scheduledTime).toISOString()
+  const verificationDay = scheduledAt.slice(0, 10)
+  const save = async (record: {
+    verifiedAt: string; rankingSnapshotAt: string | null; officialCount: number; rankingCount: number;
+    matched: number; missingFromRankings: number; missingFromOfficial: number; typeMismatches: number;
+    ratingMismatches: number; weeklyIncomeMismatches: number; status: string; errorMessage: string | null
+  }) => {
+    await db.prepare(`INSERT INTO global_rankings_verification (
+      verification_day, scheduled_at, verified_at, ranking_snapshot_at, official_company_count, ranking_company_count,
+      matched_company_count, missing_from_rankings, missing_from_official, type_mismatch_count, rating_mismatch_count,
+      weekly_income_mismatch_count, status, error_message
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(verification_day) DO UPDATE SET scheduled_at = excluded.scheduled_at, verified_at = excluded.verified_at,
+      ranking_snapshot_at = excluded.ranking_snapshot_at, official_company_count = excluded.official_company_count,
+      ranking_company_count = excluded.ranking_company_count, matched_company_count = excluded.matched_company_count,
+      missing_from_rankings = excluded.missing_from_rankings, missing_from_official = excluded.missing_from_official,
+      type_mismatch_count = excluded.type_mismatch_count, rating_mismatch_count = excluded.rating_mismatch_count,
+      weekly_income_mismatch_count = excluded.weekly_income_mismatch_count, status = excluded.status, error_message = excluded.error_message`)
+      .bind(verificationDay, scheduledAt, record.verifiedAt, record.rankingSnapshotAt, record.officialCount, record.rankingCount,
+        record.matched, record.missingFromRankings, record.missingFromOfficial, record.typeMismatches, record.ratingMismatches,
+        record.weeklyIncomeMismatches, record.status, record.errorMessage).run()
+  }
+  try {
+    const keyRow = await db.prepare("SELECT player_id FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string }>()
+    const apiKey = keyRow ? await savedKey(env, keyRow.player_id) : null
+    if (!apiKey) throw new Error("No saved Torn API key is available for the official company snapshot verification.")
+    const [official, cached] = await Promise.all([
+      fetchOfficialCompanySnapshot(apiKey),
+      db.prepare("SELECT companies_json AS companiesJson, fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ companiesJson: string; fetchedAt: string }>(),
+    ])
+    const officialById = new Map<string, Record<string, unknown>>()
+    for (const company of official.companies) officialById.set(String(company.companyId), company)
+    const rankingCompanies = cached ? JSON.parse(cached.companiesJson) as Record<string, unknown>[] : []
+    const rankingsById = new Map<string, Record<string, unknown>>()
+    for (const company of rankingCompanies) {
+      const id = String(company.companyId ?? "")
+      if (id) rankingsById.set(id, company)
+    }
+    let matched = 0, typeMismatches = 0, ratingMismatches = 0, weeklyIncomeMismatches = 0
+    for (const [id, officialCompany] of officialById) {
+      const rankedCompany = rankingsById.get(id)
+      if (!rankedCompany) continue
+      matched += 1
+      const officialType = numericField(officialCompany.companyTypeId)
+      const rankedType = numericField(rankedCompany.companyTypeId)
+      if (officialType !== null && rankedType !== null && officialType !== rankedType) typeMismatches += 1
+      const officialRating = numericField(officialCompany.starRating)
+      const rankedRating = numericField(rankedCompany.starRating)
+      if (officialRating !== null && rankedRating !== null && officialRating !== rankedRating) ratingMismatches += 1
+      const officialWeekly = numericField(officialCompany.weeklyIncome)
+      const rankedWeekly = numericField(rankedCompany.weeklyIncome)
+      if (officialWeekly !== null && rankedWeekly !== null && officialWeekly !== rankedWeekly) weeklyIncomeMismatches += 1
+    }
+    const missingFromRankings = Array.from(officialById.keys()).filter((id) => !rankingsById.has(id)).length
+    const missingFromOfficial = Array.from(rankingsById.keys()).filter((id) => !officialById.has(id)).length
+    const hasRankingCache = Boolean(cached && rankingCompanies.length)
+    const hasDifferences = missingFromRankings > 0 || missingFromOfficial > 0 || typeMismatches > 0 || ratingMismatches > 0 || weeklyIncomeMismatches > 0
+    await save({
+      verifiedAt: new Date().toISOString(), rankingSnapshotAt: cached?.fetchedAt ?? null,
+      officialCount: official.companies.length, rankingCount: rankingCompanies.length, matched,
+      missingFromRankings, missingFromOfficial, typeMismatches, ratingMismatches, weeklyIncomeMismatches,
+      status: !hasRankingCache ? "no_ranking_cache" : hasDifferences ? "differences_found" : "verified",
+      errorMessage: null,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 220) : "Official company snapshot verification failed."
+    await save({ verifiedAt: new Date().toISOString(), rankingSnapshotAt: null, officialCount: 0, rankingCount: 0, matched: 0, missingFromRankings: 0, missingFromOfficial: 0, typeMismatches: 0, ratingMismatches: 0, weeklyIncomeMismatches: 0, status: "failed", errorMessage: message })
+    throw error
   }
 }
 
@@ -978,15 +1162,22 @@ async function evaluateStaleDataRules(env: WorkerEnv): Promise<number> {
 async function runScheduledAutomation(controller: { scheduledTime: number; cron: string }, env: WorkerEnv): Promise<void> {
   if (!env.DB) return
   const db = requireDb(env)
+  const isRankingCaptureWindow = controller.cron.trim() === "10 18 * * *"
+  const isOfficialVerificationWindow = controller.cron.trim() === "10 0 * * *"
   try { await ensureAutomationSchema(env) } catch {
-    await Promise.allSettled([refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, 35), refreshGlobalRankingCache(env)])
+    const fallbackTasks: Promise<unknown>[] = [refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, 35)]
+    if (isRankingCaptureWindow) fallbackTasks.push(refreshGlobalRankingCache(env, undefined, true))
+    if (isOfficialVerificationWindow) fallbackTasks.push(verifyGlobalRankingsAgainstOfficialSnapshot(env, controller.scheduledTime))
+    await Promise.allSettled(fallbackTasks)
     return
   }
   const runId = crypto.randomUUID()
   const startedAt = new Date(controller.scheduledTime).toISOString()
   await db.prepare("INSERT INTO automation_runs (run_id, trigger_name, status, started_at) VALUES (?, ?, 'running', ?)").bind(runId, controller.cron || "scheduled", startedAt).run()
   const isWeeklyLock = new Date(controller.scheduledTime).getUTCDay() === 0
-  const tasks: Promise<unknown>[] = [refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35), refreshGlobalRankingCache(env)]
+  const tasks: Promise<unknown>[] = [refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35)]
+  if (isRankingCaptureWindow) tasks.push(refreshGlobalRankingCache(env, undefined, true))
+  if (isOfficialVerificationWindow) tasks.push(verifyGlobalRankingsAgainstOfficialSnapshot(env, controller.scheduledTime))
   if (isWeeklyLock) tasks.push(captureWeeklyFactionStarCounts(env, startedAt))
   const results = await Promise.allSettled(tasks)
   let staleRuleFailures = 0
@@ -1030,8 +1221,7 @@ async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
     } else if (job.job_type === "global-refresh") {
       await refreshRankingProfiles(env)
       await refreshFactionDirectoryFromAnyKey(env, 35)
-      await refreshGlobalRankingCache(env, undefined, true)
-      result = { message: "Company rankings, faction directory batch, and global ranking cache refreshed." }
+      result = { message: "Company ranking profiles and faction directory refreshed. Global company rankings remain locked to the 18:10 UTC capture; the 00:10 UTC official snapshot is verification-only." }
     } else {
       throw new Error("Unsupported administrative job type.")
     }
@@ -1768,7 +1958,6 @@ export default {
         const now = new Date().toISOString()
         await db.prepare("INSERT INTO players (player_id, player_name, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, updated_at = excluded.updated_at").bind(player.id, player.name, now, now).run()
         await saveKey(env, player.id, apiKey)
-        try { await refreshGlobalRankingCache(env, apiKey) } catch { /* Daily schedule retries the cache warm-up. */ }
         // Prefer the sign-in credential and persist the primary key plus its company snapshot.
         let selectedCompanyData = loginCompanyData
         let selectedCompanyApiKey = selectedCompanyData ? apiKey : ""
@@ -1977,12 +2166,8 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       if (url.searchParams.get("scope") === "global") {
-        // Refresh a stale shared snapshot on demand. The server-side six-hour cache
-        // and database lease ensure concurrent dashboard users do not fan out to Torn.
-        try {
-          const userKey = await savedKey(env, session.player_id).catch(() => null)
-          await refreshGlobalRankingCache(env, userKey ?? undefined)
-        } catch { /* Serve the last saved ranking snapshot if Torn is temporarily unavailable. */ }
+        // Global company rankings are captured only by the 18:10 UTC scheduled job.
+        // The 00:10 UTC official Torn snapshot is verification-only and never replaces this cache.
         const db = requireDb(env)
         await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_cache (cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1), companies_json TEXT NOT NULL, fetched_at TEXT NOT NULL)").run()
         const cached = await db.prepare("SELECT companies_json AS companiesJson, fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ companiesJson: string; fetchedAt: string }>()

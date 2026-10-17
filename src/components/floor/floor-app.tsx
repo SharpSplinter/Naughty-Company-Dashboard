@@ -116,6 +116,7 @@ export function FloorApp() {
   const [factionSyncProgress, setFactionSyncProgress] = useState("")
   const [selectedRankingType, setSelectedRankingType] = useState("")
   const [snapshotHistory, setSnapshotHistory] = useState<SnapshotHistoryCompany[]>([])
+  const [officialStockHistory, setOfficialStockHistory] = useState<{ day: string; stockQuantity: number | null }[]>([])
   const [snapshotSourceCreatedAt, setSnapshotSourceCreatedAt] = useState("")
   const [snapshotHistoryLoading, setSnapshotHistoryLoading] = useState(true)
   const [snapshotHistoryError, setSnapshotHistoryError] = useState("")
@@ -496,6 +497,39 @@ export function FloorApp() {
     return boundary
   }
   const currentChartCompany = snapshotHistory.find((company) => company.companyId === String(model?.company.id ?? result?.model.company.id ?? ""))
+  // The stock-difference widget uses live saved reporting records, not the imported chart archive.
+  useEffect(() => {
+    const companyId = String(model?.company.id ?? result?.model.company.id ?? "")
+    if (!sessionToken || demoMode || !companyId) {
+      setOfficialStockHistory([])
+      return
+    }
+    let cancelled = false
+    async function loadOfficialStockHistory() {
+      try {
+        const response = await fetch(`${API_BASE}/api/me/companies/${encodeURIComponent(companyId)}/history?days=7`, {
+          headers: { Authorization: `Bearer ${sessionToken}` },
+        })
+        if (!response.ok) throw new Error("Could not load saved daily stock history.")
+        const payload = await response.json() as { history?: unknown[] }
+        const history = Array.isArray(payload.history) ? payload.history : []
+        const rows = history.flatMap((item) => {
+          if (!item || typeof item !== "object" || Array.isArray(item)) return []
+          const record = item as Record<string, unknown>
+          const day = typeof record.day === "string" ? record.day : ""
+          const stockQuantity = typeof record.stockQuantity === "number" && Number.isFinite(record.stockQuantity)
+            ? record.stockQuantity
+            : null
+          return /^\d{4}-\d{2}-\d{2}$/.test(day) ? [{ day, stockQuantity }] : []
+        })
+        if (!cancelled) setOfficialStockHistory(rows)
+      } catch {
+        if (!cancelled) setOfficialStockHistory([])
+      }
+    }
+    void loadOfficialStockHistory()
+    return () => { cancelled = true }
+  }, [sessionToken, demoMode, model?.company.id, model?.fetchedAt, result?.model.company.id])
   const dailyProfit = currentChartCompany?.history.at(-1)?.dailyProfit ?? (model?.company.dailyIncome == null || !costs ? null : model.company.dailyIncome - (costs.adBudget ?? 0) - costs.wages)
   const allDailySamples = (result?.incomeHistory ?? []).filter((item) => item.dailyIncome !== null && new Date(item.fetchedAt) <= utcNow)
   const dedupedSamples = Array.from(new Map(allDailySamples.map((item) => [new Date(new Date(item.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10), item])).values())
@@ -558,31 +592,23 @@ export function FloorApp() {
     ? rawCompanyFunds
     : typeof rawCompanyFunds === "string" && rawCompanyFunds.trim() && Number.isFinite(Number(rawCompanyFunds)) ? Number(rawCompanyFunds) : null
   const currentStockRows = stockPriceRows(result?.stock)
+  const currentStockQuantity = currentStockRows.length && currentStockRows.every((item) => item.quantity !== null) ? currentStockRows.reduce((sum, item) => sum + (item.quantity ?? 0), 0) : null
   const totalStockValueRows = currentStockRows.filter((item) => item.quantity !== null && item.price !== null)
   const totalStockValue = totalStockValueRows.reduce((sum, item) => sum + Math.max(0, item.quantity ?? 0) * Math.max(0, item.price ?? 0), 0)
   const hasTotalStockValue = totalStockValueRows.length > 0
-  const currentStockQuantity = currentStockRows.length && currentStockRows.every((item) => item.quantity !== null) ? currentStockRows.reduce((sum, item) => sum + (item.quantity ?? 0), 0) : null
   const currentSnapshotDay = new Date(Date.now() - 18 * 3600000).toISOString().slice(0, 10)
-  const officialStockSnapshots = (currentChartCompany?.history ?? [])
+  const officialStockSnapshots = officialStockHistory
     .filter((point) => point.stockQuantity !== null && /^\d{4}-\d{2}-\d{2}$/.test(point.day) && point.day <= currentSnapshotDay)
     .sort((a, b) => a.day.localeCompare(b.day))
-  // Use today's live stock only when its persisted company snapshot crossed the official 18:10 UTC boundary.
-  const currentSnapshotFetchedAt = model?.fetchedAt ? Date.parse(model.fetchedAt) : Number.NaN
-  const currentSnapshotBoundary = Date.parse(`${currentSnapshotDay}T18:10:00.000Z`)
-  const hasCurrentOfficialStock = currentStockQuantity !== null && Number.isFinite(currentSnapshotFetchedAt) && currentSnapshotFetchedAt >= currentSnapshotBoundary
-  if (hasCurrentOfficialStock) {
-    const existingToday = officialStockSnapshots.findIndex((point) => point.day === currentSnapshotDay)
-    const todayPoint = { day: currentSnapshotDay, period: currentSnapshotBoundary, capturedAt: currentSnapshotFetchedAt, stockQuantity: currentStockQuantity } as (typeof officialStockSnapshots)[number]
-    if (existingToday >= 0) officialStockSnapshots[existingToday] = { ...officialStockSnapshots[existingToday], ...todayPoint }
-    else officialStockSnapshots.push(todayPoint)
-    officialStockSnapshots.sort((a, b) => a.day.localeCompare(b.day))
-  }
   const currentOfficialStockSnapshot = officialStockSnapshots.find((point) => point.day === currentSnapshotDay)
   const previousSnapshotDay = new Date(Date.parse(`${currentSnapshotDay}T12:00:00.000Z`) - 86400000).toISOString().slice(0, 10)
   const previousStockSnapshot = officialStockSnapshots.find((point) => point.day === previousSnapshotDay)
   const stockDifference = currentOfficialStockSnapshot?.stockQuantity != null && previousStockSnapshot?.stockQuantity != null
     ? currentOfficialStockSnapshot.stockQuantity - previousStockSnapshot.stockQuantity
     : null
+  const missingStockSnapshotDays = [previousSnapshotDay, currentSnapshotDay].filter((day) =>
+    !officialStockSnapshots.some((point) => point.day === day && point.stockQuantity !== null)
+  )
 
   function downloadJson(filename: string, value: unknown) {
     const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" })
@@ -1041,7 +1067,7 @@ export function FloorApp() {
               {model ? <>
                 <section className="panel company-panel company-overview-panel"><div className="panel-heading"><div><h2>{model.company.name}</h2><p>{model.company.typeName} · Company #{model.company.id}</p></div><span className="status-badge success"><i /> COMPANY DATA</span></div>
                   <div className="company-facts overview-facts"><div><small>COMPANY TYPE</small><strong>{model.company.typeName}</strong></div><div><small>EMPLOYEES</small><strong>{formatNumber(model.company.employeesHired ?? model.employees.length)} / {formatNumber(model.company.employeeCapacity)}</strong></div><div><small>STAR RATING</small><strong>{currentStar === null ? "—" : `${currentStar} ★`}</strong></div><div><small>DIRECTOR</small><strong>{model.company.directorName ?? "Restricted"}</strong></div></div>
-                  {highRiskEmployeeAlerts.length > 0 && <section className="employee-risk-overview" aria-label="Employee addiction and inactivity alerts"><div className="employee-risk-overview-heading"><div><h3>Employee effectiveness alerts</h3><p>Flags apply independently when either addiction or inactivity effectiveness reaches the warning thresholds.</p></div><span className="count-chip">{highRiskEmployeeAlerts.length} high risk</span></div><div className="employee-risk-overview-list">{highRiskEmployeeAlerts.map((employee) => <article key={employee.id} className={`employee-risk-overview-item employee-risk-${employee.riskSeverity}`}><div className="employee-risk-name"><strong>{employee.name}</strong><span>{employee.riskSeverity === "red" ? "HIGH RISK" : "WATCH"}</span></div><div className="employee-risk-last-seen" title={employee.lastAction || undefined}><span className="employee-risk-last-seen-dot" aria-hidden="true" />{formatLastSeenElapsed(employee.lastActionTimestamp)}</div><div className="employee-risk-values"><span>Addiction <strong>{formatNumber(employee.addictionEffectiveness)}</strong></span><span>Inactivity <strong>{formatNumber(employee.inactivityEffectiveness)}</strong></span></div><div className="employee-risk-trigger">Triggered by: {employee.flaggedMetrics.map((metric) => `${metric.label} ${metric.value} (${metric.severity === "red" ? "red alert" : "yellow alert"})`).join(" · ")}</div></article>)}</div><button type="button" className="text-button" onClick={() => setActiveView("employees")}>View employee details →</button></section>}<div className="income-grid"><article><small>DAILY INCOME</small><strong>{formatMoney(model.company.dailyIncome)}</strong><span className="profit-line">Profit {formatMoney(dailyProfit)}</span></article><article><small>WEEKLY INCOME</small><strong>{formatMoney(weeklyIncome)}</strong><span className="profit-line">Profit {formatMoney(weeklyProfit)}</span><span>Sunday 18:00 UTC to Sunday 18:00 UTC</span></article><article><small>MONTH-TO-DATE INCOME</small><strong>{formatMoney(monthlyIncome)}</strong><span className="profit-line">Profit {formatMoney(monthlyProfit)}</span><span>Since the 1st at 18:00 UTC</span></article></div><div className="overview-financial-strip"><article><small>CURRENT AD BUDGET</small><strong>{formatMoney(costs?.adBudget)}</strong><span>Daily advertising spend configured in Torn</span></article><article className="overview-stock-prices"><small>STOCK</small>{currentStockRows.length ? <><div className="stock-price-list stock-inventory-table"><div className="stock-inventory-header"><span>STOCK NAME</span><span>CURRENT QTY</span><span>SET PRICE</span><span>CURRENT VALUE</span></div>{currentStockRows.map((item, index) => <div className="stock-inventory-row" key={`${item.name}-${index}`}><span>{item.name}</span><strong>{item.quantity === null ? "—" : formatNumber(item.quantity)}</strong><strong>{item.price === null ? "—" : formatMoney(item.price)}</strong><strong>{item.quantity === null || item.price === null ? "—" : formatMoney(Math.max(0, item.quantity) * Math.max(0, item.price))}</strong></div>)}<div className="stock-value-total"><span>TOTAL STOCK VALUE</span><strong>{hasTotalStockValue ? formatMoney(totalStockValue) : "—"}</strong></div><div className="stock-difference-row"><span>STOCK DIFFERENCE</span><strong className={stockDifference === null ? "" : stockDifference > 0 ? "stock-difference-positive" : stockDifference < 0 ? "stock-difference-negative" : ""}>{stockDifference === null ? "—" : `${stockDifference > 0 ? "+" : ""}${formatNumber(stockDifference)}`}</strong></div><small className="stock-difference-note">{stockDifference === null ? `Unavailable: official stock snapshots are required for ${previousSnapshotDay} and ${currentSnapshotDay}.` : `Compared with the official snapshot for ${previousSnapshotDay}.`}</small></div></> : <span>Current stock details were not returned by Torn for this company key.</span>}</article></div>{costs && <p className="profit-footnote">Estimated daily operating costs: {formatMoney(costs.adBudget)} ad budget + {formatMoney(costs.wages)} employee wages{costs.hasStockCosts ? <> + {formatMoney(costs.stockCosts)} stock costs</> : null} = <strong className="numeric-value">{formatMoney(costs.dailyCosts)}</strong> total. Stock costs are included when the company has stock with recorded cost data. Recorded coverage: {weekCoverage}/{expectedReportingDays(weekStart)} reporting days this week and {monthCoverage}/{expectedReportingDays(monthStart)} month-to-date. Weekly profit uses the latest imported reported total when available; month-to-date profit sums captured daily-profit snapshots, so incomplete coverage is shown as partial.</p>}
+                  {highRiskEmployeeAlerts.length > 0 && <section className="employee-risk-overview" aria-label="Employee addiction and inactivity alerts"><div className="employee-risk-overview-heading"><div><h3>Employee effectiveness alerts</h3><p>Flags apply independently when either addiction or inactivity effectiveness reaches the warning thresholds.</p></div><span className="count-chip">{highRiskEmployeeAlerts.length} high risk</span></div><div className="employee-risk-overview-list">{highRiskEmployeeAlerts.map((employee) => <article key={employee.id} className={`employee-risk-overview-item employee-risk-${employee.riskSeverity}`}><div className="employee-risk-name"><strong>{employee.name}</strong><span>{employee.riskSeverity === "red" ? "HIGH RISK" : "WATCH"}</span></div><div className="employee-risk-last-seen" title={employee.lastAction || undefined}><span className="employee-risk-last-seen-dot" aria-hidden="true" />{formatLastSeenElapsed(employee.lastActionTimestamp)}</div><div className="employee-risk-values"><span>Addiction <strong>{formatNumber(employee.addictionEffectiveness)}</strong></span><span>Inactivity <strong>{formatNumber(employee.inactivityEffectiveness)}</strong></span></div><div className="employee-risk-trigger">Triggered by: {employee.flaggedMetrics.map((metric) => `${metric.label} ${metric.value} (${metric.severity === "red" ? "red alert" : "yellow alert"})`).join(" · ")}</div></article>)}</div><button type="button" className="text-button" onClick={() => setActiveView("employees")}>View employee details →</button></section>}<div className="income-grid"><article><small>DAILY INCOME</small><strong>{formatMoney(model.company.dailyIncome)}</strong><span className="profit-line">Profit {formatMoney(dailyProfit)}</span></article><article><small>WEEKLY INCOME</small><strong>{formatMoney(weeklyIncome)}</strong><span className="profit-line">Profit {formatMoney(weeklyProfit)}</span><span>Sunday 18:00 UTC to Sunday 18:00 UTC</span></article><article><small>MONTH-TO-DATE INCOME</small><strong>{formatMoney(monthlyIncome)}</strong><span className="profit-line">Profit {formatMoney(monthlyProfit)}</span><span>Since the 1st at 18:00 UTC</span></article></div><div className="overview-financial-strip"><article><small>CURRENT AD BUDGET</small><strong>{formatMoney(costs?.adBudget)}</strong><span>Daily advertising spend configured in Torn</span></article><article className="overview-stock-prices"><small>STOCK</small>{currentStockRows.length ? <><div className="stock-price-list stock-inventory-table"><div className="stock-inventory-header"><span>STOCK NAME</span><span>CURRENT QTY</span><span>SET PRICE</span><span>CURRENT VALUE</span></div>{currentStockRows.map((item, index) => <div className="stock-inventory-row" key={`${item.name}-${index}`}><span>{item.name}</span><strong>{item.quantity === null ? "—" : formatNumber(item.quantity)}</strong><strong>{item.price === null ? "—" : formatMoney(item.price)}</strong><strong>{item.quantity === null || item.price === null ? "—" : formatMoney(Math.max(0, item.quantity) * Math.max(0, item.price))}</strong></div>)}<div className="stock-value-total"><span>TOTAL STOCK VALUE</span><strong>{hasTotalStockValue ? formatMoney(totalStockValue) : "—"}</strong></div><div className="stock-difference-row"><span>STOCK DIFFERENCE</span><strong className={stockDifference === null ? "" : stockDifference > 0 ? "stock-difference-positive" : stockDifference < 0 ? "stock-difference-negative" : ""}>{stockDifference === null ? "—" : `${stockDifference > 0 ? "+" : ""}${formatNumber(stockDifference)}`}</strong></div><small className="stock-difference-note">{stockDifference === null ? `Unavailable: saved daily stock records are missing for ${missingStockSnapshotDays.join(" and ") || "the required reporting dates"}.` : `Compared with the official snapshot for ${previousSnapshotDay}.`}</small></div></> : <span>Current stock details were not returned by Torn for this company key.</span>}</article></div>{costs && <p className="profit-footnote">Estimated daily operating costs: {formatMoney(costs.adBudget)} ad budget + {formatMoney(costs.wages)} employee wages{costs.hasStockCosts ? <> + {formatMoney(costs.stockCosts)} stock costs</> : null} = <strong className="numeric-value">{formatMoney(costs.dailyCosts)}</strong> total. Stock costs are included when the company has stock with recorded cost data. Recorded coverage: {weekCoverage}/{expectedReportingDays(weekStart)} reporting days this week and {monthCoverage}/{expectedReportingDays(monthStart)} month-to-date. Weekly profit uses the latest imported reported total when available; month-to-date profit sums captured daily-profit snapshots, so incomplete coverage is shown as partial.</p>}
                   <div className="ratings-section company-funds-section"><div className="section-heading"><div><h3>Company Funds</h3><p>Live balance returned by Torn. Daily history remains locked to the official snapshot.</p></div></div><div className="ratings-grid"><div><span>AVAILABLE FUNDS</span><strong>{companyFunds === null ? "—" : formatMoney(companyFunds)}</strong></div></div></div>
                   <div className="ratings-section"><div className="section-heading"><div><h3>Operating ratings</h3><p>Current company performance indicators from Torn.</p></div></div><div className="ratings-grid"><div><span>POPULARITY</span><strong>{formatNumber(popularity)}</strong></div><div><span>EFFICIENCY</span><strong>{formatNumber(efficiency)}</strong></div><div><span>ENVIRONMENT</span><strong>{formatNumber(environment)}</strong></div></div></div>
                   <div className="employee-heading overview-actions"><div><h3>Company health scorecard</h3><p>Benchmarked against companies of the same type.</p></div><button className="text-button" onClick={() => setActiveView("type-rankings")}>View rankings ↗</button></div>
