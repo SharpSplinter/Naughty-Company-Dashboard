@@ -16,18 +16,33 @@ const headers = {
 };
 
 async function request(url, method, body) {
-  const response = await fetch(url, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body)
-  });
-  const responseText = await response.text();
-  let data;
-  try { data = responseText ? JSON.parse(responseText) : null; } catch { data = responseText; }
-  if (!response.ok) {
-    throw new Error("Discord API " + method + " " + response.status + ": " + JSON.stringify(data).slice(0, 1000));
+  // Discord applies per-route limits to guild command updates. Retry explicit 429
+  // responses using Discord's retry_after value so a longer command set can sync
+  // without leaving registration half-complete after a temporary rate limit.
+  const maxRateLimitRetries = 8;
+  for (let attempt = 0; attempt <= maxRateLimitRetries; attempt += 1) {
+    const response = await fetch(url, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    const responseText = await response.text();
+    let data;
+    try { data = responseText ? JSON.parse(responseText) : null; } catch { data = responseText; }
+    if (response.status === 429 && attempt < maxRateLimitRetries) {
+      const retryAfter = Number(data && typeof data === "object" ? data.retry_after : undefined) ||
+        Number(response.headers.get("retry-after")) || 1;
+      const delayMs = Math.max(250, Math.ceil((retryAfter + 0.25) * 1000));
+      console.warn("Discord rate limited guild command sync; retrying after " + (delayMs / 1000).toFixed(2) + " seconds.");
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      continue;
+    }
+    if (!response.ok) {
+      throw new Error("Discord API " + method + " " + response.status + ": " + JSON.stringify(data).slice(0, 1000));
+    }
+    return data;
   }
-  return data;
+  throw new Error("Discord guild command sync exceeded its rate-limit retry budget.");
 }
 
 const existing = await request(base, "GET");
