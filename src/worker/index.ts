@@ -590,7 +590,7 @@ async function persistFactionDirectorSnapshot(env: WorkerEnv, profile: unknown, 
       .bind(playerId, companyId, day, asJson(profile), stock === null || stock === undefined ? null : asJson(stock), now).run()
   }
 }
-async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[] }> {
+async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20, captureSnapshots = true): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[] }> {
   const client = new TornApiClient({ apiKey })
   const memberPayload = await client.getFactionMembers()
   const rawMembers = Array.isArray(memberPayload.members) ? memberPayload.members : isRecord(memberPayload.members) ? Object.values(memberPayload.members) : []
@@ -634,7 +634,7 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
       const weeklyIncome = typeof income.weekly === "number" ? income.weekly : null
       await db.prepare("INSERT INTO faction_member_cache (player_id, player_name, faction_id, checked_at, is_director, company_id, company_name, company_type, company_type_id, company_rating, daily_income, weekly_income, job_json, profile_json, updated_at) VALUES (?, ?, '8317', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, faction_id = excluded.faction_id, checked_at = excluded.checked_at, is_director = 1, company_id = excluded.company_id, company_name = excluded.company_name, company_type = excluded.company_type, company_type_id = excluded.company_type_id, company_rating = excluded.company_rating, daily_income = excluded.daily_income, weekly_income = excluded.weekly_income, job_json = excluded.job_json, profile_json = COALESCE(excluded.profile_json, faction_member_cache.profile_json), updated_at = excluded.updated_at")
         .bind(id, name, checkedAt, companyId, companyName, companyType, companyTypeId, rating, dailyIncome, weeklyIncome, asJson(jobPayload), profile === null ? null : asJson(profile), checkedAt).run()
-      if (profile) await persistFactionDirectorSnapshot(env, profile)
+      if (profile && captureSnapshots) await persistFactionDirectorSnapshot(env, profile)
     } catch {
       await db.prepare("INSERT INTO faction_member_cache (player_id, player_name, faction_id, checked_at, is_director, updated_at) VALUES (?, ?, '8317', ?, 0, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, checked_at = excluded.checked_at, updated_at = excluded.updated_at")
         .bind(id, name, checkedAt, checkedAt).run()
@@ -1240,7 +1240,7 @@ async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefr
         const row = await db.prepare("SELECT player_id, ciphertext, iv FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string; ciphertext: string; iv: string }>()
         if (!row) throw new Error("No saved Torn API key is available for the faction-directory refresh.")
         const apiKey = await decryptKey(env, row.ciphertext, row.iv)
-        globalResults[endpoint] = await syncFactionDirectorDirectory(env, apiKey, 35)
+        globalResults[endpoint] = await syncFactionDirectorDirectory(env, apiKey, 35, false)
       }
       endpointStats[endpoint].attempted += 1
       endpointStats[endpoint].succeeded += 1
@@ -1356,7 +1356,7 @@ async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefr
     failedEndpointCalls: failedCalls,
     globalResults,
     failures: failures.slice(0, 30),
-    partialFailure: failedCalls > 0 || globalFailures > 0,
+    partialFailure: failedCalls > 0 || globalFailures > 0 || (userEndpoints.length > 0 && connections.length === 0) || selectedWithoutConnection > 0,
     globalSuccesses,
   }
 }
