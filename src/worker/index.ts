@@ -1381,9 +1381,20 @@ async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
       const root = companyProfileRoot(validated.profile)
       result = { companyId: String(validated.companyId), companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}` }
     } else if (job.job_type === "global-refresh") {
-      await refreshRankingProfiles(env)
+      const rankings = await refreshRankingProfiles(env)
       await refreshFactionDirectoryFromAnyKey(env, 35)
-      result = { message: "Company ranking profiles and faction directory refreshed. Global company rankings remain locked to the 18:10 UTC capture; the 00:10 UTC official snapshot is verification-only." }
+      result = { ...rankings, message: "Company ranking profiles and faction directory refreshed. Global company rankings remain locked to the 18:10 UTC capture; the 00:10 UTC official snapshot is verification-only." }
+    } else if (job.job_type === "endpoint-refresh") {
+      const rawConfig = parseStoredJson(job.job_payload_json)
+      if (!isRecord(rawConfig) || !Array.isArray(rawConfig.endpoints) || (rawConfig.scope !== "all" && rawConfig.scope !== "selected")) {
+        throw new Error("Endpoint refresh job is missing a valid saved configuration.")
+      }
+      const endpoints = Array.from(new Set(rawConfig.endpoints.filter((item): item is AdminRefreshEndpoint => typeof item === "string" && ADMIN_REFRESH_ENDPOINTS.includes(item as AdminRefreshEndpoint))))
+      if (!endpoints.length) throw new Error("Endpoint refresh job has no supported endpoints.")
+      const targetPlayerIds = Array.isArray(rawConfig.targetPlayerIds)
+        ? Array.from(new Set(rawConfig.targetPlayerIds.filter((item): item is string => typeof item === "string" && /^\d+$/.test(item))))
+        : []
+      result = await runAdminEndpointRefresh(env, { endpoints, scope: rawConfig.scope, targetPlayerIds })
     } else {
       throw new Error("Unsupported administrative job type.")
     }
@@ -1860,6 +1871,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
     return jsonResponse({ error: "Administrator access is required." }, 403, origin)
   }
   const db = requireDb(env)
+  await ensureAdminJobPayloadSchema(env)
   await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
   await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
   const memberMatch = url.pathname.match(/^\/api\/admin\/members\/(\d+)(?:\/(status|connection-test|connection-repair))?$/)
@@ -1973,13 +1985,37 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
     }
   }
   if (url.pathname === "/api/admin/jobs" && request.method === "GET") {
-    const rows = await db.prepare("SELECT job_id AS jobId, job_type AS jobType, target_player_id AS targetPlayerId, target_company_id AS targetCompanyId, status, requested_by AS requestedBy, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt, result_json AS resultJson, error_message AS errorMessage FROM admin_jobs ORDER BY created_at DESC LIMIT ?").bind(limit).all<Record<string, unknown>>()
-    return jsonResponse({ jobs: (rows.results ?? []).map((row) => ({ ...row, result: parseStoredJson(row.resultJson), resultJson: undefined })) }, 200, origin)
+    const rows = await db.prepare("SELECT job_id AS jobId, job_type AS jobType, target_player_id AS targetPlayerId, target_company_id AS targetCompanyId, job_payload_json AS jobPayloadJson, status, requested_by AS requestedBy, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt, result_json AS resultJson, error_message AS errorMessage FROM admin_jobs ORDER BY created_at DESC LIMIT ?").bind(limit).all<Record<string, unknown>>()
+    return jsonResponse({ jobs: (rows.results ?? []).map((row) => ({ ...row, refreshConfig: parseStoredJson(row.jobPayloadJson), result: parseStoredJson(row.resultJson), jobPayloadJson: undefined, resultJson: undefined })) }, 200, origin)
   }
   if (url.pathname === "/api/admin/jobs" && request.method === "POST") {
     const body: unknown = await request.json().catch(() => null)
-    if (!isRecord(body) || (body.jobType !== "global-refresh" && body.jobType !== "company-refresh")) return jsonResponse({ error: "Choose a supported administrative job type." }, 400, origin)
+    if (!isRecord(body) || !["global-refresh", "company-refresh", "endpoint-refresh"].includes(String(body.jobType))) return jsonResponse({ error: "Choose a supported administrative job type." }, 400, origin)
     if (!await readAdminBoolean(env, "manualRefreshEnabled", true)) return jsonResponse({ error: "Manual refresh operations are disabled in global settings." }, 409, origin)
+    let refreshConfig: AdminEndpointRefreshConfig | null = null
+    if (body.jobType === "endpoint-refresh") {
+      if (!Array.isArray(body.endpoints) || !body.endpoints.length || body.endpoints.length > ADMIN_REFRESH_ENDPOINTS.length) {
+        return jsonResponse({ error: "Choose one or more supported endpoint refresh targets." }, 400, origin)
+      }
+      const endpoints = Array.from(new Set(body.endpoints.filter((item): item is AdminRefreshEndpoint => typeof item === "string" && ADMIN_REFRESH_ENDPOINTS.includes(item as AdminRefreshEndpoint))))
+      if (endpoints.length !== body.endpoints.length) return jsonResponse({ error: "One or more selected refresh endpoints are unsupported." }, 400, origin)
+      const scope = body.scope === "selected" ? "selected" : body.scope === "all" ? "all" : null
+      if (!scope) return jsonResponse({ error: "Choose whether to refresh all users or selected users." }, 400, origin)
+      const userEndpoints = endpoints.some((endpoint) => endpoint === "company-profile" || endpoint === "company-employees" || endpoint === "company-stock")
+      const rawIds = Array.isArray(body.targetPlayerIds) ? body.targetPlayerIds : []
+      if (rawIds.length > 100) return jsonResponse({ error: "Select no more than 100 dashboard users per job. Run another job for additional users." }, 400, origin)
+      const targetPlayerIds = Array.from(new Set(rawIds.map((value) => positiveId(value)).filter((value): value is string => Boolean(value))))
+      if (scope === "selected" && userEndpoints && (!targetPlayerIds.length || targetPlayerIds.length !== new Set(rawIds).size)) {
+        return jsonResponse({ error: "Selected-user refreshes require valid dashboard user IDs." }, 400, origin)
+      }
+      if (scope === "all" && targetPlayerIds.length) return jsonResponse({ error: "Do not include selected user IDs when the refresh scope is all users." }, 400, origin)
+      if (scope === "selected" && userEndpoints) {
+        const placeholders = targetPlayerIds.map(() => "?").join(",")
+        const found = await db.prepare("SELECT player_id FROM players WHERE player_id IN (" + placeholders + ")").bind(...targetPlayerIds).all<{ player_id: string }>()
+        if ((found.results ?? []).length !== targetPlayerIds.length) return jsonResponse({ error: "One or more selected dashboard users do not exist." }, 404, origin)
+      }
+      refreshConfig = { endpoints, scope, targetPlayerIds: scope === "selected" ? targetPlayerIds : [] }
+    }
     const targetPlayerId = body.jobType === "company-refresh" ? positiveId(body.targetPlayerId) : null
     const targetCompanyId = body.jobType === "company-refresh" ? positiveId(body.targetCompanyId) : null
     if (body.jobType === "company-refresh" && (!targetPlayerId || !targetCompanyId)) return jsonResponse({ error: "Select a member and one of their saved company IDs for a company refresh." }, 400, origin)
@@ -1987,12 +2023,13 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
       const target = await db.prepare("SELECT player_id FROM players WHERE player_id = ?").bind(targetPlayerId).first<{ player_id: string }>()
       if (!target) return jsonResponse({ error: "That dashboard member does not exist." }, 404, origin)
     }
-    const duplicate = await db.prepare("SELECT job_id FROM admin_jobs WHERE status IN ('queued','running') AND job_type = ? AND COALESCE(target_player_id,'') = ? AND COALESCE(target_company_id,'') = ? LIMIT 1").bind(body.jobType, targetPlayerId ? String(targetPlayerId) : "", targetCompanyId ? String(targetCompanyId) : "").first<{ job_id: string }>()
+    const payloadJson = refreshConfig ? asJson(refreshConfig) : null
+    const duplicate = await db.prepare("SELECT job_id FROM admin_jobs WHERE status IN ('queued','running') AND job_type = ? AND COALESCE(target_player_id,'') = ? AND COALESCE(target_company_id,'') = ? AND COALESCE(job_payload_json,'') = COALESCE(?, '') LIMIT 1").bind(body.jobType, targetPlayerId ? String(targetPlayerId) : "", targetCompanyId ? String(targetCompanyId) : "", payloadJson).first<{ job_id: string }>()
     if (duplicate) return jsonResponse({ error: "An equivalent refresh job is already queued or running.", jobId: duplicate.job_id }, 409, origin)
     const jobId = randomToken().slice(0, 20)
     const now = new Date().toISOString()
-    await db.prepare("INSERT INTO admin_jobs (job_id, job_type, target_player_id, target_company_id, status, requested_by, created_at) VALUES (?, ?, ?, ?, 'queued', ?, ?)").bind(jobId, body.jobType, targetPlayerId ? String(targetPlayerId) : null, targetCompanyId ? String(targetCompanyId) : null, session.player_id, now).run()
-    await writeAdminAudit(env, session, "job.queued", "job", jobId, "succeeded", `Queued ${body.jobType}.`, { targetPlayerId: targetPlayerId ? String(targetPlayerId) : null, targetCompanyId: targetCompanyId ? String(targetCompanyId) : null })
+    await db.prepare("INSERT INTO admin_jobs (job_id, job_type, target_player_id, target_company_id, job_payload_json, status, requested_by, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)").bind(jobId, body.jobType, targetPlayerId ? String(targetPlayerId) : null, targetCompanyId ? String(targetCompanyId) : null, payloadJson, session.player_id, now).run()
+    await writeAdminAudit(env, session, "job.queued", "job", jobId, "succeeded", "Queued " + body.jobType + ".", refreshConfig ? { endpoints: refreshConfig.endpoints, scope: refreshConfig.scope, targetPlayerCount: refreshConfig.targetPlayerIds.length } : { targetPlayerId: targetPlayerId ? String(targetPlayerId) : null, targetCompanyId: targetCompanyId ? String(targetCompanyId) : null })
     const task = runAdminJob(env, jobId)
     if (ctx?.waitUntil) ctx.waitUntil(task)
     else await task
