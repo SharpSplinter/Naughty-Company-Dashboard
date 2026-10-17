@@ -52,6 +52,10 @@ for (const name of ["link", "link-code", "status", "unlink", "help", "ping", "bo
 }
 
 const worker = readFileSync(new URL("./production-worker.js", import.meta.url), "utf8");
+const registration = readFileSync(new URL("./register-commands.mjs", import.meta.url), "utf8");
+assert.match(registration, /response\.status === 429/, "Discord command registration must retry explicit rate limits");
+assert.match(registration, /data\.retry_after/, "rate-limit retry must honor Discord retry_after");
+assert.match(registration, /maxRateLimitRetries/, "rate-limit retry attempts must be bounded");
 assert.match(worker, /const privateReply = content => \(\{ type: 4, data: \{ content, flags: 64 \} \}\)/, "account-specific slash replies must be ephemeral");
 assert.match(worker, /Direct API-key entry in Discord is disabled/, "legacy API-key modal submissions must be rejected");
 assert.doesNotMatch(worker, /\/api\/auth\/sign-in/, "bot must not accept a Torn API key through Discord");
