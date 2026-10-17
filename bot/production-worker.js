@@ -1,3 +1,5 @@
+import { money, numberLabel, countChangeLabel } from "./formatting.mjs";
+
 const enc = new TextEncoder();
 const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 const privateReply = content => ({ type: 4, data: { content, flags: 64 } });
@@ -110,12 +112,6 @@ function requestedCompanyId(interaction) {
 }
 function safeText(value, max = 90) {
   return String(value ?? "").replace(/@/g, "@" + String.fromCharCode(8203)).replace(/\s+/g, " ").slice(0, max);
-}
-function money(value) {
-  return typeof value === "number" && Number.isFinite(value) ? "$" + Math.round(value).toLocaleString("en-US") : "Not available";
-}
-function numberLabel(value) {
-  return typeof value === "number" && Number.isFinite(value) ? (value > 0 ? "+" : "") + value.toLocaleString("en-US", { maximumFractionDigits: 2 }) : "Not reported";
 }
 function chunkedPrivateReply(title, lines, maxLength = 1750) {
   const chunks = [];
@@ -375,7 +371,6 @@ async function replyFor(i, env) {
       const root = profile.company && typeof profile.company === "object" ? profile.company : profile.profile && typeof profile.profile === "object" ? profile.profile : profile;
       const income = root.income && typeof root.income === "object" ? root.income : {};
       const profit = root.profit && typeof root.profit === "object" ? root.profit : {};
-      const money = value => typeof value === "number" && Number.isFinite(value) ? "$" + Math.round(value).toLocaleString("en-US") : "Not available";
       const dailyProfit = [profit.daily, root.daily_profit, root.dailyProfit, root.profit_daily].find(value => typeof value === "number" && Number.isFinite(value));
       const rating = [root.company_rating, root.star_rating, root.rating, root.stars].find(value => typeof value === "number" && Number.isFinite(value));
       const employeeRoot = data.employees && typeof data.employees === "object" ? data.employees : {};
@@ -461,7 +456,6 @@ async function replyFor(i, env) {
       const firstMs = Date.parse(first.fetchedAt || ""), latestMs = Date.parse(latest.fetchedAt || "");
       const coverageDays = Number.isFinite(firstMs) && Number.isFinite(latestMs) ? Math.max(0, (latestMs - firstMs) / 86400000) : 0;
       const coverageNote = history.length < 7 || coverageDays < 20 ? "Coverage note: Limited history; these snapshots may not represent the full 30 days." : "Coverage: " + String(first.fetchedAt || "earliest snapshot unavailable") + " to " + String(latest.fetchedAt || "latest snapshot unavailable");
-      const money = v => typeof v === "number" && Number.isFinite(v) ? "$" + Math.round(v).toLocaleString("en-US") : "Not available";
       const change = v => typeof v === "number" && Number.isFinite(v) ? (v > 0 ? "+" : "") + money(v) : "Not available";
       const title = "**" + (days === "all" ? "All-history" : days + "-day") + " trend  |  " + String(company.company_name || "Your company").slice(0, 90) + "**";
       const summaryLines = ["Snapshots: " + Number(s.snapshotCount || 0)];
@@ -469,8 +463,8 @@ async function replyFor(i, env) {
         summaryLines.push("Daily income change: " + change(s.dailyIncomeChange) + (s.dailyIncomeChangePercent == null ? "" : " (" + Number(s.dailyIncomeChangePercent).toFixed(1) + "%)"));
         summaryLines.push("Weekly income change: " + change(s.weeklyIncomeChange));
       }
-      if (requestedMetric === "overview" || requestedMetric === "stars") summaryLines.push("Star-rating change: " + change(s.ratingChange));
-      if (requestedMetric === "overview" || requestedMetric === "employees") summaryLines.push("Employee-count change: " + change(s.employeeCountChange) + " | latest: " + (latest.employeeCount == null ? "Not available" : latest.employeeCount));
+      if (requestedMetric === "overview" || requestedMetric === "stars") summaryLines.push("Star-rating change: " + countChangeLabel(s.ratingChange, "star", "stars"));
+      if (requestedMetric === "overview" || requestedMetric === "employees") summaryLines.push("Employee-count change: " + countChangeLabel(s.employeeCountChange, "employee", "employees") + " | latest: " + (latest.employeeCount == null ? "Not available" : latest.employeeCount));
       if (requestedMetric === "overview" || requestedMetric === "stock") {
         const stockHistory = history.filter(point => typeof point.stockQuantity === "number");
         const stockDelta = stockHistory.length > 1 ? stockHistory[stockHistory.length - 1].stockQuantity - stockHistory[stockHistory.length - 2].stockQuantity : null;

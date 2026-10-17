@@ -66,6 +66,8 @@ assert.match(worker, /\/api\/rankings\?scope=global&typeId=/, "global rankings m
 assert.match(worker, /advertisement_budget/, "ad budget parsing must follow dashboard field aliases");
 assert.match(worker, /advertising_budget_daily/, "ad budget parsing must recognize daily advertising budget");
 assert.match(worker, /daily_ad_budget/, "ad budget parsing must recognize daily ad budget");
+assert.match(worker, /countChangeLabel\(s\.ratingChange, "star", "stars"\)/, "star-rating trend must use a count formatter");
+assert.match(worker, /countChangeLabel\(s\.employeeCountChange, "employee", "employees"\)/, "employee trend must use a count formatter");
 assert.doesNotMatch(worker, /\/api\/company\/refresh/, "read commands must not trigger company refreshes");
 assert.doesNotMatch(worker, /company_snapshots|GLOBAL_RANKINGS_QUEUE/, "read commands must not write snapshot or ranking-run state");
 console.log("PASS Discord command contract: " + commands.length + " top-level commands; private replies, one-time linking, owner-scoped reads, and no refresh/snapshot actions.");
