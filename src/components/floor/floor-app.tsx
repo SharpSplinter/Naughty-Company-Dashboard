@@ -592,6 +592,7 @@ export function FloorApp() {
     ? rawCompanyFunds
     : typeof rawCompanyFunds === "string" && rawCompanyFunds.trim() && Number.isFinite(Number(rawCompanyFunds)) ? Number(rawCompanyFunds) : null
   const currentStockRows = stockPriceRows(result?.stock)
+  const currentStockQuantity = currentStockRows.length && currentStockRows.every((item) => item.quantity !== null) ? currentStockRows.reduce((sum, item) => sum + (item.quantity ?? 0), 0) : null
   const totalStockValueRows = currentStockRows.filter((item) => item.quantity !== null && item.price !== null)
   const totalStockValue = totalStockValueRows.reduce((sum, item) => sum + Math.max(0, item.quantity ?? 0) * Math.max(0, item.price ?? 0), 0)
   const hasTotalStockValue = totalStockValueRows.length > 0
