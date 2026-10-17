@@ -277,50 +277,144 @@ function numberField(row: Record<string, string>, ...names: string[]): number | 
   return null
 }
 async function fetchGlobalCompanyRankings(apiKey: string): Promise<{ companies: Record<string, unknown>[]; snapshotFetchedAt: string }> {
-  const headers = { Authorization: `ApiKey ${apiKey}`, Accept: "text/csv, text/plain, application/json" }
-  const response = await fetch("https://api.torn.com/v2/company/snapshot", { headers, signal: AbortSignal.timeout(20000) })
+  const headers = { Authorization: `ApiKey ${apiKey}`, Accept: "application/json" }
+  const typesResponse = await fetch("https://api.torn.com/v2/torn/companies", { headers, signal: AbortSignal.timeout(20000) })
+  const typesBody = await typesResponse.text()
+  if (!typesResponse.ok || typesBody.trimStart().startsWith("{") && (() => { try { const parsed = JSON.parse(typesBody); return isRecord(parsed) && isRecord(parsed.error) } catch { return true } })()) {
+    let message = "Torn could not provide the company type catalog."
+    try { const payload = JSON.parse(typesBody); if (isRecord(payload) && isRecord(payload.error)) message = typeof payload.error.error === "string" ? payload.error.error : message } catch { /* Keep the fallback message. */ }
+    throw Object.assign(new Error(message), { status: typesResponse.status === 429 ? 429 : 502 })
+  }
+  let typePayload: unknown
+  try { typePayload = JSON.parse(typesBody) } catch { throw Object.assign(new Error("Torn returned malformed company type metadata."), { status: 502 }) }
+  const root = isRecord(typePayload)
+    ? (Array.isArray(typePayload.companies) || isRecord(typePayload.companies) ? typePayload.companies
+      : Array.isArray(typePayload.company_types) || isRecord(typePayload.company_types) ? typePayload.company_types : typePayload)
+    : typePayload
+  const typeEntries = Array.isArray(root) ? root : isRecord(root) ? Object.values(root) : []
+  const typesById = new Map<number, { id: number; name: string }>()
+  for (const entry of typeEntries) {
+    if (!isRecord(entry)) continue
+    const id = positiveId(entry.id ?? entry.type_id ?? entry.typeId ?? entry.company_type_id)
+    if (!id) continue
+    const typeId = Number(id)
+    const name = typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : `Type #${typeId}`
+    typesById.set(typeId, { id: typeId, name })
+  }
+  const types = Array.from(typesById.values()).sort((a, b) => a.id - b.id)
+  if (!types.length) throw Object.assign(new Error("Torn returned no valid company type IDs; the existing ranking cache was preserved."), { status: 502 })
+
+  const pageSize = 100
+  async function fetchTypeCompanies(type: { id: number; name: string }): Promise<Record<string, unknown>[]> {
+    const rows: Record<string, unknown>[] = []
+    let expectedTotal: number | null = null
+    for (let page = 0; page < 1000; page++) {
+      const offset = rows.length
+      const response = await fetch(`https://api.torn.com/v2/company/${type.id}/companies?offset=${offset}&limit=${pageSize}`, { headers, signal: AbortSignal.timeout(20000) })
+      const body = await response.text()
+      if (!response.ok) {
+        let message = `Torn could not provide companies for ${type.name} (type #${type.id}).`
+        try { const payload = JSON.parse(body); if (isRecord(payload) && isRecord(payload.error)) message = typeof payload.error.error === "string" ? payload.error.error : message } catch { /* Keep the fallback message. */ }
+        throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : response.status >= 500 ? 502 : 502 })
+      }
+      let payload: unknown
+      try { payload = JSON.parse(body) } catch { throw Object.assign(new Error(`Torn returned malformed company-list data for type #${type.id}.`), { status: 502 }) }
+      if (!isRecord(payload) || !Array.isArray(payload.companies)) throw Object.assign(new Error(`Torn returned no company list for type #${type.id}; the existing ranking cache was preserved.`), { status: 502 })
+      if (payload.companies.some((item) => !isRecord(item))) throw Object.assign(new Error(`Torn returned a malformed company row for type #${type.id}.`), { status: 502 })
+      const pageRows = payload.companies as Record<string, unknown>[]
+      const metadata = isRecord(payload._metadata) ? payload._metadata : {}
+      const metadataTotal = numericField(metadata.total)
+      if (metadataTotal !== null) {
+        if (expectedTotal !== null && expectedTotal !== metadataTotal) throw Object.assign(new Error(`Torn company-list total changed during type #${type.id} pagination.`), { status: 502 })
+        expectedTotal = metadataTotal
+      }
+      rows.push(...pageRows)
+      if (expectedTotal !== null) {
+        if (rows.length > expectedTotal) throw Object.assign(new Error(`Torn returned more companies than its declared total for type #${type.id}.`), { status: 502 })
+        if (rows.length === expectedTotal) break
+        if (pageRows.length === 0) throw Object.assign(new Error(`Torn returned an incomplete company list for type #${type.id}; the existing ranking cache was preserved.`), { status: 502 })
+      } else if (pageRows.length < pageSize) {
+        break
+      }
+      if (pageRows.length === 0) break
+      if (page === 999) throw Object.assign(new Error(`Torn company-list pagination exceeded its safety limit for type #${type.id}.`), { status: 502 })
+    }
+    if (expectedTotal !== null && rows.length !== expectedTotal) throw Object.assign(new Error(`Torn returned ${rows.length} of ${expectedTotal} companies for type #${type.id}; the existing ranking cache was preserved.`), { status: 502 })
+    return rows
+  }
+
+  const collected: { row: Record<string, unknown>; typeId: number; typeName: string }[] = []
+  // Limit concurrency to avoid hammering Torn while still paging every company type.
+  for (let index = 0; index < types.length; index += 4) {
+    const batch = types.slice(index, index + 4)
+    const pages = await Promise.all(batch.map(async (type) => ({ type, rows: await fetchTypeCompanies(type) })))
+    for (const page of pages) for (const row of page.rows) collected.push({ row, typeId: page.type.id, typeName: page.type.name })
+  }
+  if (!collected.length) throw Object.assign(new Error("Torn returned no companies for the scheduled ranking capture; the existing ranking cache was preserved."), { status: 502 })
+  const snapshotFetchedAt = new Date().toISOString()
+  const companies = collected.flatMap(({ row, typeId, typeName }) => {
+    const companyId = positiveId(row.id ?? row.company_id ?? row.companyId ?? row.ID)
+    if (!companyId) return []
+    const type = isRecord(row.type) ? row.type : {}
+    const income = isRecord(row.income) ? row.income : {}
+    const director = isRecord(row.director) ? row.director : {}
+    const typeNameFromRow = typeof type.name === "string" && type.name.trim() ? type.name.trim() : typeName
+    const typeIdFromRow = positiveId(type.id ?? row.company_type_id ?? row.companyTypeId)
+    const weeklyIncome = numericField(income.weekly ?? row.weekly_income ?? row.weeklyIncome)
+    const dailyIncome = numericField(income.daily ?? row.daily_income ?? row.dailyIncome)
+    return [{
+      companyId,
+      companyName: typeof row.name === "string" && row.name.trim() ? row.name : `Company #${companyId}`,
+      companyType: typeNameFromRow,
+      companyTypeId: typeIdFromRow === null ? typeId : Number(typeIdFromRow),
+      starRating: numericField(row.rating ?? row.stars ?? row.star_rating),
+      weeklyIncome,
+      dailyIncome,
+      averageDailyIncome: weeklyIncome === null ? null : weeklyIncome / 7,
+      directorName: typeof director.name === "string" ? director.name : "",
+      playerId: "torn-global",
+      fetchedAt: snapshotFetchedAt,
+    }]
+  }).sort((a, b) => Number(b.weeklyIncome ?? -1) - Number(a.weeklyIncome ?? -1))
+  if (!companies.length || companies.length < collected.length) {
+    throw Object.assign(new Error("Torn returned company rows without valid IDs; the existing ranking cache was preserved."), { status: 502 })
+  }
+  const uniqueIds = new Set(companies.map((company) => String(company.companyId)))
+  if (uniqueIds.size !== companies.length) throw Object.assign(new Error("Torn returned duplicate company IDs across company types; the existing ranking cache was preserved."), { status: 502 })
+  return { companies, snapshotFetchedAt }
+}
+
+async function fetchOfficialCompanySnapshot(apiKey: string): Promise<{ companies: Record<string, unknown>[]; snapshotFetchedAt: string }> {
+  const response = await fetch("https://api.torn.com/v2/company/snapshot", {
+    headers: { Authorization: `ApiKey ${apiKey}`, Accept: "text/csv, text/plain, application/json" },
+    signal: AbortSignal.timeout(20000),
+  })
   const body = await response.text()
   if (!response.ok || body.trimStart().startsWith("{")) {
-    let message = "Torn could not provide the all-company snapshot."
+    let message = "Torn could not provide the official all-company snapshot for verification."
     try { const payload = JSON.parse(body); if (isRecord(payload) && isRecord(payload.error)) message = typeof payload.error.error === "string" ? payload.error.error : message } catch { /* CSV response */ }
-    throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : response.status >= 500 ? 502 : 502 })
+    throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : 502 })
   }
   const csv = parseCsv(body)
-  if (csv.length < 2) throw Object.assign(new Error("Torn returned an empty company snapshot."), { status: 502 })
-  const typeNames = new Map<number, string>()
-  try {
-    const typeResponse = await fetch("https://api.torn.com/v2/torn/companies", { headers, signal: AbortSignal.timeout(10000) })
-    if (typeResponse.ok) {
-      const typePayload: unknown = await typeResponse.json()
-      const root = isRecord(typePayload) && isRecord(typePayload.companies) ? typePayload.companies : isRecord(typePayload) && isRecord(typePayload.company_types) ? typePayload.company_types : typePayload
-      const entries = Array.isArray(root) ? root : isRecord(root) ? Object.values(root) : []
-      for (const entry of entries) {
-        if (!isRecord(entry)) continue
-        const id = entry.id ?? entry.ID ?? entry.company_type
-        const name = entry.name ?? entry.title ?? entry.type_name
-        if ((typeof id === "number" || (typeof id === "string" && /^\d+$/.test(id))) && typeof name === "string") typeNames.set(Number(id), name)
-      }
-    }
-  } catch { /* The snapshot remains useful even if company-type metadata is unavailable. */ }
+  if (csv.length < 2) throw Object.assign(new Error("Torn returned an empty official company snapshot for verification."), { status: 502 })
   const headersRow = csv[0].map(normalizedColumn)
   const records = csv.slice(1).map((cells) => Object.fromEntries(headersRow.map((header, index) => [header, cells[index] ?? ""])))
   const companies = records.flatMap((row) => {
     const companyId = numberField(row, "id", "company_id", "companyId", "ID")
     if (!companyId) return []
-    const typeId = numberField(row, "company_type_id", "company_type", "companyType", "type_id", "type")
-    const weeklyIncome = numberField(row, "weekly_income", "weeklyIncome")
-    const dailyIncome = numberField(row, "daily_income", "dailyIncome")
-    const rating = numberField(row, "rating", "stars", "star_rating")
-    return [{ companyId: String(companyId), companyName: row.name || row.companyname || `Company #${companyId}`, companyType: row.companytypename || row.typename || (typeId === null ? "Unknown" : typeNames.get(typeId) || `Type #${typeId}`), companyTypeId: typeId, starRating: rating, weeklyIncome, dailyIncome, averageDailyIncome: weeklyIncome === null ? null : weeklyIncome / 7, directorName: "", playerId: "torn-global", fetchedAt: new Date().toISOString() }]
-  }).sort((a, b) => (Number(b.weeklyIncome ?? -1) - Number(a.weeklyIncome ?? -1)))
-  const validIdRows = companies.length
-  if (validIdRows === 0 || validIdRows < Math.ceil(records.length * 0.95)) {
-    throw Object.assign(new Error("Torn returned an incomplete or malformed company ranking snapshot; the existing cache was preserved."), { status: 502 })
-  }
+    const typeId = numberField(row, "type", "company_type_id", "company_type", "type_id")
+    return [{
+      companyId: String(companyId),
+      companyName: row.name || `Company #${companyId}`,
+      companyTypeId: typeId,
+      starRating: numberField(row, "rating", "stars", "star_rating"),
+      weeklyIncome: numberField(row, "weekly_income", "weeklyIncome"),
+      dailyIncome: numberField(row, "daily_income", "dailyIncome"),
+    }]
+  })
+  if (!companies.length || companies.length < Math.ceil(records.length * 0.95)) throw Object.assign(new Error("Torn returned an incomplete or malformed official company snapshot; no ranking data was changed."), { status: 502 })
   const uniqueIds = new Set(companies.map((company) => String(company.companyId)))
-  if (uniqueIds.size !== companies.length) {
-    throw Object.assign(new Error("Torn returned duplicate company IDs; the existing ranking cache was preserved."), { status: 502 })
-  }
+  if (uniqueIds.size !== companies.length) throw Object.assign(new Error("Torn returned duplicate company IDs in the official verification snapshot."), { status: 502 })
   return { companies, snapshotFetchedAt: new Date().toISOString() }
 }
 async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string, force = false): Promise<void> {
