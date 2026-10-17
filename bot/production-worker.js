@@ -183,6 +183,14 @@ async function replyFor(i, env) {
   if (name === "ping") return privateReply("Pong! Naughty Company Bot is responding.");
   if (name === "help") return privateReply("**Naughty Company Bot**\n/link: get dashboard-linking instructions\n/link-code: redeem a five-minute, one-use code from your dashboard\n/status: check your link\n/unlink: remove your link\n/company list|overview|income|profit|stars|ads|stock|employees|wages|alerts|trends: inspect your connected company\n/rankings companies|company|compare|faction: browse cached rankings\n/alerts enable|disable|configure|status|settings|recent|acknowledge|rules: manage private alerts\n/bot status: check service health\n/ping: test bot response\n\nAccount-specific replies are private by default. The bot never needs your Torn API key in Discord.");
   if (!user) return privateReply("Unable to identify your Discord account.");
+  if (name === "bot") {
+    if (commandOptions(i).subcommand !== "status") return privateReply("Choose /bot status.");
+    try {
+      const response = await dashboardFetch(env, "/health", { signal: AbortSignal.timeout(5000) });
+      const health = await response.json().catch(() => ({}));
+      return privateReply("**Naughty Company Bot status**\nInteraction endpoint: responding\nDashboard API: " + (response.ok && health?.ok ? "healthy" : "unavailable") + "\nDashboard health checked: " + String(health?.checkedAt || "timestamp not provided") + "\nNo account data or credentials are included in this status response.");
+    } catch { return privateReply("The bot is responding, but dashboard API health could not be checked."); }
+  }
   if (name === "link") return privateReply("**Secure dashboard linking**\n1. Open https://naughty-company-dashboard.pages.dev and sign in.\n2. Open the Automation Center’s Discord linking section and generate a one-time link code. It expires after five minutes.\n3. Run /link-code and submit that code in the private form.\n\nNever post a Torn API key in a Discord channel. This bot uses the dashboard’s one-time code flow.");
   if (name === "link-code") return { type: 9, data: { custom_id: "link_code_submit", title: "Link from dashboard", components: [{ type: 18, label: "Dashboard link code", component: { type: 4, custom_id: "link_code", style: 1, min_length: 48, max_length: 48, required: true, placeholder: "Paste the one-time dashboard code" } }] } };
   if (name === "status") { const row = await env.BOT_DB.prepare("SELECT dashboard_player_id,updated_at FROM discord_links WHERE discord_user_id=?1").bind(user).first(); return privateReply(row ? "Your dashboard account is linked. Player ID: " + row.dashboard_player_id + ". Last linked: " + row.updated_at + "." : "No dashboard account is linked. Run /link to connect one."); }
@@ -203,6 +211,131 @@ async function replyFor(i, env) {
       const data = await res.json(), companies = Array.isArray(data.companies) ? data.companies : [];
       if (!companies.length) return privateReply("No saved company data is available yet. Open the dashboard and refresh company data.");
       return privateReply("**Your saved companies**\n" + companies.slice(0,8).map(c => "- **" + String(c.company_name || "Company").slice(0,100) + "** (" + String(c.company_type || "type unknown").slice(0,40) + ")  |  ID " + String(c.company_id || "n/a")).join("\n"));
+    } catch { return privateReply("Company data is temporarily unavailable. Please try again later."); }
+  }
+  if (name === "company" && ["income","profit","stars","ads","stock","wages","alerts"].includes(commandOptions(i).subcommand)) {
+    const subcommand = commandOptions(i).subcommand;
+    const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
+    if (!row) return privateReply("Link your dashboard first with /link.");
+    try {
+      const token = await unseal(row.encrypted_session_token, row.token_iv, env);
+      const headers = { authorization: "Bearer " + token, accept: "application/json" };
+      const companiesRes = await dashboardFetch(env, "/api/me/companies", { headers, signal: AbortSignal.timeout(8000) });
+      if (companiesRes.status === 401 || companiesRes.status === 403) {
+        await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run();
+        return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+      }
+      if (!companiesRes.ok) return privateReply("Company data is temporarily unavailable. Please try again later.");
+      const companiesData = await companiesRes.json();
+      const companies = Array.isArray(companiesData.companies) ? companiesData.companies : [];
+      const requestedId = requestedCompanyId(i);
+      const company = requestedId ? companies.find(item => String(item.company_id) === requestedId) : companies[0];
+      if (!company) return privateReply(requestedId ? "That company ID is not connected to your dashboard account." : "No connected company is available. Connect a company in the dashboard first.");
+      const companyId = String(company.company_id);
+      const companyName = safeText(company.company_name || "Your company", 90);
+      const moneyValue = value => typeof value === "number" && Number.isFinite(value) ? "$" + Math.round(value).toLocaleString("en-US") : "Not available";
+      const firstNumber = (...values) => values.find(value => typeof value === "number" && Number.isFinite(value));
+      const periodValue = String(optionValue(i, "period") || "30");
+      const days = ["7", "30", "90", "365", "all"].includes(periodValue) ? periodValue : "30";
+
+      if (subcommand === "alerts") {
+        const alertRes = await dashboardFetch(env, "/api/me/alerts?limit=10", { headers, signal: AbortSignal.timeout(8000) });
+        if (alertRes.status === 401 || alertRes.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+        if (!alertRes.ok) return privateReply("Alert data is temporarily unavailable. Please try again later.");
+        const alertData = await alertRes.json();
+        const events = (Array.isArray(alertData.events) ? alertData.events : []).filter(event => !event.companyId || String(event.companyId) === companyId).slice(0, 8);
+        if (!events.length) return privateReply("**Recent alerts | " + companyName + "**\nNo recent alerts were found for this company in the latest alert batch.");
+        return chunkedPrivateReply("**Recent alerts | " + companyName + "**", events.map(event =>
+          "- [" + safeText(String(event.severity || "info").toUpperCase(), 10) + "] **" + safeText(event.title || "Dashboard alert", 120) + "**\n  " + safeText(event.message || "No details supplied", 220) + "\n  " + safeText(event.createdAt || "Time unavailable", 50)
+        ));
+      }
+
+      if (subcommand === "wages") {
+        const wagesRes = await dashboardFetch(env, "/api/me/member-insights?companyId=" + encodeURIComponent(companyId), { headers, signal: AbortSignal.timeout(8000) });
+        if (wagesRes.status === 401 || wagesRes.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+        if (!wagesRes.ok) return privateReply("Employee wage data is temporarily unavailable. Please try again later.");
+        const wagesData = await wagesRes.json();
+        const summary = wagesData.summary && typeof wagesData.summary === "object" ? wagesData.summary : {};
+        const roster = Array.isArray(wagesData.roster) ? wagesData.roster : [];
+        const knownCount = Number(summary.knownWageCount || 0);
+        const total = typeof summary.totalKnownWages === "number" && Number.isFinite(summary.totalKnownWages) ? summary.totalKnownWages : null;
+        return privateReply("**Known employee wages | " + companyName + "**\nKnown wage total: " + moneyValue(total) + "\nEmployees with reported wages: " + knownCount + "\nRoster entries returned: " + roster.length + "\nMissing wage values remain unknown and are not counted as zero. Data is from the saved dashboard record.");
+      }
+
+      const detailRes = await dashboardFetch(env, "/api/me/companies/" + encodeURIComponent(companyId), { headers, signal: AbortSignal.timeout(8000) });
+      if (detailRes.status === 401 || detailRes.status === 403) {
+        await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run();
+        return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+      }
+      if (detailRes.status === 404) return privateReply("No saved company snapshot exists for " + companyName + " yet. Refresh it in the dashboard first.");
+      if (!detailRes.ok) return privateReply("Saved company data is temporarily unavailable. Please try again later.");
+      const data = await detailRes.json();
+      const profile = data.profile && typeof data.profile === "object" ? data.profile : {};
+      const root = profile.company && typeof profile.company === "object" ? profile.company : profile.profile && typeof profile.profile === "object" ? profile.profile : profile;
+      const income = root.income && typeof root.income === "object" ? root.income : {};
+      const profit = root.profit && typeof root.profit === "object" ? root.profit : {};
+      const expenses = root.expenses && typeof root.expenses === "object" ? root.expenses : root.costs && typeof root.costs === "object" ? root.costs : {};
+      const fetchedAt = String(data.fetchedAt || company.fetched_at || "Not available");
+      const numeric = (...values) => firstNumber(...values);
+      const dailyIncome = numeric(income.daily, root.daily_income, root.dailyIncome);
+      const weeklyIncome = numeric(income.weekly, root.weekly_income, root.weeklyIncome);
+      const dailyProfit = numeric(profit.daily, root.daily_profit, root.dailyProfit, root.profit_daily, typeof root.profit === "number" ? root.profit : undefined);
+      const weeklyProfit = numeric(profit.weekly, root.weekly_profit, root.weeklyProfit, root.profit_weekly);
+      const rating = numeric(root.company_rating, root.star_rating, root.starRating, root.rating, root.stars);
+      const adRoot = root.advertising && typeof root.advertising === "object" ? root.advertising : {};
+      const advertisingBudget = numeric(root.advertising_budget, root.advertisingBudget, root.ad_budget, root.adBudget, adRoot.budget, adRoot.monthly_budget, adRoot.monthlyBudget);
+      const stockRows = Array.isArray(data.stock) ? data.stock : Array.isArray(data.stock?.stock) ? data.stock.stock :
+        data.stock && typeof data.stock === "object" ? Object.values(data.stock).filter(value => value && typeof value === "object") : [];
+      const stockQuantity = stockRows.reduce((sum, item) => {
+        if (!item || typeof item !== "object") return sum;
+        const quantity = firstNumber(item.in_stock, item.quantity, item.amount);
+        return sum + (quantity ?? 0);
+      }, 0);
+      const hasStockQuantity = stockRows.some(item => item && typeof item === "object" && firstNumber(item.in_stock, item.quantity, item.amount) !== undefined);
+      let historyData = null;
+      if (["income", "profit", "stars", "stock"].includes(subcommand)) {
+        const historyRes = await dashboardFetch(env, "/api/me/companies/" + encodeURIComponent(companyId) + "/history?days=" + encodeURIComponent(days), { headers, signal: AbortSignal.timeout(8000) });
+        if (historyRes.ok) historyData = await historyRes.json();
+        else if (historyRes.status === 401 || historyRes.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+      }
+      const history = historyData && Array.isArray(historyData.history) ? historyData.history : [];
+      const summary = historyData && historyData.summary && typeof historyData.summary === "object" ? historyData.summary : {};
+      const periodLabel = days === "all" ? "all saved history" : days + " days";
+      if (subcommand === "income") {
+        return privateReply("**Income | " + companyName + "**\nDaily income: " + moneyValue(dailyIncome) + "\nWeekly income: " + moneyValue(weeklyIncome) +
+          "\nDaily income change over " + periodLabel + ": " + moneyValue(summary.dailyIncomeChange) +
+          (typeof summary.dailyIncomeChangePercent === "number" ? " (" + summary.dailyIncomeChangePercent.toFixed(1) + "%)" : "") +
+          "\nWeekly income change: " + moneyValue(summary.weeklyIncomeChange) + "\nSnapshot: " + fetchedAt);
+      }
+      if (subcommand === "profit") {
+        const costLines = Object.entries(expenses).filter(([key, value]) => /cost|wage|advert|expense/i.test(key) && typeof value === "number" && Number.isFinite(value))
+          .slice(0, 6).map(([key, value]) => safeText(key, 50) + ": " + moneyValue(value));
+        return privateReply("**Reported profit | " + companyName + "**\nDaily profit: " + moneyValue(dailyProfit) + "\nWeekly profit: " + moneyValue(weeklyProfit) +
+          (costLines.length ? "\nReported cost fields:\n" + costLines.join("\n") : "\nCost breakdown: Not available in the saved profile.") +
+          "\nSource window: " + periodLabel + "\nSnapshot: " + fetchedAt);
+      }
+      if (subcommand === "stars") {
+        return privateReply("**Company stars | " + companyName + "**\nCurrent rating: " + (rating === undefined ? "Not available" : String(rating)) +
+          "\nRating change over " + periodLabel + ": " + (typeof summary.ratingChange === "number" ? (summary.ratingChange > 0 ? "+" : "") + summary.ratingChange : "Not available") +
+          "\nSnapshot: " + fetchedAt);
+      }
+      if (subcommand === "ads") {
+        return privateReply("**Advertising budget | " + companyName + "**\nReported advertising budget: " + moneyValue(advertisingBudget) +
+          "\nSnapshot: " + fetchedAt + "\nIf this is unavailable, the current saved company profile does not contain a recognized advertising-budget field. The bot does not substitute zero.");
+      }
+      if (subcommand === "stock") {
+        const stockHistory = history.filter(point => typeof point.stockQuantity === "number" && Number.isFinite(point.stockQuantity));
+        const stockDelta = stockHistory.length > 1 ? stockHistory[stockHistory.length - 1].stockQuantity - stockHistory[stockHistory.length - 2].stockQuantity : null;
+        const lines = stockRows.slice(0, 8).map(item => {
+          const label = safeText(item.name || item.item_name || item.itemName || item.id || "Stock item", 70);
+          const quantity = firstNumber(item.in_stock, item.quantity, item.amount);
+          return "- " + label + ": " + (quantity === undefined ? "Not available" : quantity.toLocaleString("en-US"));
+        });
+        return privateReply("**Stock | " + companyName + "**\nReported stock items: " + (stockRows.length || "Not available") +
+          "\nTotal quantity: " + (hasStockQuantity ? stockQuantity.toLocaleString("en-US") : "Not available") +
+          "\nChange between last two saved history points (" + periodLabel + "): " + (typeof stockDelta === "number" ? (stockDelta > 0 ? "+" : "") + stockDelta.toLocaleString("en-US") : "Not available") +
+          "\nSnapshot: " + fetchedAt + (lines.length ? "\n" + lines.join("\n") : "\nStock item detail not available in the saved record."));
+      }
     } catch { return privateReply("Company data is temporarily unavailable. Please try again later."); }
   }
   if (name === "overview" || (name === "company" && commandOptions(i).subcommand === "overview")) {
