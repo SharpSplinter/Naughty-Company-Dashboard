@@ -693,7 +693,16 @@ async function processGlobalRankingQueueMessage(env: WorkerEnv, runId: string): 
   }
 }
 
-async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[] }, env: WorkerEnv): Promise<void> {
+async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; queue?: string }, env: WorkerEnv): Promise<void> {
+  if (batch.queue === "ncd-global-rankings-refresh-dlq") {
+    for (const message of batch.messages) {
+      const body = isRecord(message.body) ? message.body : {}
+      const runId = typeof body.runId === "string" ? body.runId : ""
+      if (runId) await markGlobalRankingRunFailed(env, runId, new Error("Global-ranking refresh exhausted its queue retries. The last good cache was preserved."))
+      message.ack()
+    }
+    return
+  }
   for (const message of batch.messages) {
     const body = isRecord(message.body) ? message.body : {}
     const runId = typeof body.runId === "string" ? body.runId : ""
@@ -2431,7 +2440,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
 }
 
 export default {
-  async queue(batch: { messages: QueueMessage[] }, env: WorkerEnv): Promise<void> {
+  async queue(batch: { messages: QueueMessage[]; queue?: string }, env: WorkerEnv): Promise<void> {
     await handleGlobalRankingQueueBatch(batch, env)
   },
   async scheduled(controller: { scheduledTime: number; cron: string }, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
