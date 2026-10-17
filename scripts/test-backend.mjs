@@ -1250,7 +1250,7 @@ try {
           return null
         },
         async all() {
-          if (normalized.includes("row_number() over (partition by substr(fetched_at, 1, 10)")) {
+          if (normalized.includes("row_number() over (partition by date(fetched_at, '-18 hours')")) {
             assert.deepEqual(values.slice(0, 2), ["777", "123"], "history queries must filter by authenticated owner and selected company")
             assert.equal(values.length, 3, "a selected range must bind its cutoff")
             return { results: [
