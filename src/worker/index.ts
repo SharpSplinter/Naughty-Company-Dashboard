@@ -487,11 +487,9 @@ async function startGlobalRankingRefresh(
   const active = await db.prepare("SELECT run_id AS runId, admin_job_id AS adminJobId FROM global_rankings_refresh_runs WHERE status = 'running' ORDER BY started_at DESC LIMIT 1")
     .first<{ runId: string; adminJobId: string | null }>()
   if (active) {
-    if (adminJobId && active.adminJobId && active.adminJobId !== adminJobId) throw new Error("Another administrator ranking refresh is already running. Wait for it to finish before starting another.")
-    if (adminJobId && !active.adminJobId) {
-      await db.prepare("UPDATE global_rankings_refresh_runs SET admin_job_id = ?, updated_at = ? WHERE run_id = ? AND status = 'running' AND admin_job_id IS NULL")
-        .bind(adminJobId, new Date().toISOString(), active.runId).run()
-    }
+    // Do not attach a new admin job to an already-running refresh: it could finish
+    // before that job has persisted its pending result. Keep the job lifecycle race-free.
+    if (adminJobId) throw new Error("A global ranking refresh is already running. Wait for it to finish before starting another.")
     return { runId: active.runId, dispatchRequired: false }
   }
 
