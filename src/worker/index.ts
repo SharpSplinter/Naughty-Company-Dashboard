@@ -1996,7 +1996,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
   }
   if (url.pathname === "/api/admin/jobs" && request.method === "POST") {
     const body: unknown = await request.json().catch(() => null)
-    if (!isRecord(body) || !["global-refresh", "company-refresh", "endpoint-refresh"].includes(String(body.jobType))) return jsonResponse({ error: "Choose a supported administrative job type." }, 400, origin)
+    if (!isRecord(body) || (body.jobType !== "global-refresh" && body.jobType !== "company-refresh" && body.jobType !== "endpoint-refresh")) return jsonResponse({ error: "Choose a supported administrative job type." }, 400, origin)
     if (!await readAdminBoolean(env, "manualRefreshEnabled", true)) return jsonResponse({ error: "Manual refresh operations are disabled in global settings." }, 409, origin)
     let refreshConfig: AdminEndpointRefreshConfig | null = null
     if (body.jobType === "endpoint-refresh") {
