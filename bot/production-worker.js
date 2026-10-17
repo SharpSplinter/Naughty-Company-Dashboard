@@ -284,8 +284,19 @@ async function replyFor(i, env) {
       const dailyProfit = numeric(profit.daily, root.daily_profit, root.dailyProfit, root.profit_daily, typeof root.profit === "number" ? root.profit : undefined);
       const weeklyProfit = numeric(profit.weekly, root.weekly_profit, root.weeklyProfit, root.profit_weekly);
       const rating = numeric(root.company_rating, root.star_rating, root.starRating, root.rating, root.stars);
-      const adRoot = root.advertising && typeof root.advertising === "object" ? root.advertising : {};
-      const advertisingBudget = numeric(root.advertising_budget, root.advertisingBudget, root.ad_budget, root.adBudget, adRoot.budget, adRoot.monthly_budget, adRoot.monthlyBudget);
+      const adBudgetKeys = ["advertisement_budget", "advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"];
+      const findAdvertisingBudget = (value, depth = 0) => {
+        if (!value || typeof value !== "object" || Array.isArray(value) || depth > 5) return undefined;
+        for (const key of adBudgetKeys) {
+          if (typeof value[key] === "number" && Number.isFinite(value[key])) return value[key];
+        }
+        for (const nested of Object.values(value)) {
+          const found = findAdvertisingBudget(nested, depth + 1);
+          if (found !== undefined) return found;
+        }
+        return undefined;
+      };
+      const advertisingBudget = findAdvertisingBudget(profile);
       const stockRows = Array.isArray(data.stock) ? data.stock : Array.isArray(data.stock?.stock) ? data.stock.stock :
         data.stock && typeof data.stock === "object" ? Object.values(data.stock).filter(value => value && typeof value === "object") : [];
       const stockQuantity = stockRows.reduce((sum, item) => {
