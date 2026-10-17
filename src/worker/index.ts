@@ -456,6 +456,91 @@ async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string, force 
   }
 }
 
+async function verifyGlobalRankingsAgainstOfficialSnapshot(env: WorkerEnv, scheduledTime: number): Promise<void> {
+  if (!env.DB) return
+  const db = requireDb(env)
+  await db.prepare(`CREATE TABLE IF NOT EXISTS global_rankings_verification (
+    verification_day TEXT PRIMARY KEY,
+    scheduled_at TEXT NOT NULL,
+    verified_at TEXT NOT NULL,
+    ranking_snapshot_at TEXT,
+    official_company_count INTEGER NOT NULL DEFAULT 0,
+    ranking_company_count INTEGER NOT NULL DEFAULT 0,
+    matched_company_count INTEGER NOT NULL DEFAULT 0,
+    missing_from_rankings INTEGER NOT NULL DEFAULT 0,
+    missing_from_official INTEGER NOT NULL DEFAULT 0,
+    type_mismatch_count INTEGER NOT NULL DEFAULT 0,
+    rating_mismatch_count INTEGER NOT NULL DEFAULT 0,
+    weekly_income_mismatch_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    error_message TEXT
+  )`).run()
+  const scheduledAt = new Date(scheduledTime).toISOString()
+  const verificationDay = scheduledAt.slice(0, 10)
+  const save = async (record: {
+    verifiedAt: string; rankingSnapshotAt: string | null; officialCount: number; rankingCount: number;
+    matched: number; missingFromRankings: number; missingFromOfficial: number; typeMismatches: number;
+    ratingMismatches: number; weeklyIncomeMismatches: number; status: string; errorMessage: string | null
+  }) => {
+    await db.prepare(`INSERT INTO global_rankings_verification (
+      verification_day, scheduled_at, verified_at, ranking_snapshot_at, official_company_count, ranking_company_count,
+      matched_company_count, missing_from_rankings, missing_from_official, type_mismatch_count, rating_mismatch_count,
+      weekly_income_mismatch_count, status, error_message
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(verification_day) DO UPDATE SET scheduled_at = excluded.scheduled_at, verified_at = excluded.verified_at,
+      ranking_snapshot_at = excluded.ranking_snapshot_at, official_company_count = excluded.official_company_count,
+      ranking_company_count = excluded.ranking_company_count, matched_company_count = excluded.matched_company_count,
+      missing_from_rankings = excluded.missing_from_rankings, missing_from_official = excluded.missing_from_official,
+      type_mismatch_count = excluded.type_mismatch_count, rating_mismatch_count = excluded.rating_mismatch_count,
+      weekly_income_mismatch_count = excluded.weekly_income_mismatch_count, status = excluded.status, error_message = excluded.error_message`)
+      .bind(verificationDay, scheduledAt, record.verifiedAt, record.rankingSnapshotAt, record.officialCount, record.rankingCount,
+        record.matched, record.missingFromRankings, record.missingFromOfficial, record.typeMismatches, record.ratingMismatches,
+        record.weeklyIncomeMismatches, record.status, record.errorMessage).run()
+  }
+  try {
+    const keyRow = await db.prepare("SELECT player_id FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string }>()
+    const apiKey = keyRow ? await savedKey(env, keyRow.player_id) : null
+    if (!apiKey) throw new Error("No saved Torn API key is available for the official company snapshot verification.")
+    const [official, cached] = await Promise.all([
+      fetchOfficialCompanySnapshot(apiKey),
+      db.prepare("SELECT companies_json AS companiesJson, fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ companiesJson: string; fetchedAt: string }>(),
+    ])
+    const officialById = new Map(official.companies.map((company) => [String(company.companyId), company]))
+    const rankingCompanies = cached ? JSON.parse(cached.companiesJson) as Record<string, unknown>[] : []
+    const rankingsById = new Map(rankingCompanies.map((company) => [String(company.companyId ?? ""), company]).filter(([id]) => Boolean(id)))
+    let matched = 0, typeMismatches = 0, ratingMismatches = 0, weeklyIncomeMismatches = 0
+    for (const [id, officialCompany] of officialById) {
+      const rankedCompany = rankingsById.get(id)
+      if (!rankedCompany) continue
+      matched += 1
+      const officialType = numericField(officialCompany.companyTypeId)
+      const rankedType = numericField(rankedCompany.companyTypeId)
+      if (officialType !== null && rankedType !== null && officialType !== rankedType) typeMismatches += 1
+      const officialRating = numericField(officialCompany.starRating)
+      const rankedRating = numericField(rankedCompany.starRating)
+      if (officialRating !== null && rankedRating !== null && officialRating !== rankedRating) ratingMismatches += 1
+      const officialWeekly = numericField(officialCompany.weeklyIncome)
+      const rankedWeekly = numericField(rankedCompany.weeklyIncome)
+      if (officialWeekly !== null && rankedWeekly !== null && officialWeekly !== rankedWeekly) weeklyIncomeMismatches += 1
+    }
+    const missingFromRankings = Array.from(officialById.keys()).filter((id) => !rankingsById.has(id)).length
+    const missingFromOfficial = Array.from(rankingsById.keys()).filter((id) => !officialById.has(id)).length
+    const hasRankingCache = Boolean(cached && rankingCompanies.length)
+    const hasDifferences = missingFromRankings > 0 || missingFromOfficial > 0 || typeMismatches > 0 || ratingMismatches > 0 || weeklyIncomeMismatches > 0
+    await save({
+      verifiedAt: new Date().toISOString(), rankingSnapshotAt: cached?.fetchedAt ?? null,
+      officialCount: official.companies.length, rankingCount: rankingCompanies.length, matched,
+      missingFromRankings, missingFromOfficial, typeMismatches, ratingMismatches, weeklyIncomeMismatches,
+      status: !hasRankingCache ? "no_ranking_cache" : hasDifferences ? "differences_found" : "verified",
+      errorMessage: null,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 220) : "Official company snapshot verification failed."
+    await save({ verifiedAt: new Date().toISOString(), rankingSnapshotAt: null, officialCount: 0, rankingCount: 0, matched: 0, missingFromRankings: 0, missingFromOfficial: 0, typeMismatches: 0, ratingMismatches: 0, weeklyIncomeMismatches: 0, status: "failed", errorMessage: message })
+    throw error
+  }
+}
+
 function companyProfileRoot(payload: unknown): Record<string, unknown> {
   if (!isRecord(payload)) return {}
   if (isRecord(payload.company)) return payload.company
