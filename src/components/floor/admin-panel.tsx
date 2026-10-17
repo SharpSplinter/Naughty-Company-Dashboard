@@ -3,10 +3,20 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 type AdminTab = "overview" | "members" | "operations" | "history" | "settings" | "audit"
 type AdminSettings = { maintenanceMode: boolean; manualRefreshEnabled: boolean; historyImportEnabled: boolean }
 type AdminMember = { playerId: string; playerName: string; createdAt?: string | null; updatedAt?: string | null; companyId: string | null; companyName: string | null; companyType: string | null; companyTypeId?: number | string | null; disabled: boolean; disabledAt?: string | null; disableReason?: string | null; loginKeySaved: boolean; companyKeyCount: number; snapshotCount: number }
-type AdminJob = { jobId: string; jobType: string; targetPlayerId?: string | null; targetCompanyId?: string | null; status: string; createdAt: string; startedAt?: string | null; finishedAt?: string | null; errorMessage?: string | null; result?: unknown }
+type AdminJob = { jobId: string; jobType: string; targetPlayerId?: string | null; targetCompanyId?: string | null; status: string; createdAt: string; startedAt?: string | null; finishedAt?: string | null; errorMessage?: string | null; result?: unknown; refreshConfig?: AdminRefreshConfig | null }
 type AutomationRun = { runId: string; triggerName: string; status: string; startedAt: string; finishedAt?: string | null; companiesChecked: number; companiesFailed: number; alertsCreated: number; errorSummary?: string | null }
 type AutomationRange = "7" | "30" | "90" | "365" | "all"
 type AutomationStatusFilter = "all" | "succeeded" | "partial" | "failed" | "running"
+type AdminRefreshEndpoint = "company-profile" | "company-employees" | "company-stock" | "global-company-rankings" | "faction-directory"
+type AdminRefreshScope = "all" | "selected"
+type AdminRefreshConfig = { endpoints?: string[]; scope?: AdminRefreshScope; targetPlayerIds?: string[] }
+const REFRESH_ENDPOINT_OPTIONS: Array<{ value: AdminRefreshEndpoint; label: string; endpoint: string; description: string; userScoped: boolean }> = [
+  { value: "company-profile", label: "Company profile", endpoint: "GET /company/profile", description: "Company name, type, rating, income, and profile fields.", userScoped: true },
+  { value: "company-employees", label: "Employees", endpoint: "GET /company/employees", description: "Current employee roster and employee details.", userScoped: true },
+  { value: "company-stock", label: "Stock and financial data", endpoint: "GET /company/stock", description: "Current stock quantities and available financial fields.", userScoped: true },
+  { value: "global-company-rankings", label: "Shared global company rankings", endpoint: "GET /company/{typeId}/companies", description: "Refresh the shared live rankings cache from company-type lists. Does not create history.", userScoped: false },
+  { value: "faction-directory", label: "Faction and director directory", endpoint: "GET /faction/members + /user/{id}/job", description: "Refresh the shared faction/director directory batch.", userScoped: false },
+]
 type AutomationInsights = { totalRuns: number; succeededRuns: number; failedRuns: number; partialRuns: number; runningRuns: number; completedRuns: number; successRate: number | null; avgDurationSeconds: number | null; companiesFailed: number; alertsCreated: number; latestRunAt?: string | null; recurringFailures: Array<{ errorSummary: string; occurrences: number }> }
 type AuditEvent = { id: number; actorPlayerId: string; actorPlayerName: string; action: string; targetType?: string | null; targetId?: string | null; outcome: string; summary: string; createdAt: string; details?: unknown }
 type MemberDetail = { member: AdminMember & { disabledAt?: string | null }; connections: { companies: Array<{ companyId: string; companyName?: string | null; companyType?: string | null; lastFour?: string; keyUpdatedAt?: string; fetchedAt?: string | null }>; loginKeySaved: boolean; legacyCompanyKeySaved: boolean }; history: { companySnapshots: number; directorSnapshots: number; pageRecords: number; financialRecords: number } }
@@ -75,6 +85,16 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   const [selectedMemberId, setSelectedMemberId] = useState("")
   const [memberDetail, setMemberDetail] = useState<MemberDetail | null>(null)
   const [jobs, setJobs] = useState<AdminJob[]>([])
+  const [refreshEndpoints, setRefreshEndpoints] = useState<AdminRefreshEndpoint[]>(["company-profile", "company-employees", "company-stock"])
+  const [refreshScope, setRefreshScope] = useState<AdminRefreshScope>("all")
+  const [refreshMemberSearchInput, setRefreshMemberSearchInput] = useState("")
+  const [refreshMemberSearch, setRefreshMemberSearch] = useState("")
+  const [refreshCandidates, setRefreshCandidates] = useState<AdminMember[]>([])
+  const [refreshCandidateTotal, setRefreshCandidateTotal] = useState(0)
+  const [refreshMemberOffset, setRefreshMemberOffset] = useState(0)
+  const [refreshSelectedUserIds, setRefreshSelectedUserIds] = useState<string[]>([])
+  const [refreshCandidatesLoading, setRefreshCandidatesLoading] = useState(false)
+  const [endpointRefreshBusy, setEndpointRefreshBusy] = useState(false)
   const [automationRuns, setAutomationRuns] = useState<AutomationRun[]>([])
   const [automationInsights, setAutomationInsights] = useState<AutomationInsights | null>(null)
   const [automationRange, setAutomationRange] = useState<AutomationRange>("30")
@@ -138,6 +158,16 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load automation insights.") }
   }, [apiBase, sessionToken, automationRange])
 
+  const loadRefreshCandidates = useCallback(async (query: string, offset: number) => {
+    setRefreshCandidatesLoading(true)
+    try {
+      const payload = await adminFetch<{ members: AdminMember[]; total: number }>(apiBase, sessionToken, \`/api/admin/members?limit=50&offset=\${offset}&q=\${encodeURIComponent(query)}\`)
+      setRefreshCandidates(payload.members || [])
+      setRefreshCandidateTotal(payload.total || 0)
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load refresh targets.") }
+    finally { setRefreshCandidatesLoading(false) }
+  }, [apiBase, sessionToken])
+
   const loadMembers = useCallback(async (query: string) => {
     setError("")
     try {
@@ -153,6 +183,7 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
 
   useEffect(() => { void refreshAll() }, [refreshAll])
   useEffect(() => { if (tab === "operations") void loadAutomationRuns() }, [tab, loadAutomationRuns])
+  useEffect(() => { if (tab === "operations") void loadRefreshCandidates(refreshMemberSearch, refreshMemberOffset) }, [tab, loadRefreshCandidates, refreshMemberSearch, refreshMemberOffset])
   useEffect(() => {
     if (!selectedMemberId || !members.some((m) => m.playerId === selectedMemberId)) return
     void loadMemberDetail(selectedMemberId)
@@ -208,6 +239,39 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
       setTab("operations")
       await loadJobs()
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not queue the refresh.") }
+  }
+
+  async function queueEndpointRefresh() {
+    if (!actionsArmed || endpointRefreshBusy || !settings.manualRefreshEnabled) return
+    if (!refreshEndpoints.length) { setError("Select at least one endpoint to refresh."); return }
+    const usesUserScope = REFRESH_ENDPOINT_OPTIONS.some((option) => option.userScoped && refreshEndpoints.includes(option.value))
+    if (usesUserScope && refreshScope === "selected" && refreshSelectedUserIds.length === 0) {
+      setError("Select at least one dashboard user, or switch the scope to all connected users.")
+      return
+    }
+    if (usesUserScope && refreshScope === "selected" && refreshSelectedUserIds.length > 100) {
+      setError("A job can target at most 100 users. Remove some selections or queue another job.")
+      return
+    }
+    const endpointSummary = REFRESH_ENDPOINT_OPTIONS.filter((option) => refreshEndpoints.includes(option.value)).map((option) => option.label).join(", ")
+    const targetSummary = usesUserScope ? (refreshScope === "all" ? "all dashboard users with saved company API connections" : refreshSelectedUserIds.length + " selected dashboard users") : "shared/global data only"
+    if (!window.confirm("Run a live endpoint refresh?\n\nEndpoints: " + endpointSummary + "\nScope: " + targetSummary + "\n\nThis updates current dashboard data only. It will not create historical snapshots or call /company/snapshot.")) return
+    try {
+      setEndpointRefreshBusy(true); setError(""); setNotice("")
+      const payload = await adminFetch<{ jobId: string; status: string }>(apiBase, sessionToken, "/api/admin/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          jobType: "endpoint-refresh",
+          endpoints: refreshEndpoints,
+          scope: usesUserScope ? refreshScope : "all",
+          targetPlayerIds: usesUserScope && refreshScope === "selected" ? refreshSelectedUserIds : [],
+        }),
+      })
+      setNotice("Endpoint refresh job " + payload.jobId + " was queued.")
+      setTab("operations")
+      await loadJobs()
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not queue the endpoint refresh.") }
+    finally { setEndpointRefreshBusy(false) }
   }
 
   async function saveSettings() {
