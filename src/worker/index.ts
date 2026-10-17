@@ -333,7 +333,9 @@ async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string, force 
   const cached = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
   const nowMs = Date.now()
   const cacheAge = cached?.fetchedAt ? nowMs - Date.parse(cached.fetchedAt) : Number.POSITIVE_INFINITY
-  const maxAgeMs = 24 * 60 * 60 * 1000
+  // Refresh the shared ranking cache after six hours when a request arrives.
+  // This only updates the live cache; immutable daily history remains on its existing schedule.
+  const maxAgeMs = 6 * 60 * 60 * 1000
   if (!force && Number.isFinite(cacheAge) && cacheAge >= 0 && cacheAge < maxAgeMs) return
 
   const nowSeconds = Math.floor(nowMs / 1000)
@@ -1975,7 +1977,7 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       if (url.searchParams.get("scope") === "global") {
-        // Refresh a stale shared snapshot on demand. The server-side 24-hour cache
+        // Refresh a stale shared snapshot on demand. The server-side six-hour cache
         // and database lease ensure concurrent dashboard users do not fan out to Torn.
         try {
           const userKey = await savedKey(env, session.player_id).catch(() => null)
