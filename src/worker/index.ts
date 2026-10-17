@@ -1157,15 +1157,22 @@ async function evaluateStaleDataRules(env: WorkerEnv): Promise<number> {
 async function runScheduledAutomation(controller: { scheduledTime: number; cron: string }, env: WorkerEnv): Promise<void> {
   if (!env.DB) return
   const db = requireDb(env)
+  const isRankingCaptureWindow = controller.cron.trim() === "10 18 * * *"
+  const isOfficialVerificationWindow = controller.cron.trim() === "10 0 * * *"
   try { await ensureAutomationSchema(env) } catch {
-    await Promise.allSettled([refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, 35), refreshGlobalRankingCache(env)])
+    const fallbackTasks: Promise<unknown>[] = [refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, 35)]
+    if (isRankingCaptureWindow) fallbackTasks.push(refreshGlobalRankingCache(env, undefined, true))
+    if (isOfficialVerificationWindow) fallbackTasks.push(verifyGlobalRankingsAgainstOfficialSnapshot(env, controller.scheduledTime))
+    await Promise.allSettled(fallbackTasks)
     return
   }
   const runId = crypto.randomUUID()
   const startedAt = new Date(controller.scheduledTime).toISOString()
   await db.prepare("INSERT INTO automation_runs (run_id, trigger_name, status, started_at) VALUES (?, ?, 'running', ?)").bind(runId, controller.cron || "scheduled", startedAt).run()
   const isWeeklyLock = new Date(controller.scheduledTime).getUTCDay() === 0
-  const tasks: Promise<unknown>[] = [refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35), refreshGlobalRankingCache(env)]
+  const tasks: Promise<unknown>[] = [refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35)]
+  if (isRankingCaptureWindow) tasks.push(refreshGlobalRankingCache(env, undefined, true))
+  if (isOfficialVerificationWindow) tasks.push(verifyGlobalRankingsAgainstOfficialSnapshot(env, controller.scheduledTime))
   if (isWeeklyLock) tasks.push(captureWeeklyFactionStarCounts(env, startedAt))
   const results = await Promise.allSettled(tasks)
   let staleRuleFailures = 0
@@ -1209,8 +1216,7 @@ async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
     } else if (job.job_type === "global-refresh") {
       await refreshRankingProfiles(env)
       await refreshFactionDirectoryFromAnyKey(env, 35)
-      await refreshGlobalRankingCache(env, undefined, true)
-      result = { message: "Company rankings, faction directory batch, and global ranking cache refreshed." }
+      result = { message: "Company ranking profiles and faction directory refreshed. Global company rankings remain locked to the 18:10 UTC capture; the 00:10 UTC official snapshot is verification-only." }
     } else {
       throw new Error("Unsupported administrative job type.")
     }
@@ -1947,7 +1953,6 @@ export default {
         const now = new Date().toISOString()
         await db.prepare("INSERT INTO players (player_id, player_name, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, updated_at = excluded.updated_at").bind(player.id, player.name, now, now).run()
         await saveKey(env, player.id, apiKey)
-        try { await refreshGlobalRankingCache(env, apiKey) } catch { /* Daily schedule retries the cache warm-up. */ }
         // Prefer the sign-in credential and persist the primary key plus its company snapshot.
         let selectedCompanyData = loginCompanyData
         let selectedCompanyApiKey = selectedCompanyData ? apiKey : ""
@@ -2156,12 +2161,8 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       if (url.searchParams.get("scope") === "global") {
-        // Refresh a stale shared snapshot on demand. The server-side six-hour cache
-        // and database lease ensure concurrent dashboard users do not fan out to Torn.
-        try {
-          const userKey = await savedKey(env, session.player_id).catch(() => null)
-          await refreshGlobalRankingCache(env, userKey ?? undefined)
-        } catch { /* Serve the last saved ranking snapshot if Torn is temporarily unavailable. */ }
+        // Global company rankings are captured only by the 18:10 UTC scheduled job.
+        // The 00:10 UTC official Torn snapshot is verification-only and never replaces this cache.
         const db = requireDb(env)
         await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_cache (cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1), companies_json TEXT NOT NULL, fetched_at TEXT NOT NULL)").run()
         const cached = await db.prepare("SELECT companies_json AS companiesJson, fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ companiesJson: string; fetchedAt: string }>()
