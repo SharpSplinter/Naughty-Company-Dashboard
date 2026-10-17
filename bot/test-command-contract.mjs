@@ -74,6 +74,11 @@ assert.match(financials, /unitCost/, "stock expense must use recorded unit cost"
 assert.doesNotMatch(financials, /in_stock\s*\*\s*(?:unitCost|row\.cost)/, "on-hand quantity must not be charged as new purchases");
 assert.match(worker, /countChangeLabel\(s\.ratingChange, "star", "stars"\)/, "star-rating trend must use a count formatter");
 assert.match(worker, /countChangeLabel\(s\.employeeCountChange, "employee", "employees"\)/, "employee trend must use a count formatter");
+assert.doesNotMatch(worker, /On-hand inventory is not charged as a new purchase\./, "profit response must omit the removed explanatory paragraph");
+const overviewStart = worker.indexOf('if (name === "overview" || (name === "company" && commandOptions(i).subcommand === "overview"))');
+const employeesStart = worker.indexOf('if (name === "employees" || (name === "company" && commandOptions(i).subcommand === "employees"))', overviewStart);
+assert.ok(overviewStart >= 0 && employeesStart > overviewStart, "overview handler boundaries must exist");
+assert.doesNotMatch(worker.slice(overviewStart, employeesStart), /Cost breakdown: advertising/, "company overview must omit the cost breakdown line");
 assert.doesNotMatch(worker, /\/api\/company\/refresh/, "read commands must not trigger company refreshes");
 assert.doesNotMatch(worker, /company_snapshots|GLOBAL_RANKINGS_QUEUE/, "read commands must not write snapshot or ranking-run state");
 console.log("PASS Discord command contract: " + commands.length + " top-level commands; private replies, one-time linking, owner-scoped reads, and no refresh/snapshot actions.");
