@@ -13,3 +13,22 @@ migrations_dir = "migrations/auth"
 
 [triggers]
 crons = ["10 18 * * *", "10 0 * * *"]
+
+[[queues.producers]]
+binding = "GLOBAL_RANKINGS_QUEUE"
+queue = "ncd-global-rankings-refresh"
+
+[[queues.consumers]]
+queue = "ncd-global-rankings-refresh"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 4
+max_concurrency = 1
+dead_letter_queue = "ncd-global-rankings-refresh-dlq"
+
+[[queues.consumers]]
+queue = "ncd-global-rankings-refresh-dlq"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 1
+max_concurrency = 1

@@ -4,7 +4,9 @@ import { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, eva
 type D1Result<T = Record<string, unknown>> = { results?: T[]; success?: boolean; meta?: { changes?: number } }
 type D1Statement = { bind(...values: (string | number | null)[]): D1Statement; first<T = Record<string, unknown>>(): Promise<T | null>; all<T = Record<string, unknown>>(): Promise<D1Result<T>>; run(): Promise<D1Result> }
 type D1Database = { prepare(sql: string): D1Statement }
-type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string }
+type QueueProducer = { send(message: unknown): Promise<unknown> }
+type QueueMessage = { body: unknown; attempts?: number; ack(): void; retry(options?: { delaySeconds?: number }): void }
+type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
 type Session = { player_id: string; player_name: string }
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }
@@ -420,45 +422,332 @@ async function fetchOfficialCompanySnapshot(apiKey: string): Promise<{ companies
   if (uniqueIds.size !== companies.length) throw Object.assign(new Error("Torn returned duplicate company IDs in the official verification snapshot."), { status: 502 })
   return { companies, snapshotFetchedAt: new Date().toISOString() }
 }
+type GlobalCompanyType = { id: number; name: string }
+type GlobalRankingRunRow = {
+  run_id: string; source: string; status: string; types_json: string; type_index: number; page_offset: number;
+  expected_total: number | null; companies_seen: number; snapshot_fetched_at: string; admin_job_id: string | null;
+  lease_until: number; started_at: string; updated_at: string
+}
+
+async function ensureGlobalRankingRefreshSchema(env: WorkerEnv): Promise<void> {
+  const db = requireDb(env)
+  await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_refresh_runs (run_id TEXT PRIMARY KEY, source TEXT NOT NULL, status TEXT NOT NULL, types_json TEXT NOT NULL, type_index INTEGER NOT NULL DEFAULT 0, page_offset INTEGER NOT NULL DEFAULT 0, expected_total INTEGER, companies_seen INTEGER NOT NULL DEFAULT 0, snapshot_fetched_at TEXT NOT NULL, admin_job_id TEXT, lease_until INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT, error_message TEXT)").run()
+  await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_refresh_pages (run_id TEXT NOT NULL, type_index INTEGER NOT NULL, page_offset INTEGER NOT NULL, companies_json TEXT NOT NULL, PRIMARY KEY (run_id, type_index, page_offset))").run()
+}
+
+async function fetchGlobalCompanyTypeCatalog(apiKey: string): Promise<GlobalCompanyType[]> {
+  const response = await fetch("https://api.torn.com/v2/torn/companies", {
+    headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+    signal: AbortSignal.timeout(12000),
+  })
+  const body = await response.text()
+  if (!response.ok) {
+    let message = "Torn could not provide the company type catalog."
+    try { const payload = JSON.parse(body); if (isRecord(payload) && isRecord(payload.error)) message = typeof payload.error.error === "string" ? payload.error.error : message } catch { /* Keep the fallback message. */ }
+    throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : 502 })
+  }
+  let payload: unknown
+  try { payload = JSON.parse(body) } catch { throw Object.assign(new Error("Torn returned malformed company type metadata."), { status: 502 }) }
+  const root = isRecord(payload)
+    ? (Array.isArray(payload.companies) || isRecord(payload.companies) ? payload.companies
+      : Array.isArray(payload.company_types) || isRecord(payload.company_types) ? payload.company_types : payload)
+    : payload
+  const entries = Array.isArray(root) ? root : isRecord(root) ? Object.values(root) : []
+  const byId = new Map<number, GlobalCompanyType>()
+  for (const entry of entries) {
+    if (!isRecord(entry)) continue
+    const id = positiveId(entry.id ?? entry.type_id ?? entry.typeId ?? entry.company_type_id)
+    if (!id) continue
+    const typeId = Number(id)
+    byId.set(typeId, { id: typeId, name: typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : "Type #" + typeId })
+  }
+  const types = Array.from(byId.values()).sort((a, b) => a.id - b.id)
+  if (!types.length) throw Object.assign(new Error("Torn returned no valid company type IDs; the existing ranking cache was preserved."), { status: 502 })
+  return types
+}
+
+async function getGlobalRankingApiKey(env: WorkerEnv, preferredKey?: string): Promise<string> {
+  if (preferredKey) return preferredKey
+  const row = await requireDb(env).prepare("SELECT player_id FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string }>()
+  const key = row ? await savedKey(env, row.player_id) : null
+  if (!key) throw Object.assign(new Error("No saved Torn API key is available to refresh the global company rankings cache."), { status: 503 })
+  return key
+}
+
+async function startGlobalRankingRefresh(
+  env: WorkerEnv,
+  source: "scheduled" | "automatic" | "admin",
+  adminJobId?: string,
+  deferDispatch = false,
+  preferredKey?: string,
+): Promise<{ runId: string; dispatchRequired: boolean }> {
+  if (!env.GLOBAL_RANKINGS_QUEUE) throw new Error("The resumable global-ranking queue is not configured.")
+  const db = requireDb(env)
+  await ensureGlobalRankingRefreshSchema(env)
+  const active = await db.prepare("SELECT run_id AS runId, admin_job_id AS adminJobId FROM global_rankings_refresh_runs WHERE status = 'running' ORDER BY started_at DESC LIMIT 1")
+    .first<{ runId: string; adminJobId: string | null }>()
+  if (active) {
+    // Do not attach a new admin job to an already-running refresh: it could finish
+    // before that job has persisted its pending result. Keep the job lifecycle race-free.
+    if (adminJobId) throw new Error("A global ranking refresh is already running. Wait for it to finish before starting another.")
+    return { runId: active.runId, dispatchRequired: false }
+  }
+
+  const apiKey = await getGlobalRankingApiKey(env, preferredKey)
+  const types = await fetchGlobalCompanyTypeCatalog(apiKey)
+  const now = new Date().toISOString()
+  const runId = randomToken().slice(0, 24)
+  await db.prepare("INSERT INTO global_rankings_refresh_runs (run_id, source, status, types_json, type_index, page_offset, expected_total, companies_seen, snapshot_fetched_at, admin_job_id, lease_until, started_at, updated_at) VALUES (?, ?, 'running', ?, 0, 0, NULL, 0, ?, ?, 0, ?, ?)")
+    .bind(runId, source, asJson(types), now, adminJobId ?? null, now, now).run()
+  if (deferDispatch) return { runId, dispatchRequired: true }
+  try {
+    await env.GLOBAL_RANKINGS_QUEUE.send({ runId })
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 220) : "Could not enqueue the global ranking refresh."
+    await db.prepare("UPDATE global_rankings_refresh_runs SET status = 'failed', finished_at = ?, updated_at = ?, error_message = ? WHERE run_id = ? AND status = 'running'")
+      .bind(new Date().toISOString(), new Date().toISOString(), message, runId).run()
+    throw new Error("Could not queue the resumable global ranking refresh: " + message)
+  }
+  return { runId, dispatchRequired: false }
+}
+
+async function completeLinkedAdminRankingJob(env: WorkerEnv, run: GlobalRankingRunRow, succeeded: boolean, summary: string): Promise<void> {
+  if (!run.admin_job_id) return
+  const db = requireDb(env)
+  const job = await db.prepare("SELECT job_type, result_json FROM admin_jobs WHERE job_id = ?").bind(run.admin_job_id)
+    .first<{ job_type: string; result_json: string | null }>()
+  if (!job || job.job_type !== "endpoint-refresh") return
+  const raw = parseStoredJson(job.result_json)
+  const result: Record<string, unknown> = isRecord(raw) ? raw : {}
+  const globalResults: Record<string, unknown> = isRecord(result.globalResults) ? result.globalResults : {}
+  globalResults["global-company-rankings"] = succeeded
+    ? { message: "Shared rankings cache refreshed from type-specific company lists.", refreshRunId: run.run_id, fetchedAt: run.snapshot_fetched_at, companies: run.companies_seen }
+    : { message: summary, status: "failed", refreshRunId: run.run_id }
+  result.globalResults = globalResults
+  delete result.pendingGlobalRankingRunId
+  if (!succeeded) {
+    result.partialFailure = true
+    result.globalFailures = Math.max(0, Number(result.globalFailures ?? 0)) + 1
+    result.globalSuccesses = Math.max(0, Number(result.globalSuccesses ?? 0) - 1)
+    const endpoints: Record<string, unknown> = isRecord(result.endpoints) ? result.endpoints : {}
+    const stats: Record<string, unknown> = isRecord(endpoints["global-company-rankings"]) ? endpoints["global-company-rankings"] as Record<string, unknown> : { attempted: 1, succeeded: 0, failed: 0 }
+    stats.succeeded = Math.max(0, Number(stats.succeeded ?? 0) - 1)
+    stats.failed = Number(stats.failed ?? 0) + 1
+    endpoints["global-company-rankings"] = stats
+    result.endpoints = endpoints
+    const failures = Array.isArray(result.failures) ? result.failures.slice() : []
+    failures.push({ endpoint: "global-company-rankings", error: summary })
+    result.failures = failures.slice(0, 30)
+    result.failedEndpointCalls = Number(result.failedEndpointCalls ?? 0) + 1
+    result.successfulEndpointCalls = Math.max(0, Number(result.successfulEndpointCalls ?? 0) - 1)
+  }
+  const now = new Date().toISOString()
+  await db.prepare("UPDATE admin_jobs SET status = 'completed', finished_at = ?, result_json = ?, error_message = NULL WHERE job_id = ? AND status = 'running'")
+    .bind(now, asJson(result), run.admin_job_id).run()
+  const actor = { player_id: ADMIN_PLAYER_ID, player_name: "SharpSplinter" }
+  await writeAdminAudit(env, actor, "job.completed", "job", run.admin_job_id, succeeded ? "succeeded" : "failed",
+    succeeded ? "Administrative endpoint refresh completed, including resumable global company rankings." : "Administrative endpoint refresh completed with a failed global company ranking endpoint.",
+    { jobType: "endpoint-refresh", refreshRunId: run.run_id, partialFailure: !succeeded })
+}
+
+async function markGlobalRankingRunFailed(env: WorkerEnv, runId: string, error: unknown): Promise<void> {
+  const db = requireDb(env)
+  const run = await db.prepare("SELECT run_id, source, status, types_json, type_index, page_offset, expected_total, companies_seen, snapshot_fetched_at, admin_job_id, lease_until, started_at, updated_at FROM global_rankings_refresh_runs WHERE run_id = ?")
+    .bind(runId).first<GlobalRankingRunRow>()
+  if (!run || run.status !== "running") return
+  const message = error instanceof Error ? error.message.slice(0, 220) : "Global company rankings refresh failed unexpectedly."
+  const now = new Date().toISOString()
+  await db.prepare("UPDATE global_rankings_refresh_runs SET status = 'failed', lease_until = 0, finished_at = ?, updated_at = ?, error_message = ? WHERE run_id = ? AND status = 'running'")
+    .bind(now, now, message, runId).run()
+  await db.prepare("DELETE FROM global_rankings_refresh_pages WHERE run_id = ?").bind(runId).run()
+  await completeLinkedAdminRankingJob(env, run, false, message)
+}
+
+async function finalizeGlobalRankingRefresh(env: WorkerEnv, run: GlobalRankingRunRow, types: GlobalCompanyType[]): Promise<void> {
+  const db = requireDb(env)
+  const pages = await db.prepare("SELECT type_index AS typeIndex, page_offset AS pageOffset, companies_json AS companiesJson FROM global_rankings_refresh_pages WHERE run_id = ? ORDER BY type_index, page_offset")
+    .bind(run.run_id).all<{ typeIndex: number; pageOffset: number; companiesJson: string }>()
+  const collected: Array<{ row: Record<string, unknown>; typeId: number; typeName: string }> = []
+  for (const page of pages.results ?? []) {
+    const type = types[Number(page.typeIndex)]
+    if (!type) throw new Error("Staged global-ranking data referenced an unknown company type; the existing cache was preserved.")
+    let parsed: unknown
+    try { parsed = JSON.parse(page.companiesJson) } catch { throw new Error("Staged global-ranking page data was malformed; the existing cache was preserved.") }
+    if (!Array.isArray(parsed) || parsed.some((item) => !isRecord(item))) throw new Error("Staged global-ranking page data was incomplete; the existing cache was preserved.")
+    for (const row of parsed as Record<string, unknown>[]) collected.push({ row, typeId: type.id, typeName: type.name })
+  }
+  if (collected.length !== run.companies_seen) throw new Error("Staged global-ranking row count did not match the saved progress; the existing cache was preserved.")
+  if (!collected.length) throw new Error("Torn returned no companies for the global ranking capture; the existing cache was preserved.")
+  const companies = collected.flatMap(({ row, typeId, typeName }) => {
+    const companyId = positiveId(row.id ?? row.company_id ?? row.companyId ?? row.ID)
+    if (!companyId) return []
+    const type = isRecord(row.type) ? row.type : {}
+    const income = isRecord(row.income) ? row.income : {}
+    const director = isRecord(row.director) ? row.director : {}
+    const typeNameFromRow = typeof type.name === "string" && type.name.trim() ? type.name.trim() : typeName
+    const typeIdFromRow = positiveId(type.id ?? row.company_type_id ?? row.companyTypeId)
+    const weeklyIncome = numericField(income.weekly ?? row.weekly_income ?? row.weeklyIncome)
+    const dailyIncome = numericField(income.daily ?? row.daily_income ?? row.dailyIncome)
+    return [{
+      companyId, companyName: typeof row.name === "string" && row.name.trim() ? row.name : "Company #" + companyId,
+      companyType: typeNameFromRow, companyTypeId: typeIdFromRow === null ? typeId : Number(typeIdFromRow),
+      starRating: numericField(row.rating ?? row.stars ?? row.star_rating), weeklyIncome, dailyIncome,
+      averageDailyIncome: weeklyIncome === null ? null : weeklyIncome / 7, directorName: typeof director.name === "string" ? director.name : "",
+      playerId: "torn-global", fetchedAt: run.snapshot_fetched_at,
+    }]
+  }).sort((a, b) => Number(b.weeklyIncome ?? -1) - Number(a.weeklyIncome ?? -1))
+  if (!companies.length || companies.length !== collected.length) throw new Error("Torn returned company rows without valid IDs; the existing ranking cache was preserved.")
+  const uniqueIds = new Set(companies.map((company) => String(company.companyId)))
+  if (uniqueIds.size !== companies.length) throw new Error("Torn returned duplicate company IDs across company types; the existing ranking cache was preserved.")
+  await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_cache (cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1), companies_json TEXT NOT NULL, fetched_at TEXT NOT NULL)").run()
+  await db.prepare("INSERT INTO global_rankings_cache (cache_id, companies_json, fetched_at) VALUES (1, ?, ?) ON CONFLICT(cache_id) DO UPDATE SET companies_json = excluded.companies_json, fetched_at = excluded.fetched_at")
+    .bind(asJson(companies), run.snapshot_fetched_at).run()
+  const now = new Date().toISOString()
+  await db.prepare("UPDATE global_rankings_refresh_runs SET status = 'completed', lease_until = 0, finished_at = ?, updated_at = ?, error_message = NULL WHERE run_id = ? AND status = 'running'")
+    .bind(now, now, run.run_id).run()
+  await db.prepare("DELETE FROM global_rankings_refresh_pages WHERE run_id = ?").bind(run.run_id).run()
+  await completeLinkedAdminRankingJob(env, { ...run, companies_seen: companies.length }, true, "")
+}
+
+async function processGlobalRankingQueueMessage(env: WorkerEnv, runId: string): Promise<"busy" | "pending" | "complete"> {
+  const db = requireDb(env)
+  await ensureGlobalRankingRefreshSchema(env)
+  const nowSeconds = Math.floor(Date.now() / 1000)
+  const leaseUntil = nowSeconds + 45
+  const claim = await db.prepare("UPDATE global_rankings_refresh_runs SET lease_until = ?, updated_at = ? WHERE run_id = ? AND status = 'running' AND lease_until < ?")
+    .bind(leaseUntil, new Date().toISOString(), runId, nowSeconds).run()
+  if (claim.meta?.changes === 0) {
+    const current = await db.prepare("SELECT status FROM global_rankings_refresh_runs WHERE run_id = ?").bind(runId).first<{ status: string }>()
+    return current?.status === "running" ? "busy" : "complete"
+  }
+  let run = await db.prepare("SELECT run_id, source, status, types_json, type_index, page_offset, expected_total, companies_seen, snapshot_fetched_at, admin_job_id, lease_until, started_at, updated_at FROM global_rankings_refresh_runs WHERE run_id = ?")
+    .bind(runId).first<GlobalRankingRunRow>()
+  if (!run || run.status !== "running") return "complete"
+  try {
+    let typesValue: unknown
+    try { typesValue = JSON.parse(run.types_json) } catch { throw new Error("Saved global-ranking type catalogue was malformed; the existing cache was preserved.") }
+    if (!Array.isArray(typesValue) || typesValue.some((item) => !isRecord(item) || !Number.isFinite(Number(item.id)) || typeof item.name !== "string")) throw new Error("Saved global-ranking type catalogue was incomplete; the existing cache was preserved.")
+    const types = typesValue as GlobalCompanyType[]
+    if (!types.length) throw new Error("Saved global-ranking type catalogue is empty; the existing cache was preserved.")
+    const key = await getGlobalRankingApiKey(env)
+    let typeIndex = Number(run.type_index)
+    let offset = Number(run.page_offset)
+    let expectedTotal = run.expected_total === null ? null : Number(run.expected_total)
+    let companiesSeen = Number(run.companies_seen)
+    const pageSize = 100
+    const maxPagesPerInvocation = 3
+    for (let pageNumber = 0; pageNumber < maxPagesPerInvocation && typeIndex < types.length; pageNumber++) {
+      const type = types[typeIndex]
+      const response = await fetch("https://api.torn.com/v2/company/" + type.id + "/companies?offset=" + offset + "&limit=" + pageSize, {
+        headers: { Authorization: "ApiKey " + key, Accept: "application/json" },
+        signal: AbortSignal.timeout(8000),
+      })
+      const body = await response.text()
+      if (!response.ok) {
+        let message = "Torn could not provide companies for " + type.name + " (type #" + type.id + ")."
+        try { const payload = JSON.parse(body); if (isRecord(payload) && isRecord(payload.error)) message = typeof payload.error.error === "string" ? payload.error.error : message } catch { /* Keep the fallback message. */ }
+        throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : 502 })
+      }
+      let payload: unknown
+      try { payload = JSON.parse(body) } catch { throw new Error("Torn returned malformed company-list data for type #" + type.id + "; the existing cache was preserved.") }
+      if (!isRecord(payload) || !Array.isArray(payload.companies)) throw new Error("Torn returned no company list for type #" + type.id + "; the existing cache was preserved.")
+      if (payload.companies.some((item) => !isRecord(item))) throw new Error("Torn returned a malformed company row for type #" + type.id + ".")
+      const rows = payload.companies as Record<string, unknown>[]
+      const metadata = isRecord(payload._metadata) ? payload._metadata : {}
+      const metadataTotal = numericField(metadata.total)
+      if (metadataTotal !== null && expectedTotal !== null && expectedTotal !== metadataTotal) throw new Error("Torn company-list total changed during type #" + type.id + " pagination.")
+      if (metadataTotal !== null) expectedTotal = metadataTotal
+      const nextOffset = offset + rows.length
+      if (expectedTotal !== null && nextOffset > expectedTotal) throw new Error("Torn returned more companies than its declared total for type #" + type.id + ".")
+      if (expectedTotal !== null && rows.length === 0 && offset < expectedTotal) throw new Error("Torn returned an incomplete company list for type #" + type.id + "; the existing cache was preserved.")
+      await db.prepare("INSERT INTO global_rankings_refresh_pages (run_id, type_index, page_offset, companies_json) VALUES (?, ?, ?, ?) ON CONFLICT(run_id, type_index, page_offset) DO UPDATE SET companies_json = excluded.companies_json")
+        .bind(runId, typeIndex, offset, asJson(rows)).run()
+      companiesSeen += rows.length
+      const typeFinished = expectedTotal !== null
+        ? nextOffset === expectedTotal
+        : rows.length < pageSize
+      if (typeFinished) {
+        typeIndex += 1
+        offset = 0
+        expectedTotal = null
+      } else {
+        offset = nextOffset
+      }
+      const updatedAt = new Date().toISOString()
+      await db.prepare("UPDATE global_rankings_refresh_runs SET type_index = ?, page_offset = ?, expected_total = ?, companies_seen = ?, lease_until = ?, updated_at = ? WHERE run_id = ? AND status = 'running' AND lease_until = ?")
+        .bind(typeIndex, offset, expectedTotal, companiesSeen, leaseUntil, updatedAt, runId, leaseUntil).run()
+    }
+    run = { ...run, type_index: typeIndex, page_offset: offset, expected_total: expectedTotal, companies_seen: companiesSeen, lease_until: leaseUntil, updated_at: new Date().toISOString() }
+    if (typeIndex >= types.length) {
+      await finalizeGlobalRankingRefresh(env, run, types)
+      return "complete"
+    }
+    if (!env.GLOBAL_RANKINGS_QUEUE) throw new Error("The resumable global-ranking queue binding is missing.")
+    await env.GLOBAL_RANKINGS_QUEUE.send({ runId })
+    await db.prepare("UPDATE global_rankings_refresh_runs SET lease_until = 0, updated_at = ? WHERE run_id = ? AND status = 'running' AND lease_until = ?")
+      .bind(new Date().toISOString(), runId, leaseUntil).run()
+    return "pending"
+  } catch (error) {
+    await db.prepare("UPDATE global_rankings_refresh_runs SET lease_until = 0, updated_at = ? WHERE run_id = ? AND status = 'running' AND lease_until = ?")
+      .bind(new Date().toISOString(), runId, leaseUntil).run().catch(() => undefined)
+    throw error
+  }
+}
+
+async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; queue?: string }, env: WorkerEnv): Promise<void> {
+  if (batch.queue === "ncd-global-rankings-refresh-dlq") {
+    for (const message of batch.messages) {
+      const body = isRecord(message.body) ? message.body : {}
+      const runId = typeof body.runId === "string" ? body.runId : ""
+      if (runId) await markGlobalRankingRunFailed(env, runId, new Error("Global-ranking refresh exhausted its queue retries. The last good cache was preserved."))
+      message.ack()
+    }
+    return
+  }
+  for (const message of batch.messages) {
+    const body = isRecord(message.body) ? message.body : {}
+    const runId = typeof body.runId === "string" ? body.runId : ""
+    if (!runId) { message.ack(); continue }
+    try {
+      const result = await processGlobalRankingQueueMessage(env, runId)
+      if (result === "busy") message.retry({ delaySeconds: 5 })
+      else message.ack()
+    } catch (error) {
+      const attempts = Number(message.attempts ?? 1)
+      if (attempts < 4) {
+        message.retry({ delaySeconds: Math.min(30, attempts * 5) })
+      } else {
+        await markGlobalRankingRunFailed(env, runId, error)
+        message.ack()
+      }
+    }
+  }
+}
+
 async function refreshGlobalRankingCache(env: WorkerEnv, apiKey?: string, force = false): Promise<void> {
   if (!env.DB) return
   const db = requireDb(env)
   await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_cache (cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1), companies_json TEXT NOT NULL, fetched_at TEXT NOT NULL)").run()
-  await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_refresh_lock (lock_id INTEGER PRIMARY KEY CHECK (lock_id = 1), lease_until INTEGER NOT NULL DEFAULT 0)").run()
-  await db.prepare("INSERT INTO global_rankings_refresh_lock (lock_id, lease_until) VALUES (1, 0) ON CONFLICT(lock_id) DO NOTHING").run()
-
   const cached = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
   const nowMs = Date.now()
   const cacheAge = cached?.fetchedAt ? nowMs - Date.parse(cached.fetchedAt) : Number.POSITIVE_INFINITY
   // Refresh the shared ranking cache after six hours when a request arrives.
-  // This only updates the live cache; immutable daily history remains on its existing schedule.
+  // The queue path stages bounded pages and only publishes after full validation.
   const maxAgeMs = 6 * 60 * 60 * 1000
   if (!force && Number.isFinite(cacheAge) && cacheAge >= 0 && cacheAge < maxAgeMs) return
 
-  const nowSeconds = Math.floor(nowMs / 1000)
-  const leaseUntil = nowSeconds + 120
-  const claim = await db.prepare("UPDATE global_rankings_refresh_lock SET lease_until = ? WHERE lock_id = 1 AND lease_until < ?").bind(leaseUntil, nowSeconds).run()
-  if (claim.meta?.changes === 0) return
-
-  try {
-    // Another request may have refreshed the shared snapshot while this request waited for the lease.
-    const latest = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
-    const latestAge = latest?.fetchedAt ? Date.now() - Date.parse(latest.fetchedAt) : Number.POSITIVE_INFINITY
-    if (!force && Number.isFinite(latestAge) && latestAge >= 0 && latestAge < maxAgeMs) return
-
-    let key = apiKey
-    if (!key) {
-      const row = await db.prepare("SELECT player_id FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string }>()
-      if (row) key = (await savedKey(env, row.player_id)) ?? undefined
-    }
-    if (!key) throw Object.assign(new Error("No saved Torn API key is available to refresh the global company rankings cache."), { status: 503 })
-    const snapshot = await fetchGlobalCompanyRankings(key)
-    await db.prepare("INSERT INTO global_rankings_cache (cache_id, companies_json, fetched_at) VALUES (1, ?, ?) ON CONFLICT(cache_id) DO UPDATE SET companies_json = excluded.companies_json, fetched_at = excluded.fetched_at").bind(asJson(snapshot.companies), snapshot.snapshotFetchedAt).run()
-  } finally {
-    await db.prepare("UPDATE global_rankings_refresh_lock SET lease_until = 0 WHERE lock_id = 1 AND lease_until = ?").bind(leaseUntil).run().catch(() => undefined)
+  if (env.GLOBAL_RANKINGS_QUEUE) {
+    await startGlobalRankingRefresh(env, force ? "scheduled" : "automatic", undefined, false, apiKey)
+    return
   }
-}
 
+  // Local/test fallback only. Production is bound to GLOBAL_RANKINGS_QUEUE in wrangler.toml.
+  let key = apiKey
+  if (!key) key = await getGlobalRankingApiKey(env)
+  const snapshot = await fetchGlobalCompanyRankings(key)
+  await db.prepare("INSERT INTO global_rankings_cache (cache_id, companies_json, fetched_at) VALUES (1, ?, ?) ON CONFLICT(cache_id) DO UPDATE SET companies_json = excluded.companies_json, fetched_at = excluded.fetched_at")
+    .bind(asJson(snapshot.companies), snapshot.snapshotFetchedAt).run()
+}
 async function verifyGlobalRankingsAgainstOfficialSnapshot(env: WorkerEnv, scheduledTime: number): Promise<void> {
   if (!env.DB) return
   const db = requireDb(env)
@@ -1223,7 +1512,7 @@ async function ensureAdminJobPayloadSchema(env: WorkerEnv): Promise<void> {
   }
 }
 
-async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefreshConfig): Promise<Record<string, unknown>> {
+async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefreshConfig, adminJobId?: string): Promise<Record<string, unknown>> {
   const db = requireDb(env)
   const userEndpoints = config.endpoints.filter((endpoint) => endpoint === "company-profile" || endpoint === "company-employees" || endpoint === "company-stock")
   const endpointStats: Record<string, { attempted: number; succeeded: number; failed: number }> = {}
@@ -1232,20 +1521,29 @@ async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefr
   const globalResults: Record<string, unknown> = {}
   let globalSuccesses = 0
   let globalFailures = 0
+  let pendingGlobalRankingRunId: string | null = null
+  let dispatchGlobalRankingRun = false
 
   for (const endpoint of config.endpoints.filter((item) => item === "global-company-rankings" || item === "faction-directory")) {
     try {
       if (endpoint === "global-company-rankings") {
-        // Refresh the live ranking cache from /company/{typeId}/companies lists.
-        // /company/snapshot is verification-only and is not called here.
-        await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_cache (cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1), companies_json TEXT NOT NULL, fetched_at TEXT NOT NULL)").run()
-        const before = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
-        await refreshGlobalRankingCache(env, undefined, true)
-        const after = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
-        if (!after?.fetchedAt || after.fetchedAt === before?.fetchedAt) {
-          throw new Error("Global company ranking refresh did not write a new cache snapshot. Another refresh may still hold the refresh lock.")
+        // Rankings are collected from type-specific company lists in queue-sized page batches.
+        // The official /company/snapshot endpoint remains verification-only.
+        if (env.GLOBAL_RANKINGS_QUEUE) {
+          const started = await startGlobalRankingRefresh(env, "admin", adminJobId, true)
+          pendingGlobalRankingRunId = started.runId
+          dispatchGlobalRankingRun = started.dispatchRequired
+          globalResults[endpoint] = { message: "Global company rankings refresh is queued and will publish only after all company-type pages validate.", refreshRunId: started.runId, pending: true }
+        } else {
+          await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_cache (cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1), companies_json TEXT NOT NULL, fetched_at TEXT NOT NULL)").run()
+          const before = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
+          await refreshGlobalRankingCache(env, undefined, true)
+          const after = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1").first<{ fetchedAt: string }>()
+          if (!after?.fetchedAt || after.fetchedAt === before?.fetchedAt) {
+            throw new Error("Global company ranking refresh did not write a new cache snapshot. Another refresh may still hold the refresh lock.")
+          }
+          globalResults[endpoint] = { message: "Shared rankings cache refreshed from type-specific company lists.", fetchedAt: after.fetchedAt }
         }
-        globalResults[endpoint] = { message: "Shared rankings cache refreshed from type-specific company lists.", fetchedAt: after.fetchedAt }
       } else {
         const row = await db.prepare("SELECT player_id, ciphertext, iv FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string; ciphertext: string; iv: string }>()
         if (!row) throw new Error("No saved Torn API key is available for the faction-directory refresh.")
@@ -1368,6 +1666,7 @@ async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefr
     failures: failures.slice(0, 30),
     partialFailure: failedCalls > 0 || globalFailures > 0 || (userEndpoints.length > 0 && connections.length === 0) || selectedWithoutConnection > 0,
     globalSuccesses,
+    ...(pendingGlobalRankingRunId ? { pendingGlobalRankingRunId, dispatchGlobalRankingRun } : {}),
   }
 }
 
@@ -1404,7 +1703,19 @@ async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
       const targetPlayerIds = Array.isArray(rawConfig.targetPlayerIds)
         ? Array.from(new Set(rawConfig.targetPlayerIds.filter((item): item is string => typeof item === "string" && /^\d+$/.test(item))))
         : []
-      result = await runAdminEndpointRefresh(env, { endpoints, scope: rawConfig.scope, targetPlayerIds })
+      result = await runAdminEndpointRefresh(env, { endpoints, scope: rawConfig.scope, targetPlayerIds }, jobId)
+      if (typeof result.pendingGlobalRankingRunId === "string") {
+        await db.prepare("UPDATE admin_jobs SET status = 'running', result_json = ?, error_message = NULL WHERE job_id = ?")
+          .bind(asJson(result), jobId).run()
+        if (result.dispatchGlobalRankingRun === true) {
+          try { await env.GLOBAL_RANKINGS_QUEUE?.send({ runId: result.pendingGlobalRankingRunId }) }
+          catch (dispatchError) {
+            await markGlobalRankingRunFailed(env, result.pendingGlobalRankingRunId, dispatchError)
+            return
+          }
+        }
+        return
+      }
     } else {
       throw new Error("Unsupported administrative job type.")
     }
@@ -2130,6 +2441,9 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
 }
 
 export default {
+  async queue(batch: { messages: QueueMessage[]; queue?: string }, env: WorkerEnv): Promise<void> {
+    await handleGlobalRankingQueueBatch(batch, env)
+  },
   async scheduled(controller: { scheduledTime: number; cron: string }, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
     ctx.waitUntil(runScheduledAutomation(controller, env))
   },
