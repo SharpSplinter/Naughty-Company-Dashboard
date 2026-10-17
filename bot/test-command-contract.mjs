@@ -53,6 +53,7 @@ for (const name of ["link", "link-code", "status", "unlink", "help", "ping", "bo
 
 const worker = readFileSync(new URL("./production-worker.js", import.meta.url), "utf8");
 const registration = readFileSync(new URL("./register-commands.mjs", import.meta.url), "utf8");
+const financials = readFileSync(new URL("./financials.mjs", import.meta.url), "utf8");
 assert.match(registration, /response\.status === 429/, "Discord command registration must retry explicit rate limits");
 assert.match(registration, /data\.retry_after/, "rate-limit retry must honor Discord retry_after");
 assert.match(registration, /maxRateLimitRetries/, "rate-limit retry attempts must be bounded");
@@ -66,6 +67,11 @@ assert.match(worker, /\/api\/rankings\?scope=global&typeId=/, "global rankings m
 assert.match(worker, /advertisement_budget/, "ad budget parsing must follow dashboard field aliases");
 assert.match(worker, /advertising_budget_daily/, "ad budget parsing must recognize daily advertising budget");
 assert.match(worker, /daily_ad_budget/, "ad budget parsing must recognize daily ad budget");
+assert.match(worker, /stockOrderExpenses\(data\.stock\)/, "profit estimates must use saved stock order data");
+assert.match(worker, /knownWageSummary\(wagesData\.summary\)/, "profit estimates must require known wage coverage");
+assert.match(financials, /on_order/, "stock expense must use on_order quantity");
+assert.match(financials, /unitCost/, "stock expense must use recorded unit cost");
+assert.doesNotMatch(financials, /in_stock\s*\*\s*(?:unitCost|row\.cost)/, "on-hand quantity must not be charged as new purchases");
 assert.match(worker, /countChangeLabel\(s\.ratingChange, "star", "stars"\)/, "star-rating trend must use a count formatter");
 assert.match(worker, /countChangeLabel\(s\.employeeCountChange, "employee", "employees"\)/, "employee trend must use a count formatter");
 assert.doesNotMatch(worker, /\/api\/company\/refresh/, "read commands must not trigger company refreshes");
