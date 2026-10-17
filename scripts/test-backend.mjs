@@ -107,13 +107,28 @@ try {
     assert.doesNotMatch(migrationSource, /DROP TABLE|DELETE FROM company_financials/i)
   })
 
-  await test("ranking refresh schedules run at both daily UTC checkpoints and reject malformed caches", () => {
+  await test("global rankings use type-specific company lists at 18:10 UTC and official snapshot only verifies at 00:10 UTC", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const wranglerSource = readFileSync(join(root, "wrangler.toml"), "utf8")
     assert.match(wranglerSource, /crons = \["10 18 \* \* \*", "10 0 \* \* \*"\]/)
-    assert.match(workerSource, /validIdRows < Math\.ceil\(records\.length \* 0\.95\)/)
-    assert.match(workerSource, /uniqueIds\.size !== companies\.length/)
+    assert.ok(workerSource.includes("https://api.torn.com/v2/company/\u0024{type.id}/companies?offset=\u0024{offset}&limit=\u0024{pageSize}"))
+    assert.ok(workerSource.includes("https://api.torn.com/v2/company/snapshot"))
+    assert.match(workerSource, /controller\.cron\.trim\(\) === "10 18 \* \* \*"/)
+    assert.match(workerSource, /controller\.cron\.trim\(\) === "10 0 \* \* \*"/)
+    assert.match(workerSource, /if \(isRankingCaptureWindow\) tasks\.push\(refreshGlobalRankingCache\(env, undefined, true\)\)/)
+    assert.match(workerSource, /if \(isOfficialVerificationWindow\) tasks\.push\(verifyGlobalRankingsAgainstOfficialSnapshot\(env, controller\.scheduledTime\)\)/)
     assert.match(workerSource, /const maxAgeMs = 6 \* 60 \* 60 \* 1000/)
+    assert.match(workerSource, /uniqueIds\.size !== companies\.length/)
+    assert.equal([...workerSource.matchAll(/refreshGlobalRankingCache\(/g)].length, 3, "ranking cache should only be refreshed by the function itself and the two guarded scheduled branches")
+  })
+
+  await test("stock difference uses saved daily trend records instead of imported chart archive", () => {
+    const uiSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
+    assert.ok(uiSource.includes("/api/me/companies/\u0024{encodeURIComponent(companyId)}/history?days=7"))
+    assert.match(uiSource, /const officialStockSnapshots = officialStockHistory/)
+    assert.match(uiSource, /const stockDifference = currentOfficialStockSnapshot\?\.stockQuantity != null && previousStockSnapshot\?\.stockQuantity != null/)
+    assert.match(uiSource, /missingStockSnapshotDays\.join\(" and "\)/)
+    assert.doesNotMatch(uiSource, /const officialStockSnapshots = \(currentChartCompany\?\.history \?\? \[\]\)/)
   })
 
   await test("scheduled automation records stale-rule and digest delivery failures for dashboard visibility", () => {
