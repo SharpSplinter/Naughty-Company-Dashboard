@@ -668,17 +668,17 @@ async function getWeeklyFactionStarCounts(env: WorkerEnv): Promise<{ weeklyStarC
   return { weeklyStarCounts: rows.results ?? [], weeklyStarCountsCapturedAt: latest.capturedAt }
 }
 
-async function refreshFactionDirectoryFromAnyKey(env: WorkerEnv, limit = 35): Promise<void> {
+async function refreshFactionDirectoryFromAnyKey(env: WorkerEnv, limit = 35, captureSnapshots = true, forceRefresh = false): Promise<void> {
   if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return
   const row = await requireDb(env).prepare("SELECT player_id, ciphertext, iv FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string; ciphertext: string; iv: string }>()
   if (!row) return
   try {
     const apiKey = await decryptKey(env, row.ciphertext, row.iv)
-    await syncFactionDirectorDirectory(env, apiKey, limit)
+    await syncFactionDirectorDirectory(env, apiKey, limit, captureSnapshots, forceRefresh)
   } catch { /* Keep scheduled sync resilient to a revoked key or temporary Torn failure. */ }
 }
 
-async function refreshRankingProfiles(env: WorkerEnv): Promise<{ companiesChecked: number; companiesFailed: number }> {
+async function refreshRankingProfiles(env: WorkerEnv, captureHistory = true): Promise<{ companiesChecked: number; companiesFailed: number }> {
   if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return { companiesChecked: 0, companiesFailed: 0 }
   const db = requireDb(env)
   const perCompany = await db.prepare("SELECT player_id, company_id, ciphertext, iv FROM company_api_keys ORDER BY updated_at ASC").all<{ player_id: string; company_id: string; ciphertext: string; iv: string }>()
@@ -701,10 +701,12 @@ async function refreshRankingProfiles(env: WorkerEnv): Promise<{ companiesChecke
       const employees = employeePayload === null ? existing?.employees_json ?? "{}" : asJson(employeePayload)
       const now = new Date().toISOString()
       await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, employees_json = excluded.employees_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), String(root.name ?? `Company #${companyId}`), typeof type.name === "string" ? type.name : null, asJson(profile), employees, now).run()
-      await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(profile), employees, now).run()
+      if (captureHistory) await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(profile), employees, now).run()
       await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), asJson(stock), now).run()
-      await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(stock), now).run()
-      await persistFactionDirectorSnapshot(env, profile, stock)
+      if (captureHistory) {
+        await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(stock), now).run()
+        await persistFactionDirectorSnapshot(env, profile, stock)
+      }
       companiesChecked += 1
       await evaluateAutomationForCompany(env, keyRow.player_id, String(companyId)).catch(() => undefined)
     } catch (error) {
@@ -1389,9 +1391,9 @@ async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
       const root = companyProfileRoot(validated.profile)
       result = { companyId: String(validated.companyId), companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}` }
     } else if (job.job_type === "global-refresh") {
-      const rankings = await refreshRankingProfiles(env)
-      await refreshFactionDirectoryFromAnyKey(env, 35)
-      result = { ...rankings, message: "Company ranking profiles and faction directory refreshed. Global company rankings remain locked to the 18:10 UTC capture; the 00:10 UTC official snapshot is verification-only." }
+      const rankings = await refreshRankingProfiles(env, false)
+      await refreshFactionDirectoryFromAnyKey(env, 35, false, true)
+      result = { ...rankings, message: "Live company ranking profiles and a forced faction-directory batch refreshed without adding historical snapshots. Global company rankings remain sourced from the dedicated endpoint refresh; the official /company/snapshot endpoint is verification-only." }
     } else if (job.job_type === "endpoint-refresh") {
       const rawConfig = parseStoredJson(job.job_payload_json)
       if (!isRecord(rawConfig) || !Array.isArray(rawConfig.endpoints) || (rawConfig.scope !== "all" && rawConfig.scope !== "selected")) {
