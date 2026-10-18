@@ -892,7 +892,85 @@ async function replyFor(i, env) {
       return privateReply("**Private alert status**\n" + lines.join("\n") + "\nDiscord DMs are immediate when enabled, subject to minimum severity and quiet hours.");
     } catch { return privateReply("Alert settings are temporarily unavailable. Please try again later."); }
   }
-    return privateReply("That command isn't enabled yet. Use /help to see available commands.");
+    if (name === "dashboard" && ["health", "summary"].includes(commandOptions(i).subcommand)) {
+    const subcommand = commandOptions(i).subcommand;
+    const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
+    if (!row) return privateReply("Link your dashboard first with /link.");
+    try {
+      const token = await unseal(row.encrypted_session_token, row.token_iv, env);
+      const headers = { authorization: "Bearer " + token, accept: "application/json" };
+      const healthRes = await dashboardFetch(env, "/api/me/health", { headers, signal: AbortSignal.timeout(8000) });
+      if (healthRes.status === 401 || healthRes.status === 403) {
+        await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run();
+        return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+      }
+      if (!healthRes.ok) return privateReply("Dashboard health data is temporarily unavailable. Please try again later.");
+      const health = await healthRes.json();
+      const summary = health.summary && typeof health.summary === "object" ? health.summary : {};
+      const workerStatus = health.worker && typeof health.worker.status === "string" ? health.worker.status : "unknown";
+      const databaseStatus = health.database && typeof health.database.status === "string" ? health.database.status : "unknown";
+      const latency = value => typeof value === "number" && Number.isFinite(value) ? value + " ms" : "not reported";
+      const snapshotTime = value => typeof value === "string" && value ? value : "not available";
+      const companyRows = Array.isArray(health.companies) ? health.companies : [];
+      const freshnessLabel = value => ({ fresh: "fresh", stale: "stale", never: "never synced", unknown: "unknown" }[String(value || "").toLowerCase()] || "unknown");
+      if (subcommand === "health") {
+        const lines = [
+          "Dashboard Worker: **" + safeText(workerStatus, 30) + "** (latency " + latency(health.worker?.latencyMs) + ")",
+          "Database: **" + safeText(databaseStatus, 30) + "** (latency " + latency(health.database?.latencyMs) + ")",
+          "Connected companies: **" + Number(summary.companyCount || 0) + "**",
+          "Saved snapshots: **" + Number(summary.snapshotCount || 0).toLocaleString("en-US") + "**",
+          "Stale or never-synced companies: **" + Number(summary.staleCompanies || 0) + "**",
+          "Latest saved snapshot: " + snapshotTime(summary.latestSnapshotAt),
+          "Checked at: " + snapshotTime(health.checkedAt)
+        ];
+        for (const company of companyRows.slice(0, 10)) {
+          const age = typeof company.ageHours === "number" && Number.isFinite(company.ageHours)
+            ? " · " + (company.ageHours < 1 ? "under 1 hour" : Math.floor(company.ageHours) + "h old")
+            : "";
+          lines.push("- **" + safeText(company.companyName || "Company", 70) + "**: " + freshnessLabel(company.freshness) +
+            age + " · " + Number(company.snapshotCount || 0) + " snapshot(s)");
+        }
+        if (companyRows.length > 10) lines.push("Showing 10 of " + companyRows.length + " companies returned by the health endpoint.");
+        if (health.error) lines.push("Health note: " + safeText(health.error, 180));
+        return chunkedPrivateReply("**Dashboard health & data freshness**", lines);
+      }
+
+      const alertsRes = await dashboardFetch(env, "/api/me/alerts?limit=10", { headers, signal: AbortSignal.timeout(8000) });
+      if (alertsRes.status === 401 || alertsRes.status === 403) {
+        await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run();
+        return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+      }
+      if (!alertsRes.ok) return privateReply("Dashboard summary is partially unavailable because recent alert data could not be loaded.");
+      const alertData = await alertsRes.json();
+      const events = Array.isArray(alertData.events) ? alertData.events : [];
+      const unreadCount = typeof alertData.unreadCount === "number" && Number.isFinite(alertData.unreadCount)
+        ? alertData.unreadCount
+        : events.filter(event => String(event.status || "").toLowerCase() === "unread").length;
+      const latestRun = alertData.latestRun && typeof alertData.latestRun === "object" ? alertData.latestRun : {};
+      const lines = [
+        "Dashboard Worker: **" + safeText(workerStatus, 30) + "** · Database: **" + safeText(databaseStatus, 30) + "**",
+        "Connected companies: **" + Number(summary.companyCount || 0) + "**",
+        "Saved snapshots: **" + Number(summary.snapshotCount || 0).toLocaleString("en-US") + "**",
+        "Stale or never-synced companies: **" + Number(summary.staleCompanies || 0) + "**",
+        "Latest saved snapshot: " + snapshotTime(summary.latestSnapshotAt),
+        "Unread dashboard alerts: **" + unreadCount + "**"
+      ];
+      if (latestRun.status) {
+        lines.push("Latest scheduled run: **" + safeText(latestRun.status, 30) + "**" +
+          (latestRun.finishedAt || latestRun.startedAt ? " · " + snapshotTime(latestRun.finishedAt || latestRun.startedAt) : ""));
+        if (typeof latestRun.companiesChecked === "number") lines.push("Companies checked in that run: " + latestRun.companiesChecked +
+          " · failures: " + Number(latestRun.companiesFailed || 0) + " · alerts created: " + Number(latestRun.alertsCreated || 0));
+      } else {
+        lines.push("Latest scheduled run: not recorded yet");
+      }
+      const staleNames = companyRows.filter(company => ["stale", "never"].includes(String(company.freshness || "").toLowerCase()))
+        .slice(0, 5).map(company => safeText(company.companyName || "Company", 70));
+      if (staleNames.length) lines.push("Stale/unsynced company list: " + staleNames.join(", "));
+      if (health.error) lines.push("Health note: " + safeText(health.error, 180));
+      return chunkedPrivateReply("**Dashboard executive summary**", lines);
+    } catch { return privateReply("Dashboard status is temporarily unavailable. Please try again later."); }
+  }
+  return privateReply("That command isn't enabled yet. Use /help to see available commands.");
 }
 export default {
   async scheduled(_controller, env, ctx) { ctx.waitUntil(pollPrivateAlerts(env)); },
