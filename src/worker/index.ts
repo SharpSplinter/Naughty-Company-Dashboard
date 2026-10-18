@@ -865,6 +865,24 @@ function historicalAdvertisingBudget(profile: unknown): number | null {
 }
 
 function historicalEmployeeWages(payload: unknown): number | null {
+  // Reconstructed history may have a proven daily wage aggregate without a recoverable per-employee roster.
+  // Accept it only when its source method is explicit and the accounting identity reconciles exactly.
+  if (isRecord(payload) && payload.reconstructed === true && isRecord(payload.wage_reconstruction)) {
+    const aggregate = payload.wage_reconstruction
+    const totalWages = numericField(aggregate.total_wages)
+    const dailyIncome = numericField(aggregate.daily_income)
+    const dailyProfit = numericField(aggregate.daily_profit)
+    const advertisingBudget = numericField(aggregate.advertising_budget)
+    const stockOrderExpense = numericField(aggregate.stock_order_expense)
+    const validSource = typeof aggregate.source === "string" && aggregate.source.trim().length > 0
+    const validMethod = aggregate.method === "daily-income-minus-daily-profit-minus-advertising-budget-minus-stock-order-expense"
+    if (totalWages !== null && totalWages >= 0 && Number.isInteger(totalWages) &&
+      dailyIncome !== null && dailyProfit !== null && advertisingBudget !== null && stockOrderExpense !== null &&
+      validSource && validMethod &&
+      totalWages === dailyIncome - dailyProfit - advertisingBudget - stockOrderExpense) {
+      return totalWages
+    }
+  }
   const hasEmployeeList = Array.isArray(payload) || (isRecord(payload) && (
     Array.isArray(payload.employees) ||
     (isRecord(payload.employees) && Array.isArray(payload.employees.employees))
