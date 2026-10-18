@@ -99,8 +99,17 @@ function snapshotAgeLabel(value) {
 }
 function commandOptions(interaction) {
   const top = Array.isArray(interaction?.data?.options) ? interaction.data.options : [];
-  const subcommand = top.find(item => item && (item.type === 1 || Array.isArray(item.options)));
-  return { subcommand: subcommand?.name || null, options: subcommand ? (Array.isArray(subcommand.options) ? subcommand.options : []) : top };
+  const route = top.find(item => item && (item.type === 1 || item.type === 2 || Array.isArray(item.options)));
+  if (!route) return { group: null, subcommand: null, options: top };
+  if (route.type === 2) {
+    const child = (Array.isArray(route.options) ? route.options : []).find(item => item && item.type === 1);
+    return {
+      group: route.name || null,
+      subcommand: child?.name || null,
+      options: child && Array.isArray(child.options) ? child.options : []
+    };
+  }
+  return { group: null, subcommand: route.name || null, options: Array.isArray(route.options) ? route.options : [] };
 }
 function optionValue(interaction, name) {
   const options = commandOptions(interaction).options;
@@ -178,7 +187,7 @@ async function replyFor(i, env) {
   }
   if (i.type !== 2) return privateReply("Unsupported interaction.");
   if (name === "ping") return privateReply("Pong! Naughty Company Bot is responding.");
-  if (name === "help") return privateReply("**Naughty Company Bot**\n/link: get dashboard-linking instructions\n/link-code: redeem a five-minute, one-use code from your dashboard\n/status: check your link\n/unlink: remove your link\n/company list|overview|income|profit|stars|ads|stock|employees (detail: brief/full)|wages|alerts|trends: inspect your connected company\n/rankings companies|company|compare|faction: browse cached rankings\n/alerts enable|disable|configure|status|settings|recent|acknowledge|rules: manage private alerts\n/bot status: check service health\n/ping: test bot response\n\nAccount-specific replies are private by default. The bot never needs your Torn API key in Discord.");
+  if (name === "help") return privateReply("**Naughty Company Bot**\n/link: get dashboard-linking instructions\n/link-code: redeem a five-minute, one-use code from your dashboard\n/status: check your link\n/unlink: remove your link\n/company list|overview|income|profit|stars|ads|stock|employees (detail: brief/full)|wages|trends: inspect your connected company\n/company alerts recent|enable|disable|configure|status|settings|acknowledge|rules: inspect and manage private alerts\n/company rankings companies|company|compare|global|faction: browse cached rankings\n/bot status: check service health\n/ping: test bot response\n\nAccount-specific replies are private by default. The bot never needs your Torn API key in Discord.");
   if (!user) return privateReply("Unable to identify your Discord account.");
   if (name === "bot") {
     if (commandOptions(i).subcommand !== "status") return privateReply("Choose /bot status.");
@@ -212,7 +221,7 @@ async function replyFor(i, env) {
       return privateReply("**Your saved companies**\n" + companies.slice(0,8).map(c => "- **" + String(c.company_name || "Company").slice(0,100) + "** (" + String(c.company_type || "type unknown").slice(0,40) + ")  |  ID " + String(c.company_id || "n/a")).join("\n"));
     } catch { return privateReply("Company data is temporarily unavailable. Please try again later."); }
   }
-  if (name === "company" && ["income","profit","stars","ads","stock","wages","alerts"].includes(commandOptions(i).subcommand)) {
+  if (name === "company" && ["income","profit","stars","ads","stock","wages"].includes(commandOptions(i).subcommand)) {
     const subcommand = commandOptions(i).subcommand;
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
@@ -236,18 +245,6 @@ async function replyFor(i, env) {
       const firstNumber = (...values) => values.find(value => typeof value === "number" && Number.isFinite(value));
       const periodValue = String(optionValue(i, "period") || "30");
       const days = ["7", "30", "90", "365", "all"].includes(periodValue) ? periodValue : "30";
-
-      if (subcommand === "alerts") {
-        const alertRes = await dashboardFetch(env, "/api/me/alerts?limit=10", { headers, signal: AbortSignal.timeout(8000) });
-        if (alertRes.status === 401 || alertRes.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
-        if (!alertRes.ok) return privateReply("Alert data is temporarily unavailable. Please try again later.");
-        const alertData = await alertRes.json();
-        const events = (Array.isArray(alertData.events) ? alertData.events : []).filter(event => !event.companyId || String(event.companyId) === companyId).slice(0, 8);
-        if (!events.length) return privateReply("**Recent alerts | " + companyName + "**\nNo recent alerts were found for this company in the latest alert batch.");
-        return chunkedPrivateReply("**Recent alerts | " + companyName + "**", events.map(event =>
-          "- [" + safeText(String(event.severity || "info").toUpperCase(), 10) + "] **" + safeText(event.title || "Dashboard alert", 120) + "**\n  " + safeText(event.message || "No details supplied", 220) + "\n  " + safeText(event.createdAt || "Time unavailable", 50)
-        ));
-      }
 
       if (subcommand === "wages") {
         const wagesRes = await dashboardFetch(env, "/api/me/member-insights?companyId=" + encodeURIComponent(companyId), { headers, signal: AbortSignal.timeout(8000) });
@@ -512,7 +509,7 @@ async function replyFor(i, env) {
       return privateReply(title + "\n" + summaryLines.join("\n"));
     } catch { return privateReply("Trend data is temporarily unavailable. Please try again later."); }
   }
-  if (name === "rankings") {
+  if (name === "company" && commandOptions(i).group === "rankings") {
     const subcommand = commandOptions(i).subcommand;
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
@@ -580,7 +577,7 @@ async function replyFor(i, env) {
         const sourceAt = data.generatedAt || directors.map(d => d.fetchedAt).filter(Boolean).sort().at(-1) || "timestamp unavailable";
         return chunkedPrivateReply("**Faction company rankings**\nSorted by " + (sort === "stars" ? "star rating" : sort === "daily_income" ? "daily income" : "weekly income") + " | Page " + page + " of " + Math.max(1, Math.ceil(allDirectors.length / pageSize)) + "\nCompanies: " + allDirectors.length + "  |  Snapshot: " + sourceAt, lines);
       }
-      if (!["global", "company", "compare"].includes(subcommand)) return privateReply("Choose /rankings companies, /rankings company, /rankings compare, or /rankings faction.");
+      if (!["global", "company", "compare"].includes(subcommand)) return privateReply("Choose /company rankings companies, /company rankings company, /company rankings compare, or /company rankings faction.");
       const ownRes = await dashboardFetch(env, "/api/me/companies", { headers, signal: AbortSignal.timeout(8000) });
       if (ownRes.status === 401 || ownRes.status === 403) { await env.BOT_DB.prepare("DELETE FROM discord_links WHERE discord_user_id=?1").bind(user).run(); return privateReply("Your dashboard session expired or access changed. Run /link to reconnect."); }
       if (!ownRes.ok) return privateReply("Your company data is temporarily unavailable. Please try again later.");
@@ -734,7 +731,7 @@ async function replyFor(i, env) {
         ]);
     } catch { return privateReply("Company rankings are temporarily unavailable. Please try again later."); }
   }
-  if (name === "alerts") {
+  if (name === "company" && commandOptions(i).group === "alerts") {
     const subcommand = commandOptions(i).subcommand;
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
@@ -752,21 +749,35 @@ async function replyFor(i, env) {
       if (subcommand === "recent") {
         const requestedLimit = Number(optionValue(i, "limit") || 8);
         const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(10, requestedLimit)) : 8;
+        const requestedId = requestedCompanyId(i);
+        let selectedCompanyName = "";
+        if (requestedId) {
+          const companiesRes = await dashboardFetch(env, "/api/me/companies", { headers, signal: AbortSignal.timeout(8000) });
+          if (companiesRes.status === 401 || companiesRes.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+          if (!companiesRes.ok) return privateReply("Company data is temporarily unavailable. Please try again later.");
+          const companiesData = await companiesRes.json();
+          const companies = Array.isArray(companiesData.companies) ? companiesData.companies : [];
+          const selected = companies.find(company => String(company.company_id) === requestedId);
+          if (!selected) return privateReply("That company ID is not connected to your dashboard account.");
+          selectedCompanyName = safeText(selected.company_name || "Selected company", 90);
+        }
         const res = await dashboardFetch(env, "/api/me/alerts?limit=" + limit, { headers, signal: AbortSignal.timeout(8000) });
         if (res.status === 401 || res.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
         if (!res.ok) return privateReply("Recent alerts are temporarily unavailable. Please try again later.");
-        const data = await res.json(), events = Array.isArray(data.events) ? data.events : [];
-        if (!events.length) return privateReply("No recent dashboard alerts were found for your account.");
-        const lines = events.slice(0, limit).map(event =>
+        const data = await res.json();
+        const allEvents = Array.isArray(data.events) ? data.events : [];
+        const events = allEvents.filter(event => !requestedId || String(event.companyId || "") === requestedId).slice(0, limit);
+        if (!events.length) return privateReply("No recent dashboard alerts were found" + (selectedCompanyName ? " for " + selectedCompanyName : " for your account") + ".");
+        const lines = events.map(event =>
           "- [" + safeText(String(event.severity || "info").toUpperCase(), 10) + "] **" + safeText(event.title || "Dashboard alert", 120) + "**" +
           " (" + safeText(event.status || "unread", 20) + ")\n  " + safeText(event.message || "No details supplied", 220) +
           "\n  Company: " + safeText(event.companyName || event.companyId || "Not specified", 70) +
           " | Event ID: " + safeText(event.eventId || "", 50) + "\n  " + safeText(event.createdAt || "Time unavailable", 50));
-        return chunkedPrivateReply("**Recent dashboard alerts** | Showing " + events.length + " event(s)\nUse /alerts acknowledge with an event ID to acknowledge an alert.", lines);
+        return chunkedPrivateReply("**Recent dashboard alerts" + (selectedCompanyName ? " | " + selectedCompanyName : "") + "** | Showing " + events.length + " event(s)\nUse /company alerts acknowledge with an event ID to acknowledge an alert.", lines);
       }
       if (subcommand === "acknowledge") {
         const eventId = String(optionValue(i, "event_id") || "").trim();
-        if (!/^[a-f0-9-]{36}$/i.test(eventId)) return privateReply("That alert ID is not valid. Copy the full event ID from /alerts recent.");
+        if (!/^[a-f0-9-]{36}$/i.test(eventId)) return privateReply("That alert ID is not valid. Copy the full event ID from /company alerts recent.");
         const response = await dashboardFetch(env, "/api/me/alerts/" + encodeURIComponent(eventId) + "/acknowledge", {
           method: "POST", headers: { ...headers, "content-type": "application/json" }, body: "{}",
           signal: AbortSignal.timeout(8000)
@@ -822,7 +833,7 @@ async function replyFor(i, env) {
           "** (" + String(saved.quietHoursStart || "22:00") + "–" + String(saved.quietHoursEnd || "08:00") + ", " + String(saved.timezone || "UTC") +
           "). Discord DMs are sent immediately when enabled and outside quiet hours.");
       }
-      if (subcommand !== "status") return privateReply("Choose an available /alerts subcommand, such as status, recent, settings, acknowledge, or rules.");
+      if (subcommand !== "status") return privateReply("Choose a /company alerts subcommand such as recent, status, settings, acknowledge, or rules.");
       const [linkRes, rulesRes] = await Promise.all([
         dashboardFetch(env, linkPath, { headers, signal: AbortSignal.timeout(8000) }),
         dashboardFetch(env, "/api/me/alert-rules", { headers, signal: AbortSignal.timeout(8000) })
