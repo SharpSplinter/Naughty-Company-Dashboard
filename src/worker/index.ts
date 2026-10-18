@@ -839,6 +839,89 @@ async function verifyGlobalRankingsAgainstOfficialSnapshot(env: WorkerEnv, sched
   }
 }
 
+function historicalAdvertisingBudget(profile: unknown): number | null {
+  const keys = ["advertisement_budget", "advertising_budget", "advertising_budget_daily", "ad_budget", "daily_ad_budget", "advertising"]
+  const visit = (value: unknown, depth = 0): number | null => {
+    if (depth > 6) return null
+    if (Array.isArray(value)) {
+      for (const child of value) {
+        const found = visit(child, depth + 1)
+        if (found !== null) return found
+      }
+      return null
+    }
+    if (!isRecord(value)) return null
+    for (const key of keys) {
+      const candidate = value[key]
+      if (typeof candidate === "number" && Number.isFinite(candidate)) return Math.max(0, candidate)
+    }
+    for (const child of Object.values(value)) {
+      const found = visit(child, depth + 1)
+      if (found !== null) return found
+    }
+    return null
+  }
+  return visit(profile)
+}
+
+function historicalEmployeeWages(payload: unknown): number | null {
+  const hasEmployeeList = Array.isArray(payload) || (isRecord(payload) && (
+    Array.isArray(payload.employees) ||
+    (isRecord(payload.employees) && Array.isArray(payload.employees.employees))
+  ))
+  if (!hasEmployeeList) return null
+  const employees = employeesFromPayload(payload)
+  let total = 0
+  for (const employee of employees) {
+    const wage = numericField(employee.wage)
+    if (wage === null || wage < 0) return null
+    total += wage
+  }
+  return total
+}
+
+function historicalStockOrderExpense(stock: unknown): number | null {
+  if (stock === null || stock === undefined || (!isRecord(stock) && !Array.isArray(stock))) return null
+  const rows: Array<{ name: string; order: number | null; unitCost: number | null; rawCost: unknown }> = []
+  const visit = (value: unknown, depth = 0, label = ""): void => {
+    if (!value || typeof value !== "object" || depth > 7) return
+    if (Array.isArray(value)) {
+      value.forEach((child, index) => visit(child, depth + 1, String(index + 1)))
+      return
+    }
+    if (!isRecord(value)) return
+    const hasOwn = (key: string) => Object.prototype.hasOwnProperty.call(value, key)
+    const unitCost = numericField(value.cost) ?? numericField(value.unit_cost) ?? numericField(value.cost_per_unit) ?? numericField(value.purchase_price)
+    const hasCostField = ["cost", "unit_cost", "cost_per_unit", "purchase_price"].some(hasOwn)
+    const hasOrderField = ["on_order", "onOrder"].some(hasOwn)
+    const hasInventoryField = ["in_stock", "quantity", "amount", "price", "rrp"].some(hasOwn)
+    if (hasOrderField || (hasCostField && hasInventoryField)) {
+      rows.push({
+        name: String(value.name ?? value.item_name ?? value.itemName ?? label ?? "Stock item"),
+        order: numericField(value.on_order) ?? numericField(value.onOrder),
+        unitCost,
+        rawCost: value.cost
+      })
+      return
+    }
+    for (const [key, child] of Object.entries(value)) if (child && typeof child === "object") visit(child, depth + 1, key)
+  }
+  visit(stock)
+  let total = 0
+  for (const row of rows) {
+    const nonOrderable = typeof row.rawCost === "string" && /cannot be ordered/i.test(row.rawCost)
+    if (row.order === null) {
+      if (nonOrderable || row.unitCost === 0) continue
+      return null
+    }
+    const order = Math.max(0, row.order)
+    if (order === 0) continue
+    if (row.unitCost === null) return null
+    total += order * Math.max(0, row.unitCost)
+  }
+  return total
+}
+
 function companyProfileRoot(payload: unknown): Record<string, unknown> {
   if (!isRecord(payload)) return {}
   if (isRecord(payload.company)) return payload.company
@@ -2070,7 +2153,7 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
       const fetchedAtMs = Date.parse(String(row.fetchedAt ?? ""))
       const day = Number.isFinite(fetchedAtMs) ? new Date(fetchedAtMs - 18 * 60 * 60 * 1000).toISOString().slice(0, 10) : ""
       if (!day) continue
-      byDay.set(day, { day, fetchedAt: row.fetchedAt, snapshotId: row.snapshotId, dailyIncome: dailyIncomeFromProfile(profile), weeklyIncome: numericField(income.weekly), rating: ratingFromProfile(profile), employeeCount: rosterCount(employees), employeeCapacity: isRecord(root.employees) ? numericField(root.employees.capacity) : null, stockQuantity: null })
+      byDay.set(day, { day, fetchedAt: row.fetchedAt, snapshotId: row.snapshotId, dailyIncome: dailyIncomeFromProfile(profile), weeklyIncome: numericField(income.weekly), rating: ratingFromProfile(profile), employeeCount: rosterCount(employees), employeeCapacity: isRecord(root.employees) ? numericField(root.employees.capacity) : null, advertisingBudget: historicalAdvertisingBudget(profile), employeeWages: historicalEmployeeWages(employees), stockOrderExpense: null, stockQuantity: null })
     }
     const stockCutoffDay = cutoff ? cutoff.slice(0, 10) : null
     const stockQuery = db.prepare(`SELECT snapshot_day AS day, stock_json AS stockJson FROM faction_director_snapshots WHERE player_id = ? AND company_id = ?${stockCutoffDay ? " AND snapshot_day >= ?" : ""} ORDER BY snapshot_day ASC`)
@@ -2088,7 +2171,14 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
       }, 0)
       stockByDay.set(row.day, quantity)
     }
-    for (const point of byDay.values()) point.stockQuantity = stockByDay.get(String(point.day)) ?? null
+    const financialStockQuery = db.prepare(\`SELECT day, stockJson FROM (SELECT date(fetched_at, '-18 hours') AS day, stock_json AS stockJson, fetched_at AS fetchedAt, snapshot_id AS snapshotId, ROW_NUMBER() OVER (PARTITION BY date(fetched_at, '-18 hours') ORDER BY fetched_at DESC, snapshot_id DESC) AS dayRank FROM company_financial_snapshots WHERE player_id = ? AND company_id = ?\${cutoffSql}) WHERE dayRank = 1 ORDER BY fetchedAt ASC LIMIT 2000\`)
+    const financialStockRaw = await (cutoff ? financialStockQuery.bind(session.player_id, companyId, cutoff) : financialStockQuery.bind(session.player_id, companyId)).all<{ day: string; stockJson: string | null }>()
+    const stockExpensesByDay = new Map<string, number | null>()
+    for (const row of financialStockRaw.results ?? []) stockExpensesByDay.set(row.day, historicalStockOrderExpense(parseStoredJson(row.stockJson)))
+    for (const point of byDay.values()) {
+      point.stockQuantity = stockByDay.get(String(point.day)) ?? null
+      point.stockOrderExpense = stockExpensesByDay.get(String(point.day)) ?? null
+    }
     const history = Array.from(byDay.values()).sort((a, b) => String(a.day).localeCompare(String(b.day)))
     const first = history[0] ?? null, latest = history.at(-1) ?? null
     const delta = (key: string) => first && latest && typeof first[key] === "number" && typeof latest[key] === "number" ? Number(latest[key]) - Number(first[key]) : null
