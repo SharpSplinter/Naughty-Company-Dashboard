@@ -1044,7 +1044,7 @@ async function persistFactionDirectorSnapshot(
   const snapshotAt = options.kind === "lock-in"
     ? officialSnapshotSourceTime(options.sourceTimestamp, options.schedule)
     : sourceAt ?? new Date(updatedAt)
-  if (options.kind === "lock-in" && !snapshotAt) return
+  if (!snapshotAt) return
   const fetchedAt = snapshotAt.toISOString()
   const day = new Date(snapshotAt.getTime() - 18 * 60 * 60 * 1000).toISOString().slice(0, 10)
   const db = requireDb(env)
