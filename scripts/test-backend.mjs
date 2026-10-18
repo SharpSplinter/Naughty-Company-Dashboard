@@ -110,15 +110,26 @@ try {
     assert.match(source, /await deliverAutomationDigest\(env, owner\.ownerPlayerId, events\.results \?\? \[\]\)/)
   })
 
-  await test("official daily stock deltas require two cutoff-aligned immutable snapshots", () => {
+  await test("official daily stock deltas require scheduled, source-timestamped immutable snapshots", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const floorSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
-    assert.match(workerSource, /capturedAt\.getTime\(\) - 18 \* 60 \* 60 \* 1000/)
-    assert.match(workerSource, /capturedAt\.getUTCHours\(\) === 18 && capturedAt\.getUTCMinutes\(\) >= 10/)
-    assert.match(workerSource, /ON CONFLICT\(player_id, company_id, snapshot_day\) DO NOTHING/)
-    assert.match(floorSource, /currentOfficialStockSnapshot = officialStockSnapshots\.find\(\(point\) => point\.day === currentSnapshotDay\)/)
-    assert.match(floorSource, /currentOfficialStockSnapshot\.stockQuantity - previousStockSnapshot\.stockQuantity/)
-    assert.doesNotMatch(floorSource, /currentStockQuantity - previousStockSnapshot\.stockQuantity/)
+    const migrationSource = readFileSync(join(root, "migrations/auth/0009_faction_director_snapshot_kind.sql"), "utf8")
+    assert.match(workerSource, /function officialSnapshotSourceTime/)
+    assert.match(workerSource, /schedule\\.cron\\.trim\\(\\) !== "10 18 \\* \\* \\*"/)
+    assert.match(workerSource, /schedule\\.scheduledTime/)
+    assert.match(workerSource, /sourceTimestamp \\* 1000/)
+    assert.match(workerSource, /snapshot_kind = excluded\\.snapshot_kind/)
+    assert.match(migrationSource, /snapshot_kind IN \\(\'initialization\', \'lock-in\', \'legacy\'\\)/)
+    const rankingRefresh = workerSource.slice(workerSource.indexOf("async function refreshRankingProfiles"), workerSource.indexOf("async function refreshGlobalRankingCache"))
+    assert.match(rankingRefresh, /officialSnapshotSourceTime\\(sourceTimestamp, snapshotSchedule\\)/)
+    assert.match(rankingRefresh, /if \\(sourceSnapshotAt\\)/)
+    const directoryRefresh = workerSource.slice(workerSource.indexOf("async function syncFactionDirectorDirectory"), workerSource.indexOf("async function refreshFactionDirectoryFromAnyKey"))
+    assert.doesNotMatch(directoryRefresh, /persistFactionDirectorSnapshot/, "profile-only directory refreshes must not create official stock history")
+    const scheduled = workerSource.slice(workerSource.indexOf("async function runScheduledAutomation"), workerSource.indexOf("type AdminRefreshEndpoint"))
+    assert.match(scheduled, /refreshRankingProfiles\\(env, isRankingCaptureWindow, \\{ cron: controller\\.cron, scheduledTime: controller\\.scheduledTime \\}\\)/)
+    assert.match(floorSource, /currentOfficialStockSnapshot = officialStockSnapshots\\.find\\(\\(point\\) => point\\.day === currentSnapshotDay\\)/)
+    assert.match(floorSource, /currentOfficialStockSnapshot\\.stockQuantity - previousStockSnapshot\\.stockQuantity/)
+    assert.doesNotMatch(floorSource, /currentStockQuantity - previousStockSnapshot\\.stockQuantity/)
   })
 
   await test("company stock refreshes preserve current values and append historical stock snapshots", () => {
@@ -395,13 +406,15 @@ try {
     const client = new TornApiClient({ apiKey: "test", fetcher: async (input) => {
       requestedUrl = String(input)
       return new Response(JSON.stringify({
+        timestamp: 1791845111,
         employees: [{ id: 1, name: "Employee" }],
         stock: [{ id: 173, name: "Oil (Barrel)" }],
         profile: { id: 77, name: "Sample Oil Rig", type: { id: 28, name: "Oil Rig" } },
       }))
     } })
     const response = await client.getCompanySelections()
-    assert.equal(requestedUrl, "https://api.torn.com/v2/company?selections=employees%2Cstock%2Cprofile")
+    assert.equal(requestedUrl, "https://api.torn.com/v2/company?selections=timestamp%2Cprofile%2Cstock%2Cemployees")
+    assert.equal(response.timestamp, 1791845111)
     assert.equal(response.profile.profile.id, 77)
     assert.equal(response.employees.employees.length, 1)
     assert.equal(response.stock.stock.length, 1)
@@ -409,11 +422,13 @@ try {
 
   await test("normalizes Torn combined company responses that retain OpenAPI response wrappers", async () => {
     const client = new TornApiClient({ apiKey: "test", fetcher: async () => new Response(JSON.stringify({
+      timestamp: 1791845000,
       profile: { profile: { id: 78, name: "Wrapped Company", type: { id: 28, name: "Oil Rig" } } },
       employees: { employees: [{ id: 2, name: "Wrapped Employee" }] },
       stock: { stock: [{ id: 173, name: "Oil (Barrel)" }] },
     })) })
     const response = await client.getCompanySelections()
+    assert.equal(response.timestamp, 1791845000)
     assert.equal(response.profile.profile.id, 78)
     assert.equal(response.employees.employees.length, 1)
     assert.equal(response.stock.stock.length, 1)
