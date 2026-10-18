@@ -958,6 +958,197 @@ async function replyFor(i, env) {
       return privateReply("**Private alert status**\n" + lines.join("\n") + "\nDiscord DMs are immediate when enabled, subject to minimum severity and quiet hours.");
     } catch { return privateReply("Alert settings are temporarily unavailable. Please try again later."); }
   }
+  if (name === "automation" && ["rules", "notifications", "webhook"].includes(commandOptions(i).group)) {
+    const route = commandOptions(i);
+    const groupName = route.group;
+    const subcommand = route.subcommand;
+    const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
+    if (!row) return privateReply("Link your dashboard first with /link.");
+    try {
+      const token = await unseal(row.encrypted_session_token, row.token_iv, env);
+      const headers = { authorization: "Bearer " + token, accept: "application/json" };
+      const jsonHeaders = { ...headers, "content-type": "application/json" };
+      const apiError = async response => {
+        const body = await response.json().catch(() => ({}));
+        if (response.status === 401 || response.status === 403) return "Your dashboard session expired or access changed. Run /link to reconnect.";
+        return String(body.error || "The automation request could not be completed. Please try again later.");
+      };
+      const getPreferences = async () => {
+        const response = await dashboardFetch(env, "/api/me/automation-preferences", { headers, signal: AbortSignal.timeout(8000) });
+        if (!response.ok) return { response, preferences: {} };
+        const data = await response.json();
+        return { response, preferences: data && typeof data.preferences === "object" ? data.preferences : {} };
+      };
+      if (groupName === "rules") {
+        if (subcommand === "list") {
+          const response = await dashboardFetch(env, "/api/me/alert-rules", { headers, signal: AbortSignal.timeout(8000) });
+          if (!response.ok) return privateReply(await apiError(response));
+          const data = await response.json(), rules = Array.isArray(data.rules) ? data.rules : [];
+          if (!rules.length) return privateReply("No automation rules are configured yet. Use /automation rules create to add your first private rule.");
+          const lines = rules.slice(0, 25).map(rule => {
+            const enabled = rule.enabled === true || Number(rule.enabled) === 1;
+            const type = automationRuleLabel(rule.ruleType);
+            const detail = rule.ruleType === "stale_data" ? "stale after " + String(rule.staleAfterHours ?? 30) + "h" :
+              rule.ruleType === "refresh_failure" ? "scheduled refresh failures" :
+              "threshold " + String(rule.thresholdPercent ?? 15) + "%";
+            return "- **" + safeText(type, 60) + "** " + (enabled ? "✅ enabled" : "⏸ paused") +
+              " · " + detail + " · cooldown " + String(rule.cooldownHours ?? 24) + "h · " +
+              safeText(rule.companyName || "All connected companies", 70);
+          });
+          return chunkedPrivateReply("**Your automation rules** | " + rules.length + " rule(s)" + (rules.length > 25 ? " · first 25 shown" : ""), lines);
+        }
+        if (subcommand === "create") {
+          const ruleType = String(optionValue(i, "rule_type") || "");
+          const allowedTypes = ["income_drop", "stale_data", "refresh_failure", "income_increase", "rating_drop", "roster_change"];
+          if (!allowedTypes.includes(ruleType)) return privateReply("Choose one of the supported rule templates from the selector.");
+          const companyValue = optionValue(i, "company");
+          const body = { ruleType, companyId: companyValue === undefined || companyValue === null || String(companyValue).trim() === "" ? null : String(companyValue) };
+          const threshold = optionValue(i, "threshold_percent");
+          const cooldown = optionValue(i, "cooldown_hours");
+          const staleAfter = optionValue(i, "stale_after_hours");
+          if (typeof threshold === "number") body.thresholdPercent = threshold;
+          if (typeof cooldown === "number") body.cooldownHours = cooldown;
+          if (typeof staleAfter === "number") body.staleAfterHours = staleAfter;
+          const response = await dashboardFetch(env, "/api/me/alert-rules", { method: "POST", headers: jsonHeaders, body: JSON.stringify(body), signal: AbortSignal.timeout(8000) });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            if (response.status === 401 || response.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+            return privateReply(String(result.error || "The automation rule could not be created."));
+          }
+          const scope = body.companyId ? "the selected company" : "all connected companies";
+          const detail = ruleType === "stale_data" ? " Stale-data age: " + String(staleAfter ?? 30) + " hours." :
+            ruleType === "refresh_failure" ? "" : " Threshold: " + String(threshold ?? 15) + "%.";
+          return privateReply("✅ **Automation rule created**\n" + automationRuleLabel(ruleType) + " · " + scope + "." + detail + " Cooldown: " + String(cooldown ?? 24) + " hours. Manage it with /automation rules list.");
+        }
+        if (["enable", "disable", "delete"].includes(subcommand)) {
+          const ruleId = String(optionValue(i, "rule") || "").trim();
+          if (!/^[a-f0-9-]{36}$/i.test(ruleId)) return privateReply("Choose a rule from the autocomplete selector. Rule IDs are handled automatically.");
+          const endpoint = "/api/me/alert-rules/" + encodeURIComponent(ruleId);
+          if (subcommand === "delete") {
+            const response = await dashboardFetch(env, endpoint, { method: "DELETE", headers, signal: AbortSignal.timeout(8000) });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              if (response.status === 401 || response.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+              return privateReply(String(result.error || "The automation rule could not be deleted."));
+            }
+            return privateReply("🗑️ **Rule deleted.** The rule and its associated alert history were removed. Use /automation rules list to review the remaining rules.");
+          }
+          const enabled = subcommand === "enable";
+          const response = await dashboardFetch(env, endpoint, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ enabled }), signal: AbortSignal.timeout(8000) });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            if (response.status === 401 || response.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+            return privateReply(String(result.error || "The automation rule could not be updated."));
+          }
+          return privateReply((enabled ? "✅ **Rule enabled.** " : "⏸️ **Rule paused.** ") + "Your rule settings and existing alert history are preserved.");
+        }
+        return privateReply("Choose /automation rules list, create, enable, disable, or delete.");
+      }
+      if (groupName === "notifications") {
+        if (subcommand !== "status" && subcommand !== "configure") return privateReply("Choose /automation notifications status or configure.");
+        const { response, preferences: prefs } = await getPreferences();
+        if (!response.ok) return privateReply(await apiError(response));
+        if (subcommand === "status") {
+          const discordRes = await dashboardFetch(env, "/api/me/discord-link", { headers, signal: AbortSignal.timeout(8000) });
+          const discord = discordRes.ok ? await discordRes.json() : {};
+          const quiet = prefs.quietHoursEnabled === true || Number(prefs.quietHoursEnabled) === 1;
+          const lines = [
+            "Minimum severity: **" + String(prefs.minimumSeverity || "info") + "**",
+            "Quiet hours: **" + (quiet ? "on" : "off") + "** · " + String(prefs.quietHoursStart || "22:00") + "–" + String(prefs.quietHoursEnd || "08:00") + " · " + String(prefs.timezone || "UTC"),
+            "Webhook digest mode: **" + String(prefs.digestMode || "instant") + "**",
+            "Private Discord DMs: **" + (discord.alertsEnabled ? "enabled" : discord.linked ? "disabled" : "not linked") + "**"
+          ];
+          return privateReply("**Your notification settings**\n" + lines.join("\n") + "\nQuiet hours and minimum severity affect supported notification delivery. Discord DMs are immediate when enabled and outside quiet hours.");
+        }
+        const body = {};
+        const minimumSeverity = optionValue(i, "minimum_severity");
+        const quietEnabled = optionValue(i, "quiet_hours_enabled");
+        const quietStart = optionValue(i, "quiet_hours_start");
+        const quietEnd = optionValue(i, "quiet_hours_end");
+        const timezone = optionValue(i, "timezone");
+        const digestMode = optionValue(i, "digest_mode");
+        if (typeof minimumSeverity === "string") body.minimumSeverity = minimumSeverity;
+        if (typeof quietEnabled === "boolean") body.quietHoursEnabled = quietEnabled;
+        const validTime = value => typeof value === "string" && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
+        if (typeof quietStart === "string") {
+          if (!validTime(quietStart)) return privateReply("Quiet-hours start must use 24-hour HH:MM format, from 00:00 through 23:59.");
+          body.quietHoursStart = quietStart;
+        }
+        if (typeof quietEnd === "string") {
+          if (!validTime(quietEnd)) return privateReply("Quiet-hours end must use 24-hour HH:MM format, from 00:00 through 23:59.");
+          body.quietHoursEnd = quietEnd;
+        }
+        if (typeof timezone === "string") {
+          try { new Intl.DateTimeFormat("en", { timeZone: timezone }).format(new Date()); }
+          catch { return privateReply("That time zone is not a valid IANA time zone, for example America/New_York or UTC."); }
+          body.timezone = timezone;
+        }
+        if (typeof digestMode === "string") body.digestMode = digestMode;
+        if (!Object.keys(body).length) {
+          const quiet = prefs.quietHoursEnabled === true || Number(prefs.quietHoursEnabled) === 1;
+          return privateReply("Current settings: minimum severity **" + String(prefs.minimumSeverity || "info") + "**; quiet hours **" +
+            (quiet ? "on" : "off") + "** (" + String(prefs.quietHoursStart || "22:00") + "–" + String(prefs.quietHoursEnd || "08:00") + ", " +
+            String(prefs.timezone || "UTC") + "); webhook digest **" + String(prefs.digestMode || "instant") +
+            "**. Supply one or more options to change settings. Browser permission is still managed in the dashboard.");
+        }
+        const saveRes = await dashboardFetch(env, "/api/me/automation-preferences", { method: "POST", headers: jsonHeaders, body: JSON.stringify(body), signal: AbortSignal.timeout(8000) });
+        const saveData = await saveRes.json().catch(() => ({}));
+        if (!saveRes.ok) {
+          if (saveRes.status === 401 || saveRes.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+          return privateReply(String(saveData.error || "Notification preferences could not be saved."));
+        }
+        const saved = saveData.preferences || {};
+        return privateReply("✅ **Notification preferences saved**\nMinimum severity: **" + String(saved.minimumSeverity || "info") +
+          "** · quiet hours: **" + ((saved.quietHoursEnabled === true || Number(saved.quietHoursEnabled) === 1) ? "on" : "off") +
+          "** (" + String(saved.quietHoursStart || "22:00") + "–" + String(saved.quietHoursEnd || "08:00") + ", " + String(saved.timezone || "UTC") +
+          ") · webhook digest: **" + String(saved.digestMode || "instant") + "**. Discord DMs remain immediate when enabled and outside quiet hours.");
+      }
+      if (groupName === "webhook") {
+        if (subcommand === "status") {
+          const response = await dashboardFetch(env, "/api/me/automation-webhook", { headers, signal: AbortSignal.timeout(8000) });
+          if (!response.ok) return privateReply(await apiError(response));
+          const data = await response.json(), hook = data.webhook && typeof data.webhook === "object" ? data.webhook : null;
+          const lines = [
+            "Configured: **" + (data.configured ? "yes" : "no") + "**",
+            "Delivery: **" + (hook?.enabled ? "enabled" : data.configured ? "disabled" : "not configured") + "**",
+            "Last delivered: **" + String(hook?.lastDeliveredAt || "not yet") + "**"
+          ];
+          if (hook?.lastError) lines.push("Last error: " + safeText(hook.lastError, 220));
+          return privateReply("**Webhook status**\n" + lines.join("\n") + "\nThe encrypted endpoint URL is never shown in Discord.");
+        }
+        if (subcommand === "deliveries") {
+          const response = await dashboardFetch(env, "/api/me/automation-webhook/deliveries?limit=10", { headers, signal: AbortSignal.timeout(8000) });
+          if (!response.ok) return privateReply(await apiError(response));
+          const data = await response.json(), deliveries = Array.isArray(data.deliveries) ? data.deliveries : [];
+          if (!deliveries.length) return privateReply("No webhook delivery attempts are recorded yet.");
+          const lines = deliveries.map(delivery =>
+            "- **" + safeText(String(delivery.status || "unknown").toUpperCase(), 15) + "** · " +
+            safeText(delivery.createdAt || "time unavailable", 40) + " · HTTP " + String(delivery.statusCode ?? "—") +
+            "\n  " + safeText(delivery.detail || "No delivery detail recorded.", 180));
+          return chunkedPrivateReply("**Recent webhook deliveries** | " + deliveries.length + " attempt(s)\nUse /automation webhook retry and select a failed attempt to retry it.", lines);
+        }
+        if (subcommand === "retry") {
+          const eventId = String(optionValue(i, "delivery") || "").trim();
+          if (!/^[a-f0-9-]{36}$/i.test(eventId)) return privateReply("Choose a failed webhook attempt from the autocomplete selector. The event ID is handled automatically.");
+          const response = await dashboardFetch(env, "/api/me/automation-webhook/retry/" + encodeURIComponent(eventId), { method: "POST", headers: jsonHeaders, body: "{}", signal: AbortSignal.timeout(12000) });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok && !data.delivery) {
+            if (response.status === 401 || response.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+            return privateReply(String(data.error || "The webhook delivery could not be retried."));
+          }
+          const delivery = data.delivery || {};
+          const resultLine = delivery.delivered ? "✅ Webhook delivery succeeded." :
+            delivery.attempted ? "⚠️ Webhook retry failed." : "ℹ️ No request was sent.";
+          return privateReply(resultLine + (delivery.statusCode ? " HTTP " + delivery.statusCode + "." : "") +
+            (delivery.detail ? " " + safeText(delivery.detail, 300) : ""));
+        }
+        return privateReply("Choose /automation webhook status, deliveries, or retry.");
+      }
+      return privateReply("Choose a valid /automation command group and subcommand.");
+    } catch {
+      return privateReply("Automation settings are temporarily unavailable. Please try again later.");
+    }
+  }
     if (name === "dashboard" && ["health", "summary"].includes(commandOptions(i).subcommand)) {
     const subcommand = commandOptions(i).subcommand;
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
