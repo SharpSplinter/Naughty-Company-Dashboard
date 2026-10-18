@@ -39,6 +39,13 @@ const companyCommands = (commandsByName.get("company")?.options || []).map(optio
 for (const name of ["list", "overview", "income", "profit", "stars", "ads", "stock", "employees", "wages", "alerts", "trends"]) {
   assert.ok(companyCommands.includes(name), "missing /company " + name);
 }
+for (const name of ["overview", "employees", "trends"]) {
+  assert.equal(commandsByName.has(name), false, "retired root alias must not be registered: /" + name);
+}
+const employeesSubcommand = (commandsByName.get("company")?.options || []).find(option => option.name === "employees");
+const detailOption = (employeesSubcommand?.options || []).find(option => option.name === "detail");
+assert.deepEqual((detailOption?.choices || []).map(choice => choice.value), ["brief", "full"], "/company employees must expose brief/full detail levels");
+
 const rankingCommands = (commandsByName.get("rankings")?.options || []).map(option => option.name);
 for (const name of ["companies", "company", "compare", "faction"]) {
   assert.ok(rankingCommands.includes(name), "missing /rankings " + name);
@@ -57,6 +64,8 @@ const financials = readFileSync(new URL("./financials.mjs", import.meta.url), "u
 assert.match(registration, /response\.status === 429/, "Discord command registration must retry explicit rate limits");
 assert.match(registration, /data\.retry_after/, "rate-limit retry must honor Discord retry_after");
 assert.match(registration, /maxRateLimitRetries/, "rate-limit retry attempts must be bounded");
+assert.match(registration, /DEPRECATED_ROOT_ALIASES/, "registration must identify retired root aliases");
+assert.match(registration, /await request\(base \+ "\/" \+ stale\.id, "DELETE"\)/, "registration must remove retired root aliases from Discord");
 assert.match(worker, /const privateReply = content => \(\{ type: 4, data: \{ content, flags: 64 \} \}\)/, "account-specific slash replies must be ephemeral");
 assert.match(worker, /Direct API-key entry in Discord is disabled/, "legacy API-key modal submissions must be rejected");
 assert.doesNotMatch(worker, /\/api\/auth\/sign-in/, "bot must not accept a Torn API key through Discord");
@@ -86,8 +95,9 @@ assert.match(profitBlock, /Monthly income \(month to date\)/, "profit output mus
 assert.match(profitBlock, /Monthly profit \(month to date\)/, "profit output must include month-to-date profit");
 assert.match(profitBlock, /summarizeMonthToDate\(history\)/, "month-to-date estimates must use owner-scoped saved daily history");
 assert.match(worker, /subcommand === "profit" \? "all" : days/, "profit must fetch all available history to cover the current month");
-const overviewStart = worker.indexOf('if (name === "overview" || (name === "company" && commandOptions(i).subcommand === "overview"))');
-const employeesStart = worker.indexOf('if (name === "employees" || (name === "company" && commandOptions(i).subcommand === "employees"))', overviewStart);
+assert.doesNotMatch(worker, /name === "(?:overview|employees|trends)"/, "retired aliases must not have standalone handler routes");
+const overviewStart = worker.indexOf('if (name === "company" && commandOptions(i).subcommand === "overview")');
+const employeesStart = worker.indexOf('if (name === "company" && commandOptions(i).subcommand === "employees")', overviewStart);
 assert.ok(overviewStart >= 0 && employeesStart > overviewStart, "overview handler boundaries must exist");
 assert.doesNotMatch(worker.slice(overviewStart, employeesStart), /Cost breakdown: advertising/, "company overview must omit the cost breakdown line");
 assert.doesNotMatch(worker.slice(overviewStart, employeesStart), /Employee wage coverage|\(estimated\)/, "company overview must omit wage coverage and estimated descriptors");

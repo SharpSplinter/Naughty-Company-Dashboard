@@ -178,7 +178,7 @@ async function replyFor(i, env) {
   }
   if (i.type !== 2) return privateReply("Unsupported interaction.");
   if (name === "ping") return privateReply("Pong! Naughty Company Bot is responding.");
-  if (name === "help") return privateReply("**Naughty Company Bot**\n/link: get dashboard-linking instructions\n/link-code: redeem a five-minute, one-use code from your dashboard\n/status: check your link\n/unlink: remove your link\n/company list|overview|income|profit|stars|ads|stock|employees|wages|alerts|trends: inspect your connected company\n/rankings companies|company|compare|faction: browse cached rankings\n/alerts enable|disable|configure|status|settings|recent|acknowledge|rules: manage private alerts\n/bot status: check service health\n/ping: test bot response\n\nAccount-specific replies are private by default. The bot never needs your Torn API key in Discord.");
+  if (name === "help") return privateReply("**Naughty Company Bot**\n/link: get dashboard-linking instructions\n/link-code: redeem a five-minute, one-use code from your dashboard\n/status: check your link\n/unlink: remove your link\n/company list|overview|income|profit|stars|ads|stock|employees (detail: brief/full)|wages|alerts|trends: inspect your connected company\n/rankings companies|company|compare|faction: browse cached rankings\n/alerts enable|disable|configure|status|settings|recent|acknowledge|rules: manage private alerts\n/bot status: check service health\n/ping: test bot response\n\nAccount-specific replies are private by default. The bot never needs your Torn API key in Discord.");
   if (!user) return privateReply("Unable to identify your Discord account.");
   if (name === "bot") {
     if (commandOptions(i).subcommand !== "status") return privateReply("Choose /bot status.");
@@ -367,7 +367,7 @@ async function replyFor(i, env) {
       }
     } catch { return privateReply("Company data is temporarily unavailable. Please try again later."); }
   }
-  if (name === "overview" || (name === "company" && commandOptions(i).subcommand === "overview")) {
+  if (name === "company" && commandOptions(i).subcommand === "overview") {
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
     try {
@@ -431,7 +431,7 @@ async function replyFor(i, env) {
       return privateReply(lines.join("\n"));
     } catch { return privateReply("Company overview is temporarily unavailable. Please try again later."); }
   }
-  if (name === "employees" || (name === "company" && commandOptions(i).subcommand === "employees")) {
+  if (name === "company" && commandOptions(i).subcommand === "employees") {
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
     try {
@@ -450,7 +450,7 @@ async function replyFor(i, env) {
       const data = await res.json(), roster = Array.isArray(data.roster) ? data.roster : [];
       const summary = data.summary && typeof data.summary === "object" ? data.summary : {};
       if (!roster.length) return privateReply(String(data.message || "No employee roster is available yet."));
-      const full = name === "employees" ? commandOptions(i).subcommand === "full" : optionValue(i, "detail") === "full";
+      const full = optionValue(i, "detail") === "full";
       const lines = roster.map((e, n) => {
         const label = safeText(e.name || e.employeeName || e.employee_name || ("Employee " + (n + 1)), 70) || ("Employee " + (n + 1));
         const position = safeText(e.positionName || e.position_name || e.position?.name || e.position || "Position not reported", 60);
@@ -469,7 +469,7 @@ async function replyFor(i, env) {
       return chunkedPrivateReply(title, lines);
     } catch { return privateReply("Employee data is temporarily unavailable. Please try again later."); }
   }
-    if (name === "trends" || (name === "company" && commandOptions(i).subcommand === "trends")) {
+    if (name === "company" && commandOptions(i).subcommand === "trends") {
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
     try {
