@@ -48,7 +48,7 @@ export const commands = [
     sub("status", "Show alert delivery and preference status"),
     sub("settings", "Show current severity and quiet-hours settings"),
     sub("recent", "Show recent dashboard alerts for your account", [companyId(), integer("limit", "Number of alerts, maximum 10", false, { min_value: 1, max_value: 10 })]),
-    sub("acknowledge", "Acknowledge one of your alerts", [str("event_id", "Alert event ID from /company alerts recent", true, { min_length: 1, max_length: 80 })]),
+    sub("acknowledge", "Acknowledge an active alert", [str("event_id", "Choose an active alert from the suggestions list", true, { min_length: 1, max_length: 80, autocomplete: true })]),
     sub("rules", "List your enabled and disabled dashboard alert rules")
   ]),
     sub("trends", "Summarize saved history by period and metric", [companyId(), period(), str("metric", "Metric to inspect", false, { choices: [
