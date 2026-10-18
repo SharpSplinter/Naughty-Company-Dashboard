@@ -123,3 +123,52 @@ export function estimateWeeklyProfit(weeklyIncome, breakdown) {
     ? weeklyIncome - breakdown.dailyRecurringCosts * 7 - breakdown.stockCosts
     : null;
 }
+
+
+export function summarizeMonthToDate(history, now = new Date()) {
+  const timestamp = now instanceof Date ? now.getTime() : typeof now === "number" ? now : Date.parse(now);
+  if (!Number.isFinite(timestamp)) {
+    return { month: null, startDay: null, reportingDay: null, expectedDays: 0, snapshotDays: 0, incomeDays: 0, costDays: 0, monthlyIncome: null, monthlyProfit: null };
+  }
+
+  // Torn's company reporting day rolls over at 18:00 UTC, matching the daily lock-in snapshots.
+  const reportingDay = new Date(timestamp - 18 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const month = reportingDay.slice(0, 7);
+  const startDay = month + "-01";
+  const expectedDays = Number(reportingDay.slice(8, 10));
+  const pointsByDay = new Map();
+
+  for (const point of Array.isArray(history) ? history : []) {
+    const day = typeof point?.day === "string" ? point.day : "";
+    if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(day) || day < startDay || day > reportingDay) continue;
+    const existing = pointsByDay.get(day);
+    const currentTime = Date.parse(point.fetchedAt || "");
+    const existingTime = Date.parse(existing?.fetchedAt || "");
+    if (!existing || (Number.isFinite(currentTime) && (!Number.isFinite(existingTime) || currentTime >= existingTime))) pointsByDay.set(day, point);
+  }
+
+  const rows = Array.from(pointsByDay.values()).sort((a, b) => a.day.localeCompare(b.day));
+  const numeric = value => typeof value === "number" && Number.isFinite(value);
+  const incomeRows = rows.filter(point => numeric(point.dailyIncome));
+  const completeProfitRows = rows.filter(point =>
+    numeric(point.dailyIncome) &&
+    numeric(point.advertisingBudget) &&
+    numeric(point.employeeWages) &&
+    numeric(point.stockOrderExpense)
+  );
+  const fullMonthToDateCoverage = rows.length === expectedDays && rows.every((point, index) => point.day === startDay.slice(0, 8) + String(index + 1).padStart(2, "0"));
+  const incomeComplete = fullMonthToDateCoverage && incomeRows.length === expectedDays;
+  const profitComplete = fullMonthToDateCoverage && completeProfitRows.length === expectedDays;
+
+  return {
+    month,
+    startDay,
+    reportingDay,
+    expectedDays,
+    snapshotDays: rows.length,
+    incomeDays: incomeRows.length,
+    costDays: completeProfitRows.length,
+    monthlyIncome: incomeComplete ? incomeRows.reduce((sum, point) => sum + point.dailyIncome, 0) : null,
+    monthlyProfit: profitComplete ? completeProfitRows.reduce((sum, point) => sum + point.dailyIncome - point.advertisingBudget - point.employeeWages - point.stockOrderExpense, 0) : null
+  };
+}
