@@ -8,7 +8,7 @@ The dashboard includes five connected intelligence views in addition to Company 
 
 ## Historical Trends and Comparisons
 
-`GET /api/me/companies/:companyId/history?days=7|30|90|365|all` returns an owner-scoped daily series derived from successful `company_snapshots`. The response includes daily/weekly income, star rating, roster size, reporting timestamps, and window summary deltas. Multiple snapshots on one date are collapsed to the latest saved snapshot for that date. The UI shows period-over-period daily-income averages when the selected history window has sufficient coverage. Missing or restricted values remain unknown rather than being treated as zero.
+`GET /api/me/companies/:companyId/history?days=7|30|90|365|all` returns an owner-scoped daily series derived from successful `company_snapshots`. The response includes daily/weekly income, star rating, roster size, reporting timestamps, window summary deltas, and normalized historical cost inputs (advertising budget, fully known employee wages, and stock order expense calculated from unit cost × on-order quantity). Profile and employee data comes from each saved company snapshot; stock order expense is matched to the latest saved financial stock snapshot for that reporting day. Multiple snapshots on one date are collapsed to the latest saved snapshot for that date. Missing or restricted values remain unknown rather than being treated as zero. Month-to-date profit sums each reporting day's saved daily income less that day's saved advertising, wages, and stock-order expense; it is unavailable when any date or cost input needed for a complete month-to-date total is missing.
 
 ## Member Activity & Roster Insights
 
