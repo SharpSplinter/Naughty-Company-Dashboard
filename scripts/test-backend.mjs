@@ -544,7 +544,7 @@ try {
       }
       if (path.endsWith("/v2/company/employees")) return new Response(JSON.stringify({ employees: [] }))
       if (path.endsWith("/v2/company/stock")) return new Response(JSON.stringify({ stock: [] }))
-      if (path.endsWith("/v2/company") && url.searchParams.get("selections") === "employees,stock,profile") {
+      if (path.endsWith("/v2/company") && url.searchParams.get("selections") === "timestamp,profile,stock,employees") {
         combinedRequests += 1
         if (combinedRequests === 2) {
           combinedFailureObserved = true
