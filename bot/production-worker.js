@@ -89,6 +89,17 @@ async function pollPrivateAlerts(env) {
   }
 }
 
+function automationRuleLabel(value) {
+  const labels = {
+    income_drop: "Daily income drop",
+    stale_data: "Stale company data",
+    refresh_failure: "Scheduled refresh failure",
+    income_increase: "Daily income increase",
+    rating_drop: "Company rating drop",
+    roster_change: "Employee roster change"
+  };
+  return labels[String(value || "")] || "Dashboard alert rule";
+}
 function snapshotAgeLabel(value) {
   const timestamp = Date.parse(value || "");
   if (!Number.isFinite(timestamp)) return "age unavailable";
@@ -187,44 +198,99 @@ async function replyFor(i, env) {
   }
   if (i.type === 4) {
     const route = commandOptions(i);
-    const focused = route.options.find(option => option && option.name === "alert" && option.focused === true);
-    if (name !== "company" || route.group !== "alerts" || route.subcommand !== "acknowledge" || !focused || !user) {
-      return { type: 8, data: { choices: [] } };
-    }
+    const focused = route.options.find(option => option && option.focused === true);
+    if (!focused || !user) return { type: 8, data: { choices: [] } };
+    const query = String(focused.value || "").trim().toLocaleLowerCase();
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return { type: 8, data: { choices: [] } };
     try {
       const token = await unseal(row.encrypted_session_token, row.token_iv, env);
-      const response = await dashboardFetch(env, "/api/me/alerts?limit=100", {
-        headers: { authorization: "Bearer " + token, accept: "application/json" },
-        signal: AbortSignal.timeout(1800)
-      });
-      if (!response.ok) return { type: 8, data: { choices: [] } };
-      const data = await response.json();
-      const query = String(focused.value || "").trim().toLocaleLowerCase();
-      const events = Array.isArray(data.events) ? data.events : [];
-      const choices = events
-        .filter(event => String(event.status || "").toLowerCase() === "unread" &&
-          typeof event.eventId === "string" && /^[a-f0-9-]{36}$/i.test(event.eventId))
-        .map(event => {
-          const severity = safeText(String(event.severity || "info").toUpperCase(), 10);
-          const title = safeText(event.title || event.ruleType || "Dashboard alert", 36);
-          const company = safeText(event.companyName || event.companyId || "Company", 22);
-          const created = safeText(event.createdAt || "time unavailable", 16);
-          const name = ("[" + severity + "] " + title + " | " + company + " | " + created).slice(0, 100);
-          const searchable = [event.severity, event.title, event.ruleType, event.companyName, event.companyId, event.createdAt]
-            .map(value => String(value || "")).join(" ").toLocaleLowerCase();
-          return { name, value: event.eventId, searchable };
-        })
-        .filter(choice => !query || choice.searchable.includes(query) || choice.name.toLocaleLowerCase().includes(query))
-        .slice(0, 25)
-        .map(({ name, value }) => ({ name, value }));
-      return { type: 8, data: { choices } };
+      const headers = { authorization: "Bearer " + token, accept: "application/json" };
+      if (name === "company" && route.group === "alerts" && route.subcommand === "acknowledge" && focused.name === "alert") {
+        const response = await dashboardFetch(env, "/api/me/alerts?limit=100", { headers, signal: AbortSignal.timeout(1800) });
+        if (!response.ok) return { type: 8, data: { choices: [] } };
+        const data = await response.json();
+        const events = Array.isArray(data.events) ? data.events : [];
+        const choices = events
+          .filter(event => String(event.status || "").toLowerCase() === "unread" &&
+            typeof event.eventId === "string" && /^[a-f0-9-]{36}$/i.test(event.eventId))
+          .map(event => {
+            const severity = safeText(String(event.severity || "info").toUpperCase(), 10);
+            const title = safeText(event.title || event.ruleType || "Dashboard alert", 36);
+            const company = safeText(event.companyName || event.companyId || "Company", 22);
+            const created = safeText(event.createdAt || "time unavailable", 16);
+            const label = ("[" + severity + "] " + title + " | " + company + " | " + created).slice(0, 100);
+            const searchable = [event.severity, event.title, event.ruleType, event.companyName, event.companyId, event.createdAt]
+              .map(value => String(value || "")).join(" ").toLocaleLowerCase();
+            return { name: label, value: event.eventId, searchable };
+          })
+          .filter(choice => !query || choice.searchable.includes(query) || choice.name.toLocaleLowerCase().includes(query))
+          .slice(0, 25).map(({ name, value }) => ({ name, value }));
+        return { type: 8, data: { choices } };
+      }
+      if (name !== "automation") return { type: 8, data: { choices: [] } };
+      if (route.group === "rules" && route.subcommand === "create" && focused.name === "company") {
+        const response = await dashboardFetch(env, "/api/me/companies", { headers, signal: AbortSignal.timeout(1800) });
+        if (!response.ok) return { type: 8, data: { choices: [] } };
+        const data = await response.json();
+        const companies = Array.isArray(data.companies) ? data.companies : [];
+        const choices = companies.map(company => {
+          const id = String(company.company_id ?? company.companyId ?? "");
+          const companyName = safeText(company.company_name || company.companyName || "Connected company", 65);
+          return { name: (companyName + " | " + id).slice(0, 100), value: id, searchable: (companyName + " " + id).toLocaleLowerCase() };
+        }).filter(choice => /^[1-9]\d{0,19}$/.test(choice.value))
+          .filter(choice => !query || choice.searchable.includes(query))
+          .slice(0, 25).map(({ name, value }) => ({ name, value }));
+        return { type: 8, data: { choices } };
+      }
+      if (route.group === "rules" && ["enable", "disable", "delete"].includes(route.subcommand) && focused.name === "rule") {
+        const response = await dashboardFetch(env, "/api/me/alert-rules", { headers, signal: AbortSignal.timeout(1800) });
+        if (!response.ok) return { type: 8, data: { choices: [] } };
+        const data = await response.json();
+        const rules = Array.isArray(data.rules) ? data.rules : [];
+        const choices = rules.filter(rule => {
+          const enabled = rule.enabled === true || Number(rule.enabled) === 1;
+          return route.subcommand === "delete" || (route.subcommand === "enable" ? !enabled : enabled);
+        }).map(rule => {
+          const enabled = rule.enabled === true || Number(rule.enabled) === 1;
+          const label = automationRuleLabel(rule.ruleType);
+          const scope = safeText(rule.companyName || "All connected companies", 35);
+          return {
+            name: ((enabled ? "Enabled" : "Paused") + " · " + label + " · " + scope).slice(0, 100),
+            value: String(rule.ruleId || ""),
+            searchable: [label, scope, rule.ruleType, enabled ? "enabled" : "paused"].join(" ").toLocaleLowerCase()
+          };
+        }).filter(choice => /^[a-f0-9-]{36}$/i.test(choice.value))
+          .filter(choice => !query || choice.searchable.includes(query) || choice.name.toLocaleLowerCase().includes(query))
+          .slice(0, 25).map(({ name, value }) => ({ name, value }));
+        return { type: 8, data: { choices } };
+      }
+      if (route.group === "webhook" && route.subcommand === "retry" && focused.name === "delivery") {
+        const response = await dashboardFetch(env, "/api/me/automation-webhook/deliveries?limit=50", { headers, signal: AbortSignal.timeout(1800) });
+        if (!response.ok) return { type: 8, data: { choices: [] } };
+        const data = await response.json();
+        const deliveries = Array.isArray(data.deliveries) ? data.deliveries : [];
+        const seen = new Set();
+        const choices = deliveries.filter(delivery => String(delivery.status || "").toLowerCase() === "failed" &&
+          typeof delivery.eventId === "string" && /^[a-f0-9-]{36}$/i.test(delivery.eventId))
+          .filter(delivery => {
+            if (seen.has(delivery.eventId)) return false;
+            seen.add(delivery.eventId);
+            return true;
+          }).map(delivery => {
+            const detail = safeText(delivery.detail || "Delivery failed", 48);
+            const created = safeText(delivery.createdAt || "time unavailable", 28);
+            return { name: ("Failed · " + detail + " · " + created).slice(0, 100), value: delivery.eventId, searchable: (detail + " " + created).toLocaleLowerCase() };
+          }).filter(choice => !query || choice.searchable.includes(query) || choice.name.toLocaleLowerCase().includes(query))
+          .slice(0, 25).map(({ name, value }) => ({ name, value }));
+        return { type: 8, data: { choices } };
+      }
+      return { type: 8, data: { choices: [] } };
     } catch { return { type: 8, data: { choices: [] } }; }
   }
   if (i.type !== 2) return privateReply("Unsupported interaction.");
   if (name === "ping") return privateReply("Pong! Naughty Company Bot is responding.");
-  if (name === "help") return privateReply("**Naughty Company Bot**\n/link: get dashboard-linking instructions\n/link-code: redeem a five-minute, one-use code from your dashboard\n/status: check your link\n/unlink: remove your link\n/dashboard health|summary: inspect dashboard and cross-company data status\n/company list|overview|income|profit|stars|ads|stock|employees (detail: brief/full)|wages|trends: inspect your connected company\n/company alerts recent|enable|disable|configure|status|settings|acknowledge|rules: inspect and manage private alerts\n/company rankings companies|company|compare|global|faction: browse cached rankings\n/bot status: check service health\n/ping: test bot response\n\nAccount-specific replies are private by default. The bot never needs your Torn API key in Discord.");
+  if (name === "help") return privateReply("**Naughty Company Bot**\\n/link: get dashboard-linking instructions\\n/link-code: redeem a five-minute, one-use code from your dashboard\\n/status: check your link\\n/unlink: remove your link\\n/dashboard health|summary: inspect dashboard and cross-company data status\\n/company list|overview|income|profit|stars|ads|stock|employees (detail: brief/full)|wages|trends: inspect your connected company\\n/company alerts recent|enable|disable|configure|status|settings|acknowledge|rules: inspect and manage private Discord alerts\\n/company rankings companies|company|compare|global|faction: browse cached rankings\\n/automation rules list|create|enable|disable|delete: manage private alert rules\\n/automation notifications status|configure: manage severity, quiet hours, and webhook digest\\n/automation webhook status|deliveries|retry: inspect and retry webhook deliveries\\n/bot status: check service health\\n/ping: test bot response\\n\\nAccount-specific replies are private by default. The bot never needs your Torn API key in Discord.");
   if (!user) return privateReply("Unable to identify your Discord account.");
   if (name === "bot") {
     if (commandOptions(i).subcommand !== "status") return privateReply("Choose /bot status.");
