@@ -185,6 +185,43 @@ async function replyFor(i, env) {
     // Reject stale API-key modal submissions; the supported flow uses a short-lived dashboard code.
     return privateReply("Direct API-key entry in Discord is disabled. Open the dashboard, generate a one-time Discord link code, then use /link-code.");
   }
+  if (i.type === 4) {
+    const route = commandOptions(i);
+    const focused = route.options.find(option => option && option.name === "event_id" && option.focused === true);
+    if (name !== "company" || route.group !== "alerts" || route.subcommand !== "acknowledge" || !focused || !user) {
+      return { type: 8, data: { choices: [] } };
+    }
+    const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
+    if (!row) return { type: 8, data: { choices: [] } };
+    try {
+      const token = await unseal(row.encrypted_session_token, row.token_iv, env);
+      const response = await dashboardFetch(env, "/api/me/alerts?limit=100", {
+        headers: { authorization: "Bearer " + token, accept: "application/json" },
+        signal: AbortSignal.timeout(1800)
+      });
+      if (!response.ok) return { type: 8, data: { choices: [] } };
+      const data = await response.json();
+      const query = String(focused.value || "").trim().toLocaleLowerCase();
+      const events = Array.isArray(data.events) ? data.events : [];
+      const choices = events
+        .filter(event => String(event.status || "").toLowerCase() === "unread" &&
+          typeof event.eventId === "string" && /^[a-f0-9-]{36}$/i.test(event.eventId))
+        .map(event => {
+          const severity = safeText(String(event.severity || "info").toUpperCase(), 10);
+          const title = safeText(event.title || event.ruleType || "Dashboard alert", 36);
+          const company = safeText(event.companyName || event.companyId || "Company", 22);
+          const created = safeText(event.createdAt || "time unavailable", 16);
+          const name = ("[" + severity + "] " + title + " | " + company + " | " + created).slice(0, 100);
+          const searchable = [event.severity, event.title, event.ruleType, event.companyName, event.companyId, event.createdAt]
+            .map(value => String(value || "")).join(" ").toLocaleLowerCase();
+          return { name, value: event.eventId, searchable };
+        })
+        .filter(choice => !query || choice.searchable.includes(query) || choice.name.toLocaleLowerCase().includes(query))
+        .slice(0, 25)
+        .map(({ name, value }) => ({ name, value }));
+      return { type: 8, data: { choices } };
+    } catch { return { type: 8, data: { choices: [] } }; }
+  }
   if (i.type !== 2) return privateReply("Unsupported interaction.");
   if (name === "ping") return privateReply("Pong! Naughty Company Bot is responding.");
   if (name === "help") return privateReply("**Naughty Company Bot**\n/link: get dashboard-linking instructions\n/link-code: redeem a five-minute, one-use code from your dashboard\n/status: check your link\n/unlink: remove your link\n/company list|overview|income|profit|stars|ads|stock|employees (detail: brief/full)|wages|trends: inspect your connected company\n/company alerts recent|enable|disable|configure|status|settings|acknowledge|rules: inspect and manage private alerts\n/company rankings companies|company|compare|global|faction: browse cached rankings\n/bot status: check service health\n/ping: test bot response\n\nAccount-specific replies are private by default. The bot never needs your Torn API key in Discord.");
@@ -761,7 +798,7 @@ async function replyFor(i, env) {
           if (!selected) return privateReply("That company ID is not connected to your dashboard account.");
           selectedCompanyName = safeText(selected.company_name || "Selected company", 90);
         }
-        const res = await dashboardFetch(env, "/api/me/alerts?limit=" + limit, { headers, signal: AbortSignal.timeout(8000) });
+        const res = await dashboardFetch(env, "/api/me/alerts?limit=100", { headers, signal: AbortSignal.timeout(8000) });
         if (res.status === 401 || res.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
         if (!res.ok) return privateReply("Recent alerts are temporarily unavailable. Please try again later.");
         const data = await res.json();
@@ -772,12 +809,12 @@ async function replyFor(i, env) {
           "- [" + safeText(String(event.severity || "info").toUpperCase(), 10) + "] **" + safeText(event.title || "Dashboard alert", 120) + "**" +
           " (" + safeText(event.status || "unread", 20) + ")\n  " + safeText(event.message || "No details supplied", 220) +
           "\n  Company: " + safeText(event.companyName || event.companyId || "Not specified", 70) +
-          " | Event ID: " + safeText(event.eventId || "", 50) + "\n  " + safeText(event.createdAt || "Time unavailable", 50));
-        return chunkedPrivateReply("**Recent dashboard alerts" + (selectedCompanyName ? " | " + selectedCompanyName : "") + "** | Showing " + events.length + " event(s)\nUse /company alerts acknowledge with an event ID to acknowledge an alert.", lines);
+          "\n  " + safeText(event.createdAt || "Time unavailable", 50));
+        return chunkedPrivateReply("**Recent dashboard alerts" + (selectedCompanyName ? " | " + selectedCompanyName : "") + "** | Showing " + events.length + " event(s)\nUse /company alerts acknowledge and select an active alert from the autocomplete suggestions. The selector shows severity, title, company, and time; acknowledged alerts are excluded.", lines);
       }
       if (subcommand === "acknowledge") {
         const eventId = String(optionValue(i, "event_id") || "").trim();
-        if (!/^[a-f0-9-]{36}$/i.test(eventId)) return privateReply("That alert ID is not valid. Copy the full event ID from /company alerts recent.");
+        if (!/^[a-f0-9-]{36}$/i.test(eventId)) return privateReply("Choose an active alert from the autocomplete suggestions. Only unacknowledged alerts are selectable.");
         const response = await dashboardFetch(env, "/api/me/alerts/" + encodeURIComponent(eventId) + "/acknowledge", {
           method: "POST", headers: { ...headers, "content-type": "application/json" }, body: "{}",
           signal: AbortSignal.timeout(8000)
