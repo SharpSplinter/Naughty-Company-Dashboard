@@ -131,6 +131,19 @@ try {
     assert.doesNotMatch(migrationSource, /DROP TABLE|DELETE FROM company_financials/i)
   })
 
+  await test("manual company refresh updates live caches without appending immutable history", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const refreshStart = workerSource.indexOf('if (url.pathname === "/api/company/refresh" && request.method === "POST")')
+    const refreshEnd = workerSource.indexOf("    // Compatibility routes use the same key-scoped endpoints;", refreshStart)
+    const refreshBody = workerSource.slice(refreshStart, refreshEnd)
+    assert.ok(refreshStart >= 0 && refreshEnd > refreshStart, "manual company refresh route must remain identifiable")
+    assert.match(refreshBody, /INSERT INTO companies/, "manual refresh must update the live company cache")
+    assert.match(refreshBody, /INSERT INTO company_financials/, "manual refresh must update the live stock cache")
+    assert.match(refreshBody, /saveCompanyApiKey/, "manual refresh must preserve the saved company-key metadata")
+    assert.match(refreshBody, /immutable history is captured by approved snapshot paths/)
+    assert.doesNotMatch(refreshBody, /INSERT INTO company_snapshots|INSERT INTO company_financial_snapshots|persistFactionDirectorSnapshot/, "manual company refresh must not append profile, stock, or director history")
+  })
+
   await test("global rankings use type-specific company lists at 18:10 UTC and official snapshot only verifies at 00:10 UTC", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const wranglerSource = readFileSync(join(root, "wrangler.toml"), "utf8")
