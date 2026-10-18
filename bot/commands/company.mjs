@@ -10,6 +10,11 @@ export const companyCommand = { name: "company", description: "Privately inspect
     sub("stock", "Show stock quantities and historical differences", [companyId(), period()]),
     sub("employees", "Show employee roster and summary", [companyId(), detail()]),
     sub("wages", "Show known employee wage totals and data coverage", [companyId()]),
+    sub("trends", "Summarize saved history by period and metric", [companyId(), period(), str("metric", "Metric to inspect", false, { choices: [
+      { name: "Overview", value: "overview" }, { name: "Income", value: "income" },
+      { name: "Stars", value: "stars" }, { name: "Stock", value: "stock" },
+      { name: "Employees", value: "employees" }
+    ]})]),
     group("alerts", "Inspect recent alerts and notification settings", [
     sub("recent", "Show recent dashboard alerts for your account", [companyId(), integer("limit", "Number of alerts, maximum 10", false, { min_value: 1, max_value: 10 })]),
     sub("enable", "Enable private Discord alert DMs"),
@@ -29,11 +34,6 @@ export const companyCommand = { name: "company", description: "Privately inspect
     sub("acknowledge", "Acknowledge an active alert", [str("alert", "Pick an active alert to acknowledge", true, { min_length: 1, max_length: 80, autocomplete: true })]),
     sub("rules", "List your enabled and disabled dashboard alert rules")
   ]),
-    sub("trends", "Summarize saved history by period and metric", [companyId(), period(), str("metric", "Metric to inspect", false, { choices: [
-      { name: "Overview", value: "overview" }, { name: "Income", value: "income" },
-      { name: "Stars", value: "stars" }, { name: "Stock", value: "stock" },
-      { name: "Employees", value: "employees" }
-    ]})]),
     group("rankings", "Browse global and faction company rankings", [
     sub("companies", "Browse cached global companies by type", [
       integer("company_type_id", "Torn company type ID", true, { min_value: 1 }),
