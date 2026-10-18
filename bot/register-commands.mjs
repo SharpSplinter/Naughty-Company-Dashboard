@@ -2,6 +2,7 @@ import { commands } from "./command-schema.mjs";
 
 const APP_ID = process.env.DISCORD_APP_ID || "1558700958983389254";
 const GUILD_ID = process.env.DISCORD_GUILD_ID || "1525623497999515770";
+const DEPRECATED_ROOT_ALIASES = new Set(["overview", "employees", "trends"]);
 const TOKEN = (process.env.DISCORD_TOKEN || "").replace(/^Bot\s+/i, "").trim();
 
 if (!TOKEN) {
@@ -62,5 +63,12 @@ for (const command of commands) {
     await request(base, "POST", command);
     console.log("Created guild command /" + command.name);
   }
+}
+
+// Remove only the three retired root aliases. Other guild commands are left untouched.
+for (const stale of existing) {
+  if (!DEPRECATED_ROOT_ALIASES.has(stale.name) || (stale.type !== undefined && stale.type !== 1) || !stale.id) continue;
+  await request(base + "/" + stale.id, "DELETE");
+  console.log("Removed deprecated guild command /" + stale.name);
 }
 console.log("Synchronized " + commands.length + " guild commands for application " + APP_ID + " in guild " + GUILD_ID + "; unrelated commands were preserved.");
