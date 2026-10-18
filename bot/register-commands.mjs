@@ -2,7 +2,7 @@ import { commands } from "./command-schema.mjs";
 
 const APP_ID = process.env.DISCORD_APP_ID || "1558700958983389254";
 const GUILD_ID = process.env.DISCORD_GUILD_ID || "1525623497999515770";
-const DEPRECATED_ROOT_ALIASES = new Set(["overview", "employees", "trends"]);
+const DEPRECATED_ROOT_ALIASES = new Set(["overview", "employees", "trends", "alerts", "rankings"]);
 const TOKEN = (process.env.DISCORD_TOKEN || "").replace(/^Bot\s+/i, "").trim();
 
 if (!TOKEN) {
@@ -65,7 +65,7 @@ for (const command of commands) {
   }
 }
 
-// Remove only the three retired root aliases. Other guild commands are left untouched.
+// Remove only retired root aliases whose functionality now lives under /company. Other guild commands are left untouched.
 for (const stale of existing) {
   if (!DEPRECATED_ROOT_ALIASES.has(stale.name) || (stale.type !== undefined && stale.type !== 1) || !stale.id) continue;
   await request(base + "/" + stale.id, "DELETE");
