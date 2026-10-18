@@ -89,6 +89,8 @@ for (const name of ["alerts", "rankings"]) {
 }
 const companyOptions = commandsByName.get("company")?.options || [];
 const companyCommands = companyOptions.map(option => option.name);
+assert.deepEqual(companyCommands, ["list", "overview", "income", "profit", "stars", "ads", "stock", "employees", "wages", "trends", "alerts", "rankings"],
+  "company subcommand and group order must match the requested tree");
 for (const name of ["list", "overview", "income", "profit", "stars", "ads", "stock", "employees", "wages", "alerts", "trends", "rankings"]) {
   assert.ok(companyCommands.includes(name), "missing /company " + name);
 }
@@ -101,11 +103,15 @@ assert.deepEqual((detailOption?.choices || []).map(choice => choice.value), ["br
 
 const rankingGroup = companyOptions.find(option => option.name === "rankings" && option.type === 2);
 const rankingCommands = (rankingGroup?.options || []).map(option => option.name);
+assert.deepEqual(rankingCommands, ["companies", "company", "compare", "global", "faction"],
+  "company rankings children must match the requested order");
 for (const name of ["companies", "company", "compare", "global", "faction"]) {
   assert.ok(rankingCommands.includes(name), "missing /company rankings " + name);
 }
 const alertGroup = companyOptions.find(option => option.name === "alerts" && option.type === 2);
 const alertCommands = (alertGroup?.options || []).map(option => option.name);
+assert.deepEqual(alertCommands, ["recent", "enable", "disable", "configure", "status", "settings", "acknowledge", "rules"],
+  "company alerts children must match the requested order");
 for (const name of ["enable", "disable", "configure", "status", "settings", "recent", "acknowledge", "rules"]) {
   assert.ok(alertCommands.includes(name), "missing /company alerts " + name);
 }
