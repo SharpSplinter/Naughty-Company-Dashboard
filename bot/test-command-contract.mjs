@@ -98,8 +98,11 @@ const notificationOptions = automationNotifications.get("configure")?.options ||
 assert.ok(notificationOptions.some(option => option.name === "quiet_hours_enabled" && option.type === 5), "notifications configure must support quiet-hours toggle");
 assert.deepEqual((notificationOptions.find(option => option.name === "digest_mode")?.choices || []).map(choice => choice.value), ["instant", "daily", "both", "off"], "notifications configure must expose supported webhook digest modes");
 const automationWebhook = new Map((automationGroups.get("webhook")?.options || []).map(option => [option.name, option]));
-assert.deepEqual([...automationWebhook.keys()], ["status", "deliveries", "retry"], "/automation webhook must expose status, deliveries, and retry");
+assert.deepEqual([...automationWebhook.keys()], ["status", "delete", "deliveries", "retry"], "/automation webhook must expose status, delete, deliveries, and retry");
 assert.equal(automationWebhook.get("retry")?.options?.find(option => option.name === "delivery")?.autocomplete, true, "webhook retry must use an autocomplete selector rather than an event ID");
+assert.match(worker, /method: "DELETE", headers, signal: AbortSignal.timeout\(8000\)/, "webhook delete must use the authenticated delete endpoint");
+assert.match(worker, /JSON.stringify\(\{ digestMode: "off" \}\)/, "webhook delete must turn off external webhook digests");
+assert.match(worker, /External webhook delivery is separate from private Discord DMs/, "notification status must distinguish external webhook delivery from private Discord DMs");
 
 const dashboardCommand = commandsByName.get("dashboard");
 assert.ok(dashboardCommand, "missing top-level /dashboard command");
