@@ -59,7 +59,7 @@ export const commands = [
         str("quiet_hours_start", "Quiet-hours start, 24-hour HH:MM", false, { min_length: 5, max_length: 5 }),
         str("quiet_hours_end", "Quiet-hours end, 24-hour HH:MM", false, { min_length: 5, max_length: 5 }),
         str("timezone", "IANA time zone, e.g. America/New_York", false, { max_length: 80 }),
-        str("digest_mode", "Webhook alert delivery mode", false, { choices: [
+        str("digest_mode", "External webhook delivery mode, separate from Discord DMs", false, { choices: [
           { name: "Instant alerts", value: "instant" },
           { name: "Daily summary only", value: "daily" },
           { name: "Instant alerts and daily summary", value: "both" },
@@ -69,6 +69,7 @@ export const commands = [
     ]),
     group("webhook", "Inspect webhook delivery and retry failures", [
       sub("status", "Show encrypted webhook configuration and last delivery status"),
+      sub("delete", "Remove the external webhook and turn webhook digests off"),
       sub("deliveries", "List recent webhook delivery attempts"),
       sub("retry", "Retry a failed webhook delivery", [str("delivery", "Choose a failed delivery to retry", true, { min_length: 1, max_length: 80, autocomplete: true })])
     ])
