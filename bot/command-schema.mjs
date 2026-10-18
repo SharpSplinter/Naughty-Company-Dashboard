@@ -1,133 +1,25 @@
-// Canonical guild slash-command schema, shared by registration and contract tests.
-const sub = (name, description, options = []) => ({ type: 1, name, description, ...(options.length ? { options } : {}) });
-const group = (name, description, options = []) => ({ type: 2, name, description, options });
-const str = (name, description, required = false, extras = {}) => ({ type: 3, name, description, required, ...extras });
-const integer = (name, description, required = false, extras = {}) => ({ type: 4, name, description, required, ...extras });
-const companyId = () => str("company_id", "Connected company ID; defaults to your most recently saved company", false, { min_length: 1, max_length: 20 });
-const period = () => str("period", "Historical window", false, { choices: [
-  { name: "7 days", value: "7" }, { name: "30 days", value: "30" },
-  { name: "90 days", value: "90" }, { name: "365 days", value: "365" }, { name: "All history", value: "all" }
-] });
-const detail = () => str("detail", "Roster detail level", false, { choices: [
-  { name: "Brief", value: "brief" }, { name: "Full", value: "full" }
-] });
+// Canonical guild slash-command schema, assembled from one definition file per root command.
+import { linkCommand } from "./commands/link.mjs";
+import { linkcodeCommand } from "./commands/link-code.mjs";
+import { statusCommand } from "./commands/status.mjs";
+import { unlinkCommand } from "./commands/unlink.mjs";
+import { pingCommand } from "./commands/ping.mjs";
+import { helpCommand } from "./commands/help.mjs";
+import { botCommand } from "./commands/bot.mjs";
+import { dashboardCommand } from "./commands/dashboard.mjs";
+import { automationCommand } from "./commands/automation.mjs";
+import { companyCommand } from "./commands/company.mjs";
 
+// This array is the exact set of guild root commands owned by Naughty Company Bot.
 export const commands = [
-  { name: "ping", description: "Check that Naughty Company Bot is responding" },
-  { name: "help", description: "Show commands, privacy notes, and account-linking instructions" },
-  { name: "link", description: "Get the private dashboard account-linking instructions" },
-  { name: "link-code", description: "Redeem a one-time code generated in your dashboard" },
-  { name: "status", description: "Check your private dashboard account-link status" },
-  { name: "unlink", description: "Disconnect your dashboard account from this Discord account" },
-  { name: "bot", description: "Bot operational status", options: [
-    sub("status", "Check bot and dashboard API availability")
-  ]},
-  { name: "dashboard", description: "Inspect dashboard health and cross-company snapshot coverage", options: [
-    sub("health", "Show dashboard API, database, and company freshness"),
-    sub("summary", "Summarize saved coverage, stale companies, and recent alerts")
-  ]},
-  { name: "automation", description: "Manage private alert rules, notification preferences, and webhook delivery", options: [
-    group("rules", "Create and manage your private alert rules", [
-      sub("list", "List your alert rules and their current state"),
-      sub("create", "Create a private alert rule", [
-        str("rule_type", "Rule template", true, { choices: [
-          { name: "Daily income drop", value: "income_drop" },
-          { name: "Stale company data", value: "stale_data" },
-          { name: "Scheduled refresh failure", value: "refresh_failure" },
-          { name: "Daily income increase", value: "income_increase" },
-          { name: "Company rating drop", value: "rating_drop" },
-          { name: "Employee roster change", value: "roster_change" }
-        ]}),
-        str("company", "Optional company; leave blank to cover all connected companies", false, { min_length: 1, max_length: 20, autocomplete: true }),
-        integer("threshold_percent", "Change percentage threshold, 1–90", false, { min_value: 1, max_value: 90 }),
-        integer("cooldown_hours", "Repeat-alert cooldown in hours, 1–168", false, { min_value: 1, max_value: 168 }),
-        integer("stale_after_hours", "Stale-data age in hours, 1–168", false, { min_value: 1, max_value: 168 })
-      ]),
-      sub("enable", "Enable a paused alert rule", [str("rule", "Choose a paused rule", true, { min_length: 1, max_length: 80, autocomplete: true })]),
-      sub("disable", "Pause an enabled alert rule", [str("rule", "Choose an enabled rule", true, { min_length: 1, max_length: 80, autocomplete: true })]),
-      sub("delete", "Delete a rule and its associated alert history", [str("rule", "Choose a rule to delete", true, { min_length: 1, max_length: 80, autocomplete: true })])
-    ]),
-    group("notifications", "Inspect and configure alert notification preferences", [
-      sub("status", "Show severity, quiet-hours, and delivery preferences"),
-      sub("configure", "Change severity, quiet hours, time zone, or digest mode", [
-        str("minimum_severity", "Lowest severity for browser/webhook delivery", false, { choices: [
-          { name: "Info and above", value: "info" },
-          { name: "Warning and critical only", value: "warning" },
-          { name: "Critical only", value: "critical" }
-        ]}),
-        { type: 5, name: "quiet_hours_enabled", description: "Suppress supported notifications during quiet hours", required: false },
-        str("quiet_hours_start", "Quiet-hours start, 24-hour HH:MM", false, { min_length: 5, max_length: 5 }),
-        str("quiet_hours_end", "Quiet-hours end, 24-hour HH:MM", false, { min_length: 5, max_length: 5 }),
-        str("timezone", "IANA time zone, e.g. America/New_York", false, { max_length: 80 }),
-        str("digest_mode", "External webhook delivery mode, separate from Discord DMs", false, { choices: [
-          { name: "Instant alerts", value: "instant" },
-          { name: "Daily summary only", value: "daily" },
-          { name: "Instant alerts and daily summary", value: "both" },
-          { name: "Webhook delivery off", value: "off" }
-        ]})
-      ])
-    ]),
-    group("webhook", "Inspect webhook delivery and retry failures", [
-      sub("status", "Show encrypted webhook configuration and last delivery status"),
-      sub("delete", "Remove the external webhook and turn webhook digests off"),
-      sub("deliveries", "List recent webhook delivery attempts"),
-      sub("retry", "Retry a failed webhook delivery", [str("delivery", "Choose a failed delivery to retry", true, { min_length: 1, max_length: 80, autocomplete: true })])
-    ])
-  ]},
-  { name: "company", description: "Privately inspect your connected company data", options: [
-    sub("list", "List companies connected to your dashboard"),
-    sub("overview", "Show income, profit, stars, employees, stock, and freshness", [companyId()]),
-    sub("income", "Show daily and weekly income with available historical change", [companyId(), period()]),
-    sub("profit", "Show reported profit and available cost breakdown", [companyId(), period()]),
-    sub("stars", "Show current company rating and historical change", [companyId()]),
-    sub("ads", "Show advertising budget fields available in saved company data", [companyId()]),
-    sub("stock", "Show stock quantities and historical differences", [companyId(), period()]),
-    sub("employees", "Show employee roster and summary", [companyId(), detail()]),
-    sub("wages", "Show known employee wage totals and data coverage", [companyId()]),
-    group("alerts", "Inspect recent alerts and notification settings", [
-    sub("enable", "Enable private Discord alert DMs"),
-    sub("disable", "Disable private Discord alert DMs without unlinking"),
-    sub("configure", "Change alert severity and quiet-hours preferences", [
-      str("minimum_severity", "Lowest severity delivered", false, { choices: [
-        { name: "Info and above", value: "info" }, { name: "Warning and critical only", value: "warning" },
-        { name: "Critical only", value: "critical" }
-      ]}),
-      { type: 5, name: "quiet_hours_enabled", description: "Enable or disable quiet hours", required: false },
-      str("quiet_hours_start", "Quiet-hours start, 24-hour HH:MM", false, { min_length: 5, max_length: 5 }),
-      str("quiet_hours_end", "Quiet-hours end, 24-hour HH:MM", false, { min_length: 5, max_length: 5 }),
-      str("timezone", "IANA time zone, e.g. America/New_York", false, { max_length: 80 })
-    ]),
-    sub("status", "Show alert delivery and preference status"),
-    sub("settings", "Show current severity and quiet-hours settings"),
-    sub("recent", "Show recent dashboard alerts for your account", [companyId(), integer("limit", "Number of alerts, maximum 10", false, { min_value: 1, max_value: 10 })]),
-    sub("acknowledge", "Acknowledge an active alert", [str("alert", "Pick an active alert to acknowledge", true, { min_length: 1, max_length: 80, autocomplete: true })]),
-    sub("rules", "List your enabled and disabled dashboard alert rules")
-  ]),
-    sub("trends", "Summarize saved history by period and metric", [companyId(), period(), str("metric", "Metric to inspect", false, { choices: [
-      { name: "Overview", value: "overview" }, { name: "Income", value: "income" },
-      { name: "Stars", value: "stars" }, { name: "Stock", value: "stock" },
-      { name: "Employees", value: "employees" }
-    ]})]),
-    group("rankings", "Browse global and faction company rankings", [
-    sub("companies", "Browse cached global companies by type", [
-      integer("company_type_id", "Torn company type ID", true, { min_value: 1 }),
-      integer("page", "Result page, 10 companies per page", false, { min_value: 1, max_value: 100 }),
-      str("sort", "Ranking sort order", false, { choices: [
-        { name: "Weekly income", value: "weekly_income" }, { name: "Daily income", value: "daily_income" },
-        { name: "Star rating", value: "stars" }
-      ]})
-    ]),
-    sub("company", "Show your connected company's position and nearby competitors", [companyId()]),
-    sub("compare", "Compare your connected company with same-type cached benchmarks", [companyId()]),
-    sub("global", "Compatibility alias for your global company ranking"),
-    sub("faction", "List faction company directors ranked by weekly income", [
-      integer("page", "Result page, 10 companies per page", false, { min_value: 1, max_value: 100 }),
-      str("sort", "Ranking sort order", false, { choices: [
-        { name: "Weekly income", value: "weekly_income" }, { name: "Daily income", value: "daily_income" },
-        { name: "Star rating", value: "stars" }
-      ]})
-    ])
-  ])
-  ]},
-
+  linkCommand,
+  linkcodeCommand,
+  statusCommand,
+  unlinkCommand,
+  pingCommand,
+  helpCommand,
+  botCommand,
+  dashboardCommand,
+  automationCommand,
+  companyCommand
 ];

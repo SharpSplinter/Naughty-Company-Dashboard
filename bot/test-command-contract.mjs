@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { commands } from "./command-schema.mjs";
+import { parseCommandRoute } from "./command-routing.mjs";
 
 const rootNames = commands.map(command => command.name);
 assert.equal(new Set(rootNames).size, rootNames.length, "top-level command names must be unique");
+assert.deepEqual(rootNames, ["link", "link-code", "status", "unlink", "ping", "help", "bot", "dashboard", "automation", "company"],
+  "registered root commands must match the intended architecture, with /help retained");
 
 const validName = /^[a-z0-9_-]{1,32}$/;
 function validateLeafOption(child, path) {
@@ -51,9 +54,43 @@ function validateCommand(command) {
 }
 for (const command of commands) validateCommand(command);
 
+const parsedRootRoute = parseCommandRoute({ data: { name: "ping" } });
+assert.deepEqual(parsedRootRoute, { group: null, subcommand: null, options: [] }, "flat root commands must remain root routes");
+const parsedCompanyList = parseCommandRoute({ data: { name: "company", options: [
+  { type: 1, name: "list" }
+] } });
+assert.deepEqual(parsedCompanyList, { group: null, subcommand: "list", options: [] }, "/company list must parse as a direct subcommand");
+const parsedCompanyGlobal = parseCommandRoute({ data: { name: "company", options: [
+  { type: 2, name: "rankings", options: [
+    { type: 1, name: "global", options: [] }
+  ] }
+] } });
+assert.deepEqual(parsedCompanyGlobal, { group: "rankings", subcommand: "global", options: [] },
+  "/company rankings global must parse group type 2 then subcommand type 1");
+const parsedAutomationRetry = parseCommandRoute({ data: { name: "automation", options: [
+  { type: 2, name: "webhook", options: [
+    { type: 1, name: "retry", options: [{ type: 3, name: "delivery", value: "delivery-id" }] }
+  ] }
+] } });
+assert.deepEqual(parsedAutomationRetry, { group: "webhook", subcommand: "retry", options: [{ type: 3, name: "delivery", value: "delivery-id" }] },
+  "/automation webhook retry must preserve leaf arguments");
+
+
 const commandsByName = new Map(commands.map(command => [command.name, command]));
+const botOwnedRoots = new Set(rootNames);
+assert.equal(botOwnedRoots.size, 10, "the schema must expose ten intended roots, including /help");
+const directCompanySubcommands = ["list", "overview", "income", "profit", "stars", "ads", "stock", "employees", "wages", "trends"];
+const companyRoot = commandsByName.get("company");
+for (const name of directCompanySubcommands) {
+  assert.equal((companyRoot?.options || []).find(option => option.name === name)?.type, 1, "/company " + name + " must be a direct subcommand (type 1)");
+}
+for (const name of ["alerts", "rankings"]) {
+  assert.equal((companyRoot?.options || []).find(option => option.name === name)?.type, 2, "/company " + name + " must be a subcommand group (type 2)");
+}
 const companyOptions = commandsByName.get("company")?.options || [];
 const companyCommands = companyOptions.map(option => option.name);
+assert.deepEqual(companyCommands, ["list", "overview", "income", "profit", "stars", "ads", "stock", "employees", "wages", "trends", "alerts", "rankings"],
+  "company subcommand and group order must match the requested tree");
 for (const name of ["list", "overview", "income", "profit", "stars", "ads", "stock", "employees", "wages", "alerts", "trends", "rankings"]) {
   assert.ok(companyCommands.includes(name), "missing /company " + name);
 }
@@ -66,11 +103,15 @@ assert.deepEqual((detailOption?.choices || []).map(choice => choice.value), ["br
 
 const rankingGroup = companyOptions.find(option => option.name === "rankings" && option.type === 2);
 const rankingCommands = (rankingGroup?.options || []).map(option => option.name);
+assert.deepEqual(rankingCommands, ["companies", "company", "compare", "global", "faction"],
+  "company rankings children must match the requested order");
 for (const name of ["companies", "company", "compare", "global", "faction"]) {
   assert.ok(rankingCommands.includes(name), "missing /company rankings " + name);
 }
 const alertGroup = companyOptions.find(option => option.name === "alerts" && option.type === 2);
 const alertCommands = (alertGroup?.options || []).map(option => option.name);
+assert.deepEqual(alertCommands, ["recent", "enable", "disable", "configure", "status", "settings", "acknowledge", "rules"],
+  "company alerts children must match the requested order");
 for (const name of ["enable", "disable", "configure", "status", "settings", "recent", "acknowledge", "rules"]) {
   assert.ok(alertCommands.includes(name), "missing /company alerts " + name);
 }
@@ -98,7 +139,7 @@ const notificationOptions = automationNotifications.get("configure")?.options ||
 assert.ok(notificationOptions.some(option => option.name === "quiet_hours_enabled" && option.type === 5), "notifications configure must support quiet-hours toggle");
 assert.deepEqual((notificationOptions.find(option => option.name === "digest_mode")?.choices || []).map(choice => choice.value), ["instant", "daily", "both", "off"], "notifications configure must expose supported webhook digest modes");
 const automationWebhook = new Map((automationGroups.get("webhook")?.options || []).map(option => [option.name, option]));
-assert.deepEqual([...automationWebhook.keys()], ["status", "delete", "deliveries", "retry"], "/automation webhook must expose status, delete, deliveries, and retry");
+assert.deepEqual([...automationWebhook.keys()], ["status", "deliveries", "retry", "delete"], "/automation webhook must expose status, deliveries, retry, and delete in the requested order");
 assert.equal(automationWebhook.get("retry")?.options?.find(option => option.name === "delivery")?.autocomplete, true, "webhook retry must use an autocomplete selector rather than an event ID");
 
 const dashboardCommand = commandsByName.get("dashboard");
@@ -119,6 +160,9 @@ assert.match(registration, /data\.retry_after/, "rate-limit retry must honor Dis
 assert.match(registration, /maxRateLimitRetries/, "rate-limit retry attempts must be bounded");
 assert.match(registration, /DEPRECATED_ROOT_ALIASES/, "registration must identify retired root aliases");
 assert.match(registration, /"alerts", "rankings"/, "registration must retire former standalone company alert and ranking roots");
+assert.match(registration, /LEGACY_FLAT_ROOT_ALIASES/, "registration must remove obsolete flattened nested-command roots");
+assert.match(registration, /automation-webhook-delete/, "registration must clean up flattened automation webhook aliases");
+assert.match(registration, /company-rankings-global/, "registration must clean up flattened company ranking aliases");
 assert.match(registration, /await request\(base \+ "\/" \+ stale\.id, "DELETE"\)/, "registration must remove retired root aliases from Discord");
 assert.match(worker, /const privateReply = content => \(\{ type: 4, data: \{ content, flags: 64 \} \}\)/, "account-specific slash replies must be ephemeral");
 assert.match(worker, /if \(i\.type === 4\)/, "alert acknowledgement must support Discord autocomplete interactions");
@@ -156,7 +200,7 @@ assert.match(profitBlock, /Monthly profit \(month to date\)/, "profit output mus
 assert.match(profitBlock, /summarizeMonthToDate\(history\)/, "month-to-date estimates must use owner-scoped saved daily history");
 assert.match(worker, /subcommand === "profit" \? "all" : days/, "profit must fetch all available history to cover the current month");
 assert.doesNotMatch(worker, /name === "(?:overview|employees|trends|alerts|rankings)"/, "retired aliases must not have standalone handler routes");
-assert.match(worker, /route\.type === 2/, "command parser must support nested subcommand groups");
+assert.match(worker, /parseCommandRoute\(interaction\)/, "Worker must use the explicit nested interaction parser");
 assert.match(worker, /name === "dashboard" && \["health", "summary"\]\.includes\(commandOptions\(i\)\.subcommand\)/, "dashboard commands must route to their shared handler");
 assert.match(worker, /\/dashboard health\|summary/, "help must document the dashboard command family");
 assert.match(worker, /\/api\/me\/health/, "dashboard health must use the owner-scoped health endpoint");
