@@ -1,4 +1,5 @@
 import { money, numberLabel, countChangeLabel } from "./formatting.mjs";
+import { parseCommandRoute } from "./command-routing.mjs";
 import { buildCostBreakdown, estimateDailyProfit, estimateWeeklyProfit, findAdvertisingBudget, knownWageSummary, stockOrderExpenses, summarizeMonthToDate } from "./financials.mjs";
 
 const enc = new TextEncoder();
@@ -109,18 +110,7 @@ function snapshotAgeLabel(value) {
   return Math.floor(hours / 24) + " day(s) old";
 }
 function commandOptions(interaction) {
-  const top = Array.isArray(interaction?.data?.options) ? interaction.data.options : [];
-  const route = top.find(item => item && (item.type === 1 || item.type === 2 || Array.isArray(item.options)));
-  if (!route) return { group: null, subcommand: null, options: top };
-  if (route.type === 2) {
-    const child = (Array.isArray(route.options) ? route.options : []).find(item => item && item.type === 1);
-    return {
-      group: route.name || null,
-      subcommand: child?.name || null,
-      options: child && Array.isArray(child.options) ? child.options : []
-    };
-  }
-  return { group: null, subcommand: route.name || null, options: Array.isArray(route.options) ? route.options : [] };
+  return parseCommandRoute(interaction);
 }
 function optionValue(interaction, name) {
   const options = commandOptions(interaction).options;
