@@ -6,6 +6,12 @@ const rootNames = commands.map(command => command.name);
 assert.equal(new Set(rootNames).size, rootNames.length, "top-level command names must be unique");
 
 const validName = /^[a-z0-9_-]{1,32}$/;
+function validateLeafOption(child, path) {
+  assert.match(child.name, validName, path + " argument name");
+  assert.ok(child.description.length > 0 && child.description.length <= 100, path + "/" + child.name + " argument description length");
+  assert.ok(!Object.prototype.hasOwnProperty.call(child, "options"), "Discord supports only command -> group -> subcommand nesting");
+  assert.ok(!Object.prototype.hasOwnProperty.call(child, "choices") || child.choices.length <= 25, "choice limit");
+}
 function validateCommand(command) {
   assert.match(command.name, validName, "Discord command names must use valid lowercase names");
   assert.ok(command.description.length > 0 && command.description.length <= 100, command.name + " description length");
@@ -14,45 +20,59 @@ function validateCommand(command) {
   assert.equal(new Set(options.map(option => option.name)).size, options.length, command.name + " duplicate option/subcommand");
   for (const option of options) {
     assert.match(option.name, validName, command.name + " option name");
-    assert.ok(option.description.length > 0 && option.description.length <= 100, command.name + "/" + option.name + " description length");
+    assert.ok(option.description.length > 0 && option.description.length <= 100, command.name + "/" + option.name + " option description length");
     if (option.type === 1) {
       assert.ok(!Object.prototype.hasOwnProperty.call(option, "required"), "subcommands cannot have required flags");
       assert.ok(!Object.prototype.hasOwnProperty.call(option, "choices"), "subcommands cannot have choices");
       assert.ok(!Object.prototype.hasOwnProperty.call(option, "options") || option.options.length <= 25, command.name + "/" + option.name + " option count");
       const childOptions = option.options || [];
       assert.equal(new Set(childOptions.map(child => child.name)).size, childOptions.length, command.name + "/" + option.name + " duplicate arguments");
-      for (const child of childOptions) {
-        assert.match(child.name, validName, command.name + "/" + option.name + " argument name");
+      for (const child of childOptions) validateLeafOption(child, command.name + "/" + option.name);
+    } else if (option.type === 2) {
+      assert.ok(!Object.prototype.hasOwnProperty.call(option, "required"), "groups cannot have required flags");
+      assert.ok(!Object.prototype.hasOwnProperty.call(option, "choices"), "groups cannot have choices");
+      assert.ok(Array.isArray(option.options) && option.options.length > 0 && option.options.length <= 25, command.name + "/" + option.name + " must have subcommands");
+      const childNames = option.options.map(child => child.name);
+      assert.equal(new Set(childNames).size, childNames.length, command.name + "/" + option.name + " duplicate nested subcommand");
+      for (const child of option.options) {
+        assert.equal(child.type, 1, "a subcommand group can contain only subcommands");
         assert.ok(child.description.length > 0 && child.description.length <= 100, command.name + "/" + option.name + "/" + child.name + " description length");
-        assert.ok(!Object.prototype.hasOwnProperty.call(child, "options"), "Discord allows only one subcommand level");
-        assert.ok(!Object.prototype.hasOwnProperty.call(child, "choices") || child.choices.length <= 25, "choice limit");
+        assert.ok(!Object.prototype.hasOwnProperty.call(child, "required"), "nested subcommands cannot have required flags");
+        assert.ok(!Object.prototype.hasOwnProperty.call(child, "choices"), "nested subcommands cannot have choices");
+        assert.ok(!Object.prototype.hasOwnProperty.call(child, "options") || child.options.length <= 25, command.name + "/" + option.name + "/" + child.name + " option count");
+        const leafOptions = child.options || [];
+        assert.equal(new Set(leafOptions.map(leaf => leaf.name)).size, leafOptions.length, command.name + "/" + option.name + "/" + child.name + " duplicate arguments");
+        for (const leaf of leafOptions) validateLeafOption(leaf, command.name + "/" + option.name + "/" + child.name);
       }
     } else {
-      assert.ok(!Object.prototype.hasOwnProperty.call(option, "options"), "top-level non-subcommand options cannot contain nested options");
+      assert.ok(!Object.prototype.hasOwnProperty.call(option, "options"), "top-level parameters cannot contain nested options");
     }
   }
 }
 for (const command of commands) validateCommand(command);
 
 const commandsByName = new Map(commands.map(command => [command.name, command]));
-const companyCommands = (commandsByName.get("company")?.options || []).map(option => option.name);
-for (const name of ["list", "overview", "income", "profit", "stars", "ads", "stock", "employees", "wages", "alerts", "trends"]) {
+const companyOptions = commandsByName.get("company")?.options || [];
+const companyCommands = companyOptions.map(option => option.name);
+for (const name of ["list", "overview", "income", "profit", "stars", "ads", "stock", "employees", "wages", "alerts", "trends", "rankings"]) {
   assert.ok(companyCommands.includes(name), "missing /company " + name);
 }
-for (const name of ["overview", "employees", "trends"]) {
-  assert.equal(commandsByName.has(name), false, "retired root alias must not be registered: /" + name);
+for (const name of ["overview", "employees", "trends", "alerts", "rankings"]) {
+  assert.equal(commandsByName.has(name), false, "company command must not remain a root command: /" + name);
 }
-const employeesSubcommand = (commandsByName.get("company")?.options || []).find(option => option.name === "employees");
+const employeesSubcommand = companyOptions.find(option => option.name === "employees");
 const detailOption = (employeesSubcommand?.options || []).find(option => option.name === "detail");
 assert.deepEqual((detailOption?.choices || []).map(choice => choice.value), ["brief", "full"], "/company employees must expose brief/full detail levels");
 
-const rankingCommands = (commandsByName.get("rankings")?.options || []).map(option => option.name);
-for (const name of ["companies", "company", "compare", "faction"]) {
-  assert.ok(rankingCommands.includes(name), "missing /rankings " + name);
+const rankingGroup = companyOptions.find(option => option.name === "rankings" && option.type === 2);
+const rankingCommands = (rankingGroup?.options || []).map(option => option.name);
+for (const name of ["companies", "company", "compare", "global", "faction"]) {
+  assert.ok(rankingCommands.includes(name), "missing /company rankings " + name);
 }
-const alertCommands = (commandsByName.get("alerts")?.options || []).map(option => option.name);
+const alertGroup = companyOptions.find(option => option.name === "alerts" && option.type === 2);
+const alertCommands = (alertGroup?.options || []).map(option => option.name);
 for (const name of ["enable", "disable", "configure", "status", "settings", "recent", "acknowledge", "rules"]) {
-  assert.ok(alertCommands.includes(name), "missing /alerts " + name);
+  assert.ok(alertCommands.includes(name), "missing /company alerts " + name);
 }
 for (const name of ["link", "link-code", "status", "unlink", "help", "ping", "bot"]) {
   assert.ok(commandsByName.has(name), "missing top-level /" + name);
@@ -65,6 +85,7 @@ assert.match(registration, /response\.status === 429/, "Discord command registra
 assert.match(registration, /data\.retry_after/, "rate-limit retry must honor Discord retry_after");
 assert.match(registration, /maxRateLimitRetries/, "rate-limit retry attempts must be bounded");
 assert.match(registration, /DEPRECATED_ROOT_ALIASES/, "registration must identify retired root aliases");
+assert.match(registration, /"alerts", "rankings"/, "registration must retire former standalone company alert and ranking roots");
 assert.match(registration, /await request\(base \+ "\/" \+ stale\.id, "DELETE"\)/, "registration must remove retired root aliases from Discord");
 assert.match(worker, /const privateReply = content => \(\{ type: 4, data: \{ content, flags: 64 \} \}\)/, "account-specific slash replies must be ephemeral");
 assert.match(worker, /Direct API-key entry in Discord is disabled/, "legacy API-key modal submissions must be rejected");
@@ -95,7 +116,10 @@ assert.match(profitBlock, /Monthly income \(month to date\)/, "profit output mus
 assert.match(profitBlock, /Monthly profit \(month to date\)/, "profit output must include month-to-date profit");
 assert.match(profitBlock, /summarizeMonthToDate\(history\)/, "month-to-date estimates must use owner-scoped saved daily history");
 assert.match(worker, /subcommand === "profit" \? "all" : days/, "profit must fetch all available history to cover the current month");
-assert.doesNotMatch(worker, /name === "(?:overview|employees|trends)"/, "retired aliases must not have standalone handler routes");
+assert.doesNotMatch(worker, /name === "(?:overview|employees|trends|alerts|rankings)"/, "retired aliases must not have standalone handler routes");
+assert.match(worker, /route\.type === 2/, "command parser must support nested subcommand groups");
+assert.match(worker, /name === "company" && commandOptions\(i\)\.group === "alerts"/, "alerts must route through /company alerts group");
+assert.match(worker, /name === "company" && commandOptions\(i\)\.group === "rankings"/, "rankings must route through /company rankings group");
 const overviewStart = worker.indexOf('if (name === "company" && commandOptions(i).subcommand === "overview")');
 const employeesStart = worker.indexOf('if (name === "company" && commandOptions(i).subcommand === "employees")', overviewStart);
 assert.ok(overviewStart >= 0 && employeesStart > overviewStart, "overview handler boundaries must exist");
