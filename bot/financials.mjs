@@ -140,7 +140,7 @@ export function summarizeMonthToDate(history, now = new Date()) {
 
   for (const point of Array.isArray(history) ? history : []) {
     const day = typeof point?.day === "string" ? point.day : "";
-    if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(day) || day < startDay || day > reportingDay) continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day < startDay || day > reportingDay) continue;
     const existing = pointsByDay.get(day);
     const currentTime = Date.parse(point.fetchedAt || "");
     const existingTime = Date.parse(existing?.fetchedAt || "");
