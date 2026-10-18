@@ -95,8 +95,8 @@ jobs:
           grep -Fq 'naughty-company-bot.kboone801.workers.dev' bot/configure-production-endpoint.mjs
           grep -Fq 'sub("global"' bot/commands/company.mjs
           grep -Fq 'sub("faction"' bot/commands/company.mjs
-          grep -Fq 'str("detail"' bot/commands/company.mjs
-          grep -Fq 'value: "full"' bot/commands/company.mjs
+          grep -Fq 'str("detail"' bot/command-options.mjs
+          grep -Fq 'value: "full"' bot/command-options.mjs
           grep -Fq 'sub("configure"' bot/commands/company.mjs
   deploy-production:
     needs: validate
