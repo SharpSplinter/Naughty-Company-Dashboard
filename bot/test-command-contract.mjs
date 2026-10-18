@@ -135,6 +135,18 @@ assert.match(worker, /name === "dashboard" && \["health", "summary"\]\.includes\
 assert.match(worker, /\/dashboard health\|summary/, "help must document the dashboard command family");
 assert.match(worker, /\/api\/me\/health/, "dashboard health must use the owner-scoped health endpoint");
 assert.match(worker, /\/api\/me\/alerts\?limit=10/, "dashboard summary must include recent alert status");
+const dashboardSummaryStart = worker.indexOf('const latestRun = alertData.latestRun && typeof alertData.latestRun === "object" ? alertData.latestRun : {};', worker.indexOf('if (name === "dashboard" && ["health", "summary"].includes(commandOptions(i).subcommand))'));
+const dashboardSummaryEnd = worker.indexOf('return chunkedPrivateReply("**Dashboard executive summary**", lines);', dashboardSummaryStart);
+assert.ok(dashboardSummaryStart >= 0 && dashboardSummaryEnd > dashboardSummaryStart, "dashboard summary output block must exist");
+const dashboardSummaryBlock = worker.slice(dashboardSummaryStart, dashboardSummaryEnd);
+assert.match(dashboardSummaryBlock, /Latest scheduled run:/, "dashboard summary must report the latest scheduled run");
+assert.match(dashboardSummaryBlock, /Run results:/, "dashboard summary must report scheduled-run outcomes concisely");
+assert.match(dashboardSummaryBlock, /Unread dashboard alerts:/, "dashboard summary must report unread alerts");
+assert.match(dashboardSummaryBlock, /Snapshot coverage:/, "dashboard summary must report a compact snapshot coverage line");
+assert.match(dashboardSummaryBlock, /Needs attention:/, "dashboard summary must identify stale companies when present");
+assert.doesNotMatch(dashboardSummaryBlock, /Dashboard Worker:|Database:|Latest saved snapshot:|latency\(/, "dashboard summary must leave system diagnostics to /dashboard health");
+assert.match(dashboardSummaryBlock, /timeZone: "UTC"/, "scheduled-run time must be compact and explicitly UTC");
+
 assert.match(worker, /name === "company" && commandOptions\(i\)\.group === "alerts"/, "alerts must route through /company alerts group");
 assert.match(worker, /name === "company" && commandOptions\(i\)\.group === "rankings"/, "rankings must route through /company rankings group");
 const overviewStart = worker.indexOf('if (name === "company" && commandOptions(i).subcommand === "overview")');

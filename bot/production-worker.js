@@ -947,25 +947,34 @@ async function replyFor(i, env) {
         ? alertData.unreadCount
         : events.filter(event => String(event.status || "").toLowerCase() === "unread").length;
       const latestRun = alertData.latestRun && typeof alertData.latestRun === "object" ? alertData.latestRun : {};
-      const lines = [
-        "Dashboard Worker: **" + safeText(workerStatus, 30) + "** · Database: **" + safeText(databaseStatus, 30) + "**",
-        "Connected companies: **" + Number(summary.companyCount || 0) + "**",
-        "Saved snapshots: **" + Number(summary.snapshotCount || 0).toLocaleString("en-US") + "**",
-        "Stale or never-synced companies: **" + Number(summary.staleCompanies || 0) + "**",
-        "Latest saved snapshot: " + snapshotTime(summary.latestSnapshotAt),
-        "Unread dashboard alerts: **" + unreadCount + "**"
-      ];
+      const summaryTime = value => {
+        const timestamp = Date.parse(value || "");
+        if (!Number.isFinite(timestamp)) return "time unavailable";
+        return new Intl.DateTimeFormat("en-US", {
+          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+          hour12: false, timeZone: "UTC"
+        }).format(new Date(timestamp)) + " UTC";
+      };
+      const lines = [];
       if (latestRun.status) {
         lines.push("Latest scheduled run: **" + safeText(latestRun.status, 30) + "**" +
-          (latestRun.finishedAt || latestRun.startedAt ? " · " + snapshotTime(latestRun.finishedAt || latestRun.startedAt) : ""));
-        if (typeof latestRun.companiesChecked === "number") lines.push("Companies checked in that run: " + latestRun.companiesChecked +
-          " · failures: " + Number(latestRun.companiesFailed || 0) + " · alerts created: " + Number(latestRun.alertsCreated || 0));
+          (latestRun.finishedAt || latestRun.startedAt ? " · " + summaryTime(latestRun.finishedAt || latestRun.startedAt) : ""));
+        if (typeof latestRun.companiesChecked === "number") {
+          lines.push("Run results: " + latestRun.companiesChecked + " companies checked · failures: " +
+            Number(latestRun.companiesFailed || 0) + " · alerts created: " + Number(latestRun.alertsCreated || 0));
+        }
       } else {
         lines.push("Latest scheduled run: not recorded yet");
       }
+      lines.push("Unread dashboard alerts: **" + unreadCount + "**");
+      const staleCount = Number(summary.staleCompanies || 0);
+      const companyCount = Number(summary.companyCount || 0);
+      const snapshotCount = Number(summary.snapshotCount || 0);
+      lines.push("Snapshot coverage: " + companyCount + " connected " + (companyCount === 1 ? "company" : "companies") +
+        " · " + snapshotCount.toLocaleString("en-US") + " saved snapshots · " + staleCount + " stale/unsynced");
       const staleNames = companyRows.filter(company => ["stale", "never"].includes(String(company.freshness || "").toLowerCase()))
         .slice(0, 5).map(company => safeText(company.companyName || "Company", 70));
-      if (staleNames.length) lines.push("Stale/unsynced company list: " + staleNames.join(", "));
+      if (staleNames.length) lines.push("Needs attention: " + staleNames.join(", "));
       if (health.error) lines.push("Health note: " + safeText(health.error, 180));
       return chunkedPrivateReply("**Dashboard executive summary**", lines);
     } catch { return privateReply("Dashboard status is temporarily unavailable. Please try again later."); }
