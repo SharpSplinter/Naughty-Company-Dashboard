@@ -74,6 +74,9 @@ const alertCommands = (alertGroup?.options || []).map(option => option.name);
 for (const name of ["enable", "disable", "configure", "status", "settings", "recent", "acknowledge", "rules"]) {
   assert.ok(alertCommands.includes(name), "missing /company alerts " + name);
 }
+const acknowledgeCommand = (alertGroup?.options || []).find(option => option.name === "acknowledge");
+const alertPicker = (acknowledgeCommand?.options || []).find(option => option.name === "event_id");
+assert.equal(alertPicker?.autocomplete, true, "alert acknowledgement must use Discord autocomplete instead of requiring a pasted event ID");
 for (const name of ["link", "link-code", "status", "unlink", "help", "ping", "bot"]) {
   assert.ok(commandsByName.has(name), "missing top-level /" + name);
 }
@@ -88,6 +91,11 @@ assert.match(registration, /DEPRECATED_ROOT_ALIASES/, "registration must identif
 assert.match(registration, /"alerts", "rankings"/, "registration must retire former standalone company alert and ranking roots");
 assert.match(registration, /await request\(base \+ "\/" \+ stale\.id, "DELETE"\)/, "registration must remove retired root aliases from Discord");
 assert.match(worker, /const privateReply = content => \(\{ type: 4, data: \{ content, flags: 64 \} \}\)/, "account-specific slash replies must be ephemeral");
+assert.match(worker, /if \(i\.type === 4\)/, "alert acknowledgement must support Discord autocomplete interactions");
+assert.match(worker, /type: 8, data: \{ choices \}/, "autocomplete must return a selector to Discord");
+assert.match(worker, /String\(event\.status \|\| ""\)\.toLowerCase\(\) === "unread"/, "the alert selector must exclude acknowledged events");
+assert.match(worker, /Use \/company alerts acknowledge and select an active alert from the autocomplete suggestions/, "recent alerts must explain selection-based acknowledgement");
+assert.doesNotMatch(worker, /\| Event ID:/, "recent alert output must not expose long event IDs");
 assert.match(worker, /Direct API-key entry in Discord is disabled/, "legacy API-key modal submissions must be rejected");
 assert.doesNotMatch(worker, /\/api\/auth\/sign-in/, "bot must not accept a Torn API key through Discord");
 assert.match(worker, /\/api\/discord\/link\/redeem/, "one-time dashboard link-code redemption must use the existing API");
