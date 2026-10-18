@@ -1391,6 +1391,59 @@ try {
     assert.ok(queries.some((query) => query.normalized.includes("where player_id = ? and company_id = ?")))
   })
 
+  await test("reconstructed historical wage aggregates reconcile to documented inputs", async () => {
+    const db = { prepare(sql) {
+      const normalized = sql.toLowerCase()
+      return {
+        bind() { return this },
+        async first() {
+          if (normalized.includes("from sessions s join players p")) return { player_id: "777", player_name: "History Tester" }
+          if (normalized.includes("from companies where player_id = ? and company_id = ? limit 1")) return { companyId: "96639", companyName: "Knotty Oil [Hiring]", companyType: "Oil Rig" }
+          return null
+        },
+        async all() {
+          if (normalized.includes("from company_financial_snapshots")) {
+            return { results: [{ day: "2026-10-01", stockJson: JSON.stringify({ reconstructed: true, stock: [{ name: "Oil (Barrel)", cost: 0, in_stock: 1042659, on_order: 0 }] }) }] }
+          }
+          if (normalized.includes("from faction_director_snapshots")) return { results: [] }
+          if (normalized.includes("row_number() over (partition by date(fetched_at, '-18 hours')")) {
+            return { results: [{
+              snapshotId: 117,
+              fetchedAt: "2026-10-01T19:06:57.429Z",
+              profileJson: JSON.stringify({ profile: {
+                id: 96639, name: "Knotty Oil [Hiring]", type: { id: 28, name: "Oil Rig" }, rating: 9,
+                income: { daily: 119113440, weekly: 864327250 }, employees: { hired: 30, capacity: 30 },
+                advertisement_budget: 5200000
+              } }),
+              employeesJson: JSON.stringify({
+                reconstructed: true, employee_count: 30, reporting_day: "2026-10-01",
+                wage_reconstruction: {
+                  total_wages: 78744770, daily_income: 119113440, daily_profit: 35168670,
+                  advertising_budget: 5200000, stock_order_expense: 0,
+                  method: "daily-income-minus-daily-profit-minus-advertising-budget-minus-stock-order-expense",
+                  source: "Yata.yt logs supplied by the user and uploaded dashboard backup"
+                }
+              })
+            }] }
+          }
+          return { results: [] }
+        },
+        async run() { return { success: true } },
+      }
+    } }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/companies/96639/history?days=30", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer history-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.history.length, 1)
+    assert.equal(payload.history[0].day, "2026-10-01")
+    assert.equal(payload.history[0].employeeCount, 30)
+    assert.equal(payload.history[0].advertisingBudget, 5200000)
+    assert.equal(payload.history[0].employeeWages, 78744770)
+    assert.equal(payload.history[0].stockOrderExpense, 0)
+  })
+
   await test("historical company trends refuse to disclose an unowned company", async () => {
     let historyRead = false
     const db = { prepare(sql) {
