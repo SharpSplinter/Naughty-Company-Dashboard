@@ -290,7 +290,7 @@ async function replyFor(i, env) {
   }
   if (i.type !== 2) return privateReply("Unsupported interaction.");
   if (name === "ping") return privateReply("Pong! Naughty Company Bot is responding.");
-  if (name === "help") return privateReply("**Naughty Company Bot**\\n/link: get dashboard-linking instructions\\n/link-code: redeem a five-minute, one-use code from your dashboard\\n/status: check your link\\n/unlink: remove your link\\n/dashboard health|summary: inspect dashboard and cross-company data status\\n/company list|overview|income|profit|stars|ads|stock|employees (detail: brief/full)|wages|trends: inspect your connected company\\n/company alerts recent|enable|disable|configure|status|settings|acknowledge|rules: inspect and manage private Discord alerts\\n/company rankings companies|company|compare|global|faction: browse cached rankings\\n/automation rules list|create|enable|disable|delete: manage private alert rules\\n/automation notifications status|configure: manage severity, quiet hours, and webhook digest\\n/automation webhook status|deliveries|retry: inspect and retry webhook deliveries\\n/bot status: check service health\\n/ping: test bot response\\n\\nAccount-specific replies are private by default. The bot never needs your Torn API key in Discord.");
+  if (name === "help") return privateReply("**Naughty Company Bot**\\n/link: get dashboard-linking instructions\\n/link-code: redeem a five-minute, one-use code from your dashboard\\n/status: check your link\\n/unlink: remove your link\\n/dashboard health|summary: inspect dashboard and cross-company data status\\n/company list|overview|income|profit|stars|ads|stock|employees (detail: brief/full)|wages|trends: inspect your connected company\\n/company alerts recent|enable|disable|configure|status|settings|acknowledge|rules: inspect and manage private Discord alerts\\n/company rankings companies|company|compare|global|faction: browse cached rankings\\n/automation rules list|create|enable|disable|delete: manage private alert rules\\n/automation notifications status|configure: manage severity, quiet hours, and webhook digest\\n/automation webhook status|deliveries|retry|delete: inspect or remove the external webhook\\n/bot status: check service health\\n/ping: test bot response\\n\\nAccount-specific replies are private by default. The bot never needs your Torn API key in Discord.");
   if (!user) return privateReply("Unable to identify your Discord account.");
   if (name === "bot") {
     if (commandOptions(i).subcommand !== "status") return privateReply("Choose /bot status.");
@@ -1049,16 +1049,21 @@ async function replyFor(i, env) {
         const { response, preferences: prefs } = await getPreferences();
         if (!response.ok) return privateReply(await apiError(response));
         if (subcommand === "status") {
-          const discordRes = await dashboardFetch(env, "/api/me/discord-link", { headers, signal: AbortSignal.timeout(8000) });
+          const [discordRes, webhookRes] = await Promise.all([
+            dashboardFetch(env, "/api/me/discord-link", { headers, signal: AbortSignal.timeout(8000) }),
+            dashboardFetch(env, "/api/me/automation-webhook", { headers, signal: AbortSignal.timeout(8000) })
+          ]);
           const discord = discordRes.ok ? await discordRes.json() : {};
+          const webhook = webhookRes.ok ? await webhookRes.json() : {};
           const quiet = prefs.quietHoursEnabled === true || Number(prefs.quietHoursEnabled) === 1;
           const lines = [
             "Minimum severity: **" + String(prefs.minimumSeverity || "info") + "**",
             "Quiet hours: **" + (quiet ? "on" : "off") + "** · " + String(prefs.quietHoursStart || "22:00") + "–" + String(prefs.quietHoursEnd || "08:00") + " · " + String(prefs.timezone || "UTC"),
-            "Webhook digest mode: **" + String(prefs.digestMode || "instant") + "**",
+            "External webhook: **" + (webhook.configured ? "configured" : "not configured") + "**",
+            "External webhook digest mode: **" + String(prefs.digestMode || "instant") + "**",
             "Private Discord DMs: **" + (discord.alertsEnabled ? "enabled" : discord.linked ? "disabled" : "not linked") + "**"
           ];
-          return privateReply("**Your notification settings**\n" + lines.join("\n") + "\nQuiet hours and minimum severity affect supported notification delivery. Discord DMs are immediate when enabled and outside quiet hours.");
+          return privateReply("**Your notification settings**\\n" + lines.join("\\n") + "\\nExternal webhook delivery is separate from private Discord DMs. To use DMs only, remove any external endpoint with /automation webhook delete. Discord DMs are immediate when enabled and outside quiet hours.");
         }
         const body = {};
         const minimumSeverity = optionValue(i, "minimum_severity");
@@ -1104,6 +1109,17 @@ async function replyFor(i, env) {
           ") · webhook digest: **" + String(saved.digestMode || "instant") + "**. Discord DMs remain immediate when enabled and outside quiet hours.");
       }
       if (groupName === "webhook") {
+        if (subcommand === "delete") {
+          const response = await dashboardFetch(env, "/api/me/automation-webhook", { method: "DELETE", headers, signal: AbortSignal.timeout(8000) });
+          if (!response.ok) return privateReply(await apiError(response));
+          const preferenceResponse = await dashboardFetch(env, "/api/me/automation-preferences", {
+            method: "POST", headers: jsonHeaders, body: JSON.stringify({ digestMode: "off" }), signal: AbortSignal.timeout(8000)
+          });
+          if (!preferenceResponse.ok) {
+            return privateReply("✅ External webhook endpoint removed. Private Discord DMs are unchanged. The webhook digest preference could not be changed, so set it to off with /automation notifications configure.");
+          }
+          return privateReply("✅ **External webhook removed.** Its saved endpoint was deleted and external webhook digest mode is now off. Private Discord DMs are separate and were not changed.");
+        }
         if (subcommand === "status") {
           const response = await dashboardFetch(env, "/api/me/automation-webhook", { headers, signal: AbortSignal.timeout(8000) });
           if (!response.ok) return privateReply(await apiError(response));
@@ -1114,7 +1130,7 @@ async function replyFor(i, env) {
             "Last delivered: **" + String(hook?.lastDeliveredAt || "not yet") + "**"
           ];
           if (hook?.lastError) lines.push("Last error: " + safeText(hook.lastError, 220));
-          return privateReply("**Webhook status**\n" + lines.join("\n") + "\nThe encrypted endpoint URL is never shown in Discord.");
+          return privateReply("**External webhook status**\\n" + lines.join("\\n") + "\\nThis is separate from private Discord DMs. The encrypted endpoint URL is never shown in Discord. Use /automation webhook delete to remove this endpoint and turn webhook digests off.");
         }
         if (subcommand === "deliveries") {
           const response = await dashboardFetch(env, "/api/me/automation-webhook/deliveries?limit=10", { headers, signal: AbortSignal.timeout(8000) });
@@ -1142,7 +1158,7 @@ async function replyFor(i, env) {
           return privateReply(resultLine + (delivery.statusCode ? " HTTP " + delivery.statusCode + "." : "") +
             (delivery.detail ? " " + safeText(delivery.detail, 300) : ""));
         }
-        return privateReply("Choose /automation webhook status, deliveries, or retry.");
+        return privateReply("Choose /automation webhook status, deliveries, retry, or delete.");
       }
       return privateReply("Choose a valid /automation command group and subcommand.");
     } catch {
