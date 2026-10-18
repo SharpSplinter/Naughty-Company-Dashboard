@@ -120,7 +120,7 @@ try {
     assert.match(workerSource, /sourceTimestamp \* 1000/)
     assert.match(workerSource, /snapshot_kind = excluded\.snapshot_kind/)
     assert.match(migrationSource, /snapshot_kind IN \('initialization', 'lock-in', 'legacy'\)/)
-    const rankingRefresh = workerSource.slice(workerSource.indexOf("async function refreshRankingProfiles"), workerSource.indexOf("async function refreshGlobalRankingCache"))
+    const rankingRefresh = workerSource.slice(workerSource.indexOf("async function refreshRankingProfiles"), workerSource.indexOf("type AdminAuditOutcome"))
     assert.match(rankingRefresh, /officialSnapshotSourceTime\(sourceTimestamp, snapshotSchedule\)/)
     assert.match(rankingRefresh, /if \(sourceSnapshotAt\)/)
     const directoryRefresh = workerSource.slice(workerSource.indexOf("async function syncFactionDirectorDirectory"), workerSource.indexOf("async function refreshFactionDirectoryFromAnyKey"))
