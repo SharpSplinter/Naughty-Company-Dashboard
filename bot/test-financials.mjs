@@ -5,7 +5,8 @@ import {
   estimateWeeklyProfit,
   findAdvertisingBudget,
   knownWageSummary,
-  stockOrderExpenses
+  stockOrderExpenses,
+  summarizeMonthToDate
 } from "./financials.mjs";
 
 assert.equal(findAdvertisingBudget({ profile: { company: { advertising_budget: 5200000 } } }), 5200000);
@@ -33,6 +34,20 @@ const breakdown = buildCostBreakdown({ advertisingBudget: 5200000, wages: wages.
 assert.equal(breakdown.total, 83400000);
 assert.equal(estimateDailyProfit(119465920, breakdown), 36065920);
 assert.equal(estimateWeeklyProfit(850324992, breakdown), 850324992 - (5200000 + 78200000) * 7);
+
+const monthHistory = [
+  { day: "2026-10-01", fetchedAt: "2026-10-01T20:00:00.000Z", dailyIncome: 100, advertisingBudget: 10, employeeWages: 20, stockOrderExpense: 3 },
+  { day: "2026-10-02", fetchedAt: "2026-10-02T20:00:00.000Z", dailyIncome: 200, advertisingBudget: 20, employeeWages: 30, stockOrderExpense: 4 },
+];
+const monthToDate = summarizeMonthToDate(monthHistory, new Date("2026-10-02T20:30:00.000Z"));
+assert.equal(monthToDate.month, "2026-10");
+assert.equal(monthToDate.expectedDays, 2);
+assert.equal(monthToDate.snapshotDays, 2);
+assert.equal(monthToDate.monthlyIncome, 300, "monthly income must sum daily income in the current reporting month");
+assert.equal(monthToDate.monthlyProfit, 213, "monthly profit must sum saved daily income minus that day's advertising, wages, and stock orders");
+assert.equal(summarizeMonthToDate([monthHistory[1]], new Date("2026-10-02T20:30:00.000Z")).monthlyIncome, null, "missing days must not be treated as zero");
+assert.equal(summarizeMonthToDate(monthHistory.map(point => ({ ...point, employeeWages: null })), new Date("2026-10-02T20:30:00.000Z")).monthlyProfit, null, "missing historical costs must not be treated as zero");
+
 assert.equal(buildCostBreakdown({ advertisingBudget: null, wages: wages.total, stockSummary: stockCosts }).total, null);
 assert.equal(buildCostBreakdown({ advertisingBudget: 5200000, wages: null, stockSummary: stockCosts }).total, null);
 assert.equal(buildCostBreakdown({ advertisingBudget: 5200000, wages: wages.total, stockSummary: stockOrderExpenses(null) }).total, null);
