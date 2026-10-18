@@ -821,7 +821,7 @@ async function replyFor(i, env) {
         });
         const result = await response.json().catch(() => ({}));
         if (response.status === 401 || response.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
-        if (!response.ok) return privateReply(String(result.error || "The alert could not be acknowledged. Check the event ID and try again."));
+        if (!response.ok) return privateReply(String(result.error || "The selected alert could not be acknowledged. It may already be acknowledged; refresh recent alerts and choose it again."));
         return privateReply("✅ Alert acknowledged. Only the linked dashboard account’s own alert record was changed.");
       }
       if (subcommand === "rules") {
@@ -920,6 +920,9 @@ export default {
         })());
       }
       return json(reply);
-    } catch { return json({ type: 4, data: { content: "The request could not be completed. Please try again later.", flags: 64 } }); }
+    } catch {
+      if (interaction?.type === 4) return json({ type: 8, data: { choices: [] } });
+      return json({ type: 4, data: { content: "The request could not be completed. Please try again later.", flags: 64 } });
+    }
   }
 };
