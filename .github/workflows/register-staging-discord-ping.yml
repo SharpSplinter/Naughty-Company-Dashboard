@@ -6,6 +6,8 @@ on:
       - feature/staging-discord-link-company
     paths:
       - '.github/workflows/register-staging-discord-ping.yml'
+      - 'bot/command-schema.mjs'
+      - 'bot/register-commands.mjs'
   workflow_dispatch:
 
 permissions:
@@ -18,43 +20,17 @@ concurrency:
 jobs:
   register:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
-      - name: Register commands in the test guild only
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Register canonical slash commands in the test guild
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          DISCORD_APPLICATION_ID: "1558700958983389254"
-          DISCORD_TEST_GUILD_ID: "1525623497999515770"
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$DISCORD_TOKEN"
-          payload=$(cat <<'JSON'
-          [
-            {"name":"ping","description":"Check whether the bot is responding"},
-            {"name":"help","description":"Show bot commands and privacy guidance"},
-            {"name":"link","description":"Securely link your dashboard account"},
-            {"name":"link-code","description":"Link using a one-time code from the dashboard"},
-            {"name":"status","description":"Check your dashboard account link"},
-            {"name":"unlink","description":"Remove your dashboard account link"},
-            {"name":"company","description":"List your saved dashboard companies"},
-            {"name":"employees","description":"View a saved company's employee roster","options":[{"type":3,"name":"company_id","description":"Optional company ID from /company (defaults to first saved company)","required":false}]},
-            {"name":"overview","description":"Show income, profit, stars, employees and stock for a saved company","options":[{"type":3,"name":"company_id","description":"Optional company ID from /company (defaults to first saved company)","required":false}]},
-            {"name":"rankings","description":"View top global companies by weekly income"},
-            {"name":"trends","description":"Summarize a saved company's 30-day trend","options":[{"type":3,"name":"company_id","description":"Optional company ID from /company (defaults to first saved company)","required":false}]},
-            {"name":"alerts","description":"View your recent dashboard alerts"}
-          ]
-          JSON
-          )
-          status=$(curl --silent --show-error --output /tmp/discord-response.json --write-out '%{http_code}' \
-            -X PUT "https://discord.com/api/v10/applications/$DISCORD_APPLICATION_ID/guilds/$DISCORD_TEST_GUILD_ID/commands" \
-            -H "Authorization: Bot $DISCORD_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data "$payload")
-          if [[ "$status" != "200" ]]; then
-            echo "Discord command registration failed (HTTP $status)."
-            jq -r '[.message // "Unknown Discord API error", (.errors // {})] | .[:2]' /tmp/discord-response.json 2>/dev/null || true
-            exit 1
-          fi
-          jq -r '["Registered staging test-guild commands:", (.[] | "• /" + .name)] | .[]' /tmp/discord-response.json
-          rm -f /tmp/discord-response.json
+          DISCORD_APP_ID: "1558700958983389254"
+          DISCORD_GUILD_ID: "1525623497999515770"
+        run: node bot/register-commands.mjs
