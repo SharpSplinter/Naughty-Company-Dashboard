@@ -38,17 +38,6 @@ export const commands = [
       { name: "Employees", value: "employees" }
     ]})])
   ]},
-  // Compatibility aliases remain available while users learn the grouped /company commands.
-  { name: "overview", description: "Alias for /company overview", options: [companyId()] },
-  { name: "employees", description: "Alias for /company employees", options: [
-    sub("brief", "Show the compact employee roster", [companyId()]),
-    sub("full", "Include employee status and available effectiveness details", [companyId()])
-  ]},
-  { name: "trends", description: "Alias for /company trends", options: [companyId(), period(), str("metric", "Metric to inspect", false, { choices: [
-    { name: "Overview", value: "overview" }, { name: "Income", value: "income" },
-    { name: "Stars", value: "stars" }, { name: "Stock", value: "stock" },
-    { name: "Employees", value: "employees" }
-  ]})]},
   { name: "rankings", description: "Browse the shared global and faction company rankings", options: [
     sub("companies", "Browse cached global companies by type", [
       integer("company_type_id", "Torn company type ID", true, { min_value: 1 }),
