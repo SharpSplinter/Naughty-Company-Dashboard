@@ -187,7 +187,7 @@ async function replyFor(i, env) {
   }
   if (i.type === 4) {
     const route = commandOptions(i);
-    const focused = route.options.find(option => option && option.name === "event_id" && option.focused === true);
+    const focused = route.options.find(option => option && option.name === "alert" && option.focused === true);
     if (name !== "company" || route.group !== "alerts" || route.subcommand !== "acknowledge" || !focused || !user) {
       return { type: 8, data: { choices: [] } };
     }
@@ -813,7 +813,7 @@ async function replyFor(i, env) {
         return chunkedPrivateReply("**Recent dashboard alerts" + (selectedCompanyName ? " | " + selectedCompanyName : "") + "** | Showing " + events.length + " event(s)\nUse /company alerts acknowledge and select an active alert from the autocomplete suggestions. The selector shows severity, title, company, and time; acknowledged alerts are excluded.", lines);
       }
       if (subcommand === "acknowledge") {
-        const eventId = String(optionValue(i, "event_id") || "").trim();
+        const eventId = String(optionValue(i, "alert") || "").trim();
         if (!/^[a-f0-9-]{36}$/i.test(eventId)) return privateReply("Choose an active alert from the autocomplete suggestions. Only unacknowledged alerts are selectable.");
         const response = await dashboardFetch(env, "/api/me/alerts/" + encodeURIComponent(eventId) + "/acknowledge", {
           method: "POST", headers: { ...headers, "content-type": "application/json" }, body: "{}",
