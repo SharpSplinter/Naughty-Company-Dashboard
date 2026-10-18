@@ -45,6 +45,18 @@ const LEGACY_FLAT_ROOT_ALIASES = new Set([
   "company-rankings-global",
   "company-rankings-faction"
 ]);
+function isLegacyFlatRootName(name) {
+  return typeof name === "string" &&
+    (LEGACY_FLAT_ROOT_ALIASES.has(name) || /^(?:company|automation|dashboard|bot)[-_]/.test(name));
+}
+function optionTreeShape(options) {
+  return (Array.isArray(options) ? options : []).map(option => {
+    const shaped = { name: option.name, type: option.type };
+    const children = optionTreeShape(option.options);
+    if (children.length) shaped.options = children;
+    return shaped;
+  });
+}
 const TOKEN = (process.env.DISCORD_TOKEN || "").replace(/^Bot\s+/i, "").trim();
 
 if (!TOKEN) {
@@ -109,9 +121,33 @@ for (const command of commands) {
 
 // Remove only known legacy aliases and flattened forms of nested bot commands. Other guild commands are left untouched.
 for (const stale of existing) {
-  if ((!DEPRECATED_ROOT_ALIASES.has(stale.name) && !LEGACY_FLAT_ROOT_ALIASES.has(stale.name)) ||
+  if ((!DEPRECATED_ROOT_ALIASES.has(stale.name) && !isLegacyFlatRootName(stale.name)) ||
       (stale.type !== undefined && stale.type !== 1) || !stale.id) continue;
   await request(base + "/" + stale.id, "DELETE");
   console.log("Removed obsolete guild command /" + stale.name);
 }
-console.log("Synchronized " + commands.length + " guild commands for application " + APP_ID + " in guild " + GUILD_ID + "; unrelated commands were preserved.");
+const registeredAfterSync = await request(base, "GET");
+if (!Array.isArray(registeredAfterSync)) throw new Error("Discord returned an unexpected command list after registration.");
+const missingOrMismatched = [];
+for (const command of commands) {
+  const registeredCommand = registeredAfterSync.find(item =>
+    item.name === command.name && (item.type === undefined || item.type === 1));
+  if (!registeredCommand) {
+    missingOrMismatched.push("/" + command.name + " (missing)");
+    continue;
+  }
+  const expectedTree = JSON.stringify(optionTreeShape(command.options));
+  const actualTree = JSON.stringify(optionTreeShape(registeredCommand.options));
+  if (actualTree !== expectedTree) missingOrMismatched.push("/" + command.name + " (option tree differs)");
+}
+if (missingOrMismatched.length) {
+  throw new Error("Discord command-tree verification failed: " + missingOrMismatched.join(", "));
+}
+const remainingFlatRoots = registeredAfterSync.filter(item =>
+  DEPRECATED_ROOT_ALIASES.has(item.name) || isLegacyFlatRootName(item.name));
+if (remainingFlatRoots.length) {
+  throw new Error("Obsolete flat command roots remain registered: " + remainingFlatRoots.map(item => "/" + item.name).join(", "));
+}
+console.log("Verified nested command trees for all " + commands.length + " canonical roots, including /company and /automation.");
+console.log("Verified no obsolete flat aliases remain; unrelated commands were preserved.");
+

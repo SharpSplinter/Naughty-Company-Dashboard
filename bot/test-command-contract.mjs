@@ -161,6 +161,10 @@ assert.match(registration, /maxRateLimitRetries/, "rate-limit retry attempts mus
 assert.match(registration, /DEPRECATED_ROOT_ALIASES/, "registration must identify retired root aliases");
 assert.match(registration, /"alerts", "rankings"/, "registration must retire former standalone company alert and ranking roots");
 assert.match(registration, /LEGACY_FLAT_ROOT_ALIASES/, "registration must remove obsolete flattened nested-command roots");
+assert.match(registration, /function isLegacyFlatRootName/, "registration must catch legacy hyphenated or underscored root aliases");
+assert.match(registration, /function optionTreeShape/, "registration must normalize Discord option trees for structural verification");
+assert.match(registration, /registeredAfterSync = await request\(base, "GET"\)/, "registration must read back the live command tree");
+assert.match(registration, /Verified nested command trees for all/, "registration must report successful structural verification");
 assert.match(registration, /automation-webhook-delete/, "registration must clean up flattened automation webhook aliases");
 assert.match(registration, /company-rankings-global/, "registration must clean up flattened company ranking aliases");
 assert.match(registration, /await request\(base \+ "\/" \+ stale\.id, "DELETE"\)/, "registration must remove retired root aliases from Discord");
