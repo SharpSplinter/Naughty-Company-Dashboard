@@ -3,6 +3,48 @@ import { commands } from "./command-schema.mjs";
 const APP_ID = process.env.DISCORD_APP_ID || "1558700958983389254";
 const GUILD_ID = process.env.DISCORD_GUILD_ID || "1525623497999515770";
 const DEPRECATED_ROOT_ALIASES = new Set(["overview", "employees", "trends", "alerts", "rankings"]);
+// Flat aliases from earlier command layouts must be removed after nested roots are synced.
+const LEGACY_FLAT_ROOT_ALIASES = new Set([
+  "bot-status",
+  "dashboard-health",
+  "dashboard-summary",
+  "automation-rules-list",
+  "automation-rules-create",
+  "automation-rules-enable",
+  "automation-rules-disable",
+  "automation-rules-delete",
+  "automation-notifications-status",
+  "automation-notifications-configure",
+  "automation-webhook-status",
+  "automation-webhook-deliveries",
+  "automation-webhook-retry",
+  "automation-webhook-delete",
+  "company-list",
+  "company-overview",
+  "company-income",
+  "company-profit",
+  "company-stars",
+  "company-ads",
+  "company-stock",
+  "company-employees",
+  "company-wages",
+  "company-trends",
+  "company-alerts",
+  "company-alerts-recent",
+  "company-alerts-enable",
+  "company-alerts-disable",
+  "company-alerts-configure",
+  "company-alerts-status",
+  "company-alerts-settings",
+  "company-alerts-acknowledge",
+  "company-alerts-rules",
+  "company-rankings",
+  "company-rankings-companies",
+  "company-rankings-company",
+  "company-rankings-compare",
+  "company-rankings-global",
+  "company-rankings-faction"
+]);
 const TOKEN = (process.env.DISCORD_TOKEN || "").replace(/^Bot\s+/i, "").trim();
 
 if (!TOKEN) {
@@ -65,10 +107,11 @@ for (const command of commands) {
   }
 }
 
-// Remove only retired root aliases whose functionality now lives under /company. Other guild commands are left untouched.
+// Remove only known legacy aliases and flattened forms of nested bot commands. Other guild commands are left untouched.
 for (const stale of existing) {
-  if (!DEPRECATED_ROOT_ALIASES.has(stale.name) || (stale.type !== undefined && stale.type !== 1) || !stale.id) continue;
+  if ((!DEPRECATED_ROOT_ALIASES.has(stale.name) && !LEGACY_FLAT_ROOT_ALIASES.has(stale.name)) ||
+      (stale.type !== undefined && stale.type !== 1) || !stale.id) continue;
   await request(base + "/" + stale.id, "DELETE");
-  console.log("Removed deprecated guild command /" + stale.name);
+  console.log("Removed obsolete guild command /" + stale.name);
 }
 console.log("Synchronized " + commands.length + " guild commands for application " + APP_ID + " in guild " + GUILD_ID + "; unrelated commands were preserved.");
