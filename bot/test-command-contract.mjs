@@ -92,6 +92,7 @@ assert.match(registration, /"alerts", "rankings"/, "registration must retire for
 assert.match(registration, /await request\(base \+ "\/" \+ stale\.id, "DELETE"\)/, "registration must remove retired root aliases from Discord");
 assert.match(worker, /const privateReply = content => \(\{ type: 4, data: \{ content, flags: 64 \} \}\)/, "account-specific slash replies must be ephemeral");
 assert.match(worker, /if \(i\.type === 4\)/, "alert acknowledgement must support Discord autocomplete interactions");
+assert.match(worker, /interaction\?\.type === 4\) return json\(\{ type: 8, data: \{ choices: \[\] \} \}\)/, "failed autocomplete requests must return a valid empty choices response");
 assert.match(worker, /type: 8, data: \{ choices \}/, "autocomplete must return a selector to Discord");
 assert.match(worker, /String\(event\.status \|\| ""\)\.toLowerCase\(\) === "unread"/, "the alert selector must exclude acknowledged events");
 assert.match(worker, /Use \/company alerts acknowledge and select an active alert from the autocomplete suggestions/, "recent alerts must explain selection-based acknowledgement");
