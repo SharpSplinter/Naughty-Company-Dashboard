@@ -280,7 +280,45 @@ async function replyFor(i, env) {
   }
   if (i.type !== 2) return privateReply("Unsupported interaction.");
   if (name === "ping") return privateReply("Pong! Naughty Company Bot is responding.");
-  if (name === "help") return privateReply("**Naughty Company Bot**\\n/link: get dashboard-linking instructions\\n/link-code: redeem a five-minute, one-use code from your dashboard\\n/status: check your link\\n/unlink: remove your link\\n/dashboard health|summary: inspect dashboard and cross-company data status\\n/company list|overview|income|profit|stars|ads|stock|employees (detail: brief/full)|wages|trends: inspect your connected company\\n/company alerts recent|enable|disable|configure|status|settings|acknowledge|rules: inspect and manage private Discord alerts\\n/company rankings companies|company|compare|global|faction: browse cached rankings\\n/automation rules list|create|enable|disable|delete: manage private alert rules\\n/automation notifications status|configure: manage severity, quiet hours, and webhook digest\\n/automation webhook status|deliveries|retry|delete: inspect or remove the external webhook\\n/bot status: check service health\\n/ping: test bot response\\n\\nAccount-specific replies are private by default. The bot never needs your Torn API key in Discord.");
+  if (name === "help") {
+    const helpLines = [
+      "**Naughty Company Bot**",
+      "",
+      "**Account linking**",
+      "- `/link`  Get secure dashboard-linking instructions.",
+      "- `/link-code`  Redeem a one-time dashboard code (expires in five minutes).",
+      "- `/status`  Check your account link.",
+      "- `/unlink`  Disconnect this Discord account.",
+      "",
+      "**Dashboard**",
+      "- `/dashboard health`  Check API, database, and company freshness.",
+      "- `/dashboard summary`  View coverage, scheduled runs, and recent alerts.",
+      "",
+      "**Company data**",
+      "- `/company list`  List connected companies.",
+      "- `/company overview`, `/company income`, `/company profit`, `/company stars`, `/company ads`, `/company stock`, `/company employees`, `/company wages`, `/company trends`  View company metrics. Employees supports brief/full detail.",
+      "",
+      "**Company alerts**",
+      "- `/company alerts recent`, `/company alerts status`, `/company alerts settings`, `/company alerts rules`  View alerts and settings.",
+      "- `/company alerts enable`, `/company alerts disable`, `/company alerts configure`, `/company alerts acknowledge`  Manage private Discord alerts.",
+      "",
+      "**Company rankings**",
+      "- `/company rankings companies`, `/company rankings company`, `/company rankings compare`, `/company rankings global`, `/company rankings faction`  Browse company rankings.",
+      "",
+      "**Automation**",
+      "- `/automation rules list`, `/automation rules create`, `/automation rules enable`, `/automation rules disable`, `/automation rules delete`  Manage your rules.",
+      "- `/automation notifications status`, `/automation notifications configure`  Set severity, quiet hours, and webhook preferences.",
+      "- `/automation webhook status`, `/automation webhook deliveries`, `/automation webhook retry`, `/automation webhook delete`  Manage the external webhook.",
+      "",
+      "**Bot**",
+      "- `/bot status`  Check bot and dashboard availability.",
+      "- `/ping`  Test the bot response.",
+      "- `/help`  Show this guide.",
+      "",
+      "Account-specific replies are private by default. The bot never needs your Torn API key in Discord."
+    ];
+    return privateReply(helpLines.join("\n"));
+  }
   if (!user) return privateReply("Unable to identify your Discord account.");
   if (name === "bot") {
     if (commandOptions(i).subcommand !== "status") return privateReply("Choose /bot status.");

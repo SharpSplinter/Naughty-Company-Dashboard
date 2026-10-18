@@ -206,7 +206,9 @@ assert.match(worker, /subcommand === "profit" \? "all" : days/, "profit must fet
 assert.doesNotMatch(worker, /name === "(?:overview|employees|trends|alerts|rankings)"/, "retired aliases must not have standalone handler routes");
 assert.match(worker, /parseCommandRoute\(interaction\)/, "Worker must use the explicit nested interaction parser");
 assert.match(worker, /name === "dashboard" && \["health", "summary"\]\.includes\(commandOptions\(i\)\.subcommand\)/, "dashboard commands must route to their shared handler");
-assert.match(worker, /\/dashboard health\|summary/, "help must document the dashboard command family");
+assert.match(worker, /\/dashboard health/, "help must document /dashboard health");
+assert.match(worker, /\/dashboard summary/, "help must document /dashboard summary");
+assert.match(worker, /helpLines\.join\("\\n"\)/, "help must join sections with real newline characters");
 assert.match(worker, /\/api\/me\/health/, "dashboard health must use the owner-scoped health endpoint");
 assert.match(worker, /\/api\/me\/alerts\?limit=10/, "dashboard summary must include recent alert status");
 const dashboardSummaryStart = worker.indexOf('const latestRun = alertData.latestRun && typeof alertData.latestRun === "object" ? alertData.latestRun : {};', worker.indexOf('if (name === "dashboard" && ["health", "summary"].includes(commandOptions(i).subcommand))'));
