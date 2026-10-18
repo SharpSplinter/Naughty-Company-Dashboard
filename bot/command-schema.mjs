@@ -22,6 +22,10 @@ export const commands = [
   { name: "bot", description: "Bot operational status", options: [
     sub("status", "Check bot and dashboard API availability")
   ]},
+  { name: "dashboard", description: "Inspect dashboard health and cross-company snapshot coverage", options: [
+    sub("health", "Show dashboard API, database, and company freshness"),
+    sub("summary", "Summarize saved coverage, stale companies, and recent alerts")
+  ]},
   { name: "company", description: "Privately inspect your connected company data", options: [
     sub("list", "List companies connected to your dashboard"),
     sub("overview", "Show income, profit, stars, employees, stock, and freshness", [companyId()]),

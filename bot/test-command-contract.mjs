@@ -78,6 +78,9 @@ const acknowledgeCommand = (alertGroup?.options || []).find(option => option.nam
 const alertPicker = (acknowledgeCommand?.options || []).find(option => option.name === "alert");
 assert.equal((acknowledgeCommand?.options || []).some(option => option.name === "event_id"), false, "technical event IDs must not be exposed as the user-facing option");
 assert.equal(alertPicker?.autocomplete, true, "alert acknowledgement must use Discord autocomplete instead of requiring a pasted event ID");
+const dashboardCommand = commandsByName.get("dashboard");
+assert.ok(dashboardCommand, "missing top-level /dashboard command");
+assert.deepEqual((dashboardCommand.options || []).map(option => option.name), ["health", "summary"], "/dashboard should expose health and summary subcommands");
 for (const name of ["link", "link-code", "status", "unlink", "help", "ping", "bot"]) {
   assert.ok(commandsByName.has(name), "missing top-level /" + name);
 }
@@ -128,6 +131,10 @@ assert.match(profitBlock, /summarizeMonthToDate\(history\)/, "month-to-date esti
 assert.match(worker, /subcommand === "profit" \? "all" : days/, "profit must fetch all available history to cover the current month");
 assert.doesNotMatch(worker, /name === "(?:overview|employees|trends|alerts|rankings)"/, "retired aliases must not have standalone handler routes");
 assert.match(worker, /route\.type === 2/, "command parser must support nested subcommand groups");
+assert.match(worker, /name === "dashboard" && \["health", "summary"\]\.includes\(commandOptions\(i\)\.subcommand\)/, "dashboard commands must route to their shared handler");
+assert.match(worker, /\/dashboard health\|summary/, "help must document the dashboard command family");
+assert.match(worker, /\/api\/me\/health/, "dashboard health must use the owner-scoped health endpoint");
+assert.match(worker, /\/api\/me\/alerts\?limit=10/, "dashboard summary must include recent alert status");
 assert.match(worker, /name === "company" && commandOptions\(i\)\.group === "alerts"/, "alerts must route through /company alerts group");
 assert.match(worker, /name === "company" && commandOptions\(i\)\.group === "rankings"/, "rankings must route through /company rankings group");
 const overviewStart = worker.indexOf('if (name === "company" && commandOptions(i).subcommand === "overview")');
