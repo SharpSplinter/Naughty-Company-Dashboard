@@ -1229,7 +1229,15 @@ function employeesFromPayload(payload: unknown): Record<string, unknown>[] {
   return nested ? nested.filter(isRecord) : []
 }
 
-function rosterCount(payload: unknown): number { return employeesFromPayload(payload).length }
+function rosterCount(payload: unknown): number {
+  const listed = employeesFromPayload(payload).length
+  if (listed > 0) return listed
+  if (isRecord(payload) && payload.reconstructed === true) {
+    const reconstructedCount = numericField(payload.employee_count)
+    if (reconstructedCount !== null && reconstructedCount >= 0 && Number.isInteger(reconstructedCount)) return reconstructedCount
+  }
+  return listed
+}
 
 function numericField(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value
