@@ -139,11 +139,11 @@ const dashboardSummaryStart = worker.indexOf('const latestRun = alertData.latest
 const dashboardSummaryEnd = worker.indexOf('return chunkedPrivateReply("**Dashboard executive summary**", lines);', dashboardSummaryStart);
 assert.ok(dashboardSummaryStart >= 0 && dashboardSummaryEnd > dashboardSummaryStart, "dashboard summary output block must exist");
 const dashboardSummaryBlock = worker.slice(dashboardSummaryStart, dashboardSummaryEnd);
-assert.match(dashboardSummaryBlock, /Latest scheduled run:/, "dashboard summary must report the latest scheduled run");
-assert.match(dashboardSummaryBlock, /Run results:/, "dashboard summary must report scheduled-run outcomes concisely");
-assert.match(dashboardSummaryBlock, /Unread dashboard alerts:/, "dashboard summary must report unread alerts");
-assert.match(dashboardSummaryBlock, /Snapshot coverage:/, "dashboard summary must report a compact snapshot coverage line");
-assert.match(dashboardSummaryBlock, /Needs attention:/, "dashboard summary must identify stale companies when present");
+assert.match(dashboardSummaryBlock, /Latest scheduled run \(all dashboard users\):/, "dashboard summary must label the latest scheduled run as global");
+assert.match(dashboardSummaryBlock, /Run results \(all dashboard users\):/, "dashboard summary must label scheduled-run outcomes as global");
+assert.match(dashboardSummaryBlock, /Unread dashboard alerts \(your account\):/, "dashboard summary must label unread alerts as account-scoped");
+assert.match(dashboardSummaryBlock, /Snapshot coverage \(your account\):/, "dashboard summary must label snapshot coverage as account-scoped");
+assert.match(dashboardSummaryBlock, /Needs attention \(your companies\):/, "dashboard summary must label stale companies as account-scoped");
 assert.doesNotMatch(dashboardSummaryBlock, /Dashboard Worker:|Database:|Latest saved snapshot:|latency\(/, "dashboard summary must leave system diagnostics to /dashboard health");
 assert.match(dashboardSummaryBlock, /timeZone: "UTC"/, "scheduled-run time must be compact and explicitly UTC");
 
