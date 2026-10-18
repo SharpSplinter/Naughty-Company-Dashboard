@@ -75,7 +75,8 @@ for (const name of ["enable", "disable", "configure", "status", "settings", "rec
   assert.ok(alertCommands.includes(name), "missing /company alerts " + name);
 }
 const acknowledgeCommand = (alertGroup?.options || []).find(option => option.name === "acknowledge");
-const alertPicker = (acknowledgeCommand?.options || []).find(option => option.name === "event_id");
+const alertPicker = (acknowledgeCommand?.options || []).find(option => option.name === "alert");
+assert.equal((acknowledgeCommand?.options || []).some(option => option.name === "event_id"), false, "technical event IDs must not be exposed as the user-facing option");
 assert.equal(alertPicker?.autocomplete, true, "alert acknowledgement must use Discord autocomplete instead of requiring a pasted event ID");
 for (const name of ["link", "link-code", "status", "unlink", "help", "ping", "bot"]) {
   assert.ok(commandsByName.has(name), "missing top-level /" + name);
