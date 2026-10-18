@@ -1335,12 +1335,20 @@ try {
           return null
         },
         async all() {
+          if (normalized.includes("from company_financial_snapshots")) {
+            assert.deepEqual(values.slice(0, 2), ["777", "123"], "historical stock costs must filter by authenticated owner and selected company")
+            assert.equal(values.length, 3, "a selected range must bind its cutoff")
+            return { results: [
+              { day: "2026-10-08", stockJson: JSON.stringify({ Oil: { cost: 10, in_stock: 100, on_order: 0 } }) },
+              { day: "2026-10-10", stockJson: JSON.stringify({ Tealight: { cost: 10, in_stock: 10, on_order: 2 } }) },
+            ] }
+          }
           if (normalized.includes("row_number() over (partition by date(fetched_at, '-18 hours')")) {
             assert.deepEqual(values.slice(0, 2), ["777", "123"], "history queries must filter by authenticated owner and selected company")
             assert.equal(values.length, 3, "a selected range must bind its cutoff")
             return { results: [
-              { snapshotId: "old", fetchedAt: "2026-10-08T18:10:00.000Z", profileJson: JSON.stringify({ company: { id: 123, income: { daily: 100, weekly: 700 }, rating: 3 } }), employeesJson: JSON.stringify({ employees: [{ id: 1 }] }) },
-              { snapshotId: "latest", fetchedAt: "2026-10-10T18:10:00.000Z", profileJson: JSON.stringify({ company: { id: 123, income: { daily: 150, weekly: 1050 }, rating: 4 } }), employeesJson: JSON.stringify({ employees: [{ id: 1 }, { id: 2 }] }) },
+              { snapshotId: "old", fetchedAt: "2026-10-08T18:10:00.000Z", profileJson: JSON.stringify({ company: { id: 123, income: { daily: 100, weekly: 700 }, rating: 3, advertisement_budget: 20 } }), employeesJson: JSON.stringify({ employees: [{ id: 1, wage: 10 }] }) },
+              { snapshotId: "latest", fetchedAt: "2026-10-10T18:10:00.000Z", profileJson: JSON.stringify({ company: { id: 123, income: { daily: 150, weekly: 1050 }, rating: 4, advertisement_budget: 25 } }), employeesJson: JSON.stringify({ employees: [{ id: 1, wage: 100 }, { id: 2, wage: 200 }] }) },
             ] }
           }
           return { results: [] }
@@ -1358,6 +1366,9 @@ try {
     assert.deepEqual(payload.history.map((point) => point.day), ["2026-10-08", "2026-10-10"])
     assert.equal(payload.history[1].dailyIncome, 150)
     assert.equal(payload.history[1].employeeCount, 2)
+    assert.equal(payload.history[1].advertisingBudget, 25)
+    assert.equal(payload.history[1].employeeWages, 300)
+    assert.equal(payload.history[1].stockOrderExpense, 20)
     assert.equal(payload.summary.snapshotCount, 2)
     assert.equal(payload.summary.dailyIncomeChange, 50)
     assert.equal(payload.summary.dailyIncomeChangePercent, 50)
