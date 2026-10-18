@@ -100,9 +100,6 @@ assert.deepEqual((notificationOptions.find(option => option.name === "digest_mod
 const automationWebhook = new Map((automationGroups.get("webhook")?.options || []).map(option => [option.name, option]));
 assert.deepEqual([...automationWebhook.keys()], ["status", "delete", "deliveries", "retry"], "/automation webhook must expose status, delete, deliveries, and retry");
 assert.equal(automationWebhook.get("retry")?.options?.find(option => option.name === "delivery")?.autocomplete, true, "webhook retry must use an autocomplete selector rather than an event ID");
-assert.match(worker, /method: "DELETE", headers, signal: AbortSignal.timeout\(8000\)/, "webhook delete must use the authenticated delete endpoint");
-assert.match(worker, /JSON.stringify\(\{ digestMode: "off" \}\)/, "webhook delete must turn off external webhook digests");
-assert.match(worker, /External webhook delivery is separate from private Discord DMs/, "notification status must distinguish external webhook delivery from private Discord DMs");
 
 const dashboardCommand = commandsByName.get("dashboard");
 assert.ok(dashboardCommand, "missing top-level /dashboard command");
@@ -114,6 +111,9 @@ for (const name of ["link", "link-code", "status", "unlink", "help", "ping", "bo
 const worker = readFileSync(new URL("./production-worker.js", import.meta.url), "utf8");
 const registration = readFileSync(new URL("./register-commands.mjs", import.meta.url), "utf8");
 const financials = readFileSync(new URL("./financials.mjs", import.meta.url), "utf8");
+assert.match(worker, /method: "DELETE", headers, signal: AbortSignal.timeout\(8000\)/, "webhook delete must use the authenticated delete endpoint");
+assert.match(worker, /JSON.stringify\(\{ digestMode: "off" \}\)/, "webhook delete must turn off external webhook digests");
+assert.match(worker, /External webhook delivery is separate from private Discord DMs/, "notification status must distinguish external webhook delivery from private Discord DMs");
 assert.match(registration, /response\.status === 429/, "Discord command registration must retry explicit rate limits");
 assert.match(registration, /data\.retry_after/, "rate-limit retry must honor Discord retry_after");
 assert.match(registration, /maxRateLimitRetries/, "rate-limit retry attempts must be bounded");
