@@ -6,17 +6,8 @@ function hasValue(object, key) {
     object[key] !== undefined && object[key] !== null;
 }
 
-function copyNonEmpty(object, source, target = source) {
-  if (!hasValue(object, source)) return;
-  const value = object[source];
-  if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0) return;
-  object[target] = value;
-}
-
 function normalizeChoice(choice) {
   const result = { name: choice.name, value: choice.value };
-  copyNonEmpty(result, "unused"); // Keep this shape isolated from Discord-owned fields.
-  copyNonEmpty(choice, "name_localizations");
   if (hasValue(choice, "name_localizations") &&
       !(choice.name_localizations && typeof choice.name_localizations === "object" &&
         !Array.isArray(choice.name_localizations) && Object.keys(choice.name_localizations).length === 0)) {
