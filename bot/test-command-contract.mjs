@@ -167,7 +167,11 @@ assert.match(registration, /Verified nested command trees for all/, "registratio
 assert.match(registration, /automation-webhook-delete/, "registration must clean up flattened automation webhook aliases");
 assert.match(registration, /company-rankings-global/, "registration must clean up flattened company ranking aliases");
 assert.match(registration, /await request\(base \+ "\/" \+ stale\.id, "DELETE"\)/, "registration must remove retired root aliases from Discord");
-assert.match(worker, /const privateReply = content => \(\{ type: 4, data: \{ content, flags: 64 \} \}\)/, "account-specific slash replies must be ephemeral");
+assert.match(worker, /const privateReply = content => \(\{ type: 4, data: \{ content, flags: 64, allowed_mentions: \{ parse: \[\] \} \} \}\)/, "account-specific slash replies must be ephemeral and suppress mentions");
+assert.match(worker, /ctx\.waitUntil\(completeDeferredInteraction\(interaction, env\)\)/, "slow command work must run after immediate acknowledgement");
+assert.match(worker, /return json\(\{ type: 5, data: \{ flags: 64 \} \}\)/, "slow account-specific commands must defer privately");
+assert.match(worker, /messages\/\@original/, "deferred responses must edit the original interaction reply");
+assert.match(worker, /AbortSignal\.timeout\(1200\)/, "autocomplete dashboard calls must leave margin within the three-second response deadline");
 assert.match(worker, /if \(i\.type === 4\)/, "alert acknowledgement must support Discord autocomplete interactions");
 assert.match(worker, /interaction\?\.type === 4\) return json\(\{ type: 8, data: \{ choices: \[\] \} \}\)/, "failed autocomplete requests must return a valid empty choices response");
 assert.match(worker, /type: 8, data: \{ choices \}/, "autocomplete must return a selector to Discord");
