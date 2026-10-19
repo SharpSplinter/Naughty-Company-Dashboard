@@ -31,9 +31,9 @@ export const companyCommand = { name: "company", description: "Privately inspect
         { name: "Star rating", value: "stars" }
       ]})
     ]),
-    sub("company", "Show your connected company's position and nearby competitors", [companyId()]),
-    sub("compare", "Compare your connected company with same-type cached benchmarks", [companyId()]),
-    sub("global", "Compatibility alias for your global company ranking"),
+    sub("company", "Show one connected company's rank, stars, and income", [companyId()]),
+    sub("compare", "Compare a company with nearby same-type ranks and star-income benchmarks", [companyId()]),
+    sub("global", "Show the top 10 companies of your company's type by weekly income"),
     sub("faction", "List faction company directors ranked by weekly income", [
       integer("page", "Result page, 10 companies per page", false, { min_value: 1, max_value: 100 }),
       str("sort", "Ranking sort order", false, { choices: [
