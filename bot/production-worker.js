@@ -115,12 +115,13 @@ function safeText(value, max = 90) {
 }
 function chunkedPrivateReply(title, lines, maxLength = 1750) {
   const chunks = [];
+  const continuationTitle = String(title).split("\n", 1)[0] + " (continued)";
   let current = title + "\n";
   for (const item of lines) {
     const line = String(item).slice(0, 1600);
     if (current.length + line.length + 1 > maxLength && current.trim() !== title) {
       chunks.push(current.trimEnd());
-      current = title + " (continued)\n";
+      current = continuationTitle + "\n";
     }
     current += line + "\n";
   }
@@ -806,7 +807,43 @@ async function replyFor(i, env) {
       const staleSnapshotNote = Number.isFinite(snapshotTime) && Date.now() - snapshotTime > 36 * 3600000
         ? "\n⚠️ This ranking snapshot is over 36 hours old. The dashboard refreshes its shared ranking cache on its normal schedule/on-demand stale-cache path; no extra historical snapshot was created by this command."
         : "";
-      return chunkedPrivateReply("**Global company rankings by company type**\nYour company: " + ownName + "  |  " + rankLabel + "  |  Weekly income: " + money(currentIncome) +
+      const companyTypeLabel = "Type #" + String(ownTypeId ?? ownType) + " (" + safeText(ownType, 50) + ")";
+      const ownDailyIncome = typeof ownIncomeRoot.daily === "number" && Number.isFinite(ownIncomeRoot.daily)
+        ? ownIncomeRoot.daily
+        : typeof own.daily_income === "number" && Number.isFinite(own.daily_income) ? own.daily_income : null;
+      if (subcommand === "company") {
+        const details = [
+          "Company: **" + ownName + "**",
+          "Rank: " + rankLabel,
+          "Company type: " + companyTypeLabel,
+          "Star rating: " + (currentStars === null ? "not reported" : currentStars + " stars"),
+          "Weekly income: " + money(currentIncome),
+          "Daily income: " + money(ownDailyIncome),
+          "Snapshot: " + generatedAt + " (" + snapshotAgeLabel(generatedAt) + ")",
+          liveWeeklyIncome !== null
+            ? "Rank basis: live company income compared with peers in the saved global snapshot."
+            : "Rank basis: saved global snapshot filtered to this company type."
+        ];
+        if (staleSnapshotNote) details.push(staleSnapshotNote.trim());
+        return chunkedPrivateReply("**Company ranking**", details);
+      }
+      if (subcommand === "global") {
+        const topLines = rankingCompanies.slice(0, 10).map((company, index) => {
+          const stars = typeof company.starRating === "number" && Number.isFinite(company.starRating)
+            ? company.starRating + " stars" : "stars not reported";
+          const name = safeText(company.companyName || company.company_name || company.name || "Company", 80);
+          return "**#" + (index + 1) + " " + name + "** | " + stars + "\n   Weekly income: " + money(company.weeklyIncome);
+        });
+        return chunkedPrivateReply("**Global company rankings by company type**\nCompany type: " + companyTypeLabel +
+          "  |  Companies: " + rankingCompanies.length + "\nSnapshot: " + generatedAt + " (" + snapshotAgeLabel(generatedAt) + ")", [
+            "Your company: **" + ownName + "** | " + rankLabel + " | Weekly income: " + money(currentIncome),
+            "Top 10 companies in this type, ranked by weekly income:",
+            ...topLines,
+            "This leaderboard only compares companies of the same type.",
+            ...(staleSnapshotNote ? [staleSnapshotNote.trim()] : [])
+          ]);
+      }
+      return chunkedPrivateReply("**Company ranking comparison**\nYour company: " + ownName + "  |  " + rankLabel + "  |  Weekly income: " + money(currentIncome) +
         "\nSnapshot: " + generatedAt + " (" + snapshotAgeLabel(generatedAt) + ")\nNearby ranks: 6 above and 4 below, within your company type." + incomeFreshnessNote + staleSnapshotNote, [
           ...lines,
           "\n**Observed same-type star-income benchmarks**",
