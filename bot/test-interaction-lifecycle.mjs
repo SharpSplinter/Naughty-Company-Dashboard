@@ -3,7 +3,6 @@ import test from "node:test";
 import { webcrypto } from "node:crypto";
 import worker from "./production-worker.js";
 
-globalThis.crypto = webcrypto;
 const encoder = new TextEncoder();
 const { publicKey, privateKey } = await webcrypto.subtle.generateKey(
   { name: "Ed25519" }, true, ["sign", "verify"]
