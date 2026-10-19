@@ -1193,10 +1193,15 @@ export default {
     // Autocomplete has a distinct response type and cannot use a deferred message response.
     // Its path intentionally skips DDL initialization and uses short dashboard request timeouts.
     if (interaction?.type === 4) {
+      let timeoutHandle;
       try {
-        const reply = await replyFor(interaction, env);
+        const timeoutReply = new Promise(resolve => {
+          timeoutHandle = setTimeout(() => resolve({ type: 8, data: { choices: [] } }), 1800);
+        });
+        const reply = await Promise.race([replyFor(interaction, env), timeoutReply]);
         return json(reply?.type === 8 ? reply : { type: 8, data: { choices: [] } });
       } catch { return json({ type: 8, data: { choices: [] } }); }
+      finally { if (timeoutHandle !== undefined) clearTimeout(timeoutHandle); }
     }
 
     if (interaction?.type === 3) {
