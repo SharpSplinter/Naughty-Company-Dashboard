@@ -95,8 +95,9 @@ function snapshotAgeLabel(value) {
   if (!Number.isFinite(timestamp)) return "age unavailable";
   const hours = Math.max(0, Math.floor((Date.now() - timestamp) / 3600000));
   if (hours < 1) return "under 1 hour old";
-  if (hours < 48) return hours + " hour(s) old";
-  return Math.floor(hours / 24) + " day(s) old";
+  if (hours < 48) return hours + (hours === 1 ? " hour old" : " hours old");
+  const days = Math.floor(hours / 24);
+  return days + (days === 1 ? " day old" : " days old");
 }
 function commandOptions(interaction) {
   return parseCommandRoute(interaction);
@@ -768,14 +769,16 @@ async function replyFor(i, env) {
       const nearby = rankingCompanies.slice(aroundStart, aroundEnd);
       const lines = nearby.map((company, index) => {
         const rank = aroundStart + index + 1;
-        const isOwn = (company.companyId ?? company.company_id ?? company.id) !== null &&
-          (company.companyId ?? company.company_id ?? company.id) !== undefined
-          ? ownIdCandidates.includes(String(company.companyId ?? company.company_id ?? company.id))
+        const companyId = company.companyId ?? company.company_id ?? company.id;
+        const isOwn = companyId !== null && companyId !== undefined
+          ? ownIdCandidates.includes(String(companyId))
           : safeText(company.companyName || company.company_name || company.name || "", 90).trim().toLocaleLowerCase() === ownNameKey;
-        const stars = typeof company.starRating === "number" && Number.isFinite(company.starRating) ? company.starRating + " stars" : "stars not reported";
+        if (isOwn) return null;
+        const stars = typeof company.starRating === "number" && Number.isFinite(company.starRating)
+          ? company.starRating + "★" : "stars n/a";
         const name = safeText(company.companyName || company.company_name || company.name || "Company", 80);
-        return (isOwn ? "➡️ " : "") + "**#" + rank + " " + name + "** (" + safeText(company.companyType || ownType || "Unknown type", 40) + ")  |  " + stars + "\n   Weekly income: " + money(company.weeklyIncome) + (isOwn ? "  ← your company" : "");
-      });
+        return "**#" + rank + " " + name + "** | " + stars + " | " + money(company.weeklyIncome) + "/week";
+      }).filter(Boolean);
       const currentIncome = typeof ownIncome === "number" ? ownIncome : null;
       const currentStars = typeof ownRating === "number" ? ownRating : null;
       const sameType = rankingCompanies.filter(c => typeof c.weeklyIncome === "number" && Number.isFinite(c.weeklyIncome) && typeof c.starRating === "number" && Number.isFinite(c.starRating) && !c._ownOnly);
@@ -787,25 +790,29 @@ async function replyFor(i, env) {
           const nextLevel = above[0].starRating;
           const target = above.filter(c => c.starRating === nextLevel).sort((a,b) => a.weeklyIncome-b.weeklyIncome)[0];
           const gap = target.weeklyIncome - currentIncome;
-          benchmarks.push("Gain to observed next-star level (" + nextLevel + "★ companies): " + (gap > 0 ? money(gap) + "/week more to match the lowest-income company currently seen at " + nextLevel + "★ (" + money(target.weeklyIncome) + "/week)." : "your current income is already at or above the lowest observed " + nextLevel + "★ benchmark (" + money(target.weeklyIncome) + "/week)."));
-        } else benchmarks.push("Gain to next-star level: not enough same-type higher-star data in this snapshot.");
+          benchmarks.push("Next star (" + nextLevel + "★): " + (gap > 0
+            ? money(gap) + "/week to match the lowest observed " + nextLevel + "★ income (" + money(target.weeklyIncome) + "/week)."
+            : "already at or above the lowest observed " + nextLevel + "★ income (" + money(target.weeklyIncome) + "/week)."));
+        } else benchmarks.push("Next star: insufficient higher-star peer data in this snapshot.");
         if (lower.length) {
           const previousLevel = lower[0].starRating;
           const target = lower.filter(c => c.starRating === previousLevel).sort((a,b) => b.weeklyIncome-a.weeklyIncome)[0];
           const buffer = currentIncome - target.weeklyIncome;
-          benchmarks.push("Buffer above observed previous-star level (" + previousLevel + "★ companies): " + (buffer > 0 ? money(buffer) + "/week above the highest-income company currently seen at " + previousLevel + "★ (" + money(target.weeklyIncome) + "/week)." : "current income is at or below the highest observed " + previousLevel + "★ benchmark (" + money(target.weeklyIncome) + "/week)."));
-        } else benchmarks.push("Previous-star income buffer: not enough same-type lower-star data in this snapshot.");
+          benchmarks.push(buffer > 0
+            ? "Previous star (" + previousLevel + "★): " + money(buffer) + "/week above the highest observed income (" + money(target.weeklyIncome) + "/week)."
+            : "Previous star (" + previousLevel + "★): " + money(Math.abs(buffer)) + "/week below the highest observed income (" + money(target.weeklyIncome) + "/week).");
+        } else benchmarks.push("Previous star: insufficient lower-star peer data in this snapshot.");
       } else {
-        benchmarks.push("Star-level income comparisons are unavailable because your current weekly income or star rating was not reported.");
+        benchmarks.push("Star benchmarks unavailable: current weekly income or star rating is missing.");
       }
       const generatedAt = data.generatedAt || "timestamp unavailable";
       const rankLabel = rankingCompanies[ownRankIndex]?._ownOnly ? "estimated slot among " + rankingCompanies.length + " Type #" + String(ownTypeId ?? ownType) + " companies" : "rank #" + (ownRankIndex + 1) + " of " + rankingCompanies.length + " Type #" + String(ownTypeId ?? ownType) + " companies";
       const incomeFreshnessNote = liveWeeklyIncome !== null
-        ? "\nYour income uses the latest company profile; other companies use the global snapshot, so your same-type position is estimated against that snapshot."
-        : "\nYour position is based on the saved global snapshot, filtered to your company type.";
+        ? "\nRank is estimated: your income is live; peer incomes are from the saved snapshot."
+        : "\nRank uses the saved snapshot for your company type.";
       const snapshotTime = Date.parse(generatedAt);
       const staleSnapshotNote = Number.isFinite(snapshotTime) && Date.now() - snapshotTime > 36 * 3600000
-        ? "\n⚠️ This ranking snapshot is over 36 hours old. The dashboard refreshes its shared ranking cache on its normal schedule/on-demand stale-cache path; no extra historical snapshot was created by this command."
+        ? "\n⚠️ Snapshot is over 36 hours old."
         : "";
       const companyTypeLabel = "Type #" + String(ownTypeId ?? ownType) + " (" + safeText(ownType, 50) + ")";
       const ownDailyIncome = typeof ownIncomeRoot.daily === "number" && Number.isFinite(ownIncomeRoot.daily)
@@ -843,12 +850,16 @@ async function replyFor(i, env) {
             ...(staleSnapshotNote ? [staleSnapshotNote.trim()] : [])
           ]);
       }
-      return chunkedPrivateReply("**Company ranking comparison**\nYour company: " + ownName + "  |  " + rankLabel + "  |  Weekly income: " + money(currentIncome) +
-        "\nSnapshot: " + generatedAt + " (" + snapshotAgeLabel(generatedAt) + ")\nNearby ranks: 6 above and 4 below, within your company type." + incomeFreshnessNote + staleSnapshotNote, [
+      const companyHeader = "Your company: **" + ownName + "** | " + rankLabel +
+        " | " + (currentStars === null ? "stars n/a" : currentStars + "★") + " | " + money(currentIncome) + "/week";
+      return chunkedPrivateReply("**Company ranking comparison**\n" + companyHeader +
+        "\nSnapshot: " + generatedAt + " (" + snapshotAgeLabel(generatedAt) + ")" + incomeFreshnessNote + staleSnapshotNote, [
+          "**Nearby companies**",
           ...lines,
-          "\n**Observed same-type star-income benchmarks**",
+          "",
+          "**Star-income benchmarks**",
           ...benchmarks,
-          "Note: these compare companies in the latest global snapshot; they are not guaranteed official Torn star thresholds."
+          "Observed snapshot values, not official Torn thresholds."
         ]);
     } catch { return privateReply("Company rankings are temporarily unavailable. Please try again later."); }
   }

@@ -303,4 +303,16 @@ assert.match(rankingsHandler, /if \(subcommand === "global"\) \{[\s\S]*?Top 10 c
   "/company rankings global must return a top-10 type leaderboard");
 assert.match(rankingsHandler, /\*\*Company ranking comparison\*\*/,
   "/company rankings compare must return nearby competitors and star-income benchmarks");
-console.log("PASS Discord command contract: " + commands.length + " top-level commands; distinct company rankings, concise continued replies, private replies, one-time linking, and owner-scoped reads.");
+assert.match(rankingsHandler, /if \(isOwn\) return null;[\s\S]*?\}\)\.filter\(Boolean\)/,
+  "comparison rows must not repeat the linked company already summarized in the header");
+assert.match(rankingsHandler, /\*\*Nearby companies\*\*/,
+  "comparison output must use a concise peer-list heading");
+assert.match(rankingsHandler, /Observed snapshot values, not official Torn thresholds\./,
+  "comparison output must retain the star-threshold caveat concisely");
+assert.doesNotMatch(rankingsHandler, /Nearby ranks: 6 above and 4 below|within your company type|latest company profile; other companies use the global snapshot|no extra historical snapshot was created|currently seen at/,
+  "comparison output must omit verbose explanations and redundant descriptors");
+assert.doesNotMatch(rankingsHandler, /\+ \" \(\" \+ safeText\(company\.companyType/,
+  "nearby comparison rows must not repeat the company type on every line");
+assert.match(rankingsHandler, /Next star \(" \+ nextLevel \+ "★\):/,
+  "star-income benchmark should use a concise next-star label");
+console.log("PASS Discord command contract: " + commands.length + " top-level commands; distinct company rankings, concise comparison output, private replies, one-time linking, and owner-scoped reads.");
