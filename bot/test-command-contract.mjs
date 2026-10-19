@@ -110,10 +110,13 @@ for (const name of ["companies", "company", "compare", "global", "faction"]) {
 }
 const alertGroup = companyOptions.find(option => option.name === "alerts" && option.type === 2);
 const alertCommands = (alertGroup?.options || []).map(option => option.name);
-assert.deepEqual(alertCommands, ["recent", "enable", "disable", "configure", "status", "settings", "acknowledge", "rules"],
-  "company alerts children must match the requested order");
-for (const name of ["enable", "disable", "configure", "status", "settings", "recent", "acknowledge", "rules"]) {
+assert.deepEqual(alertCommands, ["recent", "enable", "disable", "status", "acknowledge"],
+  "company alerts should only expose alert-event and private Discord delivery actions");
+for (const name of ["recent", "enable", "disable", "status", "acknowledge"]) {
   assert.ok(alertCommands.includes(name), "missing /company alerts " + name);
+}
+for (const duplicate of ["configure", "settings", "rules"]) {
+  assert.equal(alertCommands.includes(duplicate), false, "/company alerts must not duplicate /automation " + duplicate);
 }
 const acknowledgeCommand = (alertGroup?.options || []).find(option => option.name === "acknowledge");
 const alertPicker = (acknowledgeCommand?.options || []).find(option => option.name === "alert");
@@ -235,6 +238,16 @@ assert.match(worker, /The encrypted endpoint URL is never shown in Discord/, "we
 assert.match(worker, /name === "automation"/, "help and command handler must recognize automation");
 
 assert.match(worker, /name === "company" && commandOptions\(i\)\.group === "alerts"/, "alerts must route through /company alerts group");
+const companyAlertsStart = worker.indexOf('if (name === "company" && commandOptions(i).group === "alerts")');
+const automationHandlerStart = worker.indexOf('if (name === "automation"', companyAlertsStart);
+assert.ok(companyAlertsStart >= 0 && automationHandlerStart > companyAlertsStart, "company alert and automation handlers must exist");
+const companyAlertsBlock = worker.slice(companyAlertsStart, automationHandlerStart);
+assert.doesNotMatch(companyAlertsBlock, /subcommand === "rules"|subcommand === "configure"|subcommand === "settings"/,
+  "company alerts must not expose duplicated rule or notification-preference actions");
+assert.doesNotMatch(companyAlertsBlock, /\/api\/me\/alert-rules|\/api\/me\/automation-preferences/,
+  "rule management and shared notification preferences belong to /automation");
+assert.match(companyAlertsBlock, /Most recent private delivery:/, "company alert status must retain private DM delivery health");
+
 assert.match(worker, /name === "company" && commandOptions\(i\)\.group === "rankings"/, "rankings must route through /company rankings group");
 const overviewStart = worker.indexOf('if (name === "company" && commandOptions(i).subcommand === "overview")');
 const employeesStart = worker.indexOf('if (name === "company" && commandOptions(i).subcommand === "employees")', overviewStart);

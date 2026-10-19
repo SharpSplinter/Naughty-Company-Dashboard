@@ -15,24 +15,12 @@ export const companyCommand = { name: "company", description: "Privately inspect
       { name: "Stars", value: "stars" }, { name: "Stock", value: "stock" },
       { name: "Employees", value: "employees" }
     ]})]),
-    group("alerts", "Inspect recent alerts and notification settings", [
+    group("alerts", "Review recent alerts and private Discord delivery", [
     sub("recent", "Show recent dashboard alerts for your account", [companyId(), integer("limit", "Number of alerts, maximum 10", false, { min_value: 1, max_value: 10 })]),
     sub("enable", "Enable private Discord alert DMs"),
     sub("disable", "Disable private Discord alert DMs without unlinking"),
-    sub("configure", "Change alert severity and quiet-hours preferences", [
-      str("minimum_severity", "Lowest severity delivered", false, { choices: [
-        { name: "Info and above", value: "info" }, { name: "Warning and critical only", value: "warning" },
-        { name: "Critical only", value: "critical" }
-      ]}),
-      { type: 5, name: "quiet_hours_enabled", description: "Enable or disable quiet hours", required: false },
-      str("quiet_hours_start", "Quiet-hours start, 24-hour HH:MM", false, { min_length: 5, max_length: 5 }),
-      str("quiet_hours_end", "Quiet-hours end, 24-hour HH:MM", false, { min_length: 5, max_length: 5 }),
-      str("timezone", "IANA time zone, e.g. America/New_York", false, { max_length: 80 })
-    ]),
-    sub("status", "Show alert delivery and preference status"),
-    sub("settings", "Show current severity and quiet-hours settings"),
-    sub("acknowledge", "Acknowledge an active alert", [str("alert", "Pick an active alert to acknowledge", true, { min_length: 1, max_length: 80, autocomplete: true })]),
-    sub("rules", "List your enabled and disabled dashboard alert rules")
+    sub("status", "Show private Discord DM delivery status"),
+    sub("acknowledge", "Acknowledge an active alert", [str("alert", "Pick an active alert to acknowledge", true, { min_length: 1, max_length: 80, autocomplete: true })])
   ]),
     group("rankings", "Browse global and faction company rankings", [
     sub("companies", "Browse cached global companies by type", [

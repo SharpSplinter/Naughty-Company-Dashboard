@@ -299,15 +299,15 @@ async function replyFor(i, env) {
       "- `/company overview`, `/company income`, `/company profit`, `/company stars`, `/company ads`, `/company stock`, `/company employees`, `/company wages`, `/company trends`  View company metrics. Employees supports brief/full detail.",
       "",
       "**Company alerts**",
-      "- `/company alerts recent`, `/company alerts status`, `/company alerts settings`, `/company alerts rules`  View alerts and settings.",
-      "- `/company alerts enable`, `/company alerts disable`, `/company alerts configure`, `/company alerts acknowledge`  Manage private Discord alerts.",
+      "- `/company alerts recent`, `/company alerts status`  Review recent alerts and private Discord delivery.",
+      "- `/company alerts enable`, `/company alerts disable`, `/company alerts acknowledge`  Manage private DMs and acknowledge alerts.",
       "",
       "**Company rankings**",
       "- `/company rankings companies`, `/company rankings company`, `/company rankings compare`, `/company rankings global`, `/company rankings faction`  Browse company rankings.",
       "",
       "**Automation**",
-      "- `/automation rules list`, `/automation rules create`, `/automation rules enable`, `/automation rules disable`, `/automation rules delete`  Manage your rules.",
-      "- `/automation notifications status`, `/automation notifications configure`  Set severity, quiet hours, and webhook preferences.",
+      "- `/automation rules list`, `/automation rules create`, `/automation rules enable`, `/automation rules disable`, `/automation rules delete`  Manage all alert rules.",
+      "- `/automation notifications status`, `/automation notifications configure`  Manage severity, quiet hours, and webhook digest preferences.",
       "- `/automation webhook status`, `/automation webhook deliveries`, `/automation webhook retry`, `/automation webhook delete`  Manage the external webhook.",
       "",
       "**Bot**",
@@ -918,72 +918,17 @@ async function replyFor(i, env) {
         if (!response.ok) return privateReply(String(result.error || "The selected alert could not be acknowledged. It may already be acknowledged; refresh recent alerts and choose it again."));
         return privateReply("✅ Alert acknowledged. Only the linked dashboard account’s own alert record was changed.");
       }
-      if (subcommand === "rules") {
-        const response = await dashboardFetch(env, "/api/me/alert-rules", { headers, signal: AbortSignal.timeout(8000) });
-        if (response.status === 401 || response.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
-        if (!response.ok) return privateReply("Alert rules are temporarily unavailable. Please try again later.");
-        const data = await response.json(), rules = Array.isArray(data.rules) ? data.rules : [];
-        if (!rules.length) return privateReply("No dashboard alert rules are configured. Set them up in the Automation Center.");
-        const lines = rules.slice(0, 25).map(rule => {
-          const enabled = rule.enabled === true || Number(rule.enabled) === 1;
-          const details = rule.ruleType === "stale_data" ? "stale after " + String(rule.staleAfterHours || "not set") + "h" :
-            rule.ruleType === "refresh_failure" ? "scheduled refresh failures" :
-            "threshold " + String(rule.thresholdPercent ?? "not set") + "%";
-          return "- **" + safeText(rule.ruleType || "Rule", 60) + "** " + (enabled ? "✅ enabled" : "⏸ disabled") +
-            " | " + details + " | cooldown " + String(rule.cooldownHours ?? "not set") + "h" +
-            (rule.companyName ? " | " + safeText(rule.companyName, 80) : "");
-        });
-        return chunkedPrivateReply("**Your dashboard alert rules** | " + rules.length + " rule(s)", lines);
-      }
-      const prefsRes = await dashboardFetch(env, "/api/me/automation-preferences", { headers, signal: AbortSignal.timeout(8000) });
-      const prefsData = prefsRes.ok ? await prefsRes.json() : {};
-      const prefs = prefsData && typeof prefsData.preferences === "object" ? prefsData.preferences : {};
-      if (subcommand === "configure" || subcommand === "settings") {
-        const minSeverity = optionValue(i, "minimum_severity");
-        const quietEnabled = optionValue(i, "quiet_hours_enabled");
-        const quietStart = optionValue(i, "quiet_hours_start");
-        const quietEnd = optionValue(i, "quiet_hours_end");
-        const timezone = optionValue(i, "timezone");
-        const body = {};
-        if (typeof minSeverity === "string") body.minimumSeverity = minSeverity;
-        if (typeof quietEnabled === "boolean") body.quietHoursEnabled = quietEnabled;
-        if (typeof quietStart === "string") body.quietHoursStart = quietStart;
-        if (typeof quietEnd === "string") body.quietHoursEnd = quietEnd;
-        if (typeof timezone === "string") body.timezone = timezone;
-        if (!Object.keys(body).length) {
-          return privateReply("Current config: minimum severity **" + String(prefs.minimumSeverity || "info") + "**; quiet hours **" +
-            ((prefs.quietHoursEnabled === true || Number(prefs.quietHoursEnabled) === 1) ? "on" : "off") + "** (" +
-            String(prefs.quietHoursStart || "22:00") + "–" + String(prefs.quietHoursEnd || "08:00") + ", " + String(prefs.timezone || "UTC") + ").\nUse optional settings to change values. Quiet hours use the selected time zone.");
-        }
-        const saveRes = await dashboardFetch(env, "/api/me/automation-preferences", { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(8000) });
-        const saveData = await saveRes.json().catch(() => ({}));
-        if (!saveRes.ok) return privateReply(String(saveData.error || "Alert configuration could not be saved."));
-        const saved = saveData.preferences || {};
-        return privateReply("✅ Alert configuration saved. Minimum severity: **" + String(saved.minimumSeverity || "info") +
-          "**; quiet hours: **" + ((saved.quietHoursEnabled === true || Number(saved.quietHoursEnabled) === 1) ? "on" : "off") +
-          "** (" + String(saved.quietHoursStart || "22:00") + "–" + String(saved.quietHoursEnd || "08:00") + ", " + String(saved.timezone || "UTC") +
-          "). Discord DMs are sent immediately when enabled and outside quiet hours.");
-      }
-      if (subcommand !== "status") return privateReply("Choose a /company alerts subcommand such as recent, status, settings, acknowledge, or rules.");
-      const [linkRes, rulesRes] = await Promise.all([
-        dashboardFetch(env, linkPath, { headers, signal: AbortSignal.timeout(8000) }),
-        dashboardFetch(env, "/api/me/alert-rules", { headers, signal: AbortSignal.timeout(8000) })
-      ]);
+      if (subcommand !== "status") return privateReply("Choose /company alerts recent, enable, disable, status, or acknowledge.");
+      const linkRes = await dashboardFetch(env, linkPath, { headers, signal: AbortSignal.timeout(8000) });
+      if (linkRes.status === 401 || linkRes.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
       const linkData = linkRes.ok ? await linkRes.json() : {};
-      const rulesData = rulesRes.ok ? await rulesRes.json() : {};
-      const rules = Array.isArray(rulesData.rules) ? rulesData.rules : [];
-      const enabledRules = rules.filter(rule => rule.enabled === true || Number(rule.enabled) === 1).length;
       const last = await env.BOT_DB.prepare("SELECT status, attempts, updated_at AS updatedAt FROM discord_alert_deliveries WHERE discord_user_id=? ORDER BY updated_at DESC LIMIT 1").bind(user).first();
       const lines = [
         "Dashboard link: **" + (linkData.linked ? "connected" : "not confirmed") + "**",
         "Private Discord DMs: **" + (linkData.alertsEnabled ? "enabled" : "disabled") + "**",
-        "Minimum severity: **" + String(prefs.minimumSeverity || "info") + "**",
-        "Quiet hours: **" + ((prefs.quietHoursEnabled === true || Number(prefs.quietHoursEnabled) === 1) ? "on" : "off") + "** (" +
-          String(prefs.quietHoursStart || "22:00") + "–" + String(prefs.quietHoursEnd || "08:00") + ", " + String(prefs.timezone || "UTC") + ")",
-        "Dashboard alert rules enabled: **" + enabledRules + " / " + rules.length + "**",
         "Most recent private delivery: **" + (last ? String(last.status) + " (attempts " + String(last.attempts) + ", " + String(last.updatedAt) + ")" : "no delivery records") + "**"
       ];
-      return privateReply("**Private alert status**\n" + lines.join("\n") + "\nDiscord DMs are immediate when enabled, subject to minimum severity and quiet hours.");
+      return privateReply("**Private Discord delivery status**\n" + lines.join("\n") + "\nUse /automation notifications status for severity and quiet hours, and /automation rules list to manage alert rules.");
     } catch { return privateReply("Alert settings are temporarily unavailable. Please try again later."); }
   }
   if (name === "automation" && ["rules", "notifications", "webhook"].includes(commandOptions(i).group)) {
