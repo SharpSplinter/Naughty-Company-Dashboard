@@ -247,6 +247,14 @@ assert.doesNotMatch(companyAlertsBlock, /subcommand === "rules"|subcommand === "
 assert.doesNotMatch(companyAlertsBlock, /\/api\/me\/alert-rules|\/api\/me\/automation-preferences/,
   "rule management and shared notification preferences belong to /automation");
 assert.match(companyAlertsBlock, /Most recent private delivery:/, "company alert status must retain private DM delivery health");
+const automationNotificationsStart = worker.indexOf('if (groupName === "notifications")');
+const automationWebhookStart = worker.indexOf('if (groupName === "webhook")', automationNotificationsStart);
+assert.ok(automationNotificationsStart >= 0 && automationWebhookStart > automationNotificationsStart, "automation notification handler must exist");
+const automationNotificationsBlock = worker.slice(automationNotificationsStart, automationWebhookStart);
+assert.doesNotMatch(automationNotificationsBlock, /\\/api\\/me\\/discord-link|Private Discord DMs:/,
+  "automation notification status must not duplicate private Discord DM enablement status");
+assert.match(automationNotificationsBlock, /Your automation notification preferences/,
+  "automation status must focus on notification preferences and webhook configuration");
 
 assert.match(worker, /name === "company" && commandOptions\(i\)\.group === "rankings"/, "rankings must route through /company rankings group");
 const overviewStart = worker.indexOf('if (name === "company" && commandOptions(i).subcommand === "overview")');

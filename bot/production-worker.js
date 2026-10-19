@@ -1022,21 +1022,16 @@ async function replyFor(i, env) {
         const { response, preferences: prefs } = await getPreferences();
         if (!response.ok) return privateReply(await apiError(response));
         if (subcommand === "status") {
-          const [discordRes, webhookRes] = await Promise.all([
-            dashboardFetch(env, "/api/me/discord-link", { headers, signal: AbortSignal.timeout(8000) }),
-            dashboardFetch(env, "/api/me/automation-webhook", { headers, signal: AbortSignal.timeout(8000) })
-          ]);
-          const discord = discordRes.ok ? await discordRes.json() : {};
+          const webhookRes = await dashboardFetch(env, "/api/me/automation-webhook", { headers, signal: AbortSignal.timeout(8000) });
           const webhook = webhookRes.ok ? await webhookRes.json() : {};
           const quiet = prefs.quietHoursEnabled === true || Number(prefs.quietHoursEnabled) === 1;
           const lines = [
             "Minimum severity: **" + String(prefs.minimumSeverity || "info") + "**",
             "Quiet hours: **" + (quiet ? "on" : "off") + "** · " + String(prefs.quietHoursStart || "22:00") + "–" + String(prefs.quietHoursEnd || "08:00") + " · " + String(prefs.timezone || "UTC"),
             "External webhook: **" + (webhook.configured ? "configured" : "not configured") + "**",
-            "External webhook digest mode: **" + String(prefs.digestMode || "instant") + "**",
-            "Private Discord DMs: **" + (discord.alertsEnabled ? "enabled" : discord.linked ? "disabled" : "not linked") + "**"
+            "External webhook digest mode: **" + String(prefs.digestMode || "instant") + "**"
           ];
-          return privateReply("**Your notification settings**\\n" + lines.join("\\n") + "\\nExternal webhook delivery is separate from private Discord DMs. To use DMs only, remove any external endpoint with /automation webhook delete. Discord DMs are immediate when enabled and outside quiet hours.");
+          return privateReply("**Your automation notification preferences**\\n" + lines.join("\\n") + "\\nThese preferences control notification severity, quiet hours, and external webhook digests. Manage private Discord DM enablement and delivery status under /company alerts.");
         }
         const body = {};
         const minimumSeverity = optionValue(i, "minimum_severity");
