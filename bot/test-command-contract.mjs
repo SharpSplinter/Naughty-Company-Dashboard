@@ -251,7 +251,9 @@ const automationNotificationsStart = worker.indexOf('if (groupName === "notifica
 const automationWebhookStart = worker.indexOf('if (groupName === "webhook")', automationNotificationsStart);
 assert.ok(automationNotificationsStart >= 0 && automationWebhookStart > automationNotificationsStart, "automation notification handler must exist");
 const automationNotificationsBlock = worker.slice(automationNotificationsStart, automationWebhookStart);
-assert.doesNotMatch(automationNotificationsBlock, /\\/api\\/me\\/discord-link|Private Discord DMs:/,
+assert.equal(automationNotificationsBlock.includes("/api/me/discord-link"), false,
+  "automation notification status must not fetch private Discord DM link status");
+assert.equal(automationNotificationsBlock.includes("Private Discord DMs:"), false,
   "automation notification status must not duplicate private Discord DM enablement status");
 assert.match(automationNotificationsBlock, /Your automation notification preferences/,
   "automation status must focus on notification preferences and webhook configuration");
