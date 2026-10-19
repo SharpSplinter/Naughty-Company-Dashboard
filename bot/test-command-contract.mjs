@@ -157,7 +157,7 @@ const registration = readFileSync(new URL("./register-commands.mjs", import.meta
 const financials = readFileSync(new URL("./financials.mjs", import.meta.url), "utf8");
 assert.match(worker, /method: "DELETE", headers, signal: AbortSignal.timeout\(8000\)/, "webhook delete must use the authenticated delete endpoint");
 assert.match(worker, /JSON.stringify\(\{ digestMode: "off" \}\)/, "webhook delete must turn off external webhook digests");
-assert.match(worker, /External webhook delivery is separate from private Discord DMs/, "notification status must distinguish external webhook delivery from private Discord DMs");
+assert.match(worker, /These preferences control notification severity, quiet hours, and external webhook digests/, "automation notification status must describe its own preference scope");
 assert.match(registration, /response\.status === 429/, "Discord command registration must retry explicit rate limits");
 assert.match(registration, /data\.retry_after/, "rate-limit retry must honor Discord retry_after");
 assert.match(registration, /maxRateLimitRetries/, "rate-limit retry attempts must be bounded");
