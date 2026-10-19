@@ -14,6 +14,7 @@ on:
       - "bot/wrangler.production.toml"
       - "bot/register-commands.mjs"
       - "bot/command-schema.mjs"
+      - "bot/command-schema-contract.mjs"
       - "bot/command-options.mjs"
       - "bot/command-routing.mjs"
       - "bot/commands/**"
@@ -38,6 +39,7 @@ on:
       - "bot/wrangler.production.toml"
       - "bot/register-commands.mjs"
       - "bot/command-schema.mjs"
+      - "bot/command-schema-contract.mjs"
       - "bot/command-options.mjs"
       - "bot/command-routing.mjs"
       - "bot/commands/**"
@@ -79,6 +81,8 @@ jobs:
         run: node --check bot/register-commands.mjs
       - name: Validate canonical command schema
         run: node --check bot/command-schema.mjs
+      - name: Validate canonical-to-live command schema comparator
+        run: node --check bot/command-schema-contract.mjs
       - name: Validate command option builder syntax
         run: node --check bot/command-options.mjs
       - name: Validate nested interaction router syntax
