@@ -19,6 +19,9 @@ on:
       - "bot/commands/**"
       - "bot/test-command-contract.mjs"
       - "bot/test-interaction-lifecycle.mjs"
+      - "bot/production-health.mjs"
+      - "bot/check-production-health.mjs"
+      - "bot/test-production-health.mjs"
       - "bot/configure-production-endpoint.mjs"
       - "bot/migrations/0001_bot_schema.sql"
       - ".github/workflows/production-bot-deploy.yml"
@@ -39,6 +42,9 @@ on:
       - "bot/commands/**"
       - "bot/test-command-contract.mjs"
       - "bot/test-interaction-lifecycle.mjs"
+      - "bot/production-health.mjs"
+      - "bot/check-production-health.mjs"
+      - "bot/test-production-health.mjs"
       - "bot/configure-production-endpoint.mjs"
       - "bot/migrations/0001_bot_schema.sql"
       - ".github/workflows/production-bot-deploy.yml"
@@ -87,6 +93,12 @@ jobs:
         run: node bot/test-formatting.mjs
       - name: Validate production endpoint sync script
         run: node --check bot/configure-production-endpoint.mjs
+      - name: Validate production health-check scripts
+        run: |
+          node --check bot/production-health.mjs
+          node --check bot/check-production-health.mjs
+      - name: Test production health-check contract
+        run: node bot/test-production-health.mjs
       - name: Validate production-only target
         run: |
           grep -Fq 'name = "naughty-company-bot"' bot/wrangler.production.toml
@@ -97,6 +109,7 @@ jobs:
           grep -Fq 'CREATE TABLE IF NOT EXISTS discord_links' bot/migrations/0001_bot_schema.sql
           grep -Fq 'CREATE TABLE IF NOT EXISTS alert_preferences' bot/migrations/0001_bot_schema.sql
           grep -Fq 'naughty-company-bot.kboone801.workers.dev' bot/configure-production-endpoint.mjs
+          grep -Fq '/health' bot/check-production-health.mjs
           grep -Fq 'sub("global"' bot/commands/company.mjs
           grep -Fq 'sub("faction"' bot/commands/company.mjs
           grep -Fq 'str("detail"' bot/command-options.mjs
@@ -146,3 +159,7 @@ jobs:
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
         run: node bot/register-commands.mjs
+      - name: Verify production Worker health endpoint
+        env:
+          DISCORD_INTERACTIONS_ENDPOINT: https://naughty-company-bot.kboone801.workers.dev
+        run: node bot/check-production-health.mjs
