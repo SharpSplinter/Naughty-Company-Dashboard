@@ -339,7 +339,7 @@ async function replyFor(i, env) {
         const roster = Array.isArray(wagesData.roster) ? wagesData.roster : [];
         const knownCount = Number(summary.knownWageCount || 0);
         const total = typeof summary.totalKnownWages === "number" && Number.isFinite(summary.totalKnownWages) ? summary.totalKnownWages : null;
-        return privateReply("**Known employee wages | " + companyName + "**\nKnown wage total: " + moneyValue(total) + "\nEmployees with reported wages: " + knownCount + "\nRoster entries returned: " + roster.length + "\nMissing wage values remain unknown and are not counted as zero. Data is from the saved dashboard record.");
+        return privateReply("**Employee wages | " + companyName + "**\nTotal reported wages: " + moneyValue(total) + "\nEmployees with wage data: " + knownCount + "/" + roster.length);
       }
 
       const detailRes = await dashboardFetch(env, "/api/me/companies/" + encodeURIComponent(companyId), { headers, signal: AbortSignal.timeout(8000) });
@@ -430,9 +430,9 @@ async function replyFor(i, env) {
           "\nSnapshot: " + fetchedAt);
       }
       if (subcommand === "ads") {
-        return privateReply("**Advertising budget | " + companyName + "**\nReported advertising budget: " + moneyValue(advertisingBudget) +
-          "\nSnapshot: " + fetchedAt + "\nIf this is unavailable, the current saved company profile does not contain a recognized advertising-budget field. The bot does not substitute zero.");
+        return privateReply("**Advertising budget | " + companyName + "**\nBudget: " + moneyValue(advertisingBudget));
       }
+
       if (subcommand === "stock") {
         const stockHistory = history.filter(point => typeof point.stockQuantity === "number" && Number.isFinite(point.stockQuantity));
         const stockDelta = stockHistory.length > 1 ? stockHistory[stockHistory.length - 1].stockQuantity - stockHistory[stockHistory.length - 2].stockQuantity : null;
@@ -944,7 +944,7 @@ async function replyFor(i, env) {
             "Last delivered: **" + String(hook?.lastDeliveredAt || "not yet") + "**"
           ];
           if (hook?.lastError) lines.push("Last error: " + safeText(hook.lastError, 220));
-          return privateReply("**External webhook status**\\n" + lines.join("\\n") + "\\nThis is separate from private Discord DMs. The encrypted endpoint URL is never shown in Discord. Use /automation webhook delete to remove this endpoint and turn webhook digests off.");
+          return privateReply("**External webhook status**\n" + lines.join("\n"));
         }
         if (subcommand === "deliveries") {
           const response = await dashboardFetch(env, "/api/me/automation-webhook/deliveries?limit=10", { headers, signal: AbortSignal.timeout(8000) });
