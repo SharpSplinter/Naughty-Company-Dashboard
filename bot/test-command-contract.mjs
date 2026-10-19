@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { commands } from "./command-schema.mjs";
 import { parseCommandRoute } from "./command-routing.mjs";
+import { commandSchemaDifferences } from "./command-schema-contract.mjs";
 
 const rootNames = commands.map(command => command.name);
 assert.equal(new Set(rootNames).size, rootNames.length, "top-level command names must be unique");
@@ -9,50 +10,196 @@ assert.deepEqual(rootNames, ["link", "link-code", "status", "unlink", "ping", "h
   "registered root commands must match the intended architecture, with /help retained");
 
 const validName = /^[a-z0-9_-]{1,32}$/;
+const parameterTypes = new Set([3, 4, 5, 6, 7, 8, 9, 10, 11]);
+const choiceTypes = new Set([3, 4, 10]);
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+
+function validateHeader(value, path) {
+  assert.match(value.name, validName, path + " name");
+  assert.ok(typeof value.description === "string" && value.description.length > 0 && value.description.length <= 100,
+    path + " description length");
+}
 function validateLeafOption(child, path) {
-  assert.match(child.name, validName, path + " argument name");
-  assert.ok(child.description.length > 0 && child.description.length <= 100, path + "/" + child.name + " argument description length");
-  assert.ok(!Object.prototype.hasOwnProperty.call(child, "options"), "Discord supports only command -> group -> subcommand nesting");
-  assert.ok(!Object.prototype.hasOwnProperty.call(child, "choices") || child.choices.length <= 25, "choice limit");
+  assert.ok(parameterTypes.has(child.type), path + "/" + child.name + " must use a supported parameter type");
+  validateHeader(child, path + " argument");
+  assert.ok(!hasOwn(child, "options"), "Discord supports only command -> group -> subcommand nesting");
+  if (hasOwn(child, "required")) assert.equal(typeof child.required, "boolean", path + "/" + child.name + " required must be boolean");
+
+  if (hasOwn(child, "choices")) {
+    assert.ok(choiceTypes.has(child.type), path + "/" + child.name + " choices only support string, integer, and number options");
+    assert.ok(Array.isArray(child.choices) && child.choices.length <= 25, path + "/" + child.name + " choice limit is 25");
+    for (const choice of child.choices) {
+      assert.ok(choice && typeof choice.name === "string" && choice.name.length >= 1 && choice.name.length <= 100,
+        path + "/" + child.name + " choice names must be 1-100 characters");
+      if (child.type === 3) {
+        assert.ok(typeof choice.value === "string" && choice.value.length <= 100,
+          path + "/" + child.name + " string choice values must be at most 100 characters");
+      } else if (child.type === 4) {
+        assert.ok(Number.isSafeInteger(choice.value), path + "/" + child.name + " integer choice values must be safe integers");
+      } else {
+        assert.ok(typeof choice.value === "number" && Number.isFinite(choice.value) && Math.abs(choice.value) <= 2 ** 53,
+          path + "/" + child.name + " number choice values must be finite and within Discord's supported range");
+      }
+    }
+  }
+  if (hasOwn(child, "autocomplete")) {
+    assert.equal(typeof child.autocomplete, "boolean", path + "/" + child.name + " autocomplete must be boolean");
+  }
+  if (child.autocomplete === true) {
+    assert.ok(choiceTypes.has(child.type), path + "/" + child.name + " autocomplete only supports string, integer, and number options");
+    assert.ok(!hasOwn(child, "choices"), path + "/" + child.name + " autocomplete cannot be combined with choices");
+  }
+
+  for (const field of ["min_length", "max_length"]) {
+    if (!hasOwn(child, field)) continue;
+    assert.equal(child.type, 3, path + "/" + child.name + " " + field + " only applies to string options");
+    const value = child[field];
+    const min = field === "min_length" ? 0 : 1;
+    assert.ok(Number.isInteger(value) && value >= min && value <= 6000,
+      path + "/" + child.name + " " + field + " must be in the allowed range");
+  }
+  if (hasOwn(child, "min_length") && hasOwn(child, "max_length")) {
+    assert.ok(child.min_length <= child.max_length, path + "/" + child.name + " min_length must not exceed max_length");
+  }
+
+  for (const field of ["min_value", "max_value"]) {
+    if (!hasOwn(child, field)) continue;
+    assert.ok(child.type === 4 || child.type === 10, path + "/" + child.name + " " + field + " only applies to numeric options");
+    const value = child[field];
+    if (child.type === 4) {
+      assert.ok(Number.isSafeInteger(value), path + "/" + child.name + " integer " + field + " must be a safe integer");
+    } else {
+      assert.ok(typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 2 ** 53,
+        path + "/" + child.name + " number " + field + " must be finite and within Discord's supported range");
+    }
+  }
+  if (hasOwn(child, "min_value") && hasOwn(child, "max_value")) {
+    assert.ok(child.min_value <= child.max_value, path + "/" + child.name + " min_value must not exceed max_value");
+  }
+}
+function validateLeafOptions(options, path) {
+  assert.ok(Array.isArray(options) && options.length <= 25, path + " option count must not exceed 25");
+  assert.equal(new Set(options.map(option => option.name)).size, options.length, path + " duplicate argument names");
+  let optionalSeen = false;
+  for (const option of options) {
+    if (option.required === true) {
+      assert.ok(!optionalSeen, path + ": required options must precede optional options");
+    } else {
+      optionalSeen = true;
+    }
+    validateLeafOption(option, path);
+  }
+}
+function validateParentOption(option, path) {
+  validateHeader(option, path);
+  for (const field of ["required", "choices", "autocomplete", "min_value", "max_value", "min_length", "max_length", "channel_types", "file_types"]) {
+    assert.ok(!hasOwn(option, field), path + " cannot define parameter field " + field);
+  }
 }
 function validateCommand(command) {
-  assert.match(command.name, validName, "Discord command names must use valid lowercase names");
-  assert.ok(command.description.length > 0 && command.description.length <= 100, command.name + " description length");
-  assert.ok(!Object.prototype.hasOwnProperty.call(command, "options") || command.options.length <= 25, command.name + " option count");
+  validateHeader(command, "Discord command");
+  if (hasOwn(command, "options")) {
+    assert.ok(Array.isArray(command.options), command.name + " options must be an array");
+    assert.ok(command.options.length <= 25, command.name + " option count must not exceed 25");
+  }
   const options = command.options || [];
   assert.equal(new Set(options.map(option => option.name)).size, options.length, command.name + " duplicate option/subcommand");
+  const hasNestedRoutes = options.some(option => option && (option.type === 1 || option.type === 2));
+  if (!hasNestedRoutes) {
+    validateLeafOptions(options, command.name);
+    return;
+  }
+  assert.ok(options.every(option => option && (option.type === 1 || option.type === 2)),
+    command.name + " must not mix subcommands/groups with parameter options");
+
   for (const option of options) {
-    assert.match(option.name, validName, command.name + " option name");
-    assert.ok(option.description.length > 0 && option.description.length <= 100, command.name + "/" + option.name + " option description length");
+    const optionPath = command.name + "/" + option.name;
+    assert.ok(option.type === 1 || option.type === 2, optionPath + " must be a subcommand or group");
+    validateParentOption(option, optionPath);
     if (option.type === 1) {
-      assert.ok(!Object.prototype.hasOwnProperty.call(option, "required"), "subcommands cannot have required flags");
-      assert.ok(!Object.prototype.hasOwnProperty.call(option, "choices"), "subcommands cannot have choices");
-      assert.ok(!Object.prototype.hasOwnProperty.call(option, "options") || option.options.length <= 25, command.name + "/" + option.name + " option count");
-      const childOptions = option.options || [];
-      assert.equal(new Set(childOptions.map(child => child.name)).size, childOptions.length, command.name + "/" + option.name + " duplicate arguments");
-      for (const child of childOptions) validateLeafOption(child, command.name + "/" + option.name);
-    } else if (option.type === 2) {
-      assert.ok(!Object.prototype.hasOwnProperty.call(option, "required"), "groups cannot have required flags");
-      assert.ok(!Object.prototype.hasOwnProperty.call(option, "choices"), "groups cannot have choices");
-      assert.ok(Array.isArray(option.options) && option.options.length > 0 && option.options.length <= 25, command.name + "/" + option.name + " must have subcommands");
-      const childNames = option.options.map(child => child.name);
-      assert.equal(new Set(childNames).size, childNames.length, command.name + "/" + option.name + " duplicate nested subcommand");
-      for (const child of option.options) {
-        assert.equal(child.type, 1, "a subcommand group can contain only subcommands");
-        assert.ok(child.description.length > 0 && child.description.length <= 100, command.name + "/" + option.name + "/" + child.name + " description length");
-        assert.ok(!Object.prototype.hasOwnProperty.call(child, "required"), "nested subcommands cannot have required flags");
-        assert.ok(!Object.prototype.hasOwnProperty.call(child, "choices"), "nested subcommands cannot have choices");
-        assert.ok(!Object.prototype.hasOwnProperty.call(child, "options") || child.options.length <= 25, command.name + "/" + option.name + "/" + child.name + " option count");
-        const leafOptions = child.options || [];
-        assert.equal(new Set(leafOptions.map(leaf => leaf.name)).size, leafOptions.length, command.name + "/" + option.name + "/" + child.name + " duplicate arguments");
-        for (const leaf of leafOptions) validateLeafOption(leaf, command.name + "/" + option.name + "/" + child.name);
-      }
-    } else {
-      assert.ok(!Object.prototype.hasOwnProperty.call(option, "options"), "top-level parameters cannot contain nested options");
+      const childOptions = hasOwn(option, "options") ? option.options : [];
+      assert.ok(Array.isArray(childOptions) && childOptions.length <= 25, optionPath + " option count must not exceed 25");
+      validateLeafOptions(childOptions, optionPath);
+      continue;
+    }
+
+    const groupChildren = option.options;
+    assert.ok(Array.isArray(groupChildren) && groupChildren.length > 0 && groupChildren.length <= 25,
+      optionPath + " must have 1-25 subcommands");
+    assert.equal(new Set(groupChildren.map(child => child.name)).size, groupChildren.length, optionPath + " duplicate nested subcommand");
+    for (const child of groupChildren) {
+      const childPath = optionPath + "/" + child.name;
+      assert.equal(child.type, 1, childPath + " a group can contain only subcommands");
+      validateParentOption(child, childPath);
+      const leafOptions = hasOwn(child, "options") ? child.options : [];
+      assert.ok(Array.isArray(leafOptions) && leafOptions.length <= 25, childPath + " option count must not exceed 25");
+      validateLeafOptions(leafOptions, childPath);
     }
   }
 }
 for (const command of commands) validateCommand(command);
+
+// Validator boundary fixtures protect against Discord rejecting a future schema change.
+const testOption = (name, required, extras = {}) => ({
+  type: 3, name, description: "A test option", required, ...extras
+});
+const testCommand = options => ({ name: "schema-test", description: "Validate an option schema", options });
+assert.doesNotThrow(() => validateCommand(testCommand([
+  testOption("required", true), testOption("optional", false)
+])), "required parameters before optional parameters should pass");
+assert.throws(() => validateCommand(testCommand([
+  testOption("optional", false), testOption("required", true)
+])), /required options must precede optional options/, "required parameters after optional parameters must fail");
+assert.throws(() => validateCommand(testCommand([
+  { type: 1, name: "run", description: "Run the command" }, testOption("query", false)
+])), /must not mix subcommands\/groups with parameter options/, "subcommands cannot be mixed with leaf parameters");
+assert.throws(() => validateCommand(testCommand([
+  testOption("selector", false, { choices: [{ name: "First", value: "first" }], autocomplete: true })
+])), /autocomplete cannot be combined with choices/, "autocomplete and static choices are mutually exclusive");
+assert.throws(() => validateCommand(testCommand([
+  testOption("selector", false, { choices: Array.from({ length: 26 }, (_, index) => ({ name: "Choice " + index, value: "choice-" + index })) })
+])), /choice limit is 25/, "Discord's 25-choice cap must be enforced");
+assert.throws(() => validateCommand(testCommand([
+  { type: 4, name: "page", description: "Page index", required: false, min_value: 10, max_value: 1 }
+])), /min_value must not exceed max_value/, "numeric minimum cannot exceed maximum");
+assert.throws(() => validateCommand(testCommand([
+  { type: 3, name: "query", description: "Query", required: false, min_value: 1 }
+])), /min_value only applies to numeric options/, "numeric bounds cannot be attached to strings");
+assert.throws(() => validateCommand(testCommand([
+  { type: 1, name: "outer", description: "Outer", options: [{ type: 2, name: "inner", description: "Invalid extra nesting", options: [
+    { type: 1, name: "run", description: "Run" }
+  ] }] }
+])), /must not mix subcommands\/groups with parameter options|supported parameter type/,
+  "Discord's command -> group -> subcommand nesting depth must be enforced");
+
+const equivalentDefaults = { name: "defaults", description: "Default normalization", options: [
+  { type: 3, name: "query", description: "Query", required: false }
+] };
+const omittedDefaults = { name: "defaults", description: "Default normalization", type: 1, options: [
+  { type: 3, name: "query", description: "Query" }
+] };
+assert.deepEqual(commandSchemaDifferences(equivalentDefaults, omittedDefaults), [],
+  "schema comparison must normalize omitted Discord defaults");
+
+const canonicalCompany = commands.find(command => command.name === "company");
+assert.deepEqual(commandSchemaDifferences(canonicalCompany, structuredClone(canonicalCompany)), [],
+  "a live schema identical to the canonical definition must match");
+const driftedCompany = structuredClone(canonicalCompany);
+driftedCompany.description += " (drift)";
+driftedCompany.options.find(option => option.name === "rankings").description = "Different rankings description";
+driftedCompany.options.find(option => option.name === "rankings").options
+  .find(option => option.name === "companies").options[0].required = false;
+driftedCompany.options.find(option => option.name === "trends").options
+  .find(option => option.name === "metric").choices[0].value = "changed-value";
+driftedCompany.options.find(option => option.name === "alerts").options
+  .find(option => option.name === "acknowledge").options[0].autocomplete = false;
+const schemaDifferences = commandSchemaDifferences(canonicalCompany, driftedCompany);
+assert.ok(schemaDifferences.includes("/company.description"), "live schema comparison must catch root description drift");
+assert.ok(schemaDifferences.some(path => path.endsWith(".description")), "live schema comparison must catch option description drift");
+assert.ok(schemaDifferences.some(path => path.endsWith(".required")), "live schema comparison must catch required-flag drift");
+assert.ok(schemaDifferences.some(path => path.endsWith(".choices[0].value")), "live schema comparison must catch choice-value drift");
+assert.ok(schemaDifferences.some(path => path.endsWith(".autocomplete")), "live schema comparison must catch autocomplete drift");
+
 
 const parsedRootRoute = parseCommandRoute({ data: { name: "ping" } });
 assert.deepEqual(parsedRootRoute, { group: null, subcommand: null, options: [] }, "flat root commands must remain root routes");
