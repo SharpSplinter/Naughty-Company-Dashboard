@@ -97,7 +97,10 @@ jobs:
           grep -Fq 'sub("faction"' bot/commands/company.mjs
           grep -Fq 'str("detail"' bot/command-options.mjs
           grep -Fq 'value: "full"' bot/command-options.mjs
-          grep -Fq 'sub("configure"' bot/commands/automation.mjs
+          grep -Fq 'sub("status"' bot/commands/automation.mjs
+          grep -Fq 'group("webhook"' bot/commands/automation.mjs
+          ! grep -Fq 'group("rules"' bot/commands/automation.mjs
+          ! grep -Fq 'sub("configure"' bot/commands/automation.mjs
   deploy-production:
     needs: validate
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
