@@ -108,6 +108,13 @@ assert.deepEqual(rankingCommands, ["companies", "company", "compare", "global", 
 for (const name of ["companies", "company", "compare", "global", "faction"]) {
   assert.ok(rankingCommands.includes(name), "missing /company rankings " + name);
 }
+const rankingCommandByName = new Map((rankingGroup?.options || []).map(option => [option.name, option]));
+assert.match(rankingCommandByName.get("company")?.description || "", /rank, stars, and income/i,
+  "/company rankings company should show a focused company ranking summary");
+assert.match(rankingCommandByName.get("compare")?.description || "", /nearby same-type ranks and star-income benchmarks/i,
+  "/company rankings compare should focus on nearby competitors and benchmarks");
+assert.match(rankingCommandByName.get("global")?.description || "", /top 10 companies/i,
+  "/company rankings global should show a type leaderboard rather than duplicate the company summary");
 const alertGroup = companyOptions.find(option => option.name === "alerts" && option.type === 2);
 const alertCommands = (alertGroup?.options || []).map(option => option.name);
 assert.deepEqual(alertCommands, ["recent", "enable", "disable", "status", "acknowledge"],
@@ -276,4 +283,24 @@ const wageBlock = worker.slice(wageBlockStart, wageBlockEnd);
 assert.match(wageBlock, /Total reported wages:/, "wage output must distinguish reported wages");
 assert.match(wageBlock, /Employees with wage data:/, "wage output must show employee coverage");
 assert.doesNotMatch(wageBlock, /Missing wage values remain unknown|Data is from the saved dashboard record|Roster entries returned:/, "wage output must omit unnecessary descriptors");
-console.log("PASS Discord command contract: " + commands.length + " top-level commands; private replies, one-time linking, owner-scoped reads, and no refresh/snapshot actions.");
+
+const chunkHelperStart = worker.indexOf("function chunkedPrivateReply(");
+const severityHelperStart = worker.indexOf("function severityRank(", chunkHelperStart);
+assert.ok(chunkHelperStart >= 0 && severityHelperStart > chunkHelperStart, "private reply chunk helper boundaries must exist");
+const chunkHelper = worker.slice(chunkHelperStart, severityHelperStart);
+assert.match(chunkHelper, /const continuationTitle = String\(title\)\.split\("\\n", 1\)\[0\] \+ " \(continued\)"/,
+  "continued replies must keep only the original heading, not repeat the full multi-line header");
+assert.match(chunkHelper, /current = continuationTitle \+ "\\n"/, "continued replies must use the concise continuation heading");
+assert.doesNotMatch(chunkHelper, /current = title \+ " \(continued\)\\n"/, "continued replies must not duplicate all ranking metadata");
+
+const rankingsRouteStart = worker.indexOf('if (name === "company" && commandOptions(i).group === "rankings")');
+const alertsRouteStart = worker.indexOf('if (name === "company" && commandOptions(i).group === "alerts")', rankingsRouteStart);
+assert.ok(rankingsRouteStart >= 0 && alertsRouteStart > rankingsRouteStart, "company rankings handler boundaries must exist");
+const rankingsHandler = worker.slice(rankingsRouteStart, alertsRouteStart);
+assert.match(rankingsHandler, /if \(subcommand === "company"\) \{[\s\S]*?return chunkedPrivateReply\("\*\*Company ranking\*\*"/,
+  "/company rankings company must return the focused company ranking summary");
+assert.match(rankingsHandler, /if \(subcommand === "global"\) \{[\s\S]*?Top 10 companies in this type, ranked by weekly income:/,
+  "/company rankings global must return a top-10 type leaderboard");
+assert.match(rankingsHandler, /\*\*Company ranking comparison\*\*/,
+  "/company rankings compare must return nearby competitors and star-income benchmarks");
+console.log("PASS Discord command contract: " + commands.length + " top-level commands; distinct company rankings, concise continued replies, private replies, one-time linking, and owner-scoped reads.");
