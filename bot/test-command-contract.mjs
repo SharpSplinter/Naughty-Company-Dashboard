@@ -126,21 +126,10 @@ assert.equal(alertPicker?.autocomplete, true, "alert acknowledgement must use Di
 const automationCommand = commandsByName.get("automation");
 assert.ok(automationCommand, "missing top-level /automation command");
 const automationGroups = new Map((automationCommand.options || []).map(option => [option.name, option]));
-assert.deepEqual([...automationGroups.keys()], ["rules", "notifications", "webhook"], "/automation should expose rules, notifications, and webhook groups");
-const automationRules = new Map((automationGroups.get("rules")?.options || []).map(option => [option.name, option]));
-assert.deepEqual([...automationRules.keys()], ["list", "create", "enable", "disable", "delete"], "/automation rules actions must be available");
-const createRuleOptions = automationRules.get("create")?.options || [];
-assert.deepEqual((createRuleOptions.find(option => option.name === "rule_type")?.choices || []).map(choice => choice.value),
-  ["income_drop", "stale_data", "refresh_failure", "income_increase", "rating_drop", "roster_change"], "rule creation must expose supported backend rule types");
-assert.equal(createRuleOptions.find(option => option.name === "company")?.autocomplete, true, "rule creation company selection must use autocomplete");
-for (const action of ["enable", "disable", "delete"]) {
-  assert.equal(automationRules.get(action)?.options?.find(option => option.name === "rule")?.autocomplete, true, action + " must use a friendly rule selector");
-}
+assert.deepEqual([...automationGroups.keys()], ["notifications", "webhook"], "/automation should expose only notification status and webhook operations");
+assert.equal(automationGroups.has("rules"), false, "alert-rule management must remain dashboard-only");
 const automationNotifications = new Map((automationGroups.get("notifications")?.options || []).map(option => [option.name, option]));
-assert.deepEqual([...automationNotifications.keys()], ["status", "configure"], "/automation notifications must expose status and configure");
-const notificationOptions = automationNotifications.get("configure")?.options || [];
-assert.ok(notificationOptions.some(option => option.name === "quiet_hours_enabled" && option.type === 5), "notifications configure must support quiet-hours toggle");
-assert.deepEqual((notificationOptions.find(option => option.name === "digest_mode")?.choices || []).map(choice => choice.value), ["instant", "daily", "both", "off"], "notifications configure must expose supported webhook digest modes");
+assert.deepEqual([...automationNotifications.keys()], ["status"], "/automation notifications must retain status only; editing preferences belongs in the dashboard");
 const automationWebhook = new Map((automationGroups.get("webhook")?.options || []).map(option => [option.name, option]));
 assert.deepEqual([...automationWebhook.keys()], ["status", "deliveries", "retry", "delete"], "/automation webhook must expose status, deliveries, retry, and delete in the requested order");
 assert.equal(automationWebhook.get("retry")?.options?.find(option => option.name === "delivery")?.autocomplete, true, "webhook retry must use an autocomplete selector rather than an event ID");
@@ -157,7 +146,7 @@ const registration = readFileSync(new URL("./register-commands.mjs", import.meta
 const financials = readFileSync(new URL("./financials.mjs", import.meta.url), "utf8");
 assert.match(worker, /method: "DELETE", headers, signal: AbortSignal.timeout\(8000\)/, "webhook delete must use the authenticated delete endpoint");
 assert.match(worker, /JSON.stringify\(\{ digestMode: "off" \}\)/, "webhook delete must turn off external webhook digests");
-assert.match(worker, /These preferences control notification severity, quiet hours, and external webhook digests/, "automation notification status must describe its own preference scope");
+assert.match(worker, /Edit alert rules and notification preferences in the dashboard/, "Discord must direct rule and notification preference edits to the dashboard");
 assert.match(registration, /response\.status === 429/, "Discord command registration must retry explicit rate limits");
 assert.match(registration, /data\.retry_after/, "rate-limit retry must honor Discord retry_after");
 assert.match(registration, /maxRateLimitRetries/, "rate-limit retry attempts must be bounded");
@@ -227,12 +216,12 @@ assert.doesNotMatch(dashboardSummaryBlock, /Dashboard Worker:|Database:|Latest s
 assert.match(dashboardSummaryBlock, /timeZone: "UTC"/, "scheduled-run time must be compact and explicitly UTC");
 
 
-assert.match(worker, /name === "automation" && \["rules", "notifications", "webhook"\]\.includes\(commandOptions\(i\)\.group\)/, "automation command group must route to its private handler");
-assert.match(worker, /\/api\/me\/alert-rules/, "automation rules must use the existing owner-scoped API");
+assert.equal(worker.includes('if (name === "automation" && ["notifications", "webhook"].includes(commandOptions(i).group))'), true, "automation must route only notification status and webhook operations");
+assert.equal(worker.includes("/api/me/alert-rules"), false, "Discord must not expose alert-rule CRUD; the dashboard owns rule management");
 assert.match(worker, /\/api\/me\/automation-preferences/, "notification settings must use the existing preferences API");
 assert.match(worker, /\/api\/me\/automation-webhook\/deliveries\?limit=10/, "webhook delivery history must use the existing API");
 assert.match(worker, /\/api\/me\/automation-webhook\/retry\//, "webhook retry must use the owner-scoped retry API");
-assert.match(worker, /route\.group === "rules" && \["enable", "disable", "delete"\]\.includes\(route\.subcommand\)/, "automation rule actions must support autocomplete selection");
+assert.equal(worker.includes('route.group === "rules"'), false, "Discord must not expose alert-rule autocomplete");
 assert.match(worker, /route\.group === "webhook" && route\.subcommand === "retry"/, "webhook retry must support failed-delivery autocomplete");
 assert.match(worker, /The encrypted endpoint URL is never shown in Discord/, "webhook status must never disclose the encrypted endpoint URL");
 assert.match(worker, /name === "automation"/, "help and command handler must recognize automation");
@@ -245,7 +234,7 @@ const companyAlertsBlock = worker.slice(companyAlertsStart, automationHandlerSta
 assert.doesNotMatch(companyAlertsBlock, /subcommand === "rules"|subcommand === "configure"|subcommand === "settings"/,
   "company alerts must not expose duplicated rule or notification-preference actions");
 assert.doesNotMatch(companyAlertsBlock, /\/api\/me\/alert-rules|\/api\/me\/automation-preferences/,
-  "rule management and shared notification preferences belong to /automation");
+"dashboard-managed rule and notification settings must not be handled by /company alerts");
 assert.match(companyAlertsBlock, /Most recent private delivery:/, "company alert status must retain private DM delivery health");
 const automationNotificationsStart = worker.indexOf('if (groupName === "notifications")');
 const automationWebhookStart = worker.indexOf('if (groupName === "webhook")', automationNotificationsStart);
@@ -255,6 +244,8 @@ assert.equal(automationNotificationsBlock.includes("/api/me/discord-link"), fals
   "automation notification status must not fetch private Discord DM link status");
 assert.equal(automationNotificationsBlock.includes("Private Discord DMs:"), false,
   "automation notification status must not duplicate private Discord DM enablement status");
+assert.equal(automationNotificationsBlock.includes('optionValue(i, "minimum_severity")'), false, "Discord must not expose notification preference edits");
+assert.equal(automationNotificationsBlock.includes('method: "POST"'), false, "Discord notification status must remain read-only");
 assert.match(automationNotificationsBlock, /Your automation notification preferences/,
   "automation status must focus on notification preferences and webhook configuration");
 
