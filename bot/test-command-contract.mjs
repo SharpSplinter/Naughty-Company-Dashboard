@@ -173,7 +173,7 @@ assert.match(worker, /return json\(\{ type: 5, data: \{ flags: 64 \} \}\)/, "slo
 assert.match(worker, /messages\/\@original/, "deferred responses must edit the original interaction reply");
 assert.match(worker, /AbortSignal\.timeout\(1200\)/, "autocomplete dashboard calls must leave margin within the three-second response deadline");
 assert.match(worker, /if \(i\.type === 4\)/, "alert acknowledgement must support Discord autocomplete interactions");
-assert.match(worker, /interaction\?\.type === 4\) return json\(\{ type: 8, data: \{ choices: \[\] \} \}\)/, "failed autocomplete requests must return a valid empty choices response");
+assert.match(worker, /timeoutReply = new Promise\(resolve => \{\s*timeoutHandle = setTimeout\(\(\) => resolve\(\{ type: 8, data: \{ choices: \[\] \} \}\), 1800\)/, "slow autocomplete must fall back before the three-second deadline");
 assert.match(worker, /type: 8, data: \{ choices \}/, "autocomplete must return a selector to Discord");
 assert.match(worker, /String\(event\.status \|\| ""\)\.toLowerCase\(\) === "unread"/, "the alert selector must exclude acknowledged events");
 assert.match(worker, /Use \/company alerts acknowledge and select an active alert from the autocomplete suggestions/, "recent alerts must explain selection-based acknowledgement");
