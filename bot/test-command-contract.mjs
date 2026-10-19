@@ -223,7 +223,13 @@ assert.match(worker, /\/api\/me\/automation-webhook\/deliveries\?limit=10/, "web
 assert.match(worker, /\/api\/me\/automation-webhook\/retry\//, "webhook retry must use the owner-scoped retry API");
 assert.equal(worker.includes('route.group === "rules"'), false, "Discord must not expose alert-rule autocomplete");
 assert.match(worker, /route\.group === "webhook" && route\.subcommand === "retry"/, "webhook retry must support failed-delivery autocomplete");
-assert.match(worker, /The encrypted endpoint URL is never shown in Discord/, "webhook status must never disclose the encrypted endpoint URL");
+const webhookStatusStart = worker.indexOf('if (subcommand === "status") {', worker.indexOf('if (groupName === "webhook") {'));
+const webhookDeliveriesStart = worker.indexOf('if (subcommand === "deliveries")', webhookStatusStart);
+assert.ok(webhookStatusStart >= 0 && webhookDeliveriesStart > webhookStatusStart, "webhook status output block must exist");
+const webhookStatusBlock = worker.slice(webhookStatusStart, webhookDeliveriesStart);
+assert.match(webhookStatusBlock, /External webhook status/ , "webhook status title must exist");
+assert.match(webhookStatusBlock, /lines\.join/, "webhook status must format its fields as separate lines");
+assert.doesNotMatch(webhookStatusBlock, /This is separate from private Discord DMs|Use \/automation webhook delete/, "webhook status must omit unnecessary explanatory text");
 assert.match(worker, /name === "automation"/, "help and command handler must recognize automation");
 
 assert.match(worker, /name === "company" && commandOptions\(i\)\.group === "alerts"/, "alerts must route through /company alerts group");
@@ -257,4 +263,17 @@ assert.doesNotMatch(worker.slice(overviewStart, employeesStart), /Cost breakdown
 assert.doesNotMatch(worker.slice(overviewStart, employeesStart), /Employee wage coverage|\(estimated\)/, "company overview must omit wage coverage and estimated descriptors");
 assert.doesNotMatch(worker, /\/api\/company\/refresh/, "read commands must not trigger company refreshes");
 assert.doesNotMatch(worker, /company_snapshots|GLOBAL_RANKINGS_QUEUE/, "read commands must not write snapshot or ranking-run state");
+const adsBlockStart = worker.indexOf('if (subcommand === "ads") {');
+const stockBlockStart = worker.indexOf('if (subcommand === "stock") {', adsBlockStart);
+assert.ok(adsBlockStart >= 0 && stockBlockStart > adsBlockStart, "advertising budget output block must exist");
+const adsBlock = worker.slice(adsBlockStart, stockBlockStart);
+assert.match(adsBlock, /Budget:/, "advertising budget output must use a concise label");
+assert.doesNotMatch(adsBlock, /Snapshot:|If this is unavailable|does not substitute zero/, "advertising budget output must omit unnecessary descriptors");
+const wageBlockStart = worker.indexOf('if (subcommand === "wages") {');
+const wageBlockEnd = worker.indexOf('const detailRes = await dashboardFetch', wageBlockStart);
+assert.ok(wageBlockStart >= 0 && wageBlockEnd > wageBlockStart, "employee wage output block must exist");
+const wageBlock = worker.slice(wageBlockStart, wageBlockEnd);
+assert.match(wageBlock, /Total reported wages:/, "wage output must distinguish reported wages");
+assert.match(wageBlock, /Employees with wage data:/, "wage output must show employee coverage");
+assert.doesNotMatch(wageBlock, /Missing wage values remain unknown|Data is from the saved dashboard record|Roster entries returned:/, "wage output must omit unnecessary descriptors");
 console.log("PASS Discord command contract: " + commands.length + " top-level commands; private replies, one-time linking, owner-scoped reads, and no refresh/snapshot actions.");
