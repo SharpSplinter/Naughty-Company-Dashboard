@@ -1,4 +1,5 @@
 import { commands } from "./command-schema.mjs";
+import { commandSchemaDifferences } from "./command-schema-contract.mjs";
 
 const APP_ID = process.env.DISCORD_APP_ID || "1558700958983389254";
 const GUILD_ID = process.env.DISCORD_GUILD_ID || "1525623497999515770";
@@ -48,14 +49,6 @@ const LEGACY_FLAT_ROOT_ALIASES = new Set([
 function isLegacyFlatRootName(name) {
   return typeof name === "string" &&
     (LEGACY_FLAT_ROOT_ALIASES.has(name) || /^(?:company|automation|dashboard|bot)[-_]/.test(name));
-}
-function optionTreeShape(options) {
-  return (Array.isArray(options) ? options : []).map(option => {
-    const shaped = { name: option.name, type: option.type };
-    const children = optionTreeShape(option.options);
-    if (children.length) shaped.options = children;
-    return shaped;
-  });
 }
 const TOKEN = (process.env.DISCORD_TOKEN || "").replace(/^Bot\s+/i, "").trim();
 
@@ -136,9 +129,12 @@ for (const command of commands) {
     missingOrMismatched.push("/" + command.name + " (missing)");
     continue;
   }
-  const expectedTree = JSON.stringify(optionTreeShape(command.options));
-  const actualTree = JSON.stringify(optionTreeShape(registeredCommand.options));
-  if (actualTree !== expectedTree) missingOrMismatched.push("/" + command.name + " (option tree differs)");
+  const schemaDifferences = commandSchemaDifferences(command, registeredCommand);
+  if (schemaDifferences.length) {
+    const shown = schemaDifferences.slice(0, 5).join(", ");
+    const remainder = schemaDifferences.length > 5 ? ", +" + (schemaDifferences.length - 5) + " more" : "";
+    missingOrMismatched.push("/" + command.name + " (schema differs: " + shown + remainder + ")");
+  }
 }
 if (missingOrMismatched.length) {
   throw new Error("Discord command-tree verification failed: " + missingOrMismatched.join(", "));
