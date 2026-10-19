@@ -39,7 +39,7 @@ async function encryptedSessionToken(token) {
   const iv = webcrypto.getRandomValues(new Uint8Array(12));
   const key = await webcrypto.subtle.importKey("raw", hexBytes(ENCRYPTION_KEY), "AES-GCM", false, ["encrypt"]);
   const cipher = await webcrypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoder.encode(token));
-  return { cipher: hex(cipher), iv: hex(iv) };
+  return { encrypted_session_token: hex(cipher), token_iv: hex(iv) };
 }
 
 function fakeDatabase({ linkedRow = null } = {}) {
