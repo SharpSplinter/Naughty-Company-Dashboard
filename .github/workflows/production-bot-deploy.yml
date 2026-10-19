@@ -19,6 +19,7 @@ on:
       - "bot/commands/**"
       - "bot/test-command-contract.mjs"
       - "bot/test-interaction-lifecycle.mjs"
+      - "bot/test-interaction-edge-cases.mjs"
       - "bot/production-health.mjs"
       - "bot/check-production-health.mjs"
       - "bot/test-production-health.mjs"
@@ -42,6 +43,7 @@ on:
       - "bot/commands/**"
       - "bot/test-command-contract.mjs"
       - "bot/test-interaction-lifecycle.mjs"
+      - "bot/test-interaction-edge-cases.mjs"
       - "bot/production-health.mjs"
       - "bot/check-production-health.mjs"
       - "bot/test-production-health.mjs"
@@ -87,6 +89,8 @@ jobs:
         run: node bot/test-command-contract.mjs
       - name: Test interaction acknowledgements, slow paths, and failure responses
         run: node bot/test-interaction-lifecycle.mjs
+      - name: Test account linking, authorization failures, malformed requests, and multi-part replies
+        run: node bot/test-interaction-edge-cases.mjs
       - name: Test company financial estimates
         run: node bot/test-financials.mjs
       - name: Test bot money and count formatting
