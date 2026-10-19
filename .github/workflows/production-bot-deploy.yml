@@ -18,6 +18,7 @@ on:
       - "bot/command-routing.mjs"
       - "bot/commands/**"
       - "bot/test-command-contract.mjs"
+      - "bot/test-interaction-lifecycle.mjs"
       - "bot/configure-production-endpoint.mjs"
       - "bot/migrations/0001_bot_schema.sql"
       - ".github/workflows/production-bot-deploy.yml"
@@ -37,6 +38,7 @@ on:
       - "bot/command-routing.mjs"
       - "bot/commands/**"
       - "bot/test-command-contract.mjs"
+      - "bot/test-interaction-lifecycle.mjs"
       - "bot/configure-production-endpoint.mjs"
       - "bot/migrations/0001_bot_schema.sql"
       - ".github/workflows/production-bot-deploy.yml"
@@ -77,6 +79,8 @@ jobs:
         run: for file in bot/commands/*.mjs; do node --check "$file"; done
       - name: Test Discord command contract and production safeguards
         run: node bot/test-command-contract.mjs
+      - name: Test interaction acknowledgements, slow paths, and failure responses
+        run: node bot/test-interaction-lifecycle.mjs
       - name: Test company financial estimates
         run: node bot/test-financials.mjs
       - name: Test bot money and count formatting

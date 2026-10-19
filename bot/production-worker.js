@@ -4,7 +4,7 @@ import { buildCostBreakdown, estimateDailyProfit, estimateWeeklyProfit, findAdve
 
 const enc = new TextEncoder();
 const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
-const privateReply = content => ({ type: 4, data: { content, flags: 64 } });
+const privateReply = content => ({ type: 4, data: { content, flags: 64, allowed_mentions: { parse: [] } } });
 async function dashboardFetch(env, path, init = {}) {
   if (!env.DASHBOARD_API) throw new Error("dashboard_binding_missing");
   return env.DASHBOARD_API.fetch(new Request("https://naughty-company-api" + path, init));
@@ -188,7 +188,7 @@ async function replyFor(i, env) {
       const token = await unseal(row.encrypted_session_token, row.token_iv, env);
       const headers = { authorization: "Bearer " + token, accept: "application/json" };
       if (name === "company" && route.group === "alerts" && route.subcommand === "acknowledge" && focused.name === "alert") {
-        const response = await dashboardFetch(env, "/api/me/alerts?limit=100", { headers, signal: AbortSignal.timeout(1800) });
+        const response = await dashboardFetch(env, "/api/me/alerts?limit=100", { headers, signal: AbortSignal.timeout(1200) });
         if (!response.ok) return { type: 8, data: { choices: [] } };
         const data = await response.json();
         const events = Array.isArray(data.events) ? data.events : [];
@@ -211,7 +211,7 @@ async function replyFor(i, env) {
       }
       if (name !== "automation") return { type: 8, data: { choices: [] } };
       if (route.group === "webhook" && route.subcommand === "retry" && focused.name === "delivery") {
-        const response = await dashboardFetch(env, "/api/me/automation-webhook/deliveries?limit=50", { headers, signal: AbortSignal.timeout(1800) });
+        const response = await dashboardFetch(env, "/api/me/automation-webhook/deliveries?limit=50", { headers, signal: AbortSignal.timeout(1200) });
         if (!response.ok) return { type: 8, data: { choices: [] } };
         const data = await response.json();
         const deliveries = Array.isArray(data.deliveries) ? data.deliveries : [];
@@ -1116,6 +1116,60 @@ async function replyFor(i, env) {
   }
   return privateReply("That command isn't enabled yet. Use /help to see available commands.");
 }
+async function completeDeferredInteraction(interaction, env) {
+  let reply;
+  try {
+    await ensureBotSchema(env);
+    reply = await replyFor(interaction, env);
+  } catch {
+    reply = privateReply("The request could not be completed. Please try again later.");
+  }
+
+  const followups = Array.isArray(reply?.followups) ? reply.followups : [];
+  const messageData = reply?.type === 4 && reply.data && typeof reply.data === "object"
+    ? { ...reply.data }
+    : { content: "The request could not be completed. Please try again later." };
+  delete messageData.flags;
+  messageData.allowed_mentions = { parse: [] };
+
+  if (!interaction.application_id || !interaction.token) return;
+  const endpoint = "https://discord.com/api/v10/webhooks/" +
+    encodeURIComponent(interaction.application_id) + "/" + encodeURIComponent(interaction.token);
+  try {
+    const edited = await fetch(endpoint + "/messages/@original", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(messageData)
+    });
+    if (!edited.ok) {
+      console.warn("Discord deferred interaction response edit failed: " + edited.status);
+      return;
+    }
+    for (const content of followups) {
+      try {
+        const sent = await fetch(endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            content: String(content),
+            flags: 64,
+            allowed_mentions: { parse: [] }
+          })
+        });
+        if (!sent.ok) {
+          console.warn("Discord deferred interaction follow-up failed: " + sent.status);
+          break;
+        }
+      } catch {
+        console.warn("Discord deferred interaction follow-up delivery failed.");
+        break;
+      }
+    }
+  } catch {
+    console.warn("Discord deferred interaction response delivery failed.");
+  }
+}
+
 export default {
   async scheduled(_controller, env, ctx) { ctx.waitUntil(pollPrivateAlerts(env)); },
   async fetch(req, env, ctx) {
@@ -1123,28 +1177,56 @@ export default {
     if (req.method === "GET" && url.pathname === "/health") return json({ ok: true, service: "naughty-company-bot", database: !!env.BOT_DB, encryption: !!env.BOT_ENCRYPTION_KEY, discordConfigured: !!env.DISCORD_TOKEN, dashboardBinding: !!env.DASHBOARD_API, privateAlertDelivery: true });
     if (req.method !== "POST") return json({ ok: false, error: "not_found" }, 404);
     if (!await signed(req, env)) return json({ ok: false, error: "invalid_request_signature" }, 401);
-    let interaction; try { interaction = await req.json(); } catch { return json({ ok: false, error: "invalid_json" }, 400); }
-    try {
-      await ensureBotSchema(env);
-      const reply = await replyFor(interaction, env);
-      const followups = Array.isArray(reply.followups) ? reply.followups : [];
-      delete reply.followups;
-      if (followups.length && interaction.application_id && interaction.token && ctx?.waitUntil) {
-        ctx.waitUntil((async () => {
-          await new Promise(resolve => setTimeout(resolve, 800));
-          const endpoint = "https://discord.com/api/v10/webhooks/" + encodeURIComponent(interaction.application_id) + "/" + encodeURIComponent(interaction.token);
-          for (const content of followups) {
-            try {
-              const sent = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content, flags: 64, allowed_mentions: { parse: [] } }) });
-              if (!sent.ok) break;
-            } catch { break; }
-          }
-        })());
-      }
-      return json(reply);
-    } catch {
-      if (interaction?.type === 4) return json({ type: 8, data: { choices: [] } });
-      return json({ type: 4, data: { content: "The request could not be completed. Please try again later.", flags: 64 } });
+
+    let interaction;
+    try { interaction = await req.json(); } catch { return json({ ok: false, error: "invalid_json" }, 400); }
+
+    // PING must be acknowledged immediately and must not wait on D1 initialization.
+    if (interaction?.type === 1) return json({ type: 1 });
+
+    // Opening the link-code modal is itself the first response, so it cannot be deferred.
+    if (interaction?.type === 2 && interaction.data?.name === "link-code") {
+      try { return json(await replyFor(interaction, env)); }
+      catch { return json(privateReply("The link form could not be opened. Please try again.")); }
     }
+
+    // Autocomplete has a distinct response type and cannot use a deferred message response.
+    // Its path intentionally skips DDL initialization and uses short dashboard request timeouts.
+    if (interaction?.type === 4) {
+      let timeoutHandle;
+      try {
+        const timeoutReply = new Promise(resolve => {
+          timeoutHandle = setTimeout(() => resolve({ type: 8, data: { choices: [] } }), 1800);
+        });
+        const reply = await Promise.race([replyFor(interaction, env), timeoutReply]);
+        return json(reply?.type === 8 ? reply : { type: 8, data: { choices: [] } });
+      } catch { return json({ type: 8, data: { choices: [] } }); }
+      finally { if (timeoutHandle !== undefined) clearTimeout(timeoutHandle); }
+    }
+
+    if (interaction?.type === 3) {
+      return json(privateReply("This component interaction is not supported."));
+    }
+
+    const commandName = interaction?.data?.name;
+    const requiresDeferredResponse =
+      interaction?.type === 5 ||
+      (interaction?.type === 2 && !["ping", "link", "help"].includes(commandName));
+
+    if (requiresDeferredResponse) {
+      if (typeof ctx?.waitUntil !== "function") {
+        return json(privateReply("This interaction cannot be completed safely right now."));
+      }
+      ctx.waitUntil(completeDeferredInteraction(interaction, env));
+      // Acknowledge immediately; complete the private response using the interaction webhook.
+      return json({ type: 5, data: { flags: 64 } });
+    }
+
+    if (interaction?.type === 2) {
+      try { return json(await replyFor(interaction, env)); }
+      catch { return json(privateReply("The request could not be completed. Please try again later.")); }
+    }
+
+    return json(privateReply("Unsupported interaction."));
   }
 };
