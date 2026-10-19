@@ -199,6 +199,12 @@ assert.ok(schemaDifferences.some(path => path.endsWith(".description")), "live s
 assert.ok(schemaDifferences.some(path => path.endsWith(".required")), "live schema comparison must catch required-flag drift");
 assert.ok(schemaDifferences.some(path => path.endsWith(".choices[0].value")), "live schema comparison must catch choice-value drift");
 assert.ok(schemaDifferences.some(path => path.endsWith(".autocomplete")), "live schema comparison must catch autocomplete drift");
+assert.ok(schemaDifferences.some(path => path.endsWith(".min_value")), "live schema comparison must catch numeric-bound drift");
+const driftedAutomation = structuredClone(commands.find(command => command.name === "automation"));
+driftedAutomation.options.find(option => option.name === "webhook").options
+  .find(option => option.name === "retry").options[0].max_length = 79;
+assert.ok(commandSchemaDifferences(commands.find(command => command.name === "automation"), driftedAutomation)
+  .some(path => path.endsWith(".max_length")), "live schema comparison must catch string-bound drift");
 
 
 const parsedRootRoute = parseCommandRoute({ data: { name: "ping" } });
@@ -308,7 +314,9 @@ assert.match(registration, /DEPRECATED_ROOT_ALIASES/, "registration must identif
 assert.match(registration, /"alerts", "rankings"/, "registration must retire former standalone company alert and ranking roots");
 assert.match(registration, /LEGACY_FLAT_ROOT_ALIASES/, "registration must remove obsolete flattened nested-command roots");
 assert.match(registration, /function isLegacyFlatRootName/, "registration must catch legacy hyphenated or underscored root aliases");
-assert.match(registration, /function optionTreeShape/, "registration must normalize Discord option trees for structural verification");
+assert.match(registration, /commandSchemaDifferences\(command, registeredCommand\)/, "registration must compare the complete canonical schema with the live Discord schema");
+assert.match(registration, /schema differs:/, "registration failures must identify live schema drift");
+assert.match(registration, /command-schema-contract\.mjs/, "registration must use the shared schema normalization contract");
 assert.match(registration, /registeredAfterSync = await request\(base, "GET"\)/, "registration must read back the live command tree");
 assert.match(registration, /Verified nested command trees for all/, "registration must report successful structural verification");
 assert.match(registration, /automation-webhook-delete/, "registration must clean up flattened automation webhook aliases");
