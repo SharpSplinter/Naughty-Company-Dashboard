@@ -36,7 +36,7 @@ async function signedRequest(interaction) {
   });
 }
 
-function fakeDatabase({ delayMs = 0, failSchema = false } = {}) {
+function fakeDatabase({ delayMs = 0, firstDelayMs = 0, failSchema = false } = {}) {
   let runCount = 0;
   return {
     get runCount() { return runCount; },
@@ -49,7 +49,7 @@ function fakeDatabase({ delayMs = 0, failSchema = false } = {}) {
           if (delayMs) await delay(delayMs);
           return { success: true };
         },
-        async first() { return null; },
+        async first() { if (firstDelayMs) await delay(firstDelayMs); return null; },
         async all() { return { results: [] }; }
       };
     }
@@ -66,6 +66,7 @@ const botStatusInteraction = () => ({
 
 async function invoke(interaction, {
   dbDelayMs = 0,
+  dbFirstDelayMs = 0,
   failSchema = false,
   apiDelayMs = 0,
   failApi = false
@@ -81,7 +82,7 @@ async function invoke(interaction, {
     return new Response(null, { status: 204 });
   };
 
-  const db = fakeDatabase({ delayMs: dbDelayMs, failSchema });
+  const db = fakeDatabase({ delayMs: dbDelayMs, firstDelayMs: dbFirstDelayMs, failSchema });
   const env = {
     DISCORD_PUBLIC_KEY: publicKeyHex,
     BOT_ENCRYPTION_KEY: "0".repeat(64),
@@ -164,6 +165,17 @@ test("autocomplete keeps its required response type and bypasses DDL initializat
   assert.deepEqual(result.callback, { type: 8, data: { choices: [] } });
   assert.equal(result.db.runCount, 0, "autocomplete must not run schema DDL before acknowledging");
   assert.equal(result.webhookRequests.length, 0, "autocomplete must return its choices directly");
+});
+
+test("slow autocomplete returns valid empty choices before the acknowledgement deadline", async () => {
+  const result = await invoke({
+    type: 4,
+    data: { name: "company", options: [{ type: 3, name: "company_id", value: "123", focused: true }] },
+    user: { id: "discord-user-test" }
+  }, { dbFirstDelayMs: 2200 });
+  assert.ok(result.elapsedMs < 2500, "autocomplete should stop waiting well before Discord's three-second deadline");
+  assert.deepEqual(result.callback, { type: 8, data: { choices: [] } });
+  assert.equal(result.db.runCount, 0, "autocomplete timeout must not initialize the schema");
 });
 
 test("link-code modal opens immediately without deferral or database work", async () => {
