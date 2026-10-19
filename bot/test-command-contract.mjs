@@ -189,6 +189,8 @@ driftedCompany.description += " (drift)";
 driftedCompany.options.find(option => option.name === "rankings").description = "Different rankings description";
 driftedCompany.options.find(option => option.name === "rankings").options
   .find(option => option.name === "companies").options[0].required = false;
+driftedCompany.options.find(option => option.name === "rankings").options
+  .find(option => option.name === "companies").options.find(option => option.name === "page").min_value = 2;
 driftedCompany.options.find(option => option.name === "trends").options
   .find(option => option.name === "metric").choices[0].value = "changed-value";
 driftedCompany.options.find(option => option.name === "alerts").options
