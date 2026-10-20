@@ -286,13 +286,13 @@ async function deliverDailyCompanySummary(env, discordUserId, token, reportingDa
       return "failed";
     }
 
+    await db.prepare("UPDATE discord_daily_summary_deliveries SET status='delivered',updated_at=? WHERE discord_user_id=? AND reporting_day=? AND status='processing' AND attempts=?")
+      .bind(new Date().toISOString(), discordUserId, reportingDay, attempts).run();
     for (const item of report.statesToSave) {
       await db.prepare(
         "INSERT INTO discord_daily_company_summary_state(discord_user_id,company_id,snapshot_day,metrics_json,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(discord_user_id,company_id) DO UPDATE SET snapshot_day=excluded.snapshot_day,metrics_json=excluded.metrics_json,updated_at=excluded.updated_at"
       ).bind(discordUserId, item.companyId, reportingDay, JSON.stringify(item.metrics), item.updatedAt).run();
     }
-    await db.prepare("UPDATE discord_daily_summary_deliveries SET status='delivered',updated_at=? WHERE discord_user_id=? AND reporting_day=? AND status='processing' AND attempts=?")
-      .bind(new Date().toISOString(), discordUserId, reportingDay, attempts).run();
     metrics.delivered += 1;
     return "delivered";
   } catch (error) {
