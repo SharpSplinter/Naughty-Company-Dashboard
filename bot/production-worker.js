@@ -289,6 +289,18 @@ async function replyFor(i, env) {
         return { type: 8, data: { choices } };
       }
       if (name !== "automation") return { type: 8, data: { choices: [] } };
+      if (route.group === "notifications" && route.subcommand === "retry" && focused.name === "event") {
+        const rows = await env.BOT_DB.prepare("SELECT event_id AS eventId, attempts, updated_at AS updatedAt FROM discord_alert_deliveries WHERE discord_user_id=? AND status='failed' AND attempts>=3 ORDER BY updated_at DESC LIMIT 25").bind(user).all();
+        const choices = (rows.results || []).filter(row => typeof row.eventId === "string" && /^[a-f0-9-]{36}$/i.test(row.eventId))
+          .map(row => ({
+            name: ("Exhausted · " + Number(row.attempts || 0) + " attempts · " + safeText(row.updatedAt || "time unavailable", 28)).slice(0, 100),
+            value: row.eventId,
+            searchable: String(row.eventId) + " " + String(row.updatedAt || "")
+          }))
+          .filter(choice => !query || choice.searchable.toLocaleLowerCase().includes(query) || choice.name.toLocaleLowerCase().includes(query))
+          .slice(0, 25).map(({ name, value }) => ({ name, value }));
+        return { type: 8, data: { choices } };
+      }
       if (route.group === "webhook" && route.subcommand === "retry" && focused.name === "delivery") {
         const response = await dashboardFetch(env, "/api/me/automation-webhook/deliveries?limit=50", { headers, signal: AbortSignal.timeout(1200) });
         if (!response.ok) return { type: 8, data: { choices: [] } };
@@ -1021,8 +1033,8 @@ async function replyFor(i, env) {
     const route = commandOptions(i);
     const groupName = route.group;
     const subcommand = route.subcommand;
-    if (groupName === "notifications" && subcommand !== "status") {
-      return privateReply("Choose /automation notifications status.");
+    if (groupName === "notifications" && !["status", "deliveries", "retry"].includes(subcommand)) {
+      return privateReply("Choose /automation notifications status, deliveries, or retry.");
     }
     if (groupName === "webhook" && !["status", "deliveries", "retry", "delete"].includes(subcommand)) {
       return privateReply("Choose /automation webhook status, deliveries, retry, or delete.");
@@ -1045,21 +1057,65 @@ async function replyFor(i, env) {
         return { response, preferences: data && typeof data.preferences === "object" ? data.preferences : {} };
       };
       if (groupName === "notifications") {
-        if (subcommand !== "status") {
-          return privateReply("Alert rules and notification preferences are managed in the dashboard. Use /automation notifications status to inspect current preferences.");
+        if (subcommand === "status") {
+          const { response, preferences: prefs } = await getPreferences();
+          if (!response.ok) return privateReply(await apiError(response));
+          const webhookRes = await dashboardFetch(env, "/api/me/automation-webhook", { headers, signal: AbortSignal.timeout(8000) });
+          const webhook = webhookRes.ok ? await webhookRes.json() : {};
+          await reconcileExhaustedStaleClaims(env, user);
+          const poll = await env.BOT_DB.prepare("SELECT last_started_at AS lastStartedAt,last_completed_at AS lastCompletedAt,last_success_at AS lastSuccessAt,last_status AS lastStatus,last_error_code AS lastErrorCode,last_error_at AS lastErrorAt,consecutive_failures AS consecutiveFailures,last_page_count AS lastPageCount,last_events_seen AS lastEventsSeen,last_delivered AS lastDelivered,last_filtered AS lastFiltered,last_failed AS lastFailed,last_exhausted AS lastExhausted,last_stale_recovered AS lastStaleRecovered FROM discord_alert_poll_state WHERE discord_user_id=?").bind(user).first();
+          const exhausted = await env.BOT_DB.prepare("SELECT COUNT(*) AS count FROM discord_alert_deliveries WHERE discord_user_id=? AND status='failed' AND attempts>=3").bind(user).first();
+          const staleCutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+          const stale = await env.BOT_DB.prepare("SELECT COUNT(*) AS count FROM discord_alert_deliveries WHERE discord_user_id=? AND status='processing' AND updated_at<?").bind(user, staleCutoff).first();
+          const quiet = prefs.quietHoursEnabled === true || Number(prefs.quietHoursEnabled) === 1;
+          const lines = [
+            "Minimum severity: **" + String(prefs.minimumSeverity || "info") + "**",
+            "Quiet hours: **" + (quiet ? "on" : "off") + "** · " + String(prefs.quietHoursStart || "22:00") + "–" + String(prefs.quietHoursEnd || "08:00") + " · " + String(prefs.timezone || "UTC"),
+            "External webhook: **" + (webhook.configured ? "configured" : "not configured") + "**",
+            "External webhook digest mode: **" + String(prefs.digestMode || "instant") + "**"
+          ];
+          if (poll) {
+            const inProgress = poll.lastStatus === "running" && Date.parse(poll.lastStartedAt || "") > Date.parse(poll.lastCompletedAt || "1970-01-01T00:00:00.000Z");
+            const looksStale = inProgress && Number.isFinite(Date.parse(poll.lastStartedAt || "")) && Date.now() - Date.parse(poll.lastStartedAt) > 10 * 60 * 1000;
+            const shownStatus = looksStale ? "interrupted / stale" : String(poll.lastStatus || "unknown");
+            lines.push("Private alert poll: **" + shownStatus + "**");
+            lines.push("Last completed: **" + String(poll.lastCompletedAt || "not yet") + "** · Last successful: **" + String(poll.lastSuccessAt || "not yet") + "**");
+            lines.push("Last poll coverage: " + Number(poll.lastEventsSeen || 0) + " event(s) across " + Number(poll.lastPageCount || 0) + " page(s) · " + Number(poll.lastDelivered || 0) + " DM(s) sent · " + Number(poll.lastFiltered || 0) + " filtered · " + Number(poll.lastFailed || 0) + " failed");
+            if (Number(poll.consecutiveFailures || 0) > 0) lines.push("Consecutive poll failures: **" + Number(poll.consecutiveFailures) + "**");
+            if (poll.lastErrorCode) lines.push("Last error: **" + safeText(poll.lastErrorCode, 80) + "** · " + String(poll.lastErrorAt || "time unavailable"));
+            if (Number(poll.lastStaleRecovered || 0) > 0) lines.push("Recovered exhausted stale claims last poll: **" + Number(poll.lastStaleRecovered) + "**");
+          } else {
+            lines.push("Private alert poll: **no poll recorded yet**");
+          }
+          lines.push("Exhausted deliveries needing manual retry: **" + Number(exhausted?.count || 0) + "** · Stale claims: **" + Number(stale?.count || 0) + "**");
+          if (Number(exhausted?.count || 0) > 0) lines.push("Use /automation notifications deliveries, then /automation notifications retry to requeue a failed alert.");
+          if (Number(poll?.consecutiveFailures || 0) >= 3) lines.push("⚠️ Repeated API/poll failures detected. Check the error code above and reconnect with /link if your dashboard session expired.");
+          return chunkedPrivateReply("**Your automation notification and private-DM status**", lines);
         }
-        const { response, preferences: prefs } = await getPreferences();
-        if (!response.ok) return privateReply(await apiError(response));
-        const webhookRes = await dashboardFetch(env, "/api/me/automation-webhook", { headers, signal: AbortSignal.timeout(8000) });
-        const webhook = webhookRes.ok ? await webhookRes.json() : {};
-        const quiet = prefs.quietHoursEnabled === true || Number(prefs.quietHoursEnabled) === 1;
-        const lines = [
-          "Minimum severity: **" + String(prefs.minimumSeverity || "info") + "**",
-          "Quiet hours: **" + (quiet ? "on" : "off") + "** · " + String(prefs.quietHoursStart || "22:00") + "–" + String(prefs.quietHoursEnd || "08:00") + " · " + String(prefs.timezone || "UTC"),
-          "External webhook: **" + (webhook.configured ? "configured" : "not configured") + "**",
-          "External webhook digest mode: **" + String(prefs.digestMode || "instant") + "**"
-        ];
-        return privateReply("**Your automation notification preferences**\n" + lines.join("\n") + "\nEdit alert rules and notification preferences in the dashboard. Manage private Discord DM enablement and delivery status under /company alerts.");
+        if (subcommand === "deliveries") {
+          await reconcileExhaustedStaleClaims(env, user);
+          const deliveries = await env.BOT_DB.prepare("SELECT event_id AS eventId,status,attempts,updated_at AS updatedAt FROM discord_alert_deliveries WHERE discord_user_id=? AND (status='failed' OR status='processing') ORDER BY updated_at DESC LIMIT 10").bind(user).all();
+          const rows = deliveries.results || [];
+          if (!rows.length) return privateReply("No failed or pending private alert DM deliveries are currently recorded.");
+          const lines = rows.map(delivery => {
+            const attempts = Number(delivery.attempts || 0);
+            const status = String(delivery.status || "unknown");
+            const action = status === "failed" && attempts >= 3 ? "manual retry available" : status === "failed" ? "will retry automatically if eligible" : "processing; stale claims are recovered by the poller";
+            return "- **" + status.toUpperCase() + "** · " + attempts + "/3 attempt(s) · " + safeText(delivery.updatedAt || "time unavailable", 40) +
+              "\n  Event: " + safeText(delivery.eventId || "unknown", 48) + "\n  " + action;
+          });
+          return chunkedPrivateReply("**Private alert DM delivery issues**", lines.concat("Use /automation notifications retry and select an exhausted failed event to reset its retry budget." ));
+        }
+        if (subcommand === "retry") {
+          const eventId = String(optionValue(i, "event") || "").trim();
+          if (!/^[a-f0-9-]{36}$/i.test(eventId)) return privateReply("Choose an exhausted failed private alert from the autocomplete selector.");
+          await reconcileExhaustedStaleClaims(env, user);
+          const result = await env.BOT_DB.prepare("UPDATE discord_alert_deliveries SET status='failed',attempts=0,updated_at=? WHERE discord_user_id=? AND event_id=? AND status='failed' AND attempts>=3")
+            .bind(new Date().toISOString(), user, eventId).run();
+          if (Number(result?.meta?.changes || 0) !== 1) return privateReply("That alert is no longer eligible for manual retry. Run /automation notifications deliveries to inspect current delivery issues.");
+          console.warn("[alert-poll] exhausted delivery manually requeued", JSON.stringify({ discordUserId: user, eventId }));
+          return privateReply("✅ Private alert retry queued. It will be attempted during the next scheduled poll; the three-attempt budget has been reset.");
+        }
       }
       if (groupName === "webhook") {
         if (subcommand === "delete") {
