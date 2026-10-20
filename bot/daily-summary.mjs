@@ -23,7 +23,7 @@ export function isDailySummaryDue(value = new Date()) {
 export function calculateRankingMetrics(company, rankingRows) {
   const weeklyIncome = isFiniteNumber(company?.weeklyIncome) ? company.weeklyIncome : null;
   const starLevel = isFiniteNumber(company?.starLevel) ? company.starLevel : null;
-  if (!Array.isArray(rankingRows)) return { companyRank: null, starIncomeGap: null };
+  if (!Array.isArray(rankingRows) || rankingRows.length === 0) return { companyRank: null, starIncomeGap: null };
 
   const sameType = row => {
     if (!row || typeof row !== "object") return false;
@@ -36,7 +36,7 @@ export function calculateRankingMetrics(company, rankingRows) {
   };
   const peers = rankingRows.filter(row => sameType(row) && isFiniteNumber(row.weeklyIncome ?? row.weekly_income));
   let companyRank = null;
-  if (weeklyIncome !== null) {
+  if (weeklyIncome !== null && peers.length > 0) {
     companyRank = 1 + peers.filter(row =>
       String(row.companyId ?? row.company_id) !== String(company.companyId) &&
       Number(row.weeklyIncome ?? row.weekly_income) > weeklyIncome
