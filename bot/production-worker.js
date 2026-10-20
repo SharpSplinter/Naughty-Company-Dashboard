@@ -597,6 +597,9 @@ async function replyFor(i, env) {
   }
   if (name === "company" && commandOptions(i).group === "rankings") {
     const subcommand = commandOptions(i).subcommand;
+    if (!["companies", "company", "compare", "global", "faction"].includes(subcommand)) {
+      return privateReply("Choose /company rankings companies, company, compare, global, or faction.");
+    }
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
     try {
@@ -865,6 +868,9 @@ async function replyFor(i, env) {
   }
   if (name === "company" && commandOptions(i).group === "alerts") {
     const subcommand = commandOptions(i).subcommand;
+    if (!["recent", "enable", "disable", "status", "acknowledge"].includes(subcommand)) {
+      return privateReply("Choose /company alerts recent, enable, disable, status, or acknowledge.");
+    }
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
     try {
@@ -936,6 +942,12 @@ async function replyFor(i, env) {
     const route = commandOptions(i);
     const groupName = route.group;
     const subcommand = route.subcommand;
+    if (groupName === "notifications" && subcommand !== "status") {
+      return privateReply("Choose /automation notifications status.");
+    }
+    if (groupName === "webhook" && !["status", "deliveries", "retry", "delete"].includes(subcommand)) {
+      return privateReply("Choose /automation webhook status, deliveries, retry, or delete.");
+    }
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
     if (!row) return privateReply("Link your dashboard first with /link.");
     try {
