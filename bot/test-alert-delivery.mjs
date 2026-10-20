@@ -57,6 +57,7 @@ function makeFixture({
   const dbRuns = [];
   const dbReads = [];
   const pollStates = new Map();
+  const escalations = new Map();
   const deliveries = new Map(Object.entries(seededDeliveries).map(([eventId, row]) => [
     deliveryKey(accountId, eventId), structuredClone(row)
   ]));
@@ -81,6 +82,26 @@ function makeFixture({
         bind(...args) { values = args; return this; },
         async run() {
           dbRuns.push({ sql, values: [...values] });
+          if (sql.startsWith("INSERT INTO discord_alert_poll_escalations")) {
+            const [user, triggeredAt] = values;
+            const key = user + ":poll_failure_streak";
+            if (escalations.has(key)) return { success: true, meta: { changes: 0 } };
+            escalations.set(key, { triggeredAt, notificationDelivered: 0 });
+            return { success: true, meta: { changes: 1 } };
+          }
+          if (sql.startsWith("UPDATE discord_alert_poll_escalations SET notification_delivered=1")) {
+            const [user] = values;
+            const key = user + ":poll_failure_streak";
+            const prior = escalations.get(key);
+            if (prior) escalations.set(key, { ...prior, notificationDelivered: 1 });
+            return { success: true, meta: { changes: prior ? 1 : 0 } };
+          }
+          if (sql.startsWith("DELETE FROM discord_alert_poll_escalations")) {
+            const [user] = values;
+            const key = user + ":poll_failure_streak";
+            const existed = escalations.delete(key);
+            return { success: true, meta: { changes: existed ? 1 : 0 } };
+          }
           if (sql.startsWith("INSERT INTO discord_alert_poll_state")) {
             const [user, startedAt, updatedAt] = values;
             const prior = pollStates.get(user) || { consecutiveFailures: 0 };
@@ -260,7 +281,7 @@ function makeFixture({
   };
 
   return {
-    env, dbRuns, dbReads, deliveries, pollStates, dashboardThrowsFor, discordRequests, dashboardRequests, pollHealthReports, discordFetch,
+    env, dbRuns, dbReads, deliveries, pollStates, escalations, dashboardThrowsFor, discordRequests, dashboardRequests, pollHealthReports, discordFetch,
     get messageAttempts() { return messageAttempts; },
     get channelAttempts() { return channelAttempts; },
     set messageFailureCount(value) { messageFailureCount = value; }
@@ -540,4 +561,36 @@ test("dashboard health reports expose exhausted delivery backlog after the third
   assert.equal(report.exhaustedDeliveries, 1, "dashboard telemetry must preserve exhausted work beyond the current poll");
 });
 
-console.log("PASS private alert delivery: severity and quiet-hours filtering, duplicate suppression, retry cap, transient recovery, and DM-channel failures.");
+test("a private operational escalation fires at three consecutive poll failures, deduplicates, and resets after recovery", async () => {
+  const fixture = makeFixture({ dashboardThrowsFor: [accountId] });
+  const escalationMessages = () => fixture.discordRequests.filter(request =>
+    request.url.pathname === "/api/v10/channels/dm-channel-test/messages" &&
+    typeof request.body?.content === "string" &&
+    request.body.content.includes("operational alert")
+  );
+
+  await runScheduled(fixture);
+  await runScheduled(fixture);
+  assert.equal(escalationMessages().length, 0, "poll failures below the threshold must not DM an escalation");
+
+  await runScheduled(fixture);
+  assert.equal(escalationMessages().length, 1, "the third consecutive failure sends a private escalation");
+  assert.match(escalationMessages()[0].body.content, /3 consecutive times/);
+  assert.deepEqual(escalationMessages()[0].body.allowed_mentions, { parse: [] });
+
+  await runScheduled(fixture);
+  assert.equal(escalationMessages().length, 1, "continued failures in the same streak must not send duplicate escalations");
+  assert.equal(fixture.escalations.get(accountId + ":poll_failure_streak").notificationDelivered, 1);
+
+  fixture.dashboardThrowsFor.length = 0;
+  await runScheduled(fixture);
+  assert.equal(fixture.escalations.size, 0, "a recovered poll clears the active escalation marker");
+
+  fixture.dashboardThrowsFor.push(accountId);
+  await runScheduled(fixture);
+  await runScheduled(fixture);
+  await runScheduled(fixture);
+  assert.equal(escalationMessages().length, 2, "a later failure streak may trigger a new escalation");
+});
+
+console.log("PASS private alert delivery: severity and quiet-hours filtering, duplicate suppression, retry cap, transient recovery, poll-failure escalation, and DM-channel failures.");
