@@ -82,7 +82,7 @@ function makeFixture({
           if (sql.startsWith("INSERT INTO discord_alert_state")) {
             return { success: true, meta: { changes: 1 } };
           }
-          if (sql.startsWith("INSERT INTO discord_alert_deliveries") && sql.includes("'processing'")) {
+          if (sql.startsWith("INSERT INTO discord_alert_deliveries") && sql.includes("VALUES(?,?,'processing',1,?)")) {
             const [user, eventId, updatedAt, expiredBefore] = values;
             const key = deliveryKey(user, eventId);
             const prior = deliveries.get(key);
