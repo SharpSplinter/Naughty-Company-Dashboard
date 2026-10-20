@@ -57,6 +57,7 @@ function makeFixture({
   const dbRuns = [];
   const dbReads = [];
   const pollStates = new Map();
+  const pollEscalations = new Map();
   const deliveries = new Map(Object.entries(seededDeliveries).map(([eventId, row]) => [
     deliveryKey(accountId, eventId), structuredClone(row)
   ]));
@@ -81,6 +82,39 @@ function makeFixture({
         bind(...args) { values = args; return this; },
         async run() {
           dbRuns.push({ sql, values: [...values] });
+          if (sql.startsWith("INSERT INTO discord_alert_poll_escalations")) {
+            const [user, escalationKey, createdAt, lastAttemptAt, retryCutoff] = values;
+            const key = user + ":" + escalationKey;
+            const prior = pollEscalations.get(key);
+            if (!prior) {
+              pollEscalations.set(key, { createdAt, lastAttemptAt, notifiedAt: null, lastErrorCode: null });
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (!prior.notifiedAt && prior.lastAttemptAt < retryCutoff) {
+              pollEscalations.set(key, { ...prior, lastAttemptAt, lastErrorCode: null });
+              return { success: true, meta: { changes: 1 } };
+            }
+            return { success: true, meta: { changes: 0 } };
+          }
+          if (sql.startsWith("UPDATE discord_alert_poll_escalations SET notified_at=?")) {
+            const [notifiedAt, user, escalationKey] = values;
+            const key = user + ":" + escalationKey;
+            const prior = pollEscalations.get(key);
+            if (prior) pollEscalations.set(key, { ...prior, notifiedAt, lastErrorCode: null });
+            return { success: true, meta: { changes: prior ? 1 : 0 } };
+          }
+          if (sql.startsWith("UPDATE discord_alert_poll_escalations SET last_error_code=?")) {
+            const [lastErrorCode, user, escalationKey] = values;
+            const key = user + ":" + escalationKey;
+            const prior = pollEscalations.get(key);
+            if (prior) pollEscalations.set(key, { ...prior, lastErrorCode });
+            return { success: true, meta: { changes: prior ? 1 : 0 } };
+          }
+          if (sql.startsWith("DELETE FROM discord_alert_poll_escalations")) {
+            const [user, escalationKey] = values;
+            const changed = pollEscalations.delete(user + ":" + escalationKey);
+            return { success: true, meta: { changes: changed ? 1 : 0 } };
+          }
           if (sql.startsWith("INSERT INTO discord_alert_poll_state")) {
             const [user, startedAt, updatedAt] = values;
             const prior = pollStates.get(user) || { consecutiveFailures: 0 };
@@ -260,7 +294,7 @@ function makeFixture({
   };
 
   return {
-    env, dbRuns, dbReads, deliveries, pollStates, dashboardThrowsFor, discordRequests, dashboardRequests, pollHealthReports, discordFetch,
+    env, dbRuns, dbReads, deliveries, pollStates, pollEscalations, dashboardThrowsFor, discordRequests, dashboardRequests, pollHealthReports, discordFetch,
     get messageAttempts() { return messageAttempts; },
     get channelAttempts() { return channelAttempts; },
     set messageFailureCount(value) { messageFailureCount = value; }
@@ -476,6 +510,38 @@ test("repeated dashboard API failures persist account diagnostics and reset afte
   assert.equal(fixture.pollStates.get(accountId).lastStatus, "healthy");
   assert.equal(fixture.pollStates.get(accountId).consecutiveFailures, 0, "a healthy poll clears the consecutive failure counter");
   assert.equal(fixture.pollStates.get(accountId).lastErrorCode, null);
+});
+
+test("three consecutive poll failures emit one private operational DM per failure streak", async () => {
+  const fixture = makeFixture({ dashboardThrowsFor: [accountId] });
+
+  await runScheduled(fixture);
+  await runScheduled(fixture);
+  assert.equal(fixture.messageAttempts, 0, "the escalation threshold must not trigger before three failures");
+  await runScheduled(fixture);
+
+  assert.equal(fixture.messageAttempts, 1, "the third consecutive poll failure should produce one escalation DM");
+  const escalationMessage = fixture.discordRequests.find(request =>
+    request.url.pathname === "/api/v10/channels/dm-channel-test/messages" &&
+    String(request.body?.content || "").includes("operational alert")
+  );
+  assert.ok(escalationMessage, "an operational DM should be sent to the linked Discord account");
+  assert.match(escalationMessage.body.content, /3 consecutive scheduled runs/);
+  assert.equal(fixture.pollEscalations.get(accountId + ":poll_failures")?.notifiedAt != null, true);
+
+  await runScheduled(fixture);
+  assert.equal(fixture.messageAttempts, 1, "continuing failures must not spam the same active failure streak");
+
+  fixture.dashboardThrowsFor.length = 0;
+  await runScheduled(fixture);
+  assert.equal(fixture.pollEscalations.has(accountId + ":poll_failures"), false,
+    "a successful poll should clear the active escalation deduplication key");
+
+  fixture.dashboardThrowsFor.push(accountId);
+  await runScheduled(fixture);
+  await runScheduled(fixture);
+  await runScheduled(fixture);
+  assert.equal(fixture.messageAttempts, 2, "a later failure streak should be allowed to escalate again");
 });
 
 test("a DM failure exhausting its retry budget is persisted as an actionable delivery issue", async () => {
