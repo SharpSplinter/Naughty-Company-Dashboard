@@ -1807,6 +1807,15 @@ try {
     assert.match(workspaceSource, /ownerPlayerId/)
   })
 
+  await test("Discord poll monitoring runtime DDL contains complete CREATE TABLE statements", () => {
+    const source = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const statements = [...source.matchAll(/await db\.prepare\(`(CREATE TABLE IF NOT EXISTS discord_alert_poll_(?:health|history) \([\s\S]*?)`\)\.run\(\)/g)]
+    assert.equal(statements.length, 2, "both monitoring tables must be created idempotently at runtime")
+    for (const [, sql] of statements) {
+      assert.match(sql.trim(), /\)\s*$/, "each runtime table definition must close its SQL column list")
+    }
+  })
+
   console.log(`\n${passed} backend checks passed.`)
 } finally {
   rmSync(temp, { recursive: true, force: true })
