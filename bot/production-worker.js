@@ -50,17 +50,59 @@ async function beginAlertPoll(env, userId) {
     .bind(userId, now, now).run();
 }
 
-async function finishAlertPoll(env, userId, metrics, status = "healthy", errorCode = null) {
+async function reportDashboardAlertPoll(env, token, userId, metrics, status, errorCode, completedAt) {
+  if (!token) return;
+  try {
+    const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const [exhausted, stale] = await Promise.all([
+      env.BOT_DB.prepare("SELECT COUNT(*) AS count FROM discord_alert_deliveries WHERE discord_user_id=? AND status='failed' AND attempts>=3").bind(userId).first(),
+      env.BOT_DB.prepare("SELECT COUNT(*) AS count FROM discord_alert_deliveries WHERE discord_user_id=? AND status='processing' AND updated_at<?").bind(userId, cutoff).first()
+    ]);
+    const response = await dashboardFetch(env, "/api/me/discord-alert-poll-health", {
+      method: "POST",
+      headers: { authorization: "Bearer " + token, accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({
+        discordUserId: userId,
+        startedAt: metrics.startedAt,
+        completedAt,
+        status,
+        errorCode,
+        pages: metrics.pages,
+        eventsSeen: metrics.eventsSeen,
+        delivered: metrics.delivered,
+        filtered: metrics.filtered,
+        failed: metrics.failed,
+        exhausted: metrics.exhausted,
+        staleRecovered: metrics.staleRecovered,
+        exhaustedDeliveries: Number(exhausted?.count || 0),
+        staleClaims: Number(stale?.count || 0)
+      }),
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!response.ok) {
+      console.warn("[alert-poll] dashboard health report rejected", JSON.stringify({ discordUserId: userId, status: response.status }));
+    }
+  } catch (error) {
+    console.warn("[alert-poll] dashboard health report unavailable", JSON.stringify({
+      discordUserId: userId,
+      errorCode: alertPollErrorCode(error)
+    }));
+  }
+}
+
+async function finishAlertPoll(env, userId, token, metrics, status = "healthy", errorCode = null) {
   const now = new Date().toISOString();
   await env.BOT_DB.prepare("UPDATE discord_alert_poll_state SET last_completed_at=?,last_success_at=CASE WHEN ? IN ('healthy','partial','quiet_hours','disabled','unlinked','initialized') THEN ? ELSE last_success_at END,last_status=?,last_error_code=?,last_error_at=CASE WHEN ? IS NULL THEN NULL ELSE ? END,consecutive_failures=0,last_page_count=?,last_events_seen=?,last_delivered=?,last_filtered=?,last_failed=?,last_exhausted=?,last_stale_recovered=?,updated_at=? WHERE discord_user_id=?")
     .bind(now, status, now, status, errorCode, errorCode, now, metrics.pages, metrics.eventsSeen, metrics.delivered, metrics.filtered, metrics.failed, metrics.exhausted, metrics.staleRecovered, now, userId).run();
+  await reportDashboardAlertPoll(env, token, userId, metrics, status, errorCode, now);
 }
 
-async function failAlertPoll(env, userId, metrics, errorCode) {
+async function failAlertPoll(env, userId, token, metrics, errorCode) {
   const now = new Date().toISOString();
   await env.BOT_DB.prepare("UPDATE discord_alert_poll_state SET last_completed_at=?,last_status='error',last_error_code=?,last_error_at=?,consecutive_failures=consecutive_failures+1,last_page_count=?,last_events_seen=?,last_delivered=?,last_filtered=?,last_failed=?,last_exhausted=?,last_stale_recovered=?,updated_at=? WHERE discord_user_id=?")
     .bind(now, errorCode, now, metrics.pages, metrics.eventsSeen, metrics.delivered, metrics.filtered, metrics.failed, metrics.exhausted, metrics.staleRecovered, now, userId).run();
   console.warn("[alert-poll] account poll failed", JSON.stringify({ discordUserId: userId, errorCode, consecutiveFailures: "incremented" }));
+  await reportDashboardAlertPoll(env, token, userId, metrics, "error", errorCode, now);
 }
 
 function alertPollErrorCode(error) {
@@ -89,16 +131,17 @@ async function pollPrivateAlerts(env) {
   await ensureBotSchema(env);
   const rows = await env.BOT_DB.prepare("SELECT discord_user_id AS discordUserId, encrypted_session_token AS cipher, token_iv AS iv FROM discord_links").all();
   for (const link of rows.results || []) {
-    const metrics = { pages: 0, eventsSeen: 0, delivered: 0, filtered: 0, failed: 0, exhausted: 0, staleRecovered: 0 };
+    const metrics = { startedAt: new Date().toISOString(), pages: 0, eventsSeen: 0, delivered: 0, filtered: 0, failed: 0, exhausted: 0, staleRecovered: 0 };
+    let token = null;
     try {
       await beginAlertPoll(env, link.discordUserId);
-      const token = await unseal(link.cipher, link.iv, env);
+      token = await unseal(link.cipher, link.iv, env);
       const headers = { authorization: "Bearer " + token, accept: "application/json" };
       const linkResponse = await dashboardFetch(env, "/api/me/discord-link", { headers, signal: AbortSignal.timeout(8000) });
       if (!linkResponse.ok) throw pollHttpError("dashboard_discord_link", linkResponse);
       const linkStatus = await linkResponse.json();
       if (!linkStatus.linked || !linkStatus.alertsEnabled) {
-        await finishAlertPoll(env, link.discordUserId, metrics, "disabled");
+        await finishAlertPoll(env, link.discordUserId, token, metrics, "disabled");
         continue;
       }
       const prefsResponse = await dashboardFetch(env, "/api/me/automation-preferences", { headers, signal: AbortSignal.timeout(8000) });
@@ -106,14 +149,14 @@ async function pollPrivateAlerts(env) {
       const prefsPayload = await prefsResponse.json();
       const preferences = prefsPayload && typeof prefsPayload.preferences === "object" ? prefsPayload.preferences : {};
       if (isDuringQuietHours(preferences)) {
-        await finishAlertPoll(env, link.discordUserId, metrics, "quiet_hours");
+        await finishAlertPoll(env, link.discordUserId, token, metrics, "quiet_hours");
         continue;
       }
       const minimumSeverity = severityRank(preferences.minimumSeverity || "info");
       const state = await env.BOT_DB.prepare("SELECT linked_at AS linkedAt FROM discord_alert_state WHERE discord_user_id=?").bind(link.discordUserId).first();
       if (!state) {
         await env.BOT_DB.prepare("INSERT INTO discord_alert_state(discord_user_id,linked_at) VALUES(?,?)").bind(link.discordUserId, new Date().toISOString()).run();
-        await finishAlertPoll(env, link.discordUserId, metrics, "initialized");
+        await finishAlertPoll(env, link.discordUserId, token, metrics, "initialized");
         continue;
       }
 
@@ -183,10 +226,10 @@ async function pollPrivateAlerts(env) {
         cursorEventId = last.eventId;
       }
       const status = metrics.failed || metrics.exhausted ? "partial" : "healthy";
-      await finishAlertPoll(env, link.discordUserId, metrics, status, status === "partial" ? "discord_dm_delivery_failed" : null);
+      await finishAlertPoll(env, link.discordUserId, token, metrics, status, status === "partial" ? "discord_dm_delivery_failed" : null);
     } catch (error) {
       const errorCode = alertPollErrorCode(error);
-      try { await failAlertPoll(env, link.discordUserId, metrics, errorCode); } catch {
+      try { await failAlertPoll(env, link.discordUserId, token, metrics, errorCode); } catch {
         console.error("[alert-poll] unable to persist poll failure", JSON.stringify({ discordUserId: link.discordUserId, errorCode }));
       }
     }
