@@ -89,6 +89,7 @@ jobs:
         run: |
           node --check bot/alert-delivery.mjs
           node --check bot/test-alert-delivery.mjs
+          node --check bot/commands/automation.mjs
       - name: Validate command registration script
         run: node --check bot/register-commands.mjs
       - name: Validate command registration API tests
@@ -138,6 +139,7 @@ jobs:
           test -f bot/migrations/0001_bot_schema.sql
           grep -Fq 'CREATE TABLE IF NOT EXISTS discord_links' bot/migrations/0001_bot_schema.sql
           grep -Fq 'CREATE TABLE IF NOT EXISTS alert_preferences' bot/migrations/0001_bot_schema.sql
+          grep -Fq 'CREATE TABLE IF NOT EXISTS discord_alert_poll_state' bot/migrations/0001_bot_schema.sql
           grep -Fq 'naughty-company-bot.kboone801.workers.dev' bot/configure-production-endpoint.mjs
           grep -Fq '/health' bot/check-production-health.mjs
           grep -Fq 'sub("global"' bot/commands/company.mjs

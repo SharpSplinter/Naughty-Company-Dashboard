@@ -56,6 +56,7 @@ function makeFixture({
 } = {}) {
   const dbRuns = [];
   const dbReads = [];
+  const pollStates = new Map();
   const deliveries = new Map(Object.entries(seededDeliveries).map(([eventId, row]) => [
     deliveryKey(accountId, eventId), structuredClone(row)
   ]));
@@ -79,6 +80,39 @@ function makeFixture({
         bind(...args) { values = args; return this; },
         async run() {
           dbRuns.push({ sql, values: [...values] });
+          if (sql.startsWith("INSERT INTO discord_alert_poll_state")) {
+            const [user, startedAt, updatedAt] = values;
+            const prior = pollStates.get(user) || { consecutiveFailures: 0 };
+            pollStates.set(user, {
+              ...prior, lastStartedAt: startedAt, lastStatus: "running", updatedAt,
+              lastPageCount: 0, lastEventsSeen: 0, lastDelivered: 0, lastFiltered: 0,
+              lastFailed: 0, lastExhausted: 0, lastStaleRecovered: 0
+            });
+            return { success: true, meta: { changes: 1 } };
+          }
+          if (sql.startsWith("UPDATE discord_alert_poll_state SET last_completed_at=?")) {
+            if (sql.includes("last_status='error'")) {
+              const [completedAt, errorCode, errorAt, pages, eventsSeen, delivered, filtered, failed, exhausted, staleRecovered, updatedAt, user] = values;
+              const prior = pollStates.get(user) || { consecutiveFailures: 0 };
+              pollStates.set(user, {
+                ...prior, lastCompletedAt: completedAt, lastStatus: "error", lastErrorCode: errorCode,
+                lastErrorAt: errorAt, consecutiveFailures: Number(prior.consecutiveFailures || 0) + 1,
+                lastPageCount: pages, lastEventsSeen: eventsSeen, lastDelivered: delivered, lastFiltered: filtered,
+                lastFailed: failed, lastExhausted: exhausted, lastStaleRecovered: staleRecovered, updatedAt
+              });
+            } else {
+              const [completedAt, successStatus, successAt, status, errorCode, errorAtCheck, errorAt, pages, eventsSeen, delivered, filtered, failed, exhausted, staleRecovered, updatedAt, user] = values;
+              const prior = pollStates.get(user) || { consecutiveFailures: 0 };
+              pollStates.set(user, {
+                ...prior, lastCompletedAt: completedAt,
+                lastSuccessAt: ["healthy","partial","quiet_hours","disabled","unlinked","initialized"].includes(successStatus) ? successAt : prior.lastSuccessAt,
+                lastStatus: status, lastErrorCode: errorCode, lastErrorAt: errorAtCheck === null ? null : errorAt,
+                consecutiveFailures: 0, lastPageCount: pages, lastEventsSeen: eventsSeen, lastDelivered: delivered,
+                lastFiltered: filtered, lastFailed: failed, lastExhausted: exhausted, lastStaleRecovered: staleRecovered, updatedAt
+              });
+            }
+            return { success: true, meta: { changes: 1 } };
+          }
           if (sql.startsWith("INSERT INTO discord_alert_state")) {
             return { success: true, meta: { changes: 1 } };
           }
@@ -106,6 +140,17 @@ function makeFixture({
             }
             return { success: true, meta: { changes: 0 } };
           }
+          if (sql.startsWith("UPDATE discord_alert_deliveries SET status='failed',updated_at=?")) {
+            const [updatedAt, user, cutoff] = values;
+            let changes = 0;
+            for (const [key, prior] of deliveries.entries()) {
+              if (key.startsWith(user + ":") && prior.status === "processing" && Number(prior.attempts) >= 3 && prior.updatedAt < cutoff) {
+                deliveries.set(key, { ...prior, status: "failed", updatedAt });
+                changes += 1;
+              }
+            }
+            return { success: true, meta: { changes } };
+          }
           if (sql.startsWith("UPDATE discord_alert_deliveries SET status=?")) {
             const [status, updatedAt, user, eventId, attempts] = values;
             const key = deliveryKey(user, eventId);
@@ -119,12 +164,18 @@ function makeFixture({
         async first() {
           dbReads.push({ sql, values: [...values] });
           if (sql.includes("SELECT linked_at AS linkedAt")) return { linkedAt };
+          if (sql.includes("FROM discord_alert_poll_state")) return pollStates.get(values[0]) || null;
           if (sql.includes("SELECT status,attempts FROM discord_alert_deliveries")) {
             return deliveries.get(deliveryKey(values[0], values[1])) || null;
           }
           return null;
         },
         async all() {
+          if (sql.includes("FROM discord_alert_deliveries WHERE discord_user_id=?")) {
+            return { results: [...deliveries.entries()].filter(([key]) => key.startsWith(values[0] + ":")).map(([key, row]) => ({
+              eventId: key.slice(values[0].length + 1), status: row.status, attempts: row.attempts, updatedAt: row.updatedAt
+            })).filter(row => row.status === "failed" || row.status === "processing").sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0,10) };
+          }
           if (sql.includes("FROM discord_links")) {
             linkRows = linkRows || await linkRowPromise;
             return { results: linkRows.map(({ account, row }) => ({
@@ -147,7 +198,7 @@ function makeFixture({
       const token = String(request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
       const account = linkedAccounts.find(item => (item.sessionToken || sessionToken) === token) || linkedAccounts[0];
       const userId = account?.discordUserId || accountId;
-      if (dashboardThrowsFor.includes(userId)) throw new Error("simulated account-specific dashboard API failure");
+      if (dashboardThrowsFor.includes(userId)) return jsonResponse({ error: "simulated account-specific dashboard API failure" }, 503);
       if (url.pathname === "/api/me/discord-link") return jsonResponse({ linked: true, alertsEnabled: true });
       if (url.pathname === "/api/me/automation-preferences") {
         return jsonResponse({ preferences: { quietHoursEnabled: false, ...preferences, ...(preferencesByAccount[userId] || {}) } });
@@ -197,7 +248,7 @@ function makeFixture({
   };
 
   return {
-    env, dbRuns, dbReads, deliveries, discordRequests, dashboardRequests, discordFetch,
+    env, dbRuns, dbReads, deliveries, pollStates, dashboardThrowsFor, discordRequests, dashboardRequests, discordFetch,
     get messageAttempts() { return messageAttempts; },
     get channelAttempts() { return channelAttempts; },
     set messageFailureCount(value) { messageFailureCount = value; }
@@ -394,6 +445,56 @@ test("overlapping scheduled polls atomically claim an event and send only one DM
   assert.equal(fixture.messageAttempts, 1, "only the poll that atomically claimed the event should send");
   assert.equal(fixture.deliveries.get(deliveryKey(accountId, event.eventId)).status, "delivered");
   assert.equal(fixture.deliveries.get(deliveryKey(accountId, event.eventId)).attempts, 1);
+});
+
+test("repeated dashboard API failures persist account diagnostics and reset after recovery", async () => {
+  const brokenUser = accountId;
+  const fixture = makeFixture({ dashboardThrowsFor: [brokenUser] });
+
+  await runScheduled(fixture);
+  assert.equal(fixture.pollStates.get(accountId).lastStatus, "error");
+  assert.equal(fixture.pollStates.get(accountId).lastErrorCode, "dashboard_discord_link_http_503");
+  assert.equal(fixture.pollStates.get(accountId).consecutiveFailures, 1);
+
+  await runScheduled(fixture);
+  assert.equal(fixture.pollStates.get(accountId).consecutiveFailures, 2, "consecutive API failures should accumulate");
+
+  fixture.dashboardThrowsFor.length = 0;
+  await runScheduled(fixture);
+  assert.equal(fixture.pollStates.get(accountId).lastStatus, "healthy");
+  assert.equal(fixture.pollStates.get(accountId).consecutiveFailures, 0, "a healthy poll clears the consecutive failure counter");
+  assert.equal(fixture.pollStates.get(accountId).lastErrorCode, null);
+});
+
+test("a DM failure exhausting its retry budget is persisted as an actionable delivery issue", async () => {
+  const event = alertEvent("99999999-9999-4999-8999-999999999999");
+  const fixture = makeFixture({ events: [event], messageFailureCount: 99 });
+
+  await runScheduled(fixture);
+  await runScheduled(fixture);
+  await runScheduled(fixture);
+
+  assert.equal(fixture.pollStates.get(accountId).lastStatus, "partial");
+  assert.equal(fixture.pollStates.get(accountId).lastErrorCode, "discord_dm_delivery_failed");
+  assert.equal(fixture.pollStates.get(accountId).lastFailed, 1);
+  assert.equal(fixture.pollStates.get(accountId).lastExhausted, 1);
+  assert.equal(fixture.deliveries.get(deliveryKey(accountId, event.eventId)).attempts, 3);
+});
+
+test("an exhausted stale processing claim is converted to a retryable failed row", async () => {
+  const event = alertEvent("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+  const fixture = makeFixture({
+    events: [event],
+    seededDeliveries: {
+      [event.eventId]: { status: "processing", attempts: 3, updatedAt: "2026-10-01T00:00:00.000Z" }
+    }
+  });
+
+  await runScheduled(fixture);
+  assert.equal(fixture.deliveries.get(deliveryKey(accountId, event.eventId)).status, "failed");
+  assert.equal(fixture.deliveries.get(deliveryKey(accountId, event.eventId)).attempts, 3,
+    "stale recovery must preserve the attempt budget until an explicit manual retry");
+  assert.equal(fixture.pollStates.get(accountId).lastStaleRecovered, 1);
 });
 
 console.log("PASS private alert delivery: severity and quiet-hours filtering, duplicate suppression, retry cap, transient recovery, and DM-channel failures.");

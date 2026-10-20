@@ -27,6 +27,7 @@ async function ensureBotSchema(env) {
   await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS alert_deliveries (delivery_key TEXT PRIMARY KEY, discord_user_id TEXT NOT NULL, delivered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
   await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_alert_state (discord_user_id TEXT PRIMARY KEY, linked_at TEXT NOT NULL)").run();
   await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_alert_deliveries (discord_user_id TEXT NOT NULL, event_id TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY(discord_user_id,event_id))").run();
+  await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_alert_poll_state (discord_user_id TEXT PRIMARY KEY, last_started_at TEXT, last_completed_at TEXT, last_success_at TEXT, last_status TEXT NOT NULL DEFAULT 'unknown', last_error_code TEXT, last_error_at TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_page_count INTEGER NOT NULL DEFAULT 0, last_events_seen INTEGER NOT NULL DEFAULT 0, last_delivered INTEGER NOT NULL DEFAULT 0, last_filtered INTEGER NOT NULL DEFAULT 0, last_failed INTEGER NOT NULL DEFAULT 0, last_exhausted INTEGER NOT NULL DEFAULT 0, last_stale_recovered INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)").run();
 }
 async function storeBotLink(user, playerId, token, env) {
   const sealed = await seal(token, env), now = new Date().toISOString();
@@ -43,42 +44,93 @@ async function sendPrivateDiscordMessage(env, userId, content) {
   const messageResponse = await fetch("https://discord.com/api/v10/channels/" + encodeURIComponent(channel.id) + "/messages", { method: "POST", headers, body: JSON.stringify({ content: String(content).slice(0, 1900), allowed_mentions: { parse: [] } }) });
   return messageResponse.ok;
 }
+async function beginAlertPoll(env, userId) {
+  const now = new Date().toISOString();
+  await env.BOT_DB.prepare("INSERT INTO discord_alert_poll_state(discord_user_id,last_started_at,last_status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(discord_user_id) DO UPDATE SET last_started_at=excluded.last_started_at,last_status='running',last_page_count=0,last_events_seen=0,last_delivered=0,last_filtered=0,last_failed=0,last_exhausted=0,last_stale_recovered=0,updated_at=excluded.updated_at")
+    .bind(userId, now, now).run();
+}
+
+async function finishAlertPoll(env, userId, metrics, status = "healthy", errorCode = null) {
+  const now = new Date().toISOString();
+  await env.BOT_DB.prepare("UPDATE discord_alert_poll_state SET last_completed_at=?,last_success_at=CASE WHEN ? IN ('healthy','partial','quiet_hours','disabled','unlinked','initialized') THEN ? ELSE last_success_at END,last_status=?,last_error_code=?,last_error_at=CASE WHEN ? IS NULL THEN NULL ELSE ? END,consecutive_failures=0,last_page_count=?,last_events_seen=?,last_delivered=?,last_filtered=?,last_failed=?,last_exhausted=?,last_stale_recovered=?,updated_at=? WHERE discord_user_id=?")
+    .bind(now, status, now, status, errorCode, errorCode, now, metrics.pages, metrics.eventsSeen, metrics.delivered, metrics.filtered, metrics.failed, metrics.exhausted, metrics.staleRecovered, now, userId).run();
+}
+
+async function failAlertPoll(env, userId, metrics, errorCode) {
+  const now = new Date().toISOString();
+  await env.BOT_DB.prepare("UPDATE discord_alert_poll_state SET last_completed_at=?,last_status='error',last_error_code=?,last_error_at=?,consecutive_failures=consecutive_failures+1,last_page_count=?,last_events_seen=?,last_delivered=?,last_filtered=?,last_failed=?,last_exhausted=?,last_stale_recovered=?,updated_at=? WHERE discord_user_id=?")
+    .bind(now, errorCode, now, metrics.pages, metrics.eventsSeen, metrics.delivered, metrics.filtered, metrics.failed, metrics.exhausted, metrics.staleRecovered, now, userId).run();
+  console.warn("[alert-poll] account poll failed", JSON.stringify({ discordUserId: userId, errorCode, consecutiveFailures: "incremented" }));
+}
+
+function alertPollErrorCode(error) {
+  const code = typeof error?.code === "string" ? error.code : "";
+  if (/^[a-z0-9_]+(?:_http_[1-5][0-9]{2})?$/.test(code)) return code.slice(0, 80);
+  if (error?.name === "TimeoutError" || error?.name === "AbortError") return "dashboard_request_timeout";
+  return "alert_poll_failed";
+}
+
+function pollHttpError(stage, response) {
+  return Object.assign(new Error(stage + "_http_" + response.status), { code: stage + "_http_" + response.status });
+}
+
+async function reconcileExhaustedStaleClaims(env, userId) {
+  const now = new Date().toISOString();
+  const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const result = await env.BOT_DB.prepare("UPDATE discord_alert_deliveries SET status='failed',updated_at=? WHERE discord_user_id=? AND status='processing' AND attempts>=3 AND updated_at<?")
+    .bind(now, userId, cutoff).run();
+  const changed = Number(result?.meta?.changes || 0);
+  if (changed) console.warn("[alert-poll] stale delivery claims exhausted", JSON.stringify({ discordUserId: userId, count: changed }));
+  return changed;
+}
+
 async function pollPrivateAlerts(env) {
   if (!env.BOT_DB || !env.BOT_ENCRYPTION_KEY || !env.DISCORD_TOKEN || !env.DASHBOARD_API) return;
   await ensureBotSchema(env);
   const rows = await env.BOT_DB.prepare("SELECT discord_user_id AS discordUserId, encrypted_session_token AS cipher, token_iv AS iv FROM discord_links").all();
   for (const link of rows.results || []) {
+    const metrics = { pages: 0, eventsSeen: 0, delivered: 0, filtered: 0, failed: 0, exhausted: 0, staleRecovered: 0 };
     try {
+      await beginAlertPoll(env, link.discordUserId);
       const token = await unseal(link.cipher, link.iv, env);
       const headers = { authorization: "Bearer " + token, accept: "application/json" };
       const linkResponse = await dashboardFetch(env, "/api/me/discord-link", { headers, signal: AbortSignal.timeout(8000) });
-      if (!linkResponse.ok) continue;
+      if (!linkResponse.ok) throw pollHttpError("dashboard_discord_link", linkResponse);
       const linkStatus = await linkResponse.json();
-      if (!linkStatus.linked || !linkStatus.alertsEnabled) continue;
+      if (!linkStatus.linked || !linkStatus.alertsEnabled) {
+        await finishAlertPoll(env, link.discordUserId, metrics, "disabled");
+        continue;
+      }
       const prefsResponse = await dashboardFetch(env, "/api/me/automation-preferences", { headers, signal: AbortSignal.timeout(8000) });
-      if (!prefsResponse.ok) continue;
+      if (!prefsResponse.ok) throw pollHttpError("dashboard_preferences", prefsResponse);
       const prefsPayload = await prefsResponse.json();
       const preferences = prefsPayload && typeof prefsPayload.preferences === "object" ? prefsPayload.preferences : {};
-      if (isDuringQuietHours(preferences)) continue;
+      if (isDuringQuietHours(preferences)) {
+        await finishAlertPoll(env, link.discordUserId, metrics, "quiet_hours");
+        continue;
+      }
       const minimumSeverity = severityRank(preferences.minimumSeverity || "info");
       const state = await env.BOT_DB.prepare("SELECT linked_at AS linkedAt FROM discord_alert_state WHERE discord_user_id=?").bind(link.discordUserId).first();
       if (!state) {
         await env.BOT_DB.prepare("INSERT INTO discord_alert_state(discord_user_id,linked_at) VALUES(?,?)").bind(link.discordUserId, new Date().toISOString()).run();
+        await finishAlertPoll(env, link.discordUserId, metrics, "initialized");
         continue;
       }
 
-      // The dashboard alert API cursor is stable on (createdAt, eventId), so
-      // every page can be read oldest-first without an offset that shifts as new
-      // alerts arrive. Per-account failures are isolated by this link's catch.
+      metrics.staleRecovered = await reconcileExhaustedStaleClaims(env, link.discordUserId);
+      // Read cursor pages oldest-first. Every non-success API response is now
+      // persisted as a poll error instead of silently terminating this account.
       let cursorAt = state.linkedAt;
       let cursorEventId = "";
       while (true) {
         const query = new URLSearchParams({ limit: "100", after: cursorAt });
         if (cursorEventId) query.set("afterEventId", cursorEventId);
         const response = await dashboardFetch(env, "/api/me/alerts?" + query.toString(), { headers, signal: AbortSignal.timeout(8000) });
-        if (!response.ok) break;
+        if (!response.ok) throw pollHttpError("dashboard_alerts", response);
         const data = await response.json();
         const events = Array.isArray(data.events) ? data.events : [];
+        metrics.pages += 1;
+        metrics.eventsSeen += events.length;
         if (!events.length) break;
         const pending = events
           .filter(event => typeof event.eventId === "string" && typeof event.createdAt === "string" && event.createdAt > state.linkedAt)
@@ -86,17 +138,12 @@ async function pollPrivateAlerts(env) {
 
         for (const event of pending) {
           if (severityRank(event.severity) < minimumSeverity) {
-            // A filtered event is terminal, but must not overwrite a delivered
-            // or currently claimed event from an overlapping scheduled poll.
-            await env.BOT_DB.prepare("INSERT INTO discord_alert_deliveries(discord_user_id,event_id,status,attempts,updated_at) VALUES(?,?,'filtered',0,?) ON CONFLICT(discord_user_id,event_id) DO UPDATE SET status='filtered',attempts=0,updated_at=excluded.updated_at WHERE discord_alert_deliveries.status NOT IN ('delivered','processing')")
+            const filtered = await env.BOT_DB.prepare("INSERT INTO discord_alert_deliveries(discord_user_id,event_id,status,attempts,updated_at) VALUES(?,?,'filtered',0,?) ON CONFLICT(discord_user_id,event_id) DO UPDATE SET status='filtered',attempts=0,updated_at=excluded.updated_at WHERE discord_alert_deliveries.status NOT IN ('delivered','processing')")
               .bind(link.discordUserId, event.eventId, new Date().toISOString()).run();
+            if (Number(filtered?.meta?.changes || 0) === 1) metrics.filtered += 1;
             continue;
           }
 
-          // Claim delivery atomically before calling Discord. This prevents two
-          // scheduled executions from both observing an absent/failed row and
-          // sending the same private alert. Stale claims are recoverable after
-          // five minutes; each claim consumes one of the three total attempts.
           const claimedAt = new Date().toISOString();
           const expiredBefore = new Date(Date.now() - 5 * 60 * 1000).toISOString();
           const claim = await env.BOT_DB.prepare("INSERT INTO discord_alert_deliveries(discord_user_id,event_id,status,attempts,updated_at) VALUES(?,?,'processing',1,?) ON CONFLICT(discord_user_id,event_id) DO UPDATE SET status='processing',attempts=discord_alert_deliveries.attempts+1,updated_at=excluded.updated_at WHERE discord_alert_deliveries.status NOT IN ('delivered','filtered') AND discord_alert_deliveries.attempts < 3 AND (discord_alert_deliveries.status <> 'processing' OR discord_alert_deliveries.updated_at < ?)")
@@ -116,6 +163,16 @@ async function pollPrivateAlerts(env) {
           const status = delivered ? "delivered" : "failed";
           await env.BOT_DB.prepare("UPDATE discord_alert_deliveries SET status=?,updated_at=? WHERE discord_user_id=? AND event_id=? AND status='processing' AND attempts=?")
             .bind(status, new Date().toISOString(), link.discordUserId, event.eventId, attempts).run();
+          if (delivered) {
+            metrics.delivered += 1;
+          } else {
+            metrics.failed += 1;
+            console.warn("[alert-poll] private DM delivery failed", JSON.stringify({ discordUserId: link.discordUserId, eventId: event.eventId, attempt: attempts }));
+            if (attempts >= 3) {
+              metrics.exhausted += 1;
+              console.error("[alert-poll] delivery retries exhausted", JSON.stringify({ discordUserId: link.discordUserId, eventId: event.eventId, attempts }));
+            }
+          }
         }
 
         if (events.length < 100) break;
@@ -125,7 +182,14 @@ async function pollPrivateAlerts(env) {
         cursorAt = last.createdAt;
         cursorEventId = last.eventId;
       }
-    } catch {}
+      const status = metrics.failed || metrics.exhausted ? "partial" : "healthy";
+      await finishAlertPoll(env, link.discordUserId, metrics, status, status === "partial" ? "discord_dm_delivery_failed" : null);
+    } catch (error) {
+      const errorCode = alertPollErrorCode(error);
+      try { await failAlertPoll(env, link.discordUserId, metrics, errorCode); } catch {
+        console.error("[alert-poll] unable to persist poll failure", JSON.stringify({ discordUserId: link.discordUserId, errorCode }));
+      }
+    }
   }
 }
 
@@ -225,6 +289,18 @@ async function replyFor(i, env) {
         return { type: 8, data: { choices } };
       }
       if (name !== "automation") return { type: 8, data: { choices: [] } };
+      if (route.group === "notifications" && route.subcommand === "retry" && focused.name === "event") {
+        const rows = await env.BOT_DB.prepare("SELECT event_id AS eventId, attempts, updated_at AS updatedAt FROM discord_alert_deliveries WHERE discord_user_id=? AND status='failed' AND attempts>=3 ORDER BY updated_at DESC LIMIT 25").bind(user).all();
+        const choices = (rows.results || []).filter(row => typeof row.eventId === "string" && /^[a-f0-9-]{36}$/i.test(row.eventId))
+          .map(row => ({
+            name: ("Exhausted · " + Number(row.attempts || 0) + " attempts · " + safeText(row.updatedAt || "time unavailable", 28)).slice(0, 100),
+            value: row.eventId,
+            searchable: String(row.eventId) + " " + String(row.updatedAt || "")
+          }))
+          .filter(choice => !query || choice.searchable.toLocaleLowerCase().includes(query) || choice.name.toLocaleLowerCase().includes(query))
+          .slice(0, 25).map(({ name, value }) => ({ name, value }));
+        return { type: 8, data: { choices } };
+      }
       if (route.group === "webhook" && route.subcommand === "retry" && focused.name === "delivery") {
         const response = await dashboardFetch(env, "/api/me/automation-webhook/deliveries?limit=50", { headers, signal: AbortSignal.timeout(1200) });
         if (!response.ok) return { type: 8, data: { choices: [] } };
@@ -957,8 +1033,8 @@ async function replyFor(i, env) {
     const route = commandOptions(i);
     const groupName = route.group;
     const subcommand = route.subcommand;
-    if (groupName === "notifications" && subcommand !== "status") {
-      return privateReply("Choose /automation notifications status.");
+    if (groupName === "notifications" && !["status", "deliveries", "retry"].includes(subcommand)) {
+      return privateReply("Choose /automation notifications status, deliveries, or retry.");
     }
     if (groupName === "webhook" && !["status", "deliveries", "retry", "delete"].includes(subcommand)) {
       return privateReply("Choose /automation webhook status, deliveries, retry, or delete.");
@@ -981,21 +1057,65 @@ async function replyFor(i, env) {
         return { response, preferences: data && typeof data.preferences === "object" ? data.preferences : {} };
       };
       if (groupName === "notifications") {
-        if (subcommand !== "status") {
-          return privateReply("Alert rules and notification preferences are managed in the dashboard. Use /automation notifications status to inspect current preferences.");
+        if (subcommand === "status") {
+          const { response, preferences: prefs } = await getPreferences();
+          if (!response.ok) return privateReply(await apiError(response));
+          const webhookRes = await dashboardFetch(env, "/api/me/automation-webhook", { headers, signal: AbortSignal.timeout(8000) });
+          const webhook = webhookRes.ok ? await webhookRes.json() : {};
+          await reconcileExhaustedStaleClaims(env, user);
+          const poll = await env.BOT_DB.prepare("SELECT last_started_at AS lastStartedAt,last_completed_at AS lastCompletedAt,last_success_at AS lastSuccessAt,last_status AS lastStatus,last_error_code AS lastErrorCode,last_error_at AS lastErrorAt,consecutive_failures AS consecutiveFailures,last_page_count AS lastPageCount,last_events_seen AS lastEventsSeen,last_delivered AS lastDelivered,last_filtered AS lastFiltered,last_failed AS lastFailed,last_exhausted AS lastExhausted,last_stale_recovered AS lastStaleRecovered FROM discord_alert_poll_state WHERE discord_user_id=?").bind(user).first();
+          const exhausted = await env.BOT_DB.prepare("SELECT COUNT(*) AS count FROM discord_alert_deliveries WHERE discord_user_id=? AND status='failed' AND attempts>=3").bind(user).first();
+          const staleCutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+          const stale = await env.BOT_DB.prepare("SELECT COUNT(*) AS count FROM discord_alert_deliveries WHERE discord_user_id=? AND status='processing' AND updated_at<?").bind(user, staleCutoff).first();
+          const quiet = prefs.quietHoursEnabled === true || Number(prefs.quietHoursEnabled) === 1;
+          const lines = [
+            "Minimum severity: **" + String(prefs.minimumSeverity || "info") + "**",
+            "Quiet hours: **" + (quiet ? "on" : "off") + "** · " + String(prefs.quietHoursStart || "22:00") + "–" + String(prefs.quietHoursEnd || "08:00") + " · " + String(prefs.timezone || "UTC"),
+            "External webhook: **" + (webhook.configured ? "configured" : "not configured") + "**",
+            "External webhook digest mode: **" + String(prefs.digestMode || "instant") + "**"
+          ];
+          if (poll) {
+            const inProgress = poll.lastStatus === "running" && Date.parse(poll.lastStartedAt || "") > Date.parse(poll.lastCompletedAt || "1970-01-01T00:00:00.000Z");
+            const looksStale = inProgress && Number.isFinite(Date.parse(poll.lastStartedAt || "")) && Date.now() - Date.parse(poll.lastStartedAt) > 10 * 60 * 1000;
+            const shownStatus = looksStale ? "interrupted / stale" : String(poll.lastStatus || "unknown");
+            lines.push("Private alert poll: **" + shownStatus + "**");
+            lines.push("Last completed: **" + String(poll.lastCompletedAt || "not yet") + "** · Last successful: **" + String(poll.lastSuccessAt || "not yet") + "**");
+            lines.push("Last poll coverage: " + Number(poll.lastEventsSeen || 0) + " event(s) across " + Number(poll.lastPageCount || 0) + " page(s) · " + Number(poll.lastDelivered || 0) + " DM(s) sent · " + Number(poll.lastFiltered || 0) + " filtered · " + Number(poll.lastFailed || 0) + " failed");
+            if (Number(poll.consecutiveFailures || 0) > 0) lines.push("Consecutive poll failures: **" + Number(poll.consecutiveFailures) + "**");
+            if (poll.lastErrorCode) lines.push("Last error: **" + safeText(poll.lastErrorCode, 80) + "** · " + String(poll.lastErrorAt || "time unavailable"));
+            if (Number(poll.lastStaleRecovered || 0) > 0) lines.push("Recovered exhausted stale claims last poll: **" + Number(poll.lastStaleRecovered) + "**");
+          } else {
+            lines.push("Private alert poll: **no poll recorded yet**");
+          }
+          lines.push("Exhausted deliveries needing manual retry: **" + Number(exhausted?.count || 0) + "** · Stale claims: **" + Number(stale?.count || 0) + "**");
+          if (Number(exhausted?.count || 0) > 0) lines.push("Use /automation notifications deliveries, then /automation notifications retry to requeue a failed alert.");
+          if (Number(poll?.consecutiveFailures || 0) >= 3) lines.push("⚠️ Repeated API/poll failures detected. Check the error code above and reconnect with /link if your dashboard session expired.");
+          return chunkedPrivateReply("**Your automation notification preferences and private-DM status**", lines.concat("Edit alert rules and notification preferences in the dashboard. Manage private Discord DM enablement under /company alerts, delivery issues under /automation notifications deliveries, and exhausted retries under /automation notifications retry."));
         }
-        const { response, preferences: prefs } = await getPreferences();
-        if (!response.ok) return privateReply(await apiError(response));
-        const webhookRes = await dashboardFetch(env, "/api/me/automation-webhook", { headers, signal: AbortSignal.timeout(8000) });
-        const webhook = webhookRes.ok ? await webhookRes.json() : {};
-        const quiet = prefs.quietHoursEnabled === true || Number(prefs.quietHoursEnabled) === 1;
-        const lines = [
-          "Minimum severity: **" + String(prefs.minimumSeverity || "info") + "**",
-          "Quiet hours: **" + (quiet ? "on" : "off") + "** · " + String(prefs.quietHoursStart || "22:00") + "–" + String(prefs.quietHoursEnd || "08:00") + " · " + String(prefs.timezone || "UTC"),
-          "External webhook: **" + (webhook.configured ? "configured" : "not configured") + "**",
-          "External webhook digest mode: **" + String(prefs.digestMode || "instant") + "**"
-        ];
-        return privateReply("**Your automation notification preferences**\n" + lines.join("\n") + "\nEdit alert rules and notification preferences in the dashboard. Manage private Discord DM enablement and delivery status under /company alerts.");
+        if (subcommand === "deliveries") {
+          await reconcileExhaustedStaleClaims(env, user);
+          const deliveries = await env.BOT_DB.prepare("SELECT event_id AS eventId,status,attempts,updated_at AS updatedAt FROM discord_alert_deliveries WHERE discord_user_id=? AND (status='failed' OR status='processing') ORDER BY updated_at DESC LIMIT 10").bind(user).all();
+          const rows = deliveries.results || [];
+          if (!rows.length) return privateReply("No failed or pending private alert DM deliveries are currently recorded.");
+          const lines = rows.map(delivery => {
+            const attempts = Number(delivery.attempts || 0);
+            const status = String(delivery.status || "unknown");
+            const action = status === "failed" && attempts >= 3 ? "manual retry available" : status === "failed" ? "will retry automatically if eligible" : "processing; stale claims are recovered by the poller";
+            return "- **" + status.toUpperCase() + "** · " + attempts + "/3 attempt(s) · " + safeText(delivery.updatedAt || "time unavailable", 40) +
+              "\n  Event: " + safeText(delivery.eventId || "unknown", 48) + "\n  " + action;
+          });
+          return chunkedPrivateReply("**Private alert DM delivery issues**", lines.concat("Use /automation notifications retry and select an exhausted failed event to reset its retry budget." ));
+        }
+        if (subcommand === "retry") {
+          const eventId = String(optionValue(i, "event") || "").trim();
+          if (!/^[a-f0-9-]{36}$/i.test(eventId)) return privateReply("Choose an exhausted failed private alert from the autocomplete selector.");
+          await reconcileExhaustedStaleClaims(env, user);
+          const result = await env.BOT_DB.prepare("UPDATE discord_alert_deliveries SET status='failed',attempts=0,updated_at=? WHERE discord_user_id=? AND event_id=? AND status='failed' AND attempts>=3")
+            .bind(new Date().toISOString(), user, eventId).run();
+          if (Number(result?.meta?.changes || 0) !== 1) return privateReply("That alert is no longer eligible for manual retry. Run /automation notifications deliveries to inspect current delivery issues.");
+          console.warn("[alert-poll] exhausted delivery manually requeued", JSON.stringify({ discordUserId: user, eventId }));
+          return privateReply("✅ Private alert retry queued. It will be attempted during the next scheduled poll; the three-attempt budget has been reset.");
+        }
       }
       if (groupName === "webhook") {
         if (subcommand === "delete") {

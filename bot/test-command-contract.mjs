@@ -291,7 +291,8 @@ const automationGroups = new Map((automationCommand.options || []).map(option =>
 assert.deepEqual([...automationGroups.keys()], ["notifications", "webhook"], "/automation should expose only notification status and webhook operations");
 assert.equal(automationGroups.has("rules"), false, "alert-rule management must remain dashboard-only");
 const automationNotifications = new Map((automationGroups.get("notifications")?.options || []).map(option => [option.name, option]));
-assert.deepEqual([...automationNotifications.keys()], ["status"], "/automation notifications must retain status only; editing preferences belongs in the dashboard");
+assert.deepEqual([...automationNotifications.keys()], ["status", "deliveries", "retry"], "/automation notifications should expose status, failed delivery inspection, and manual retry");
+assert.equal(automationNotifications.get("retry")?.options?.find(option => option.name === "event")?.autocomplete, true, "private-alert retry must use an autocomplete selector rather than a raw event ID");
 const automationWebhook = new Map((automationGroups.get("webhook")?.options || []).map(option => [option.name, option]));
 assert.deepEqual([...automationWebhook.keys()], ["status", "deliveries", "retry", "delete"], "/automation webhook must expose status, deliveries, retry, and delete in the requested order");
 assert.equal(automationWebhook.get("retry")?.options?.find(option => option.name === "delivery")?.autocomplete, true, "webhook retry must use an autocomplete selector rather than an event ID");
@@ -391,6 +392,10 @@ assert.match(worker, /\/api\/me\/automation-webhook\/deliveries\?limit=10/, "web
 assert.match(worker, /\/api\/me\/automation-webhook\/retry\//, "webhook retry must use the owner-scoped retry API");
 assert.equal(worker.includes('route.group === "rules"'), false, "Discord must not expose alert-rule autocomplete");
 assert.match(worker, /route\.group === "webhook" && route\.subcommand === "retry"/, "webhook retry must support failed-delivery autocomplete");
+assert.match(worker, /route\.group === "notifications" && route\.subcommand === "retry" && focused\.name === "event"/, "private alert retry must expose an owner-scoped exhausted-delivery autocomplete");
+assert.match(worker, /discord_alert_poll_state/, "private alert polling status must be persisted");
+assert.match(worker, /exhausted delivery manually requeued/, "exhausted private alert deliveries must be manually recoverable");
+
 const webhookStatusStart = worker.indexOf('if (subcommand === "status") {', worker.indexOf('if (groupName === "webhook") {'));
 const webhookDeliveriesStart = worker.indexOf('if (subcommand === "deliveries")', webhookStatusStart);
 assert.ok(webhookStatusStart >= 0 && webhookDeliveriesStart > webhookStatusStart, "webhook status output block must exist");
