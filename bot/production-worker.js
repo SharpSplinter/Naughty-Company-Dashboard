@@ -2,6 +2,7 @@ import { money, numberLabel, countChangeLabel } from "./formatting.mjs";
 import { parseCommandRoute } from "./command-routing.mjs";
 import { isDuringQuietHours, severityRank } from "./alert-delivery.mjs";
 import { buildCostBreakdown, estimateDailyProfit, estimateWeeklyProfit, findAdvertisingBudget, knownWageSummary, stockOrderExpenses, summarizeMonthToDate } from "./financials.mjs";
+import { buildDailySummaryMessage, isDailySummaryDue, previousReportingDay, reportingDayAt, summaryMetricValues } from "./daily-summary.mjs";
 
 const enc = new TextEncoder();
 const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
@@ -29,6 +30,8 @@ async function ensureBotSchema(env) {
   await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_alert_deliveries (discord_user_id TEXT NOT NULL, event_id TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY(discord_user_id,event_id))").run();
   await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_alert_poll_state (discord_user_id TEXT PRIMARY KEY, last_started_at TEXT, last_completed_at TEXT, last_success_at TEXT, last_status TEXT NOT NULL DEFAULT 'unknown', last_error_code TEXT, last_error_at TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_page_count INTEGER NOT NULL DEFAULT 0, last_events_seen INTEGER NOT NULL DEFAULT 0, last_delivered INTEGER NOT NULL DEFAULT 0, last_filtered INTEGER NOT NULL DEFAULT 0, last_failed INTEGER NOT NULL DEFAULT 0, last_exhausted INTEGER NOT NULL DEFAULT 0, last_stale_recovered INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)").run();
   await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_alert_poll_escalations (discord_user_id TEXT NOT NULL, escalation_key TEXT NOT NULL, triggered_at TEXT NOT NULL, notification_delivered INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(discord_user_id,escalation_key))").run();
+  await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_daily_summary_deliveries (discord_user_id TEXT NOT NULL, reporting_day TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY(discord_user_id,reporting_day))").run();
+  await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_daily_company_summary_state (discord_user_id TEXT NOT NULL, company_id TEXT NOT NULL, snapshot_day TEXT NOT NULL, metrics_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(discord_user_id,company_id))").run();
 }
 async function storeBotLink(user, playerId, token, env) {
   const sealed = await seal(token, env), now = new Date().toISOString();
@@ -159,6 +162,146 @@ async function reconcileExhaustedStaleClaims(env, userId) {
   return changed;
 }
 
+async function loadDailyCompanySummary(env, headers, discordUserId, reportingDay) {
+  const previousDay = previousReportingDay(reportingDay);
+  const companiesResponse = await dashboardFetch(env, "/api/me/companies", { headers, signal: AbortSignal.timeout(8000) });
+  if (!companiesResponse.ok) throw pollHttpError("dashboard_companies", companiesResponse);
+  const companiesPayload = await companiesResponse.json();
+  const companies = Array.isArray(companiesPayload.companies) ? companiesPayload.companies : [];
+
+  let rankingRows = [];
+  try {
+    const rankingResponse = await dashboardFetch(env, "/api/rankings?scope=global", { headers, signal: AbortSignal.timeout(8000) });
+    if (rankingResponse.ok) {
+      const rankingPayload = await rankingResponse.json();
+      rankingRows = Array.isArray(rankingPayload.companies) ? rankingPayload.companies : [];
+    }
+  } catch {
+    // The rest of the summary remains useful when the shared ranking cache is unavailable.
+  }
+
+  const blocks = [];
+  const statesToSave = [];
+  for (const savedCompany of companies) {
+    const companyId = String(savedCompany.company_id ?? savedCompany.companyId ?? "");
+    if (!/^\d+$/.test(companyId) || Number(companyId) <= 0) continue;
+    const historyResponse = await dashboardFetch(
+      env,
+      "/api/me/companies/" + encodeURIComponent(companyId) + "/history?days=7",
+      { headers, signal: AbortSignal.timeout(8000) }
+    );
+    if (!historyResponse.ok) throw pollHttpError("dashboard_company_history", historyResponse);
+    const historyPayload = await historyResponse.json();
+    const history = Array.isArray(historyPayload.history) ? historyPayload.history : [];
+    const currentPoint = history.find(point => point && point.day === reportingDay) || null;
+    const previousPoint = history.find(point => point && point.day === previousDay) || null;
+    const latestPoint = history.length ? history[history.length - 1] : null;
+    const savedState = await env.BOT_DB.prepare(
+      "SELECT snapshot_day AS snapshotDay,metrics_json AS metricsJson FROM discord_daily_company_summary_state WHERE discord_user_id=? AND company_id=?"
+    ).bind(discordUserId, companyId).first();
+    let storedPrevious = null;
+    if (savedState && savedState.snapshotDay === previousDay && typeof savedState.metricsJson === "string") {
+      try { storedPrevious = JSON.parse(savedState.metricsJson); } catch {}
+    }
+
+    const cachedSelf = rankingRows.find(row => String(row.companyId ?? row.company_id ?? "") === companyId);
+    const companyMeta = {
+      companyId,
+      companyType: String(savedCompany.company_type ?? savedCompany.companyType ?? cachedSelf?.companyType ?? ""),
+      companyTypeId: cachedSelf?.companyTypeId ?? cachedSelf?.company_type_id ?? cachedSelf?.typeId ?? null
+    };
+    const metrics = summaryMetricValues(currentPoint, rankingRows, companyMeta);
+    let previousMetrics = summaryMetricValues(previousPoint, rankingRows, companyMeta);
+    if (storedPrevious) {
+      previousMetrics = {
+        ...previousMetrics,
+        companyRank: Number.isFinite(storedPrevious.companyRank) ? storedPrevious.companyRank : null,
+        starIncomeGap: Number.isFinite(storedPrevious.starIncomeGap) ? storedPrevious.starIncomeGap : null
+      };
+    } else {
+      previousMetrics = { ...previousMetrics, companyRank: null, starIncomeGap: null };
+    }
+
+    blocks.push({
+      companyId,
+      name: savedCompany.company_name ?? savedCompany.companyName ?? cachedSelf?.companyName ?? ("Company #" + companyId),
+      snapshotDay: currentPoint?.day ?? latestPoint?.day ?? null,
+      metrics,
+      previousMetrics,
+      previousDayAvailable: Boolean(previousPoint || storedPrevious)
+    });
+    if (currentPoint) statesToSave.push({
+      companyId,
+      metrics,
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  return {
+    message: buildDailySummaryMessage({ reportingDay, companies: blocks }),
+    companyCount: blocks.length,
+    statesToSave
+  };
+}
+
+async function deliverDailyCompanySummary(env, discordUserId, token, reportingDay, metrics) {
+  const db = env.BOT_DB;
+  const existing = await db.prepare(
+    "SELECT status,attempts,updated_at AS updatedAt FROM discord_daily_summary_deliveries WHERE discord_user_id=? AND reporting_day=?"
+  ).bind(discordUserId, reportingDay).first();
+  if (existing?.status === "delivered") return "already_delivered";
+  const now = new Date().toISOString();
+  const staleBefore = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const claim = await db.prepare(
+    "INSERT INTO discord_daily_summary_deliveries(discord_user_id,reporting_day,status,attempts,updated_at) VALUES(?,?,'processing',1,?) ON CONFLICT(discord_user_id,reporting_day) DO UPDATE SET status='processing',attempts=discord_daily_summary_deliveries.attempts+1,updated_at=excluded.updated_at WHERE discord_daily_summary_deliveries.status <> 'delivered' AND discord_daily_summary_deliveries.attempts < 3 AND (discord_daily_summary_deliveries.status <> 'processing' OR discord_daily_summary_deliveries.updated_at < ?)"
+  ).bind(discordUserId, reportingDay, now, staleBefore).run();
+  if (Number(claim?.meta?.changes || 0) !== 1) {
+    const refreshed = await db.prepare(
+      "SELECT status,attempts FROM discord_daily_summary_deliveries WHERE discord_user_id=? AND reporting_day=?"
+    ).bind(discordUserId, reportingDay).first();
+    if (refreshed?.status === "delivered") return "already_delivered";
+    if (Number(refreshed?.attempts || 0) >= 3 && refreshed?.status !== "delivered") {
+      metrics.failed += 1;
+      metrics.exhausted += 1;
+      return "exhausted";
+    }
+    return "in_progress";
+  }
+  const claimed = await db.prepare(
+    "SELECT attempts FROM discord_daily_summary_deliveries WHERE discord_user_id=? AND reporting_day=?"
+  ).bind(discordUserId, reportingDay).first();
+  const attempts = Number(claimed?.attempts || 1);
+
+  try {
+    const headers = { authorization: "Bearer " + token, accept: "application/json" };
+    const report = await loadDailyCompanySummary(env, headers, discordUserId, reportingDay);
+    metrics.pages = 1;
+    metrics.eventsSeen = report.companyCount;
+    const delivered = await sendPrivateDiscordMessage(env, discordUserId, report.message);
+    if (!delivered) {
+      await db.prepare("UPDATE discord_daily_summary_deliveries SET status='failed',updated_at=? WHERE discord_user_id=? AND reporting_day=? AND status='processing' AND attempts=?")
+        .bind(new Date().toISOString(), discordUserId, reportingDay, attempts).run();
+      metrics.failed += 1;
+      if (attempts >= 3) metrics.exhausted += 1;
+      return "failed";
+    }
+
+    for (const item of report.statesToSave) {
+      await db.prepare(
+        "INSERT INTO discord_daily_company_summary_state(discord_user_id,company_id,snapshot_day,metrics_json,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(discord_user_id,company_id) DO UPDATE SET snapshot_day=excluded.snapshot_day,metrics_json=excluded.metrics_json,updated_at=excluded.updated_at"
+      ).bind(discordUserId, item.companyId, reportingDay, JSON.stringify(item.metrics), item.updatedAt).run();
+    }
+    await db.prepare("UPDATE discord_daily_summary_deliveries SET status='delivered',updated_at=? WHERE discord_user_id=? AND reporting_day=? AND status='processing' AND attempts=?")
+      .bind(new Date().toISOString(), discordUserId, reportingDay, attempts).run();
+    metrics.delivered += 1;
+    return "delivered";
+  } catch (error) {
+    await db.prepare("UPDATE discord_daily_summary_deliveries SET status='failed',updated_at=? WHERE discord_user_id=? AND reporting_day=? AND status='processing' AND attempts=?")
+      .bind(new Date().toISOString(), discordUserId, reportingDay, attempts).run().catch(() => undefined);
+    throw error;
+  }
+}
+
 async function pollPrivateAlerts(env) {
   if (!env.BOT_DB || !env.BOT_ENCRYPTION_KEY || !env.DISCORD_TOKEN || !env.DASHBOARD_API) return;
   await ensureBotSchema(env);
@@ -185,81 +328,20 @@ async function pollPrivateAlerts(env) {
         await finishAlertPoll(env, link.discordUserId, token, metrics, "quiet_hours");
         continue;
       }
-      const minimumSeverity = severityRank(preferences.minimumSeverity || "info");
-      const state = await env.BOT_DB.prepare("SELECT linked_at AS linkedAt FROM discord_alert_state WHERE discord_user_id=?").bind(link.discordUserId).first();
-      if (!state) {
-        await env.BOT_DB.prepare("INSERT INTO discord_alert_state(discord_user_id,linked_at) VALUES(?,?)").bind(link.discordUserId, new Date().toISOString()).run();
-        await finishAlertPoll(env, link.discordUserId, token, metrics, "initialized");
+
+      const now = new Date(env.__testNow || Date.now());
+      if (!isDailySummaryDue(now)) {
+        await finishAlertPoll(env, link.discordUserId, token, metrics, "healthy");
         continue;
       }
-
-      metrics.staleRecovered = await reconcileExhaustedStaleClaims(env, link.discordUserId);
-      // Read cursor pages oldest-first. Every non-success API response is now
-      // persisted as a poll error instead of silently terminating this account.
-      let cursorAt = state.linkedAt;
-      let cursorEventId = "";
-      while (true) {
-        const query = new URLSearchParams({ limit: "100", after: cursorAt });
-        if (cursorEventId) query.set("afterEventId", cursorEventId);
-        const response = await dashboardFetch(env, "/api/me/alerts?" + query.toString(), { headers, signal: AbortSignal.timeout(8000) });
-        if (!response.ok) throw pollHttpError("dashboard_alerts", response);
-        const data = await response.json();
-        const events = Array.isArray(data.events) ? data.events : [];
-        metrics.pages += 1;
-        metrics.eventsSeen += events.length;
-        if (!events.length) break;
-        const pending = events
-          .filter(event => typeof event.eventId === "string" && typeof event.createdAt === "string" && event.createdAt > state.linkedAt)
-          .sort((a,b) => String(a.createdAt).localeCompare(String(b.createdAt)) || String(a.eventId).localeCompare(String(b.eventId)));
-
-        for (const event of pending) {
-          if (severityRank(event.severity) < minimumSeverity) {
-            const filtered = await env.BOT_DB.prepare("INSERT INTO discord_alert_deliveries(discord_user_id,event_id,status,attempts,updated_at) VALUES(?,?,'filtered',0,?) ON CONFLICT(discord_user_id,event_id) DO UPDATE SET status='filtered',attempts=0,updated_at=excluded.updated_at WHERE discord_alert_deliveries.status NOT IN ('delivered','processing')")
-              .bind(link.discordUserId, event.eventId, new Date().toISOString()).run();
-            if (Number(filtered?.meta?.changes || 0) === 1) metrics.filtered += 1;
-            continue;
-          }
-
-          const claimedAt = new Date().toISOString();
-          const expiredBefore = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-          const claim = await env.BOT_DB.prepare("INSERT INTO discord_alert_deliveries(discord_user_id,event_id,status,attempts,updated_at) VALUES(?,?,'processing',1,?) ON CONFLICT(discord_user_id,event_id) DO UPDATE SET status='processing',attempts=discord_alert_deliveries.attempts+1,updated_at=excluded.updated_at WHERE discord_alert_deliveries.status NOT IN ('delivered','filtered') AND discord_alert_deliveries.attempts < 3 AND (discord_alert_deliveries.status <> 'processing' OR discord_alert_deliveries.updated_at < ?)")
-            .bind(link.discordUserId, event.eventId, claimedAt, expiredBefore).run();
-          if (Number(claim?.meta?.changes || 0) !== 1) continue;
-          const claimed = await env.BOT_DB.prepare("SELECT status,attempts FROM discord_alert_deliveries WHERE discord_user_id=? AND event_id=?")
-            .bind(link.discordUserId, event.eventId).first();
-          const attempts = Number(claimed?.attempts || 1);
-
-          const severity = String(event.severity || "info").toUpperCase();
-          const title = String(event.title || "Dashboard alert").slice(0, 150);
-          const message = String(event.message || "").replace(/\s+/g, " ").slice(0, 900);
-          const company = event.companyName ? String(event.companyName).slice(0, 100) : event.companyId ? "Company ID " + String(event.companyId) : "Your company";
-          const content = "🔔 Naughty Company Dashboard alert\n[" + severity + "] " + title + "\n" + message + "\nCompany: " + company + "\n" + String(event.createdAt);
-          let delivered = false;
-          try { delivered = await sendPrivateDiscordMessage(env, link.discordUserId, content); } catch {}
-          const status = delivered ? "delivered" : "failed";
-          await env.BOT_DB.prepare("UPDATE discord_alert_deliveries SET status=?,updated_at=? WHERE discord_user_id=? AND event_id=? AND status='processing' AND attempts=?")
-            .bind(status, new Date().toISOString(), link.discordUserId, event.eventId, attempts).run();
-          if (delivered) {
-            metrics.delivered += 1;
-          } else {
-            metrics.failed += 1;
-            console.warn("[alert-poll] private DM delivery failed", JSON.stringify({ discordUserId: link.discordUserId, eventId: event.eventId, attempt: attempts }));
-            if (attempts >= 3) {
-              metrics.exhausted += 1;
-              console.error("[alert-poll] delivery retries exhausted", JSON.stringify({ discordUserId: link.discordUserId, eventId: event.eventId, attempts }));
-            }
-          }
-        }
-
-        if (events.length < 100) break;
-        const last = events[events.length - 1];
-        if (typeof last?.eventId !== "string" || typeof last?.createdAt !== "string" ||
-            (last.createdAt === cursorAt && last.eventId === cursorEventId)) break;
-        cursorAt = last.createdAt;
-        cursorEventId = last.eventId;
+      const reportDay = reportingDayAt(now);
+      const outcome = await deliverDailyCompanySummary(env, link.discordUserId, token, reportDay, metrics);
+      if (outcome === "failed" || outcome === "exhausted") {
+        const code = outcome === "exhausted" ? "daily_summary_delivery_exhausted" : "daily_summary_dm_delivery_failed";
+        await finishAlertPoll(env, link.discordUserId, token, metrics, "partial", code);
+      } else {
+        await finishAlertPoll(env, link.discordUserId, token, metrics, "healthy");
       }
-      const status = metrics.failed || metrics.exhausted ? "partial" : "healthy";
-      await finishAlertPoll(env, link.discordUserId, token, metrics, status, status === "partial" ? "discord_dm_delivery_failed" : null);
     } catch (error) {
       const errorCode = alertPollErrorCode(error);
       try { await failAlertPoll(env, link.discordUserId, token, metrics, errorCode); } catch {
