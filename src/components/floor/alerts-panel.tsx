@@ -128,6 +128,8 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
     try {
       const monitoring = await automationFetch<DiscordPollMonitoring>(apiBase, sessionToken, "/api/me/discord-alert-poll-health")
       setDiscordPollMonitoring(monitoring)
+      setDiscordLinked(monitoring.linked === true)
+      setDiscordAlertsEnabled(monitoring.alertsEnabled === true)
     } catch {
       setDiscordPollMonitoring(null)
     }
