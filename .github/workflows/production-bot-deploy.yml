@@ -89,6 +89,7 @@ jobs:
         run: |
           node --check bot/alert-delivery.mjs
           node --check bot/test-alert-delivery.mjs
+          node --check bot/commands/automation.mjs
       - name: Validate command registration script
         run: node --check bot/register-commands.mjs
       - name: Validate command registration API tests
