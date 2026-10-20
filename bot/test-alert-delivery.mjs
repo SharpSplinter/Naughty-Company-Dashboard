@@ -56,7 +56,7 @@ function makeFixture({
   if (seedPreviousSummary) {
     summaryStates.set(accountId + ":123", {
       snapshotDay: priorDay,
-      metrics: { dailyIncome: 100, dailyProfit: 50, starLevel: 5, starIncomeGap: 600, companyRank: 3, stockQuantity: 800, weeklyIncome: 700 }
+      metrics: { dailyIncome: 100, dailyProfit: 50, starLevel: 5, starIncomeGap: 600, companyRank: 4, stockQuantity: 800, weeklyIncome: 700 }
     });
   }
 
@@ -274,7 +274,7 @@ test("private Discord receives one consolidated daily report and not one DM per 
   assert.match(body.content, /Daily profit: \$70.*gained \$20/s);
   assert.match(body.content, /Star level: 6 ★.*gained 1 star level/s);
   assert.match(body.content, /Income gap to next star: \$550.*gap narrowed by \$50/s);
-  assert.match(body.content, /Company rank: #2.*gained 1 place/s);
+  assert.match(body.content, /Company rank: #3.*gained 1 place/s);
   assert.match(body.content, /Stock quantity: 900.*gained 100 units/s);
   assert.deepEqual(body.allowed_mentions, { parse: [] });
   assert.equal(fixture.summaryStates.get(accountId + ":123").snapshotDay, fixture.reportDay);
