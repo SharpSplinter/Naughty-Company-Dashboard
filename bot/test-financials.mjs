@@ -6,6 +6,8 @@ import {
   findAdvertisingBudget,
   knownWageSummary,
   stockOrderExpenses,
+  stockInventorySummary,
+  stockQuantityDeltaForReportingDays,
   summarizeMonthToDate
 } from "./financials.mjs";
 
@@ -22,6 +24,30 @@ assert.equal(stockOrderExpenses({ Tealight: { cost: 4, in_stock: 1000 } }).avail
 assert.equal(stockOrderExpenses({ Tealight: { on_order: 3, in_stock: 0 } }).total, null, "pending orders without unit cost must remain unavailable");
 assert.equal(stockOrderExpenses({}).total, 0, "an explicit empty stock payload means there are no listed stock-order expenses");
 assert.equal(stockOrderExpenses(null).total, null, "missing stock payload must remain unavailable");
+
+const inventory = stockInventorySummary({
+  stock: [
+    { name: "Widget", in_stock: 5, price: 10, rrp: 12 },
+    { name: "Gadget", in_stock: 3, price: 20, rrp: 25 }
+  ]
+});
+assert.equal(inventory.itemCount, 2);
+assert.equal(inventory.totalQuantity, 8);
+assert.equal(inventory.totalValue, 110, "on-hand value must use quantity × listed unit price");
+assert.equal(stockInventorySummary({ stock: [{ name: "Unknown price", in_stock: 5 }] }).totalValue, null,
+  "partial stock prices must not be silently valued as zero");
+assert.equal(stockInventorySummary(null).totalQuantity, null, "missing stock payload must remain unavailable");
+assert.equal(stockInventorySummary([]).totalQuantity, 0, "an explicit empty stock response means zero on-hand units");
+
+assert.equal(stockQuantityDeltaForReportingDays([
+  { day: "2026-10-19", stockQuantity: 8, fetchedAt: "2026-10-19T18:10:00.000Z" },
+  { day: "2026-10-20", stockQuantity: 10, fetchedAt: "2026-10-20T18:10:00.000Z" }
+], "2026-10-20", "2026-10-19"), 2);
+assert.equal(stockQuantityDeltaForReportingDays([
+  { day: "2026-10-18", stockQuantity: 8 },
+  { day: "2026-10-20", stockQuantity: 10 }
+], "2026-10-20", "2026-10-19"), null,
+  "stock delta must stay unavailable when the immediately previous reporting day is missing");
 
 assert.deepEqual(knownWageSummary({ rosterCount: 2, knownWageCount: 2, totalKnownWages: 300 }), {
   available: true, total: 300, knownCount: 2, rosterCount: 2

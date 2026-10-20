@@ -3,6 +3,7 @@ import test from "node:test";
 import { webcrypto } from "node:crypto";
 import { commands } from "./command-schema.mjs";
 import { parseCommandRoute } from "./command-routing.mjs";
+import { previousReportingDay, reportingDayAt } from "./daily-summary.mjs";
 import worker from "./production-worker.js";
 
 const encoder = new TextEncoder();
@@ -310,6 +311,64 @@ test("every canonical slash-command leaf reaches a concrete private handler", as
   }
 
   assert.deepEqual(missing, [], "canonical routes missing a dedicated dispatch handler: " + missing.join("; "));
+});
+
+test("company overview reports complete financials and only exact consecutive-day stock deltas", async () => {
+  const linkedRow = await encryptedSession("dashboard-session-test");
+  const currentDay = reportingDayAt();
+  const priorDay = previousReportingDay(currentDay);
+  const dashboardHandler = record => {
+    const path = record.url.pathname;
+    if (path === "/api/me/companies/company-123") {
+      return jsonResponse({
+        companyName: "Dispatch Test Company",
+        companyType: "Retail",
+        fetchedAt: currentDay + "T18:10:00.000Z",
+        profile: { company: {
+          name: "Dispatch Test Company",
+          company_rating: 4,
+          income: { daily: 1000, weekly: 7000 },
+          profit: { daily: 500, weekly: 3500 },
+          advertising_budget: 100,
+          company_performance: { popularity: 70, efficiency: 80, environment: 90 }
+        } },
+        stock: {
+          Widget: { name: "Widget", cost: 2, in_stock: 5, on_order: 2, price: 10, rrp: 12 },
+          Gadget: { name: "Gadget", cost: 3, in_stock: 3, on_order: 0, price: 20, rrp: 25 }
+        }
+      });
+    }
+    if (path === "/api/me/companies/company-123/history") {
+      return jsonResponse({ history: [
+        { day: priorDay, stockQuantity: 6, fetchedAt: priorDay + "T18:10:00.000Z" },
+        { day: currentDay, stockQuantity: 8, fetchedAt: currentDay + "T18:10:00.000Z" }
+      ] });
+    }
+    if (path === "/api/me/member-insights") {
+      return jsonResponse({ summary: { rosterCount: 2, knownWageCount: 2, totalKnownWages: 300 }, roster: [] });
+    }
+    return dashboardFixture(record);
+  };
+  const result = await invoke({
+    type: 2, application_id: "application-test", token: "overview-test-token",
+    data: { name: "company", options: [{ type: 1, name: "overview" }] },
+    user: { id: "discord-user-test" }
+  }, { linkedRow, dashboardHandler });
+  const content = finalReplyText(result);
+  assert.match(content, /Company rating: 4/);
+  assert.match(content, /Daily profit: \$500/);
+  assert.match(content, /Advertising budget: \$100/);
+  assert.match(content, /Total employee wages: \$300/);
+  assert.match(content, /Performance: Popularity 70 \| Efficiency 80 \| Environment 90/);
+  assert.match(content, /Total quantity: 8/);
+  assert.match(content, /Stock change vs previous reporting day .*: \+2/);
+  assert.match(content, /On-hand stock value at listed prices: \$110/);
+  assert.match(content, /Widget: 5 x \$10 = \$50/);
+  const historyRequest = result.dashboardRequests.find(request => request.url.pathname.endsWith("/history"));
+  assert.ok(historyRequest, "overview must use the authenticated history endpoint");
+  assert.equal(historyRequest.url.searchParams.get("days"), "7");
+  assert.equal(historyRequest.headers.get("authorization"), "Bearer dashboard-session-test");
+  assert.ok(result.dashboardRequests.every(request => request.method === "GET"), "overview remains read-only");
 });
 
 test("unknown nested subcommands are rejected before link lookup or dashboard API calls", async t => {
