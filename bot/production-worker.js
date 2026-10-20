@@ -28,6 +28,7 @@ async function ensureBotSchema(env) {
   await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_alert_state (discord_user_id TEXT PRIMARY KEY, linked_at TEXT NOT NULL)").run();
   await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_alert_deliveries (discord_user_id TEXT NOT NULL, event_id TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY(discord_user_id,event_id))").run();
   await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_alert_poll_state (discord_user_id TEXT PRIMARY KEY, last_started_at TEXT, last_completed_at TEXT, last_success_at TEXT, last_status TEXT NOT NULL DEFAULT 'unknown', last_error_code TEXT, last_error_at TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_page_count INTEGER NOT NULL DEFAULT 0, last_events_seen INTEGER NOT NULL DEFAULT 0, last_delivered INTEGER NOT NULL DEFAULT 0, last_filtered INTEGER NOT NULL DEFAULT 0, last_failed INTEGER NOT NULL DEFAULT 0, last_exhausted INTEGER NOT NULL DEFAULT 0, last_stale_recovered INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)").run();
+  await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_alert_poll_escalations (discord_user_id TEXT NOT NULL, escalation_key TEXT NOT NULL, created_at TEXT NOT NULL, last_attempt_at TEXT NOT NULL, notified_at TEXT, last_error_code TEXT, PRIMARY KEY(discord_user_id, escalation_key))").run();
 }
 async function storeBotLink(user, playerId, token, env) {
   const sealed = await seal(token, env), now = new Date().toISOString();
@@ -44,6 +45,35 @@ async function sendPrivateDiscordMessage(env, userId, content) {
   const messageResponse = await fetch("https://discord.com/api/v10/channels/" + encodeURIComponent(channel.id) + "/messages", { method: "POST", headers, body: JSON.stringify({ content: String(content).slice(0, 1900), allowed_mentions: { parse: [] } }) });
   return messageResponse.ok;
 }
+async function escalateAlertPollFailure(env, userId, errorCode) {
+  const state = await env.BOT_DB.prepare("SELECT consecutive_failures AS consecutiveFailures FROM discord_alert_poll_state WHERE discord_user_id=?").bind(userId).first();
+  const consecutiveFailures = Number(state?.consecutiveFailures || 0);
+  if (consecutiveFailures < 3) return;
+
+  const now = new Date().toISOString();
+  const retryCutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  const escalationKey = "poll_failures";
+  const claim = await env.BOT_DB.prepare("INSERT INTO discord_alert_poll_escalations(discord_user_id,escalation_key,created_at,last_attempt_at,notified_at,last_error_code) VALUES(?,?,?,?,NULL,NULL) ON CONFLICT(discord_user_id,escalation_key) DO UPDATE SET last_attempt_at=excluded.last_attempt_at,last_error_code=NULL WHERE discord_alert_poll_escalations.notified_at IS NULL AND discord_alert_poll_escalations.last_attempt_at < ?")
+    .bind(userId, escalationKey, now, now, retryCutoff).run();
+  if (Number(claim?.meta?.changes || 0) !== 1) return;
+
+  const content = "⚠️ Naughty Company Dashboard operational alert\nPrivate alert polling has failed " +
+    consecutiveFailures + " consecutive scheduled runs.\nLatest error: " + String(errorCode || "alert_poll_failed") +
+    ".\nThe dashboard may not be receiving new private alerts until polling recovers.";
+  let delivered = false;
+  try { delivered = await sendPrivateDiscordMessage(env, userId, content); } catch {}
+
+  if (delivered) {
+    await env.BOT_DB.prepare("UPDATE discord_alert_poll_escalations SET notified_at=?,last_error_code=NULL WHERE discord_user_id=? AND escalation_key=?")
+      .bind(now, userId, escalationKey).run();
+    console.warn("[alert-poll] operational escalation sent", JSON.stringify({ discordUserId: userId, consecutiveFailures }));
+  } else {
+    await env.BOT_DB.prepare("UPDATE discord_alert_poll_escalations SET last_error_code=? WHERE discord_user_id=? AND escalation_key=?")
+      .bind("discord_dm_escalation_failed", userId, escalationKey).run();
+    console.error("[alert-poll] operational escalation DM failed", JSON.stringify({ discordUserId: userId, consecutiveFailures, cooldownMinutes: 15 }));
+  }
+}
+
 async function beginAlertPoll(env, userId) {
   const now = new Date().toISOString();
   await env.BOT_DB.prepare("INSERT INTO discord_alert_poll_state(discord_user_id,last_started_at,last_status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(discord_user_id) DO UPDATE SET last_started_at=excluded.last_started_at,last_status='running',last_page_count=0,last_events_seen=0,last_delivered=0,last_filtered=0,last_failed=0,last_exhausted=0,last_stale_recovered=0,updated_at=excluded.updated_at")
@@ -94,6 +124,12 @@ async function finishAlertPoll(env, userId, token, metrics, status = "healthy", 
   const now = new Date().toISOString();
   await env.BOT_DB.prepare("UPDATE discord_alert_poll_state SET last_completed_at=?,last_success_at=CASE WHEN ? IN ('healthy','partial','quiet_hours','disabled','unlinked','initialized') THEN ? ELSE last_success_at END,last_status=?,last_error_code=?,last_error_at=CASE WHEN ? IS NULL THEN NULL ELSE ? END,consecutive_failures=0,last_page_count=?,last_events_seen=?,last_delivered=?,last_filtered=?,last_failed=?,last_exhausted=?,last_stale_recovered=?,updated_at=? WHERE discord_user_id=?")
     .bind(now, status, now, status, errorCode, errorCode, now, metrics.pages, metrics.eventsSeen, metrics.delivered, metrics.filtered, metrics.failed, metrics.exhausted, metrics.staleRecovered, now, userId).run();
+  try {
+    await env.BOT_DB.prepare("DELETE FROM discord_alert_poll_escalations WHERE discord_user_id=? AND escalation_key=?")
+      .bind(userId, "poll_failures").run();
+  } catch {
+    console.warn("[alert-poll] unable to clear recovered escalation", JSON.stringify({ discordUserId: userId }));
+  }
   await reportDashboardAlertPoll(env, token, userId, metrics, status, errorCode, now);
 }
 
@@ -101,7 +137,13 @@ async function failAlertPoll(env, userId, token, metrics, errorCode) {
   const now = new Date().toISOString();
   await env.BOT_DB.prepare("UPDATE discord_alert_poll_state SET last_completed_at=?,last_status='error',last_error_code=?,last_error_at=?,consecutive_failures=consecutive_failures+1,last_page_count=?,last_events_seen=?,last_delivered=?,last_filtered=?,last_failed=?,last_exhausted=?,last_stale_recovered=?,updated_at=? WHERE discord_user_id=?")
     .bind(now, errorCode, now, metrics.pages, metrics.eventsSeen, metrics.delivered, metrics.filtered, metrics.failed, metrics.exhausted, metrics.staleRecovered, now, userId).run();
-  console.warn("[alert-poll] account poll failed", JSON.stringify({ discordUserId: userId, errorCode, consecutiveFailures: "incremented" }));
+  const state = await env.BOT_DB.prepare("SELECT consecutive_failures AS consecutiveFailures FROM discord_alert_poll_state WHERE discord_user_id=?").bind(userId).first();
+  const consecutiveFailures = Number(state?.consecutiveFailures || 0);
+  console.warn("[alert-poll] account poll failed", JSON.stringify({ discordUserId: userId, errorCode, consecutiveFailures }));
+  try { await escalateAlertPollFailure(env, userId, errorCode); }
+  catch (error) {
+    console.error("[alert-poll] unable to evaluate operational escalation", JSON.stringify({ discordUserId: userId, errorCode: alertPollErrorCode(error) }));
+  }
   await reportDashboardAlertPoll(env, token, userId, metrics, "error", errorCode, now);
 }
 
