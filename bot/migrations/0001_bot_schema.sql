@@ -54,3 +54,14 @@ CREATE TABLE IF NOT EXISTS discord_alert_poll_state (
   last_stale_recovered INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
+
+
+CREATE TABLE IF NOT EXISTS discord_alert_poll_escalations (
+  discord_user_id TEXT NOT NULL,
+  escalation_key TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_attempt_at TEXT NOT NULL,
+  notified_at TEXT,
+  last_error_code TEXT,
+  PRIMARY KEY(discord_user_id, escalation_key)
+);
