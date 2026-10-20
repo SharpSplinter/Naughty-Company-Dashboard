@@ -61,31 +61,69 @@ async function pollPrivateAlerts(env) {
       const preferences = prefsPayload && typeof prefsPayload.preferences === "object" ? prefsPayload.preferences : {};
       if (isDuringQuietHours(preferences)) continue;
       const minimumSeverity = severityRank(preferences.minimumSeverity || "info");
-      let state = await env.BOT_DB.prepare("SELECT linked_at AS linkedAt FROM discord_alert_state WHERE discord_user_id=?").bind(link.discordUserId).first();
+      const state = await env.BOT_DB.prepare("SELECT linked_at AS linkedAt FROM discord_alert_state WHERE discord_user_id=?").bind(link.discordUserId).first();
       if (!state) {
         await env.BOT_DB.prepare("INSERT INTO discord_alert_state(discord_user_id,linked_at) VALUES(?,?)").bind(link.discordUserId, new Date().toISOString()).run();
         continue;
       }
-      const response = await dashboardFetch(env, "/api/me/alerts?limit=50", { headers, signal: AbortSignal.timeout(8000) });
-      if (!response.ok) continue;
-      const data = await response.json(), events = Array.isArray(data.events) ? data.events : [];
-      const pending = events.filter(event => typeof event.eventId === "string" && typeof event.createdAt === "string" && event.createdAt > state.linkedAt).sort((a,b) => String(a.createdAt).localeCompare(String(b.createdAt)));
-      for (const event of pending) {
-        const prior = await env.BOT_DB.prepare("SELECT status,attempts FROM discord_alert_deliveries WHERE discord_user_id=? AND event_id=?").bind(link.discordUserId, event.eventId).first();
-        if (prior?.status === "delivered" || prior?.status === "filtered" || Number(prior?.attempts || 0) >= 3) continue;
-        if (severityRank(event.severity) < minimumSeverity) {
-          await env.BOT_DB.prepare("INSERT INTO discord_alert_deliveries(discord_user_id,event_id,status,attempts,updated_at) VALUES(?,?,'filtered',0,?) ON CONFLICT(discord_user_id,event_id) DO UPDATE SET status='filtered',updated_at=excluded.updated_at").bind(link.discordUserId, event.eventId, new Date().toISOString()).run();
-          continue;
+
+      // The dashboard alert API cursor is stable on (createdAt, eventId), so
+      // every page can be read oldest-first without an offset that shifts as new
+      // alerts arrive. Per-account failures are isolated by this link's catch.
+      let cursorAt = state.linkedAt;
+      let cursorEventId = "";
+      while (true) {
+        const query = new URLSearchParams({ limit: "100", after: cursorAt });
+        if (cursorEventId) query.set("afterEventId", cursorEventId);
+        const response = await dashboardFetch(env, "/api/me/alerts?" + query.toString(), { headers, signal: AbortSignal.timeout(8000) });
+        if (!response.ok) break;
+        const data = await response.json();
+        const events = Array.isArray(data.events) ? data.events : [];
+        if (!events.length) break;
+        const pending = events
+          .filter(event => typeof event.eventId === "string" && typeof event.createdAt === "string" && event.createdAt > state.linkedAt)
+          .sort((a,b) => String(a.createdAt).localeCompare(String(b.createdAt)) || String(a.eventId).localeCompare(String(b.eventId)));
+
+        for (const event of pending) {
+          if (severityRank(event.severity) < minimumSeverity) {
+            // A filtered event is terminal, but must not overwrite a delivered
+            // or currently claimed event from an overlapping scheduled poll.
+            await env.BOT_DB.prepare("INSERT INTO discord_alert_deliveries(discord_user_id,event_id,status,attempts,updated_at) VALUES(?,?,'filtered',0,?) ON CONFLICT(discord_user_id,event_id) DO UPDATE SET status='filtered',attempts=0,updated_at=excluded.updated_at WHERE discord_alert_deliveries.status NOT IN ('delivered','processing')")
+              .bind(link.discordUserId, event.eventId, new Date().toISOString()).run();
+            continue;
+          }
+
+          // Claim delivery atomically before calling Discord. This prevents two
+          // scheduled executions from both observing an absent/failed row and
+          // sending the same private alert. Stale claims are recoverable after
+          // five minutes; each claim consumes one of the three total attempts.
+          const claimedAt = new Date().toISOString();
+          const expiredBefore = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+          const claim = await env.BOT_DB.prepare("INSERT INTO discord_alert_deliveries(discord_user_id,event_id,status,attempts,updated_at) VALUES(?,?,'processing',1,?) ON CONFLICT(discord_user_id,event_id) DO UPDATE SET status='processing',attempts=discord_alert_deliveries.attempts+1,updated_at=excluded.updated_at WHERE discord_alert_deliveries.status NOT IN ('delivered','filtered') AND discord_alert_deliveries.attempts < 3 AND (discord_alert_deliveries.status <> 'processing' OR discord_alert_deliveries.updated_at < ?)")
+            .bind(link.discordUserId, event.eventId, claimedAt, expiredBefore).run();
+          if (Number(claim?.meta?.changes || 0) !== 1) continue;
+          const claimed = await env.BOT_DB.prepare("SELECT status,attempts FROM discord_alert_deliveries WHERE discord_user_id=? AND event_id=?")
+            .bind(link.discordUserId, event.eventId).first();
+          const attempts = Number(claimed?.attempts || 1);
+
+          const severity = String(event.severity || "info").toUpperCase();
+          const title = String(event.title || "Dashboard alert").slice(0, 150);
+          const message = String(event.message || "").replace(/\s+/g, " ").slice(0, 900);
+          const company = event.companyName ? String(event.companyName).slice(0, 100) : event.companyId ? "Company ID " + String(event.companyId) : "Your company";
+          const content = "🔔 Naughty Company Dashboard alert\n[" + severity + "] " + title + "\n" + message + "\nCompany: " + company + "\n" + String(event.createdAt);
+          let delivered = false;
+          try { delivered = await sendPrivateDiscordMessage(env, link.discordUserId, content); } catch {}
+          const status = delivered ? "delivered" : "failed";
+          await env.BOT_DB.prepare("UPDATE discord_alert_deliveries SET status=?,updated_at=? WHERE discord_user_id=? AND event_id=? AND status='processing' AND attempts=?")
+            .bind(status, new Date().toISOString(), link.discordUserId, event.eventId, attempts).run();
         }
-        const severity = String(event.severity || "info").toUpperCase();
-        const title = String(event.title || "Dashboard alert").slice(0, 150);
-        const message = String(event.message || "").replace(/\s+/g, " ").slice(0, 900);
-        const company = event.companyName ? String(event.companyName).slice(0, 100) : event.companyId ? "Company ID " + String(event.companyId) : "Your company";
-        const content = "🔔 Naughty Company Dashboard alert\n[" + severity + "] " + title + "\n" + message + "\nCompany: " + company + "\n" + String(event.createdAt);
-        let delivered = false;
-        try { delivered = await sendPrivateDiscordMessage(env, link.discordUserId, content); } catch {}
-        const attempts = Number(prior?.attempts || 0) + 1, status = delivered ? "delivered" : "failed";
-        await env.BOT_DB.prepare("INSERT INTO discord_alert_deliveries(discord_user_id,event_id,status,attempts,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(discord_user_id,event_id) DO UPDATE SET status=excluded.status,attempts=excluded.attempts,updated_at=excluded.updated_at").bind(link.discordUserId, event.eventId, status, attempts, new Date().toISOString()).run();
+
+        if (events.length < 100) break;
+        const last = events[events.length - 1];
+        if (typeof last?.eventId !== "string" || typeof last?.createdAt !== "string" ||
+            (last.createdAt === cursorAt && last.eventId === cursorEventId)) break;
+        cursorAt = last.createdAt;
+        cursorEventId = last.eventId;
       }
     } catch {}
   }

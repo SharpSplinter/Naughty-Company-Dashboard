@@ -1290,6 +1290,61 @@ try {
     assert.equal(response.status, 404)
   })
 
+  await test("alert history cursor pagination is owner-scoped and preserves newest-first default behavior", async () => {
+    const calls = []
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer alert-cursor-session" }
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            const query = sql.toLowerCase()
+            if (query.includes("from sessions s join players p")) return { player_id: "777", player_name: "Cursor Tester" }
+            if (query.includes("from dashboard_member_status") || query.includes("from admin_settings")) return null
+            if (query.includes("select count(*) as count from alert_events")) return { count: 0 }
+            return null
+          },
+          async all() {
+            if (sql.includes("SELECT e.event_id AS eventId")) {
+              calls.push({ sql, values: [...values] })
+              return { results: [{
+                eventId: "12345678-1234-4234-8234-123456789abc",
+                createdAt: "2026-10-02T00:00:00.000Z",
+                severity: "warning",
+                title: "Cursor test alert",
+                message: "test",
+                companyName: "Test Company"
+              }] }
+            }
+            return { results: [] }
+          },
+          async run() { return { success: true, meta: { changes: 1 } } }
+        }
+      }
+    }
+    const after = "2026-10-01T00:00:00.000Z"
+    const afterEventId = "12345678-1234-4234-8234-123456789abc"
+    const cursorResponse = await worker.fetch(new Request(
+      "https://worker.test/api/me/alerts?limit=100&after=" + encodeURIComponent(after) + "&afterEventId=" + afterEventId,
+      { headers }
+    ), { DB: db })
+    assert.equal(cursorResponse.status, 200)
+    assert.equal((await cursorResponse.json()).events.length, 1)
+    const cursorCall = calls[0]
+    assert.match(cursorCall.sql, /e\.created_at > \? OR \(e\.created_at = \? AND e\.event_id > \?\)/)
+    assert.match(cursorCall.sql, /ORDER BY e\.created_at ASC, e\.event_id ASC LIMIT \?/)
+    assert.deepEqual(cursorCall.values, ["777", after, after, afterEventId, 100])
+
+    const newestFirstResponse = await worker.fetch(new Request("https://worker.test/api/me/alerts?limit=25", { headers }), { DB: db })
+    assert.equal(newestFirstResponse.status, 200)
+    assert.match(calls[1].sql, /ORDER BY e\.created_at DESC LIMIT \?/)
+    assert.deepEqual(calls[1].values, ["777", 25])
+
+    const invalidCursor = await worker.fetch(new Request("https://worker.test/api/me/alerts?after=not-a-timestamp", { headers }), { DB: db })
+    assert.equal(invalidCursor.status, 400)
+  })
+
   await test("session revocation routes are present", () => {
     const source = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     assert.match(source, /sign-out-all/)

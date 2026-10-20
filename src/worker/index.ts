@@ -2099,8 +2099,20 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
   }
   if (url.pathname === "/api/me/alerts" && request.method === "GET") {
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 50) || 50))
+    const hasCursor = url.searchParams.has("after")
+    const after = url.searchParams.get("after") ?? ""
+    const afterEventId = url.searchParams.get("afterEventId") ?? ""
+    if (hasCursor && (!after || after.length > 40 || !Number.isFinite(Date.parse(after)))) return jsonResponse({ error: "Invalid alert cursor." }, 400, origin)
+    if (afterEventId && !/^[a-f0-9-]{36}$/i.test(afterEventId)) return jsonResponse({ error: "Invalid alert cursor." }, 400, origin)
+    if (!hasCursor && afterEventId) return jsonResponse({ error: "Invalid alert cursor." }, 400, origin)
+    const eventSelect = "SELECT e.event_id AS eventId, e.rule_id AS ruleId, e.company_id AS companyId, e.rule_type AS ruleType, e.severity, e.title, e.message, e.previous_value AS previousValue, e.current_value AS currentValue, e.change_percent AS changePercent, e.source_snapshot_at AS sourceSnapshotAt, e.status, e.created_at AS createdAt, e.acknowledged_at AS acknowledgedAt, c.company_name AS companyName FROM alert_events e LEFT JOIN companies c ON c.player_id = e.owner_player_id AND c.company_id = e.company_id "
+    const eventRows = hasCursor
+      ? (afterEventId
+        ? db.prepare(eventSelect + "WHERE e.owner_player_id = ? AND (e.created_at > ? OR (e.created_at = ? AND e.event_id > ?)) ORDER BY e.created_at ASC, e.event_id ASC LIMIT ?").bind(session.player_id, after, after, afterEventId, limit)
+        : db.prepare(eventSelect + "WHERE e.owner_player_id = ? AND e.created_at > ? ORDER BY e.created_at ASC, e.event_id ASC LIMIT ?").bind(session.player_id, after, limit))
+      : db.prepare(eventSelect + "WHERE e.owner_player_id = ? ORDER BY e.created_at DESC LIMIT ?").bind(session.player_id, limit)
     const [rows, unread, latestRun] = await Promise.all([
-      db.prepare("SELECT e.event_id AS eventId, e.rule_id AS ruleId, e.company_id AS companyId, e.rule_type AS ruleType, e.severity, e.title, e.message, e.previous_value AS previousValue, e.current_value AS currentValue, e.change_percent AS changePercent, e.source_snapshot_at AS sourceSnapshotAt, e.status, e.created_at AS createdAt, e.acknowledged_at AS acknowledgedAt, c.company_name AS companyName FROM alert_events e LEFT JOIN companies c ON c.player_id = e.owner_player_id AND c.company_id = e.company_id WHERE e.owner_player_id = ? ORDER BY e.created_at DESC LIMIT ?").bind(session.player_id, limit).all<Record<string, unknown>>(),
+      eventRows.all<Record<string, unknown>>(),
       db.prepare("SELECT COUNT(*) AS count FROM alert_events WHERE owner_player_id = ? AND status = 'unread'").bind(session.player_id).first<{ count: number }>(),
       db.prepare("SELECT trigger_name AS triggerName, status, started_at AS startedAt, finished_at AS finishedAt, companies_checked AS companiesChecked, companies_failed AS companiesFailed, alerts_created AS alertsCreated, error_summary AS errorSummary FROM automation_runs ORDER BY started_at DESC LIMIT 1").first<Record<string, unknown>>(),
     ])
