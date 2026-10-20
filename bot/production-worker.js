@@ -59,8 +59,8 @@ async function reportDashboardAlertPoll(env, token, userId, metrics, status, err
   try {
     const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const [exhausted, stale] = await Promise.all([
-      env.BOT_DB.prepare("SELECT (SELECT COUNT(*) FROM discord_alert_deliveries WHERE discord_user_id=? AND status='failed' AND attempts>=3) + (SELECT COUNT(*) FROM discord_daily_summary_deliveries WHERE discord_user_id=? AND status='failed' AND attempts>=3) AS count").bind(userId, userId).first(),
-      env.BOT_DB.prepare("SELECT (SELECT COUNT(*) FROM discord_alert_deliveries WHERE discord_user_id=? AND status='processing' AND updated_at<?) + (SELECT COUNT(*) FROM discord_daily_summary_deliveries WHERE discord_user_id=? AND status='processing' AND updated_at<?) AS count").bind(userId, cutoff, userId, cutoff).first()
+      env.BOT_DB.prepare("SELECT COUNT(*) AS count FROM discord_daily_summary_deliveries WHERE discord_user_id=? AND status='failed' AND attempts>=3").bind(userId).first(),
+      env.BOT_DB.prepare("SELECT COUNT(*) AS count FROM discord_daily_summary_deliveries WHERE discord_user_id=? AND status='processing' AND updated_at<?").bind(userId, cutoff).first()
     ]);
     const response = await dashboardFetch(env, "/api/me/discord-alert-poll-health", {
       method: "POST",
