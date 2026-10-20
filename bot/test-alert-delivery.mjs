@@ -144,7 +144,7 @@ function makeFixture({
       const url = new URL(request.url);
       const record = { url, method: request.method, headers: request.headers };
       dashboardRequests.push(record);
-      const token = String(request.headers.get("authorization") || "").replace(/^Bearer\\s+/i, "");
+      const token = String(request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
       const account = linkedAccounts.find(item => (item.sessionToken || sessionToken) === token) || linkedAccounts[0];
       const userId = account?.discordUserId || accountId;
       if (dashboardThrowsFor.includes(userId)) throw new Error("simulated account-specific dashboard API failure");
