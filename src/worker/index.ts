@@ -2312,6 +2312,11 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
     for (const point of byDay.values()) {
       point.stockQuantity = stockByDay.get(String(point.day)) ?? null
       point.stockOrderExpense = stockExpensesByDay.get(String(point.day)) ?? null
+      if (typeof point.dailyProfit !== "number" && typeof point.dailyIncome === "number" &&
+          typeof point.advertisingBudget === "number" && typeof point.employeeWages === "number" &&
+          typeof point.stockOrderExpense === "number") {
+        point.dailyProfit = point.dailyIncome - point.advertisingBudget - point.employeeWages - point.stockOrderExpense
+      }
     }
     const history = Array.from(byDay.values()).sort((a, b) => String(a.day).localeCompare(String(b.day)))
     const first = history[0] ?? null, latest = history.at(-1) ?? null
