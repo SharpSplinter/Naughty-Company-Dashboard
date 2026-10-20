@@ -1,5 +1,6 @@
 import { money, numberLabel, countChangeLabel } from "./formatting.mjs";
 import { parseCommandRoute } from "./command-routing.mjs";
+import { isDuringQuietHours, severityRank } from "./alert-delivery.mjs";
 import { buildCostBreakdown, estimateDailyProfit, estimateWeeklyProfit, findAdvertisingBudget, knownWageSummary, stockOrderExpenses, summarizeMonthToDate } from "./financials.mjs";
 
 const enc = new TextEncoder();
@@ -130,30 +131,6 @@ function chunkedPrivateReply(title, lines, maxLength = 1750) {
   const reply = privateReply(chunks[0] || title);
   if (chunks.length > 1) reply.followups = chunks.slice(1);
   return reply;
-}
-
-function severityRank(value) {
-  const severity = String(value || "info").toLowerCase();
-  if (["critical", "high", "error", "fatal"].includes(severity)) return 3;
-  if (["warning", "medium", "warn"].includes(severity)) return 2;
-  return 1;
-}
-function isDuringQuietHours(preferences) {
-  if (!(preferences?.quietHoursEnabled === true || Number(preferences?.quietHoursEnabled) === 1)) return false;
-  const timezone = typeof preferences.timezone === "string" && preferences.timezone ? preferences.timezone : "UTC";
-  const startText = typeof preferences.quietHoursStart === "string" ? preferences.quietHoursStart : "22:00";
-  const endText = typeof preferences.quietHoursEnd === "string" ? preferences.quietHoursEnd : "08:00";
-  const minutes = value => {
-    const match = String(value).match(/^(\d{2}):(\d{2})$/);
-    return match ? Number(match[1]) * 60 + Number(match[2]) : null;
-  };
-  const start = minutes(startText), end = minutes(endText);
-  if (start === null || end === null || start === end) return false;
-  try {
-    const parts = new Intl.DateTimeFormat("en-GB", { timeZone: timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date()).split(":");
-    const now = Number(parts[0]) * 60 + Number(parts[1]);
-    return start < end ? now >= start && now < end : now >= start || now < end;
-  } catch { return false; }
 }
 
 async function replyFor(i, env) {
