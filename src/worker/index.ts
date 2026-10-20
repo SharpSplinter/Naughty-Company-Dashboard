@@ -1997,6 +1997,8 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
     if (!(consumed.meta?.changes ?? 0)) return jsonResponse({ error: "That dashboard link code has already been used. Generate a new code in the dashboard." }, 409, origin)
     try {
       const token = await decryptKey(env, row.ciphertext, row.iv)
+      await db.prepare("DELETE FROM discord_alert_poll_health WHERE owner_player_id = ?").bind(row.ownerPlayerId).run()
+      await db.prepare("DELETE FROM discord_alert_poll_history WHERE owner_player_id = ?").bind(row.ownerPlayerId).run()
       await db.prepare("INSERT INTO discord_account_links (owner_player_id, discord_user_id, alerts_enabled, linked_at, updated_at) VALUES (?, ?, 0, ?, ?) ON CONFLICT(owner_player_id) DO UPDATE SET discord_user_id = excluded.discord_user_id, linked_at = excluded.linked_at, updated_at = excluded.updated_at").bind(row.ownerPlayerId, discordUserId, now, now).run()
       return jsonResponse({ token, playerId: row.ownerPlayerId }, 200, origin)
     } catch { return jsonResponse({ error: "The dashboard link could not be completed. Generate a new code and try again." }, 503, origin) }
@@ -2070,6 +2072,8 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
     const otherOwner = await db.prepare("SELECT owner_player_id AS ownerPlayerId FROM discord_account_links WHERE discord_user_id = ? AND owner_player_id <> ?").bind(discordUserId, session.player_id).first<{ ownerPlayerId: string }>()
     if (otherOwner) return jsonResponse({ error: "That Discord account is already linked to another dashboard account." }, 409, origin)
     const now = new Date().toISOString()
+    await db.prepare("DELETE FROM discord_alert_poll_health WHERE owner_player_id = ?").bind(session.player_id).run()
+    await db.prepare("DELETE FROM discord_alert_poll_history WHERE owner_player_id = ?").bind(session.player_id).run()
     await db.prepare("INSERT INTO discord_account_links (owner_player_id, discord_user_id, alerts_enabled, linked_at, updated_at) VALUES (?, ?, 0, ?, ?) ON CONFLICT(owner_player_id) DO UPDATE SET discord_user_id = excluded.discord_user_id, linked_at = excluded.linked_at, updated_at = excluded.updated_at").bind(session.player_id, discordUserId, now, now).run()
     return jsonResponse({ linked: true, alertsEnabled: false, linkedAt: now }, 200, origin)
   }
