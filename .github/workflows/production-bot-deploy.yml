@@ -18,6 +18,7 @@ on:
       - "bot/command-schema-contract.mjs"
       - "bot/command-options.mjs"
       - "bot/command-routing.mjs"
+      - "bot/test-command-dispatch.mjs"
       - "bot/commands/**"
       - "bot/test-command-contract.mjs"
       - "bot/test-interaction-lifecycle.mjs"
@@ -44,6 +45,7 @@ on:
       - "bot/command-schema-contract.mjs"
       - "bot/command-options.mjs"
       - "bot/command-routing.mjs"
+      - "bot/test-command-dispatch.mjs"
       - "bot/commands/**"
       - "bot/test-command-contract.mjs"
       - "bot/test-interaction-lifecycle.mjs"
@@ -91,10 +93,14 @@ jobs:
         run: node --check bot/command-options.mjs
       - name: Validate nested interaction router syntax
         run: node --check bot/command-routing.mjs
+      - name: Validate command dispatch integration tests
+        run: node --check bot/test-command-dispatch.mjs
       - name: Validate individual command definitions
         run: for file in bot/commands/*.mjs; do node --check "$file"; done
       - name: Test Discord command contract and production safeguards
         run: node bot/test-command-contract.mjs
+      - name: Test canonical command dispatch, invalid routes, and autocomplete
+        run: node bot/test-command-dispatch.mjs
       - name: Test Discord command registration API behavior
         run: node bot/test-register-commands.mjs
       - name: Test interaction acknowledgements, slow paths, and failure responses
