@@ -122,7 +122,7 @@ export function buildDailySummaryMessage({ reportingDay, companies }) {
       metricLine("Company rank", "companyRank", current.companyRank, previous.companyRank),
       metricLine("Stock quantity", "stockQuantity", current.stockQuantity, previous.stockQuantity),
     ];
-    if (company.snapshotDay !== reportingDay) lines.push(company.snapshotDay ? `⚠️ Latest saved company snapshot: \${company.snapshotDay}; today's snapshot is missing.` : "⚠️ No saved company snapshot is available; today's snapshot is missing.");
+    if (company.snapshotDay !== reportingDay) lines.push(company.snapshotDay ? `⚠️ Latest saved company snapshot: ${company.snapshotDay}; today's snapshot is missing.` : "⚠️ No saved company snapshot is available; today's snapshot is missing.");
     if (!company.previousDayAvailable) lines.push("Prior-day comparison unavailable where no previous-day value was saved.");
     const candidate = "\n\n" + lines.join("\n");
     if (blocks.join("\n").length + candidate.length > 1750) { omitted += 1; continue; }
