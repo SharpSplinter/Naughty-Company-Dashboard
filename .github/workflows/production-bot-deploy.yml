@@ -7,6 +7,8 @@ on:
       - main
     paths:
       - "bot/production-worker.js"
+      - "bot/alert-delivery.mjs"
+      - "bot/test-alert-delivery.mjs"
       - "bot/financials.mjs"
       - "bot/test-financials.mjs"
       - "bot/formatting.mjs"
@@ -34,6 +36,8 @@ on:
       - main
     paths:
       - "bot/production-worker.js"
+      - "bot/alert-delivery.mjs"
+      - "bot/test-alert-delivery.mjs"
       - "bot/financials.mjs"
       - "bot/test-financials.mjs"
       - "bot/formatting.mjs"
@@ -81,6 +85,10 @@ jobs:
         run: node --check bot/financials.mjs
       - name: Validate bot formatting helpers
         run: node --check bot/formatting.mjs
+      - name: Validate alert delivery helpers and tests
+        run: |
+          node --check bot/alert-delivery.mjs
+          node --check bot/test-alert-delivery.mjs
       - name: Validate command registration script
         run: node --check bot/register-commands.mjs
       - name: Validate command registration API tests
@@ -103,6 +111,8 @@ jobs:
         run: node bot/test-command-dispatch.mjs
       - name: Test Discord command registration API behavior
         run: node bot/test-register-commands.mjs
+      - name: Test private alert delivery and retry behavior
+        run: node bot/test-alert-delivery.mjs
       - name: Test interaction acknowledgements, slow paths, and failure responses
         run: node bot/test-interaction-lifecycle.mjs
       - name: Test account linking, authorization failures, malformed requests, and multi-part replies

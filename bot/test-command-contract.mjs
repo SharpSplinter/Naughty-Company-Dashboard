@@ -446,7 +446,7 @@ assert.match(wageBlock, /Employees with wage data:/, "wage output must show empl
 assert.doesNotMatch(wageBlock, /Missing wage values remain unknown|Data is from the saved dashboard record|Roster entries returned:/, "wage output must omit unnecessary descriptors");
 
 const chunkHelperStart = worker.indexOf("function chunkedPrivateReply(");
-const severityHelperStart = worker.indexOf("function severityRank(", chunkHelperStart);
+const severityHelperStart = worker.indexOf("async function replyFor(", chunkHelperStart);
 assert.ok(chunkHelperStart >= 0 && severityHelperStart > chunkHelperStart, "private reply chunk helper boundaries must exist");
 const chunkHelper = worker.slice(chunkHelperStart, severityHelperStart);
 assert.match(chunkHelper, /const continuationTitle = String\(title\)\.split\("\\n", 1\)\[0\] \+ " \(continued\)"/,
