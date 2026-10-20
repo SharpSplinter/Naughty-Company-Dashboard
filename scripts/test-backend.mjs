@@ -1345,6 +1345,85 @@ try {
     assert.equal(invalidCursor.status, 400)
   })
 
+  await test("Discord alert poll health reports are authenticated, linked-account scoped, and retain bounded history", async () => {
+    const token = "discord-poll-health-session"
+    const tokenDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
+    const tokenHash = Array.from(new Uint8Array(tokenDigest), byte => byte.toString(16).padStart(2, "0")).join("")
+    const discordUserId = "123456789012345678"
+    const ownerId = "777"
+    let currentHealth = {
+      status: "error",
+      consecutiveFailures: 2,
+      lastSuccessAt: "2026-10-18T18:10:00.000Z"
+    }
+    const historyRows = []
+    const writes = []
+    const link = { discordUserId, alertsEnabled: 1 }
+    const db = {
+      prepare(sql) {
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            const lower = sql.toLowerCase()
+            if (lower.includes("from sessions s join players p")) return values[0] === tokenHash ? { player_id: ownerId, player_name: "Poll Tester" } : null
+            if (lower.includes("from dashboard_member_status") || lower.includes("from admin_settings")) return null
+            if (lower.includes("from discord_account_links where owner_player_id = ?")) return link
+            if (lower.includes("from discord_alert_poll_health")) {
+              if (currentHealth && values[0] === ownerId && values[1] === discordUserId) return currentHealth
+              return null
+            }
+            return null
+          },
+          async all() {
+            if (sql.includes("FROM discord_alert_poll_history")) return { results: historyRows.filter(row => row.ownerPlayerId === values[0] && row.discordUserId === values[1]) }
+            return { results: [] }
+          },
+          async run() {
+            writes.push({ sql, values: [...values] })
+            if (sql.includes("INSERT INTO discord_alert_poll_health")) {
+              const [playerId, userId, startedAt, completedAt, lastSuccessAt, status, errorCode, errorAt, consecutiveFailures, pageCount, eventsSeen, delivered, filtered, failed, exhausted, staleRecovered, exhaustedDeliveries, staleClaims, updatedAt] = values
+              currentHealth = { ownerPlayerId: playerId, discordUserId: userId, pollStartedAt: startedAt, pollCompletedAt: completedAt, lastSuccessAt, status, errorCode, errorAt, consecutiveFailures, pageCount, eventsSeen, delivered, filtered, failed, exhausted, staleRecovered, exhaustedDeliveries, staleClaims, updatedAt }
+            } else if (sql.includes("INSERT INTO discord_alert_poll_history")) {
+              const [reportId, ownerPlayerId, discordUserIdValue, startedAt, completedAt, status, errorCode, consecutiveFailures, pageCount, eventsSeen, delivered, filtered, failed, exhausted, staleRecovered, exhaustedDeliveries, staleClaims] = values
+              historyRows.unshift({ reportId, ownerPlayerId, discordUserId: discordUserIdValue, pollStartedAt: startedAt, pollCompletedAt: completedAt, status, errorCode, consecutiveFailures, pageCount, eventsSeen, delivered, filtered, failed, exhausted, staleRecovered, exhaustedDeliveries, staleClaims })
+            }
+            return { success: true, meta: { changes: 1 } }
+          }
+        }
+      }
+    }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer " + token, "Content-Type": "application/json" }
+    const payload = {
+      discordUserId, startedAt: "2026-10-19T18:00:00.000Z", completedAt: "2026-10-19T18:00:05.000Z",
+      status: "error", errorCode: "dashboard_alerts_http_503", pages: 1, eventsSeen: 100,
+      delivered: 0, filtered: 0, failed: 0, exhausted: 0, staleRecovered: 0, exhaustedDeliveries: 2, staleClaims: 1
+    }
+    const posted = await worker.fetch(new Request("https://worker.test/api/me/discord-alert-poll-health", { method: "POST", headers, body: JSON.stringify(payload) }), { DB: db })
+    assert.equal(posted.status, 200)
+    const postResult = await posted.json()
+    assert.equal(postResult.recorded, true)
+    assert.equal(postResult.consecutiveFailures, 3, "repeated poll errors should trip the stored warning threshold")
+    assert.equal(currentHealth.errorCode, "dashboard_alerts_http_503")
+    assert.equal(currentHealth.exhaustedDeliveries, 2)
+    assert.equal(historyRows.length, 1)
+
+    const fetched = await worker.fetch(new Request("https://worker.test/api/me/discord-alert-poll-health", { headers }), { DB: db })
+    assert.equal(fetched.status, 200)
+    const fetchedPayload = await fetched.json()
+    assert.equal(fetchedPayload.linked, true)
+    assert.equal(fetchedPayload.health.consecutiveFailures, 3)
+    assert.equal(fetchedPayload.history.length, 1)
+    assert.equal(fetchedPayload.history[0].status, "error")
+
+    const writesBeforeSpoof = writes.filter(item => item.sql.includes("INSERT INTO discord_alert_poll_health")).length
+    const spoofed = await worker.fetch(new Request("https://worker.test/api/me/discord-alert-poll-health", {
+      method: "POST", headers, body: JSON.stringify({ ...payload, discordUserId: "223456789012345678" })
+    }), { DB: db })
+    assert.equal(spoofed.status, 403, "a signed-in user cannot report health for another Discord account")
+    assert.equal(writes.filter(item => item.sql.includes("INSERT INTO discord_alert_poll_health")).length, writesBeforeSpoof)
+  })
+
   await test("session revocation routes are present", () => {
     const source = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     assert.match(source, /sign-out-all/)
