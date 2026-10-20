@@ -243,9 +243,7 @@ function makeFixture({
 
 async function runScheduled(fixture, count = 1) {
   const previousFetch = globalThis.fetch;
-  const previousCrypto = globalThis.crypto;
   globalThis.fetch = fixture.discordFetch;
-  globalThis.crypto = webcrypto;
   try {
     for (let i = 0; i < count; i++) {
       const pending = [];
@@ -254,7 +252,6 @@ async function runScheduled(fixture, count = 1) {
     }
   } finally {
     globalThis.fetch = previousFetch;
-    globalThis.crypto = previousCrypto;
   }
 }
 
