@@ -99,8 +99,9 @@ async function escalatePollFailureIfNeeded(env, userId, errorCode) {
     if (consecutiveFailures < 3) return;
 
     const triggeredAt = new Date().toISOString();
-    const marker = await env.BOT_DB.prepare("INSERT INTO discord_alert_poll_escalations(discord_user_id,escalation_key,triggered_at,notification_delivered) VALUES(?,'poll_failure_streak',?,0) ON CONFLICT(discord_user_id,escalation_key) DO NOTHING")
-      .bind(userId, triggeredAt).run();
+    const retryCutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    const marker = await env.BOT_DB.prepare("INSERT INTO discord_alert_poll_escalations(discord_user_id,escalation_key,triggered_at,notification_delivered) VALUES(?,'poll_failure_streak',?,0) ON CONFLICT(discord_user_id,escalation_key) DO UPDATE SET triggered_at=excluded.triggered_at WHERE discord_alert_poll_escalations.notification_delivered=0 AND discord_alert_poll_escalations.triggered_at < ?")
+      .bind(userId, triggeredAt, retryCutoff).run();
     if (Number(marker?.meta?.changes || 0) !== 1) return;
 
     const content = "🚨 Naughty Company Dashboard operational alert\nPrivate Discord alert polling has failed " +
