@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { FormEvent } from "react"
+import { evaluateDiscordPollHealth } from "../../lib/automation/discord-poll-monitoring"
 
 type AlertRuleType = "income_drop" | "stale_data" | "refresh_failure" | "income_increase" | "rating_drop" | "roster_change"
 type CompanyOption = { company_id: string; company_name: string | null }
@@ -139,21 +140,10 @@ export function AlertsPanel({ apiBase, sessionToken, companies, selectedCompanyI
   }, [refreshDiscordPollMonitoring])
 
   const pollHealth = discordPollMonitoring?.health ?? null
-  const pollCompletedMs = pollHealth?.pollCompletedAt ? Date.parse(pollHealth.pollCompletedAt) : Number.NaN
-  const pollTelemetryStale = discordLinked && discordAlertsEnabled && (!Number.isFinite(pollCompletedMs) || Date.now() - pollCompletedMs > 30 * 60 * 1000)
-  const pollWarningReasons: string[] = []
-  if (pollHealth?.status === "error") {
-    pollWarningReasons.push(pollHealth.consecutiveFailures >= 3
-      ? `Polling has failed ${pollHealth.consecutiveFailures} times in a row.`
-      : "The most recent private-alert poll failed.")
-  }
-  if (pollHealth && pollHealth.consecutiveFailures >= 3 && pollHealth.status !== "error") pollWarningReasons.push(`Polling previously reached ${pollHealth.consecutiveFailures} consecutive failures.`)
-  if (Number(pollHealth?.exhaustedDeliveries || 0) > 0) pollWarningReasons.push(`${pollHealth?.exhaustedDeliveries} private DM delivery(ies) have exhausted automatic retries.`)
-  if (Number(pollHealth?.staleClaims || 0) > 0) pollWarningReasons.push(`${pollHealth?.staleClaims} delivery claim(s) appear stale and need recovery.`)
-  if (pollHealth?.status === "partial" && Number(pollHealth.failed || 0) > 0) pollWarningReasons.push(`${pollHealth.failed} DM delivery attempt(s) failed in the last poll.`)
-  if (pollTelemetryStale) pollWarningReasons.push("No fresh poll report has arrived in the last 30 minutes.")
-  const pollNeedsAttention = pollWarningReasons.length > 0
-  const pollBadgeLabel = pollNeedsAttention ? "Attention needed" : pollHealth ? pollHealth.status === "quiet_hours" ? "Quiet hours" : pollHealth.status === "disabled" ? "Polling disabled" : "Reporting normally" : "Awaiting first report"
+  const pollAssessment = evaluateDiscordPollHealth(pollHealth, { linked: discordLinked, alertsEnabled: discordAlertsEnabled })
+  const pollWarningReasons = pollAssessment.warningReasons
+  const pollNeedsAttention = pollAssessment.needsAttention
+  const pollBadgeLabel = pollAssessment.badgeLabel
 
   const filteredEvents = events.filter((event) => {
     const query = alertSearch.trim().toLocaleLowerCase()
