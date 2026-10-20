@@ -2283,10 +2283,11 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
       const employees = parseStoredJson(row.employeesJson)
       const root = companyProfileRoot(profile)
       const income = isRecord(root.income) ? root.income : {}
+      const profit = isRecord(root.profit) ? root.profit : {}
       const fetchedAtMs = Date.parse(String(row.fetchedAt ?? ""))
       const day = Number.isFinite(fetchedAtMs) ? new Date(fetchedAtMs - 18 * 60 * 60 * 1000).toISOString().slice(0, 10) : ""
       if (!day) continue
-      byDay.set(day, { day, fetchedAt: row.fetchedAt, snapshotId: row.snapshotId, dailyIncome: dailyIncomeFromProfile(profile), weeklyIncome: numericField(income.weekly), rating: ratingFromProfile(profile), employeeCount: rosterCount(employees), employeeCapacity: isRecord(root.employees) ? numericField(root.employees.capacity) : null, advertisingBudget: historicalAdvertisingBudget(profile), employeeWages: historicalEmployeeWages(employees), stockOrderExpense: null, stockQuantity: null })
+      byDay.set(day, { day, fetchedAt: row.fetchedAt, snapshotId: row.snapshotId, dailyIncome: dailyIncomeFromProfile(profile), dailyProfit: numericField(profit.daily ?? root.daily_profit ?? root.dailyProfit), weeklyIncome: numericField(income.weekly), rating: ratingFromProfile(profile), employeeCount: rosterCount(employees), employeeCapacity: isRecord(root.employees) ? numericField(root.employees.capacity) : null, advertisingBudget: historicalAdvertisingBudget(profile), employeeWages: historicalEmployeeWages(employees), stockOrderExpense: null, stockQuantity: null })
     }
     const stockCutoffDay = cutoff ? cutoff.slice(0, 10) : null
     const stockQuery = db.prepare(`SELECT snapshot_day AS day, stock_json AS stockJson FROM faction_director_snapshots WHERE player_id = ? AND company_id = ?${stockCutoffDay ? " AND snapshot_day >= ?" : ""} ORDER BY snapshot_day ASC`)
@@ -2311,6 +2312,11 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
     for (const point of byDay.values()) {
       point.stockQuantity = stockByDay.get(String(point.day)) ?? null
       point.stockOrderExpense = stockExpensesByDay.get(String(point.day)) ?? null
+      if (typeof point.dailyProfit !== "number" && typeof point.dailyIncome === "number" &&
+          typeof point.advertisingBudget === "number" && typeof point.employeeWages === "number" &&
+          typeof point.stockOrderExpense === "number") {
+        point.dailyProfit = point.dailyIncome - point.advertisingBudget - point.employeeWages - point.stockOrderExpense
+      }
     }
     const history = Array.from(byDay.values()).sort((a, b) => String(a.day).localeCompare(String(b.day)))
     const first = history[0] ?? null, latest = history.at(-1) ?? null
