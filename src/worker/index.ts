@@ -1227,7 +1227,7 @@ async function ensureAutomationSchema(env: WorkerEnv): Promise<void> {
     exhausted_deliveries INTEGER NOT NULL DEFAULT 0,
     stale_claims INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
-  `).run()
+  )`).run()
   await db.prepare(`CREATE TABLE IF NOT EXISTS discord_alert_poll_history (
     report_id TEXT PRIMARY KEY,
     owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
@@ -1246,7 +1246,7 @@ async function ensureAutomationSchema(env: WorkerEnv): Promise<void> {
     stale_recovered INTEGER NOT NULL DEFAULT 0,
     exhausted_deliveries INTEGER NOT NULL DEFAULT 0,
     stale_claims INTEGER NOT NULL DEFAULT 0
-  `).run()
+  )`).run()
   await db.prepare("CREATE INDEX IF NOT EXISTS idx_discord_alert_poll_history_owner_completed ON discord_alert_poll_history(owner_player_id, discord_user_id, poll_completed_at DESC)").run()
   await db.prepare(`CREATE TABLE IF NOT EXISTS automation_delivery_log (
     delivery_id TEXT PRIMARY KEY,
