@@ -105,25 +105,52 @@ function dashboardFixture(request) {
   return jsonResponse({});
 }
 
-function fakeDatabase(linkedRow) {
+function fakeDatabase(linkedRow, { alertDeliveries = [], pollState = null } = {}) {
   const runs = [];
   const firstCalls = [];
+  const storedDeliveries = structuredClone(alertDeliveries);
+  const now = "2026-10-20T00:00:00.000Z";
   return {
-    runs, firstCalls,
+    runs, firstCalls, storedDeliveries,
     prepare(sql) {
       let values = [];
       return {
         bind(...args) { values = args; return this; },
         async run() {
           runs.push({ sql, values: [...values] });
-          return { success: true };
+          if (sql.startsWith("UPDATE discord_alert_deliveries SET status='failed',attempts=0")) {
+            const [updatedAt, userId, eventId] = values;
+            const delivery = storedDeliveries.find(item => item.eventId === eventId && item.status === "failed" && Number(item.attempts) >= 3);
+            const changed = userId === "discord-user-test" && Boolean(delivery);
+            if (changed) {
+              delivery.attempts = 0;
+              delivery.updatedAt = updatedAt;
+            }
+            return { success: true, meta: { changes: changed ? 1 : 0 } };
+          }
+          if (sql.startsWith("UPDATE discord_alert_deliveries SET status='failed',updated_at=?")) {
+            return { success: true, meta: { changes: 0 } };
+          }
+          return { success: true, meta: { changes: 1 } };
         },
         async first() {
           firstCalls.push({ sql, values: [...values] });
           if (linkedRow && /FROM discord_links/.test(sql)) return linkedRow;
+          if (sql.includes("FROM discord_alert_poll_state")) return pollState;
+          if (sql.includes("COUNT(*) AS count") && sql.includes("status='failed'") && sql.includes("attempts>=3")) {
+            return { count: storedDeliveries.filter(item => item.status === "failed" && Number(item.attempts) >= 3).length };
+          }
+          if (sql.includes("COUNT(*) AS count") && sql.includes("status='processing'")) return { count: 0 };
           return null;
         },
-        async all() { return { results: [] }; }
+        async all() {
+          if (sql.includes("FROM discord_alert_deliveries WHERE discord_user_id=?")) {
+            return { results: storedDeliveries.filter(item => item.status === "failed" || item.status === "processing").slice(0, 25).map(item => ({
+              eventId: item.eventId, status: item.status, attempts: item.attempts, updatedAt: item.updatedAt
+            })) };
+          }
+          return { results: [] };
+        }
       };
     }
   };
@@ -146,11 +173,11 @@ async function signRequest(interaction) {
   });
 }
 
-async function invoke(interaction, { linkedRow = null, dashboardHandler = dashboardFixture } = {}) {
+async function invoke(interaction, { linkedRow = null, dashboardHandler = dashboardFixture, dbOptions = {} } = {}) {
   const oldFetch = globalThis.fetch;
   const discordRequests = [];
   const dashboardRequests = [];
-  const db = fakeDatabase(linkedRow);
+  const db = fakeDatabase(linkedRow, dbOptions);
   globalThis.fetch = async (input, init = {}) => {
     let body = null;
     if (typeof init.body === "string") {
@@ -378,6 +405,66 @@ test("autocomplete dispatch returns bounded empty choices for known selectors an
       }
     });
   }
+});
+
+test("private notification status and exhausted-delivery recovery stay account-scoped", async () => {
+  const linkedRow = await encryptedSession("dashboard-session-test");
+  const pollState = {
+    lastStartedAt: "2026-10-20T00:00:00.000Z",
+    lastCompletedAt: "2026-10-20T00:00:01.000Z",
+    lastSuccessAt: "2026-10-20T00:00:01.000Z",
+    lastStatus: "error",
+    lastErrorCode: "dashboard_alerts_http_503",
+    lastErrorAt: "2026-10-20T00:00:01.000Z",
+    consecutiveFailures: 3,
+    lastPageCount: 1,
+    lastEventsSeen: 100,
+    lastDelivered: 0,
+    lastFiltered: 0,
+    lastFailed: 0,
+    lastExhausted: 0,
+    lastStaleRecovered: 0
+  };
+  const eventId = "11111111-1111-4111-8111-111111111111";
+  const dbOptions = {
+    pollState,
+    alertDeliveries: [{ eventId, status: "failed", attempts: 3, updatedAt: "2026-10-20T00:00:01.000Z" }]
+  };
+  const statusResult = await invoke({
+    type: 2, application_id: "application-test", token: "alert-poll-status-token",
+    data: { name: "automation", options: [{ type: 2, name: "notifications", options: [{ type: 1, name: "status" }] }] },
+    user: { id: "discord-user-test" }
+  }, { linkedRow, dbOptions });
+  const statusText = finalReplyText(statusResult);
+  assert.match(statusText, /dashboard_alerts_http_503/, "status must display a safe, diagnostic error code");
+  assert.match(statusText, /Consecutive poll failures: \*\*3\*\*/, "status must make repeated failures visible");
+  assert.match(statusText, /Exhausted deliveries needing manual retry: \*\*1\*\*/, "status must surface exhausted delivery count");
+  assert.ok(statusResult.db.firstCalls.some(call => call.sql.includes("WHERE discord_user_id=?") && call.values[0] === "discord-user-test"),
+    "delivery counts must be scoped to the invoking Discord account");
+
+  const retryResult = await invoke({
+    type: 2, application_id: "application-test", token: "alert-poll-retry-token",
+    data: { name: "automation", options: [{ type: 2, name: "notifications", options: [
+      { type: 1, name: "retry", options: [{ type: 3, name: "event", value: eventId }] }
+    ] }] },
+    user: { id: "discord-user-test" }
+  }, { linkedRow, dbOptions });
+  assert.match(finalReplyText(retryResult), /Private alert retry queued/);
+  assert.equal(retryResult.db.storedDeliveries[0].attempts, 0, "manual retry should safely reset the exhausted attempt budget");
+});
+
+test("private notification retry autocomplete returns only exhausted failed deliveries for the invoking account", async () => {
+  const linkedRow = await encryptedSession("dashboard-session-test");
+  const eventId = "22222222-2222-4222-8222-222222222222";
+  const result = await invoke({
+    type: 4, application_id: "application-test", token: "alert-poll-autocomplete-token",
+    data: { name: "automation", options: [{ type: 2, name: "notifications", options: [
+      { type: 1, name: "retry", options: [{ type: 3, name: "event", value: "", focused: true }] }
+    ] }] },
+    user: { id: "discord-user-test" }
+  }, { linkedRow, dbOptions: { alertDeliveries: [{ eventId, status: "failed", attempts: 3, updatedAt: "2026-10-20T00:00:01.000Z" }] } });
+  assert.deepEqual(result.payload, { type: 8, data: { choices: [{ name: "Exhausted · 3 attempts · 2026-10-20T00:00:01.000Z", value: eventId }] } });
+  assert.equal(result.dashboardRequests.length, 0, "private alert retry autocomplete must not call dashboard APIs");
 });
 
 test("command route parser safely ignores malformed route payload shapes", () => {
