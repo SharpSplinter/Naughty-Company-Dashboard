@@ -707,3 +707,31 @@ th.numeric-cell {
 .performance-finding p { margin: 8px 0; line-height: 1.5; }
 .performance-finding-top, .performance-finding-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .performance-finding-actions { margin-top: 12px; }
+
+
+/* Per-account private Discord alert polling health and recovery telemetry. */
+.discord-poll-monitor{display:grid;gap:11px;margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:rgba(7,12,24,.44)}
+.discord-poll-monitor-heading,.discord-poll-history-heading,.discord-poll-monitor-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.discord-poll-monitor-heading h4{margin:0 0 5px;color:var(--white);font-size:12px}
+.discord-poll-monitor-heading p{margin:0;max-width:560px;color:var(--muted);font-size:10px;line-height:1.55}
+.discord-poll-empty{padding:10px;border:1px dashed var(--line);border-radius:8px;color:var(--muted);font-size:11px;line-height:1.55}
+.discord-poll-warning{padding:10px 12px;border:1px solid rgba(248,113,113,.32);border-radius:8px;background:rgba(248,113,113,.07);color:var(--white);font-size:11px;line-height:1.6}
+.discord-poll-warning strong{color:var(--danger,#f87171)}
+.discord-poll-warning ul{margin:6px 0;padding-left:18px}
+.discord-poll-warning p{margin:7px 0 0;color:var(--muted);overflow-wrap:anywhere}
+.discord-poll-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.discord-poll-metrics>div{display:flex;min-width:0;flex-direction:column;gap:5px;padding:9px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.02)}
+.discord-poll-metrics span{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.045em}
+.discord-poll-metrics strong{font-size:16px;color:var(--white);overflow-wrap:anywhere;text-transform:capitalize}
+.discord-poll-metrics small{font-size:9px;color:var(--muted);line-height:1.45}
+.discord-poll-history{display:grid;gap:7px}
+.discord-poll-history-heading{align-items:center;color:var(--white);font-size:10px}
+.discord-poll-history-heading span{color:var(--muted);font-size:9px}
+.discord-poll-history ul{display:grid;gap:5px;margin:0;padding:0;list-style:none}
+.discord-poll-history li{display:grid;grid-template-columns:minmax(115px,1.3fr) minmax(80px,.7fr) minmax(100px,1fr) auto;gap:8px;align-items:center;padding:7px 8px;border-radius:6px;background:rgba(255,255,255,.025);font-size:9px;color:var(--muted)}
+.discord-poll-history time{font-variant-numeric:tabular-nums}
+.discord-poll-history-status{text-transform:capitalize;color:var(--success,#86efac)}
+.discord-poll-history-status.warning{color:var(--danger,#f87171)}
+.discord-poll-monitor-footer{align-items:center}
+.discord-poll-monitor-footer .field-hint{margin:0}
+@media(max-width:720px){.discord-poll-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.discord-poll-history li{grid-template-columns:1fr auto}.discord-poll-history li>span:nth-of-type(2){grid-column:1}.discord-poll-history li>span:nth-of-type(3){grid-column:2;grid-row:2}.discord-poll-monitor-heading{flex-direction:column}}
