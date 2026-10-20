@@ -1207,6 +1207,47 @@ async function ensureAutomationSchema(env: WorkerEnv): Promise<void> {
     expires_at TEXT NOT NULL,
     used_at TEXT
   )`).run()
+  await db.prepare(`CREATE TABLE IF NOT EXISTS discord_alert_poll_health (
+    owner_player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
+    discord_user_id TEXT NOT NULL,
+    poll_started_at TEXT,
+    poll_completed_at TEXT,
+    last_success_at TEXT,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    error_code TEXT,
+    error_at TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    page_count INTEGER NOT NULL DEFAULT 0,
+    events_seen INTEGER NOT NULL DEFAULT 0,
+    delivered INTEGER NOT NULL DEFAULT 0,
+    filtered INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    exhausted INTEGER NOT NULL DEFAULT 0,
+    stale_recovered INTEGER NOT NULL DEFAULT 0,
+    exhausted_deliveries INTEGER NOT NULL DEFAULT 0,
+    stale_claims INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+  `).run()
+  await db.prepare(`CREATE TABLE IF NOT EXISTS discord_alert_poll_history (
+    report_id TEXT PRIMARY KEY,
+    owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+    discord_user_id TEXT NOT NULL,
+    poll_started_at TEXT,
+    poll_completed_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_code TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    page_count INTEGER NOT NULL DEFAULT 0,
+    events_seen INTEGER NOT NULL DEFAULT 0,
+    delivered INTEGER NOT NULL DEFAULT 0,
+    filtered INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    exhausted INTEGER NOT NULL DEFAULT 0,
+    stale_recovered INTEGER NOT NULL DEFAULT 0,
+    exhausted_deliveries INTEGER NOT NULL DEFAULT 0,
+    stale_claims INTEGER NOT NULL DEFAULT 0
+  `).run()
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_discord_alert_poll_history_owner_completed ON discord_alert_poll_history(owner_player_id, discord_user_id, poll_completed_at DESC)").run()
   await db.prepare(`CREATE TABLE IF NOT EXISTS automation_delivery_log (
     delivery_id TEXT PRIMARY KEY,
     owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
@@ -1935,10 +1976,11 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
   const webhookTestPath = url.pathname === "/api/me/automation-webhook/test"
   const deliveriesPath = url.pathname === "/api/me/automation-webhook/deliveries"
   const discordLinkPath = url.pathname === "/api/me/discord-link"
+  const discordPollHealthPath = url.pathname === "/api/me/discord-alert-poll-health"
   const discordLinkCodePath = url.pathname === "/api/me/discord-link-code"
   const discordRedeemPath = url.pathname === "/api/discord/link/redeem"
   const retryMatch = url.pathname.match(/^\/api\/me\/automation-webhook\/retry\/([a-f0-9-]{36})$/i)
-  if (!rulesPath && !alertsPath && !preferencesPath && !webhookPath && !webhookTestPath && !deliveriesPath && !retryMatch && !discordLinkPath && !discordLinkCodePath && !discordRedeemPath) return null
+  if (!rulesPath && !alertsPath && !preferencesPath && !webhookPath && !webhookTestPath && !deliveriesPath && !retryMatch && !discordLinkPath && !discordPollHealthPath && !discordLinkCodePath && !discordRedeemPath) return null
   if (discordRedeemPath && request.method === "POST") {
     await ensureAutomationSchema(env)
     const db = requireDb(env)
@@ -1955,6 +1997,8 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
     if (!(consumed.meta?.changes ?? 0)) return jsonResponse({ error: "That dashboard link code has already been used. Generate a new code in the dashboard." }, 409, origin)
     try {
       const token = await decryptKey(env, row.ciphertext, row.iv)
+      await db.prepare("DELETE FROM discord_alert_poll_health WHERE owner_player_id = ?").bind(row.ownerPlayerId).run()
+      await db.prepare("DELETE FROM discord_alert_poll_history WHERE owner_player_id = ?").bind(row.ownerPlayerId).run()
       await db.prepare("INSERT INTO discord_account_links (owner_player_id, discord_user_id, alerts_enabled, linked_at, updated_at) VALUES (?, ?, 0, ?, ?) ON CONFLICT(owner_player_id) DO UPDATE SET discord_user_id = excluded.discord_user_id, linked_at = excluded.linked_at, updated_at = excluded.updated_at").bind(row.ownerPlayerId, discordUserId, now, now).run()
       return jsonResponse({ token, playerId: row.ownerPlayerId }, 200, origin)
     } catch { return jsonResponse({ error: "The dashboard link could not be completed. Generate a new code and try again." }, 503, origin) }
@@ -1966,6 +2010,53 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
   if (discordLinkPath && request.method === "GET") {
     const row = await db.prepare("SELECT discord_user_id AS discordUserId, alerts_enabled AS alertsEnabled, linked_at AS linkedAt FROM discord_account_links WHERE owner_player_id = ?").bind(session.player_id).first<{ discordUserId: string; alertsEnabled: number; linkedAt: string }>()
     return jsonResponse({ linked: Boolean(row), alertsEnabled: Boolean(row?.alertsEnabled), linkedAt: row?.linkedAt ?? null }, 200, origin)
+  }
+  if (discordPollHealthPath && request.method === "GET") {
+    const link = await db.prepare("SELECT discord_user_id AS discordUserId, alerts_enabled AS alertsEnabled FROM discord_account_links WHERE owner_player_id = ?").bind(session.player_id).first<{ discordUserId: string; alertsEnabled: number }>()
+    if (!link) return jsonResponse({ linked: false, alertsEnabled: false, health: null, history: [] }, 200, origin)
+    const [health, history] = await Promise.all([
+      db.prepare("SELECT poll_started_at AS pollStartedAt,poll_completed_at AS pollCompletedAt,last_success_at AS lastSuccessAt,status,error_code AS errorCode,error_at AS errorAt,consecutive_failures AS consecutiveFailures,page_count AS pageCount,events_seen AS eventsSeen,delivered,filtered,failed,exhausted,stale_recovered AS staleRecovered,exhausted_deliveries AS exhaustedDeliveries,stale_claims AS staleClaims,updated_at AS updatedAt FROM discord_alert_poll_health WHERE owner_player_id = ? AND discord_user_id = ?").bind(session.player_id, link.discordUserId).first<Record<string, unknown>>(),
+      db.prepare("SELECT poll_completed_at AS pollCompletedAt,status,error_code AS errorCode,consecutive_failures AS consecutiveFailures,events_seen AS eventsSeen,delivered,failed,exhausted_deliveries AS exhaustedDeliveries,stale_claims AS staleClaims FROM discord_alert_poll_history WHERE owner_player_id = ? AND discord_user_id = ? ORDER BY poll_completed_at DESC LIMIT 12").bind(session.player_id, link.discordUserId).all<Record<string, unknown>>()
+    ])
+    return jsonResponse({ linked: true, alertsEnabled: Boolean(link.alertsEnabled), health: health ?? null, history: history.results ?? [] }, 200, origin)
+  }
+  if (discordPollHealthPath && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    if (!isRecord(body)) return jsonResponse({ error: "Provide private alert poll metrics." }, 400, origin)
+    const discordUserId = typeof body.discordUserId === "string" ? body.discordUserId.trim() : ""
+    const status = typeof body.status === "string" ? body.status : ""
+    const allowedStatuses = ["healthy", "partial", "error", "quiet_hours", "disabled", "initialized"]
+    if (!/^\d{17,20}$/.test(discordUserId) || !allowedStatuses.includes(status)) return jsonResponse({ error: "Invalid private alert poll metrics." }, 400, origin)
+    const linked = await db.prepare("SELECT discord_user_id AS discordUserId FROM discord_account_links WHERE owner_player_id = ?").bind(session.player_id).first<{ discordUserId: string }>()
+    if (!linked) return jsonResponse({ error: "Link a Discord account before reporting private alert poll status." }, 409, origin)
+    if (linked.discordUserId !== discordUserId) return jsonResponse({ error: "Poll metrics do not match the linked Discord account." }, 403, origin)
+    const isoValue = (value: unknown, fallback: string) => {
+      if (typeof value !== "string" || value.length > 40 || !Number.isFinite(Date.parse(value))) return fallback
+      return new Date(value).toISOString()
+    }
+    const countValue = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.min(1000000, Math.floor(value)) : 0
+    const completedAt = isoValue(body.completedAt, new Date().toISOString())
+    const startedAt = body.startedAt == null ? null : isoValue(body.startedAt, completedAt)
+    const safeCode = typeof body.errorCode === "string" && /^[a-z0-9_]+(?:_http_[1-5][0-9]{2})?$/i.test(body.errorCode) ? body.errorCode.slice(0, 80) : null
+    const metrics = {
+      pages: countValue(body.pages), eventsSeen: countValue(body.eventsSeen), delivered: countValue(body.delivered),
+      filtered: countValue(body.filtered), failed: countValue(body.failed), exhausted: countValue(body.exhausted),
+      staleRecovered: countValue(body.staleRecovered), exhaustedDeliveries: countValue(body.exhaustedDeliveries),
+      staleClaims: countValue(body.staleClaims)
+    }
+    const prior = await db.prepare("SELECT status,consecutive_failures AS consecutiveFailures,last_success_at AS lastSuccessAt FROM discord_alert_poll_health WHERE owner_player_id = ? AND discord_user_id = ?").bind(session.player_id, discordUserId).first<{ status: string; consecutiveFailures: number; lastSuccessAt: string | null }>()
+    const consecutiveFailures = status === "error" ? (prior?.status === "error" ? Number(prior.consecutiveFailures || 0) + 1 : 1) : 0
+    const lastSuccessAt = ["healthy", "partial", "quiet_hours", "disabled", "initialized"].includes(status) ? completedAt : prior?.lastSuccessAt ?? null
+    const errorCode = safeCode || (status === "partial" && metrics.failed > 0 ? "discord_dm_delivery_failed" : null)
+    const errorAt = errorCode ? completedAt : null
+    const reportId = crypto.randomUUID()
+    await db.prepare("INSERT INTO discord_alert_poll_health (owner_player_id,discord_user_id,poll_started_at,poll_completed_at,last_success_at,status,error_code,error_at,consecutive_failures,page_count,events_seen,delivered,filtered,failed,exhausted,stale_recovered,exhausted_deliveries,stale_claims,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner_player_id) DO UPDATE SET discord_user_id=excluded.discord_user_id,poll_started_at=excluded.poll_started_at,poll_completed_at=excluded.poll_completed_at,last_success_at=excluded.last_success_at,status=excluded.status,error_code=excluded.error_code,error_at=excluded.error_at,consecutive_failures=excluded.consecutive_failures,page_count=excluded.page_count,events_seen=excluded.events_seen,delivered=excluded.delivered,filtered=excluded.filtered,failed=excluded.failed,exhausted=excluded.exhausted,stale_recovered=excluded.stale_recovered,exhausted_deliveries=excluded.exhausted_deliveries,stale_claims=excluded.stale_claims,updated_at=excluded.updated_at")
+      .bind(session.player_id, discordUserId, startedAt, completedAt, lastSuccessAt, status, errorCode, errorAt, consecutiveFailures, metrics.pages, metrics.eventsSeen, metrics.delivered, metrics.filtered, metrics.failed, metrics.exhausted, metrics.staleRecovered, metrics.exhaustedDeliveries, metrics.staleClaims, completedAt).run()
+    await db.prepare("INSERT INTO discord_alert_poll_history (report_id,owner_player_id,discord_user_id,poll_started_at,poll_completed_at,status,error_code,consecutive_failures,page_count,events_seen,delivered,filtered,failed,exhausted,stale_recovered,exhausted_deliveries,stale_claims) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+      .bind(reportId, session.player_id, discordUserId, startedAt, completedAt, status, errorCode, consecutiveFailures, metrics.pages, metrics.eventsSeen, metrics.delivered, metrics.filtered, metrics.failed, metrics.exhausted, metrics.staleRecovered, metrics.exhaustedDeliveries, metrics.staleClaims).run()
+    await db.prepare("DELETE FROM discord_alert_poll_history WHERE owner_player_id = ? AND discord_user_id = ? AND report_id NOT IN (SELECT report_id FROM discord_alert_poll_history WHERE owner_player_id = ? AND discord_user_id = ? ORDER BY poll_completed_at DESC LIMIT 50)")
+      .bind(session.player_id, discordUserId, session.player_id, discordUserId).run()
+    return jsonResponse({ recorded: true, status, consecutiveFailures }, 200, origin)
   }
   if (discordLinkPath && request.method === "POST") {
     const body: unknown = await request.json().catch(() => null)
@@ -1981,12 +2072,16 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
     const otherOwner = await db.prepare("SELECT owner_player_id AS ownerPlayerId FROM discord_account_links WHERE discord_user_id = ? AND owner_player_id <> ?").bind(discordUserId, session.player_id).first<{ ownerPlayerId: string }>()
     if (otherOwner) return jsonResponse({ error: "That Discord account is already linked to another dashboard account." }, 409, origin)
     const now = new Date().toISOString()
+    await db.prepare("DELETE FROM discord_alert_poll_health WHERE owner_player_id = ?").bind(session.player_id).run()
+    await db.prepare("DELETE FROM discord_alert_poll_history WHERE owner_player_id = ?").bind(session.player_id).run()
     await db.prepare("INSERT INTO discord_account_links (owner_player_id, discord_user_id, alerts_enabled, linked_at, updated_at) VALUES (?, ?, 0, ?, ?) ON CONFLICT(owner_player_id) DO UPDATE SET discord_user_id = excluded.discord_user_id, linked_at = excluded.linked_at, updated_at = excluded.updated_at").bind(session.player_id, discordUserId, now, now).run()
     return jsonResponse({ linked: true, alertsEnabled: false, linkedAt: now }, 200, origin)
   }
   if (discordLinkPath && request.method === "DELETE") {
     await db.prepare("DELETE FROM discord_account_links WHERE owner_player_id = ?").bind(session.player_id).run()
     await db.prepare("DELETE FROM discord_link_codes WHERE owner_player_id = ?").bind(session.player_id).run()
+    await db.prepare("DELETE FROM discord_alert_poll_health WHERE owner_player_id = ?").bind(session.player_id).run()
+    await db.prepare("DELETE FROM discord_alert_poll_history WHERE owner_player_id = ?").bind(session.player_id).run()
     return jsonResponse({ linked: false, alertsEnabled: false }, 200, origin)
   }
   if (discordLinkCodePath && request.method === "POST") {

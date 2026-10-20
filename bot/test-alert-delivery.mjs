@@ -62,6 +62,7 @@ function makeFixture({
   ]));
   const discordRequests = [];
   const dashboardRequests = [];
+  const pollHealthReports = [];
   const linkRowPromise = Promise.all(linkedAccounts.map(async account => ({
     account,
     row: account.invalidCipher
@@ -165,6 +166,12 @@ function makeFixture({
           dbReads.push({ sql, values: [...values] });
           if (sql.includes("SELECT linked_at AS linkedAt")) return { linkedAt };
           if (sql.includes("FROM discord_alert_poll_state")) return pollStates.get(values[0]) || null;
+          if (sql.includes("SELECT COUNT(*) AS count FROM discord_alert_deliveries")) {
+            const user = values[0];
+            const rows = [...deliveries.entries()].filter(([key]) => key.startsWith(user + ":")).map(([, row]) => row);
+            if (sql.includes("status='failed'") && sql.includes("attempts>=3")) return { count: rows.filter(row => row.status === "failed" && Number(row.attempts) >= 3).length };
+            if (sql.includes("status='processing'")) return { count: rows.filter(row => row.status === "processing" && row.updatedAt < values[1]).length };
+          }
           if (sql.includes("SELECT status,attempts FROM discord_alert_deliveries")) {
             return deliveries.get(deliveryKey(values[0], values[1])) || null;
           }
@@ -199,6 +206,11 @@ function makeFixture({
       const account = linkedAccounts.find(item => (item.sessionToken || sessionToken) === token) || linkedAccounts[0];
       const userId = account?.discordUserId || accountId;
       if (dashboardThrowsFor.includes(userId)) return jsonResponse({ error: "simulated account-specific dashboard API failure" }, 503);
+      if (url.pathname === "/api/me/discord-alert-poll-health" && request.method === "POST") {
+        const report = await request.clone().json();
+        pollHealthReports.push({ userId, authorization: request.headers.get("authorization"), report });
+        return jsonResponse({ recorded: true });
+      }
       if (url.pathname === "/api/me/discord-link") return jsonResponse({ linked: true, alertsEnabled: true });
       if (url.pathname === "/api/me/automation-preferences") {
         return jsonResponse({ preferences: { quietHoursEnabled: false, ...preferences, ...(preferencesByAccount[userId] || {}) } });
@@ -248,7 +260,7 @@ function makeFixture({
   };
 
   return {
-    env, dbRuns, dbReads, deliveries, pollStates, dashboardThrowsFor, discordRequests, dashboardRequests, discordFetch,
+    env, dbRuns, dbReads, deliveries, pollStates, dashboardThrowsFor, discordRequests, dashboardRequests, pollHealthReports, discordFetch,
     get messageAttempts() { return messageAttempts; },
     get channelAttempts() { return channelAttempts; },
     set messageFailureCount(value) { messageFailureCount = value; }
@@ -495,6 +507,37 @@ test("an exhausted stale processing claim is converted to a retryable failed row
   assert.equal(fixture.deliveries.get(deliveryKey(accountId, event.eventId)).attempts, 3,
     "stale recovery must preserve the attempt budget until an explicit manual retry");
   assert.equal(fixture.pollStates.get(accountId).lastStaleRecovered, 1);
+});
+
+test("completed private alert polls publish scoped health reports with retry backlog thresholds", async () => {
+  const event = alertEvent("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+  const fixture = makeFixture({ events: [event] });
+
+  await runScheduled(fixture);
+
+  const reports = fixture.pollHealthReports.filter(item => item.userId === accountId);
+  assert.equal(reports.length, 1, "one completed poll should publish one dashboard health report");
+  assert.equal(reports[0].authorization, "Bearer " + sessionToken, "health reports must use the linked dashboard session");
+  assert.equal(reports[0].report.discordUserId, accountId);
+  assert.equal(reports[0].report.status, "healthy");
+  assert.equal(reports[0].report.eventsSeen, 1);
+  assert.equal(reports[0].report.delivered, 1);
+  assert.equal(reports[0].report.exhaustedDeliveries, 0);
+});
+
+test("dashboard health reports expose exhausted delivery backlog after the third failure", async () => {
+  const event = alertEvent("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+  const fixture = makeFixture({ events: [event], messageFailureCount: 99 });
+
+  await runScheduled(fixture);
+  await runScheduled(fixture);
+  await runScheduled(fixture);
+
+  const report = fixture.pollHealthReports.at(-1)?.report;
+  assert.equal(report.status, "partial");
+  assert.equal(report.failed, 1);
+  assert.equal(report.exhausted, 1);
+  assert.equal(report.exhaustedDeliveries, 1, "dashboard telemetry must preserve exhausted work beyond the current poll");
 });
 
 console.log("PASS private alert delivery: severity and quiet-hours filtering, duplicate suppression, retry cap, transient recovery, and DM-channel failures.");
