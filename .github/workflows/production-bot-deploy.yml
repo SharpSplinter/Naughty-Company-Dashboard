@@ -11,6 +11,8 @@ on:
       - "bot/test-alert-delivery.mjs"
       - "bot/financials.mjs"
       - "bot/test-financials.mjs"
+      - "bot/daily-summary.mjs"
+      - "bot/test-daily-summary.mjs"
       - "bot/formatting.mjs"
       - "bot/test-formatting.mjs"
       - "bot/wrangler.production.toml"
@@ -40,6 +42,8 @@ on:
       - "bot/test-alert-delivery.mjs"
       - "bot/financials.mjs"
       - "bot/test-financials.mjs"
+      - "bot/daily-summary.mjs"
+      - "bot/test-daily-summary.mjs"
       - "bot/formatting.mjs"
       - "bot/test-formatting.mjs"
       - "bot/wrangler.production.toml"
@@ -83,6 +87,8 @@ jobs:
         run: node --check bot/production-worker.js
       - name: Validate financial helper syntax
         run: node --check bot/financials.mjs
+      - name: Validate daily summary helper syntax
+        run: node --check bot/daily-summary.mjs
       - name: Validate bot formatting helpers
         run: node --check bot/formatting.mjs
       - name: Validate alert delivery helpers and tests
@@ -114,6 +120,8 @@ jobs:
         run: node bot/test-register-commands.mjs
       - name: Test private alert delivery and retry behavior
         run: node bot/test-alert-delivery.mjs
+      - name: Test daily company summary formatting and comparisons
+        run: node bot/test-daily-summary.mjs
       - name: Test interaction acknowledgements, slow paths, and failure responses
         run: node bot/test-interaction-lifecycle.mjs
       - name: Test account linking, authorization failures, malformed requests, and multi-part replies
