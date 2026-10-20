@@ -119,8 +119,11 @@ assert.equal(scenario.registered.some(command => command.id === "foreign-overvie
   "an unrelated context-menu command sharing a deprecated alias name must be preserved");
 assert.equal(scenario.registered.some(command => command.id === "legacy-overview"), false,
   "the deprecated chat-input alias must be removed");
-assert.equal(scenario.registered.filter(command => command.name === "overview").length, 2,
-  "canonical company subcommand schema and unrelated context-menu command names must not be confused");
+assert.equal(scenario.registered.filter(command => command.name === "overview").length, 1,
+  "only the unrelated context-menu root named overview should remain");
+const registeredCompany = scenario.registered.find(command => command.name === "company" && command.type === 1);
+assert.ok(registeredCompany?.options?.some(option => option.name === "overview" && option.type === 1),
+  "the canonical /company overview subcommand must remain registered");
 assert.equal(scenario.calls.filter(call => call.method === "DELETE").every(call => call.url.startsWith(base + "/")),
   true, "cleanup requests must target only the configured guild command endpoint");
 assert.ok(scenario.logs.some(line => line.includes("unrelated commands were preserved")),
