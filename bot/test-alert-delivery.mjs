@@ -333,7 +333,7 @@ test("a dashboard API failure persists poll diagnostics and triggers one private
   assert.match(alert, /3 consecutive times/);
   await runScheduled(fixture);
   assert.equal(fixture.successfulMessages, 1, "the same failure streak must not send duplicate escalations");
-  assert.equal(fixture.pollHealthReports.at(-1).report.status, "error");
+  assert.equal(fixture.pollStates.get(accountId).lastStatus, "error");
 });
 
 console.log("PASS private alert delivery: single daily company summaries, day-level deduplication, retries, missing-data safety, and operational failure escalation.");
