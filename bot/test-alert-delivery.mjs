@@ -198,7 +198,7 @@ function makeFixture({
       const token = String(request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
       const account = linkedAccounts.find(item => (item.sessionToken || sessionToken) === token) || linkedAccounts[0];
       const userId = account?.discordUserId || accountId;
-      if (dashboardThrowsFor.includes(userId)) throw new Error("simulated account-specific dashboard API failure");
+      if (dashboardThrowsFor.includes(userId)) return jsonResponse({ error: "simulated account-specific dashboard API failure" }, 503);
       if (url.pathname === "/api/me/discord-link") return jsonResponse({ linked: true, alertsEnabled: true });
       if (url.pathname === "/api/me/automation-preferences") {
         return jsonResponse({ preferences: { quietHoursEnabled: false, ...preferences, ...(preferencesByAccount[userId] || {}) } });
@@ -453,7 +453,7 @@ test("repeated dashboard API failures persist account diagnostics and reset afte
 
   await runScheduled(fixture);
   assert.equal(fixture.pollStates.get(accountId).lastStatus, "error");
-  assert.equal(fixture.pollStates.get(accountId).lastErrorCode, "alert_poll_failed");
+  assert.equal(fixture.pollStates.get(accountId).lastErrorCode, "dashboard_discord_link_http_503");
   assert.equal(fixture.pollStates.get(accountId).consecutiveFailures, 1);
 
   await runScheduled(fixture);
