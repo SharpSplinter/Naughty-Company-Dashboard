@@ -4,6 +4,7 @@ import type {
   TornCompanyEmployees,
   TornCompanyProfile,
   TornCompanyResponse,
+  TornCompanySelections,
 } from "./types"
 
 const DEFAULT_BASE_URL = "https://api.torn.com/v2"
@@ -126,10 +127,10 @@ export class TornApiClient {
     return this.request<Record<string, unknown>>("/company/stock")
   }
 
-  async getCompanySelections(): Promise<{ profile: TornCompanyResponse<TornCompanyProfile>; employees: TornCompanyResponse<TornCompanyEmployees>; stock: Record<string, unknown> }> {
-    // Follow Torn's current OpenAPI /company endpoint and normalize both the
-    // combined-selection shape and the single-selection response wrappers.
-    const payload = await this.request<Record<string, unknown>>("/company?selections=employees%2Cstock%2Cprofile")
+  async getCompanySelections(): Promise<TornCompanySelections> {
+    // Preserve Torn's source timestamp so immutable history can be tied to the
+    // data returned by the official scheduled reporting capture.
+    const payload = await this.request<Record<string, unknown>>("/company?selections=timestamp%2Cprofile%2Cstock%2Cemployees")
     if (!isRecord(payload) || !isRecord(payload.profile)) {
       throw new TornApiClientError("Torn did not return a company profile in the combined response.", { status: 502 })
     }
@@ -143,7 +144,11 @@ export class TornApiClient {
     if (!employeePayload || !stockPayload) {
       throw new TornApiClientError("Torn did not return company employees and stock in the combined response.", { status: 502 })
     }
+    const timestamp = typeof payload.timestamp === "number" && Number.isFinite(payload.timestamp) && payload.timestamp > 0
+      ? payload.timestamp
+      : null
     return {
+      timestamp,
       profile: profilePayload as TornCompanyResponse<TornCompanyProfile>,
       employees: employeePayload as TornCompanyResponse<TornCompanyEmployees>,
       stock: stockPayload,

@@ -11,6 +11,14 @@ export type TornCompanyResponse<T> = {
   [key: string]: unknown
 }
 
+export type TornCompanySelections = {
+  /** Unix timestamp in seconds returned by Torn for this combined response. */
+  timestamp: number | null
+  profile: TornCompanyResponse<TornCompanyProfile>
+  employees: TornCompanyResponse<TornCompanyEmployees>
+  stock: Record<string, unknown>
+}
+
 export type TornClientOptions = {
   apiKey: string
   baseUrl?: string

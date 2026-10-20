@@ -147,12 +147,23 @@ try {
     assert.match(source, /await deliverAutomationDigest\(env, owner\.ownerPlayerId, events\.results \?\? \[\]\)/)
   })
 
-  await test("official daily stock deltas require two cutoff-aligned immutable snapshots", () => {
+  await test("official daily stock deltas require scheduled, source-timestamped immutable snapshots", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const floorSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
-    assert.match(workerSource, /capturedAt\.getTime\(\) - 18 \* 60 \* 60 \* 1000/)
-    assert.match(workerSource, /capturedAt\.getUTCHours\(\) === 18 && capturedAt\.getUTCMinutes\(\) >= 10/)
-    assert.match(workerSource, /ON CONFLICT\(player_id, company_id, snapshot_day\) DO NOTHING/)
+    const migrationSource = readFileSync(join(root, "migrations/auth/0009_faction_director_snapshot_kind.sql"), "utf8")
+    assert.match(workerSource, /function officialSnapshotSourceTime/)
+    assert.match(workerSource, /schedule\.cron\.trim\(\) !== "10 18 \* \* \*"/)
+    assert.match(workerSource, /schedule\.scheduledTime/)
+    assert.match(workerSource, /sourceTimestamp \* 1000/)
+    assert.match(workerSource, /snapshot_kind = excluded\.snapshot_kind/)
+    assert.match(migrationSource, /snapshot_kind IN \('initialization', 'lock-in', 'legacy'\)/)
+    const rankingRefresh = workerSource.slice(workerSource.indexOf("async function refreshRankingProfiles"), workerSource.indexOf("type AdminAuditOutcome"))
+    assert.match(rankingRefresh, /officialSnapshotSourceTime\(sourceTimestamp, snapshotSchedule\)/)
+    assert.match(rankingRefresh, /if \(sourceSnapshotAt\)/)
+    const directoryRefresh = workerSource.slice(workerSource.indexOf("async function syncFactionDirectorDirectory"), workerSource.indexOf("async function refreshFactionDirectoryFromAnyKey"))
+    assert.doesNotMatch(directoryRefresh, /persistFactionDirectorSnapshot/, "profile-only directory refreshes must not create official stock history")
+    const scheduled = workerSource.slice(workerSource.indexOf("async function runScheduledAutomation"), workerSource.indexOf("type AdminRefreshEndpoint"))
+    assert.match(scheduled, /refreshRankingProfiles\(env, isRankingCaptureWindow, \{ cron: controller\.cron, scheduledTime: controller\.scheduledTime \}\)/)
     assert.match(floorSource, /currentOfficialStockSnapshot = officialStockSnapshots\.find\(\(point\) => point\.day === currentSnapshotDay\)/)
     assert.match(floorSource, /currentOfficialStockSnapshot\.stockQuantity - previousStockSnapshot\.stockQuantity/)
     assert.doesNotMatch(floorSource, /currentStockQuantity - previousStockSnapshot\.stockQuantity/)
@@ -232,25 +243,25 @@ try {
     assert.match(refreshBody, /client\.getCompanyStock\(\)/)
     assert.match(refreshBody, /WHERE player_id IN \(/, "selected-user refreshes must scope the credential query")
     assert.match(refreshBody, /refreshGlobalRankingCache\(env, undefined, true\)/)
-    assert.match(refreshBody, /syncFactionDirectorDirectory\(env, apiKey, 35, false, true\)/, "manual directory refresh must force live lookup without writing director history")
-    assert.match(workerSource, /if \(profile && captureSnapshots\) await persistFactionDirectorSnapshot\(env, profile\)/)
+    assert.match(refreshBody, /syncFactionDirectorDirectory\(env, apiKey, 35, true\)/, "manual directory refresh must force live lookup without writing director history")
+    assert.doesNotMatch(workerSource, /captureSnapshots|persistFactionDirectorSnapshot\(env, profile\)/, "profile-only refreshes must not create director history")
     assert.doesNotMatch(refreshBody, /fetchOfficialCompanySnapshot/, "the official snapshot endpoint must not be used for a manual rankings refresh")
     assert.doesNotMatch(refreshBody, /https:\/\/api\.torn\.com\/v2\/company\/snapshot/, "manual rankings refresh must not fetch the official snapshot URL")
     assert.doesNotMatch(refreshBody, /INSERT INTO company_snapshots|INSERT INTO company_financial_snapshots|persistFactionDirectorSnapshot/, "manual endpoint refreshes must not append immutable historical snapshots")
     const persistStart = workerSource.indexOf("async function persistCompanyConnection")
     const persistEnd = workerSource.indexOf("async function ensurePrimaryCompanyConnection", persistStart)
     const persistBody = workerSource.slice(persistStart, persistEnd)
-    assert.match(persistBody, /if \(captureHistory\) await db\.prepare\("INSERT INTO company_snapshots/)
-    assert.match(persistBody, /if \(captureHistory\) \{\s*await db\.prepare\("INSERT INTO company_financial_snapshots/)
+    assert.match(persistBody, /if \(captureHistory\) \{\s*const \[profileHistory, financialHistory, directorHistory\]/)
+    assert.match(persistBody, /if \(!profileHistory && !financialHistory && !directorHistory\)/)
     assert.match(workerSource, /persistCompanyConnection\(env, job\.target_player_id, apiKey, validated, false\)/, "admin company refresh must update live data only")
     assert.match(workerSource, /if \(isRepair\) await persistCompanyConnection\(env, targetId, apiKey, validated, false\)/, "admin repairs must not create new history snapshots")
     const rankingStart = workerSource.indexOf("async function refreshRankingProfiles")
     const rankingEnd = workerSource.indexOf("\ntype AdminAuditOutcome", rankingStart)
     const rankingBody = workerSource.slice(rankingStart, rankingEnd)
-    assert.match(rankingBody, /if \(captureHistory\) await db\.prepare\("INSERT INTO company_snapshots/)
-    assert.match(rankingBody, /if \(captureHistory\) \{\s*await db\.prepare\("INSERT INTO company_financial_snapshots/)
+    assert.match(rankingBody, /const sourceSnapshotAt = captureHistory \? officialSnapshotSourceTime\(sourceTimestamp, snapshotSchedule\) : null/)
+    assert.match(rankingBody, /if \(sourceSnapshotAt\) \{\s*const fetchedAt = sourceSnapshotAt\.toISOString\(\)/)
     assert.match(workerSource, /refreshRankingProfiles\(env, false\)/, "legacy global admin refresh must not append ranking history")
-    assert.match(workerSource, /refreshFactionDirectoryFromAnyKey\(env, 35, false, true\)/, "legacy global admin refresh must force a live directory batch without history")
+    assert.match(workerSource, /refreshFactionDirectoryFromAnyKey\(env, 35, true\)/, "legacy global admin refresh must force a live directory batch without history")
     assert.match(uiSource, /REFRESH_ENDPOINT_OPTIONS/)
     assert.match(uiSource, /setRefreshScope\("selected"\)/)
     assert.match(uiSource, /setRefreshSelectedUserIds/)
@@ -432,13 +443,15 @@ try {
     const client = new TornApiClient({ apiKey: "test", fetcher: async (input) => {
       requestedUrl = String(input)
       return new Response(JSON.stringify({
+        timestamp: 1791845111,
         employees: [{ id: 1, name: "Employee" }],
         stock: [{ id: 173, name: "Oil (Barrel)" }],
         profile: { id: 77, name: "Sample Oil Rig", type: { id: 28, name: "Oil Rig" } },
       }))
     } })
     const response = await client.getCompanySelections()
-    assert.equal(requestedUrl, "https://api.torn.com/v2/company?selections=employees%2Cstock%2Cprofile")
+    assert.equal(requestedUrl, "https://api.torn.com/v2/company?selections=timestamp%2Cprofile%2Cstock%2Cemployees")
+    assert.equal(response.timestamp, 1791845111)
     assert.equal(response.profile.profile.id, 77)
     assert.equal(response.employees.employees.length, 1)
     assert.equal(response.stock.stock.length, 1)
@@ -446,11 +459,13 @@ try {
 
   await test("normalizes Torn combined company responses that retain OpenAPI response wrappers", async () => {
     const client = new TornApiClient({ apiKey: "test", fetcher: async () => new Response(JSON.stringify({
+      timestamp: 1791845000,
       profile: { profile: { id: 78, name: "Wrapped Company", type: { id: 28, name: "Oil Rig" } } },
       employees: { employees: [{ id: 2, name: "Wrapped Employee" }] },
       stock: { stock: [{ id: 173, name: "Oil (Barrel)" }] },
     })) })
     const response = await client.getCompanySelections()
+    assert.equal(response.timestamp, 1791845000)
     assert.equal(response.profile.profile.id, 78)
     assert.equal(response.employees.employees.length, 1)
     assert.equal(response.stock.stock.length, 1)
@@ -566,7 +581,7 @@ try {
       }
       if (path.endsWith("/v2/company/employees")) return new Response(JSON.stringify({ employees: [] }))
       if (path.endsWith("/v2/company/stock")) return new Response(JSON.stringify({ stock: [] }))
-      if (path.endsWith("/v2/company") && url.searchParams.get("selections") === "employees,stock,profile") {
+      if (path.endsWith("/v2/company") && url.searchParams.get("selections") === "timestamp,profile,stock,employees") {
         combinedRequests += 1
         if (combinedRequests === 2) {
           combinedFailureObserved = true

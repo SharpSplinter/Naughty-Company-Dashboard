@@ -138,7 +138,13 @@ async function saveCompanyApiKey(env: WorkerEnv, playerId: string, companyId: nu
   const now = new Date().toISOString()
   await requireDb(env).prepare("INSERT INTO company_api_keys (player_id, company_id, ciphertext, iv, last_four, company_name, company_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, company_name = excluded.company_name, company_type = excluded.company_type, updated_at = excluded.updated_at").bind(playerId, String(companyId), encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), typeof root.name === "string" ? root.name : `Company #${companyId}`, typeof type.name === "string" ? type.name : null, now, now).run()
 }
-async function persistCompanyConnection(env: WorkerEnv, playerId: string, apiKey: string, validated: { companyId: number; profile: unknown; employees: unknown; stock: unknown }, captureHistory = true): Promise<void> {
+async function persistCompanyConnection(
+  env: WorkerEnv,
+  playerId: string,
+  apiKey: string,
+  validated: { companyId: number; profile: unknown; employees: unknown; stock: unknown; sourceTimestamp?: number | null },
+  captureHistory = true,
+): Promise<void> {
   // Store the same credential in both legacy and per-company slots, with the
   // per-company record updated last so it becomes the active primary key.
   await saveCompanyKey(env, playerId, apiKey)
@@ -152,13 +158,44 @@ async function persistCompanyConnection(env: WorkerEnv, playerId: string, apiKey
   const existing = await db.prepare("SELECT employees_json FROM companies WHERE player_id = ? AND company_id = ?").bind(playerId, String(validated.companyId)).first<{ employees_json: string }>()
   const employeesJson = validated.employees ? asJson(validated.employees) : existing?.employees_json ?? "{}"
   const now = new Date().toISOString()
-  await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, employees_json = excluded.employees_json, fetched_at = excluded.fetched_at").bind(playerId, String(validated.companyId), companyName, companyType, asJson(profile), employeesJson, now).run()
-  if (captureHistory) await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(playerId, String(validated.companyId), asJson(profile), employeesJson, now).run()
+  const sourceMs = typeof validated.sourceTimestamp === "number" && Number.isFinite(validated.sourceTimestamp) && validated.sourceTimestamp > 0
+    ? validated.sourceTimestamp * 1000
+    : NaN
+  const initialFetchedAt = Number.isFinite(sourceMs) && !Number.isNaN(new Date(sourceMs).getTime())
+    ? new Date(sourceMs).toISOString()
+    : now
+
+  await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, employees_json = excluded.employees_json, fetched_at = excluded.fetched_at")
+    .bind(playerId, String(validated.companyId), companyName, companyType, asJson(profile), employeesJson, now).run()
   if (validated.stock !== null && validated.stock !== undefined) {
-    await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(playerId, String(validated.companyId), asJson(validated.stock), now).run()
-    if (captureHistory) {
-      await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)").bind(playerId, String(validated.companyId), asJson(validated.stock), now).run()
-      try { await persistFactionDirectorSnapshot(env, profile, validated.stock) } catch { /* The company snapshot is already persisted. */ }
+    await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at")
+      .bind(playerId, String(validated.companyId), asJson(validated.stock), now).run()
+  }
+
+  // Connecting or signing in again must not append another historical point.
+  // Create a one-time initialization baseline only when this company has no
+  // saved profile, financial, or director history at all.
+  if (captureHistory) {
+    const [profileHistory, financialHistory, directorHistory] = await Promise.all([
+      db.prepare("SELECT 1 AS found FROM company_snapshots WHERE player_id = ? AND company_id = ? LIMIT 1").bind(playerId, String(validated.companyId)).first<{ found: number }>(),
+      db.prepare("SELECT 1 AS found FROM company_financial_snapshots WHERE player_id = ? AND company_id = ? LIMIT 1").bind(playerId, String(validated.companyId)).first<{ found: number }>(),
+      db.prepare("SELECT 1 AS found FROM faction_director_snapshots WHERE player_id = ? AND company_id = ? LIMIT 1").bind(playerId, String(validated.companyId)).first<{ found: number }>(),
+    ])
+    if (!profileHistory && !financialHistory && !directorHistory) {
+      await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)")
+        .bind(playerId, String(validated.companyId), asJson(profile), employeesJson, initialFetchedAt).run()
+      if (validated.stock !== null && validated.stock !== undefined) {
+        await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)")
+          .bind(playerId, String(validated.companyId), asJson(validated.stock), initialFetchedAt).run()
+      }
+      try {
+        await persistFactionDirectorSnapshot(env, profile, validated.stock, {
+          kind: "initialization",
+          sourceTimestamp: validated.sourceTimestamp,
+        })
+      } catch {
+        /* The current company data is already persisted. */
+      }
     }
   }
 }
@@ -194,14 +231,16 @@ async function companyKeyMeta(env: WorkerEnv, playerId: string): Promise<{ saved
   const row = perCompany ?? legacy
   return row ? { saved: true, lastFour: row.last_four, updatedAt: row.updated_at } : { saved: false }
 }
-async function validateCompanyKey(apiKey: string): Promise<{ companyId: number; profile: unknown; employees: unknown; stock: unknown }> {
+async function validateCompanyKey(apiKey: string): Promise<{ companyId: number; profile: unknown; employees: unknown; stock: unknown; sourceTimestamp: number | null }> {
   const client = new TornApiClient({ apiKey })
   let profile: unknown, employees: unknown = null, stock: unknown = null
+  let sourceTimestamp: number | null = null
   try {
     const selections = await client.getCompanySelections()
     profile = selections.profile
     employees = selections.employees
     stock = selections.stock
+    sourceTimestamp = selections.timestamp
   } catch {
     // A profile-capable login key should still be promoted even if the combined
     // endpoint rejects one optional selection. Try the individual endpoints.
@@ -213,7 +252,7 @@ async function validateCompanyKey(apiKey: string): Promise<{ companyId: number; 
   }
   const companyId = companyIdFromPayload(profile)
   if (!companyId) throw Object.assign(new Error("That key did not return a valid company profile. Use a key with company profile access."), { status: 403 })
-  return { companyId, profile, employees, stock }
+  return { companyId, profile, employees, stock, sourceTimestamp }
 }
 async function inspectDirectorKey(apiKey: string, playerId: string): Promise<{ isDirector: boolean; profile?: unknown }> {
   try {
@@ -950,13 +989,45 @@ function positiveId(value: unknown): string | null {
   if ((typeof value === "number" || typeof value === "string") && /^\d+$/.test(String(value)) && Number(value) > 0) return String(value)
   return null
 }
-async function persistFactionDirectorSnapshot(env: WorkerEnv, profile: unknown, stock: unknown = null): Promise<void> {
+function officialSnapshotSourceTime(
+  sourceTimestamp: number | null | undefined,
+  schedule?: { cron: string; scheduledTime: number },
+): Date | null {
+  if (!schedule || schedule.cron.trim() !== "10 18 * * *") return null
+  const scheduledAt = new Date(schedule.scheduledTime)
+  if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getUTCHours() !== 18 || scheduledAt.getUTCMinutes() !== 10) return null
+  if (typeof sourceTimestamp !== "number" || !Number.isFinite(sourceTimestamp) || sourceTimestamp <= 0) return null
+  const sourceAt = new Date(sourceTimestamp * 1000)
+  if (Number.isNaN(sourceAt.getTime())) return null
+
+  // Torn's source data should belong to this reporting day and be close to the
+  // scheduled lock-in. Allow a short future skew for request processing time.
+  const sourceMs = sourceAt.getTime()
+  const scheduledMs = scheduledAt.getTime()
+  if (sourceMs < scheduledMs - 30 * 60 * 1000 || sourceMs > scheduledMs + 5 * 60 * 1000) return null
+  const sourceDay = new Date(sourceMs - 18 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const scheduledDay = new Date(scheduledMs - 18 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  if (sourceDay !== scheduledDay) return null
+  return sourceAt
+}
+
+async function persistFactionDirectorSnapshot(
+  env: WorkerEnv,
+  profile: unknown,
+  stock: unknown = null,
+  options: {
+    kind: "initialization" | "lock-in"
+    sourceTimestamp?: number | null
+    schedule?: { cron: string; scheduledTime: number }
+  },
+): Promise<void> {
   if (!env.DB) return
   const root = companyProfileRoot(profile)
   const director = isRecord(root.director) ? root.director : {}
   const playerId = positiveId(director.id ?? director.player_id)
   const companyId = positiveId(root.id ?? root.company_id)
   if (!playerId || !companyId) return
+
   const type = isRecord(root.type) ? root.type : {}
   const name = typeof root.name === "string" ? root.name : `Company #${companyId}`
   const typeName = typeof type.name === "string" ? type.name : null
@@ -965,25 +1036,39 @@ async function persistFactionDirectorSnapshot(env: WorkerEnv, profile: unknown, 
   const income = isRecord(root.income) ? root.income : {}
   const dailyIncome = typeof income.daily === "number" ? income.daily : null
   const weeklyIncome = typeof income.weekly === "number" ? income.weekly : null
-  const capturedAt = new Date()
-  const now = capturedAt.toISOString()
-  // Reporting days roll over at 18:00 UTC, not at midnight UTC.
-  const day = new Date(capturedAt.getTime() - 18 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const updatedAt = new Date().toISOString()
+  const sourceMs = typeof options.sourceTimestamp === "number" && Number.isFinite(options.sourceTimestamp) && options.sourceTimestamp > 0
+    ? options.sourceTimestamp * 1000
+    : NaN
+  const sourceAt = Number.isFinite(sourceMs) && !Number.isNaN(new Date(sourceMs).getTime()) ? new Date(sourceMs) : null
+  const snapshotAt = options.kind === "lock-in"
+    ? officialSnapshotSourceTime(options.sourceTimestamp, options.schedule)
+    : sourceAt ?? new Date(updatedAt)
+  if (!snapshotAt) return
+  const fetchedAt = snapshotAt.toISOString()
+  const day = new Date(snapshotAt.getTime() - 18 * 60 * 60 * 1000).toISOString().slice(0, 10)
   const db = requireDb(env)
+
+  // Live directory fields reflect processing time, while historical rows retain
+  // Torn's source timestamp whenever it is available.
   await db.prepare("INSERT INTO faction_member_cache (player_id, player_name, faction_id, checked_at, is_director, company_id, company_name, company_type, company_type_id, company_rating, daily_income, weekly_income, profile_json, updated_at) VALUES (?, ?, '8317', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET is_director = 1, company_id = excluded.company_id, company_name = excluded.company_name, company_type = excluded.company_type, company_type_id = excluded.company_type_id, company_rating = excluded.company_rating, daily_income = excluded.daily_income, weekly_income = excluded.weekly_income, profile_json = excluded.profile_json, updated_at = excluded.updated_at")
-    .bind(playerId, typeof director.name === "string" ? director.name : `Player #${playerId}`, now, companyId, name, typeName, typeId, rating, dailyIncome, weeklyIncome, asJson(profile), now).run()
-  // Create an initial baseline for a newly linked company, then lock one immutable
-  // daily record during the 18:10 UTC snapshot window. Ordinary refreshes update
-  // live/cache tables above but must not manufacture intraday historical points.
-  const existing = await db.prepare("SELECT snapshot_day FROM faction_director_snapshots WHERE player_id = ? AND company_id = ? LIMIT 1")
-    .bind(playerId, companyId).first<{ snapshot_day: string }>()
-  const isDailySnapshotWindow = capturedAt.getUTCHours() === 18 && capturedAt.getUTCMinutes() >= 10 && capturedAt.getUTCMinutes() < 20
-  if (!existing || isDailySnapshotWindow) {
-    await db.prepare("INSERT INTO faction_director_snapshots (player_id, company_id, snapshot_day, profile_json, stock_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id, snapshot_day) DO NOTHING")
-      .bind(playerId, companyId, day, asJson(profile), stock === null || stock === undefined ? null : asJson(stock), now).run()
+    .bind(playerId, typeof director.name === "string" ? director.name : `Player #${playerId}`, updatedAt, companyId, name, typeName, typeId, rating, dailyIncome, weeklyIncome, asJson(profile), updatedAt).run()
+
+  if (options.kind === "initialization") {
+    // A legacy or existing initialization/lock-in row means this is not a new
+    // baseline. Never manufacture an initialization snapshot on a later login.
+    const existing = await db.prepare("SELECT snapshot_day FROM faction_director_snapshots WHERE player_id = ? AND company_id = ? LIMIT 1")
+      .bind(playerId, companyId).first<{ snapshot_day: string }>()
+    if (existing) return
+    await db.prepare("INSERT INTO faction_director_snapshots (player_id, company_id, snapshot_day, profile_json, stock_json, fetched_at, snapshot_kind) VALUES (?, ?, ?, ?, ?, ?, 'initialization') ON CONFLICT(player_id, company_id, snapshot_day) DO NOTHING")
+      .bind(playerId, companyId, day, asJson(profile), stock === null || stock === undefined ? null : asJson(stock), fetchedAt).run()
+    return
   }
+
+  await db.prepare("INSERT INTO faction_director_snapshots (player_id, company_id, snapshot_day, profile_json, stock_json, fetched_at, snapshot_kind) VALUES (?, ?, ?, ?, ?, ?, 'lock-in') ON CONFLICT(player_id, company_id, snapshot_day) DO UPDATE SET profile_json = excluded.profile_json, stock_json = excluded.stock_json, fetched_at = excluded.fetched_at, snapshot_kind = excluded.snapshot_kind WHERE faction_director_snapshots.snapshot_kind IN ('legacy', 'initialization')")
+    .bind(playerId, companyId, day, asJson(profile), stock === null || stock === undefined ? null : asJson(stock), fetchedAt).run()
 }
-async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20, captureSnapshots = true, forceRefresh = false): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[] }> {
+async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20, forceRefresh = false): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[] }> {
   const client = new TornApiClient({ apiKey })
   const memberPayload = await client.getFactionMembers()
   const rawMembers = Array.isArray(memberPayload.members) ? memberPayload.members : isRecord(memberPayload.members) ? Object.values(memberPayload.members) : []
@@ -1027,7 +1112,6 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
       const weeklyIncome = typeof income.weekly === "number" ? income.weekly : null
       await db.prepare("INSERT INTO faction_member_cache (player_id, player_name, faction_id, checked_at, is_director, company_id, company_name, company_type, company_type_id, company_rating, daily_income, weekly_income, job_json, profile_json, updated_at) VALUES (?, ?, '8317', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, faction_id = excluded.faction_id, checked_at = excluded.checked_at, is_director = 1, company_id = excluded.company_id, company_name = excluded.company_name, company_type = excluded.company_type, company_type_id = excluded.company_type_id, company_rating = excluded.company_rating, daily_income = excluded.daily_income, weekly_income = excluded.weekly_income, job_json = excluded.job_json, profile_json = COALESCE(excluded.profile_json, faction_member_cache.profile_json), updated_at = excluded.updated_at")
         .bind(id, name, checkedAt, companyId, companyName, companyType, companyTypeId, rating, dailyIncome, weeklyIncome, asJson(jobPayload), profile === null ? null : asJson(profile), checkedAt).run()
-      if (profile && captureSnapshots) await persistFactionDirectorSnapshot(env, profile)
     } catch {
       await db.prepare("INSERT INTO faction_member_cache (player_id, player_name, faction_id, checked_at, is_director, updated_at) VALUES (?, ?, '8317', ?, 0, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, checked_at = excluded.checked_at, updated_at = excluded.updated_at")
         .bind(id, name, checkedAt, checkedAt).run()
@@ -1059,17 +1143,17 @@ async function getWeeklyFactionStarCounts(env: WorkerEnv): Promise<{ weeklyStarC
   return { weeklyStarCounts: rows.results ?? [], weeklyStarCountsCapturedAt: latest.capturedAt }
 }
 
-async function refreshFactionDirectoryFromAnyKey(env: WorkerEnv, limit = 35, captureSnapshots = true, forceRefresh = false): Promise<void> {
+async function refreshFactionDirectoryFromAnyKey(env: WorkerEnv, limit = 35, forceRefresh = false): Promise<void> {
   if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return
   const row = await requireDb(env).prepare("SELECT player_id, ciphertext, iv FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string; ciphertext: string; iv: string }>()
   if (!row) return
   try {
     const apiKey = await decryptKey(env, row.ciphertext, row.iv)
-    await syncFactionDirectorDirectory(env, apiKey, limit, captureSnapshots, forceRefresh)
+    await syncFactionDirectorDirectory(env, apiKey, limit, forceRefresh)
   } catch { /* Keep scheduled sync resilient to a revoked key or temporary Torn failure. */ }
 }
 
-async function refreshRankingProfiles(env: WorkerEnv, captureHistory = true): Promise<{ companiesChecked: number; companiesFailed: number }> {
+async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, snapshotSchedule?: { cron: string; scheduledTime: number }): Promise<{ companiesChecked: number; companiesFailed: number }> {
   if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return { companiesChecked: 0, companiesFailed: 0 }
   const db = requireDb(env)
   const perCompany = await db.prepare("SELECT player_id, company_id, ciphertext, iv FROM company_api_keys ORDER BY updated_at ASC").all<{ player_id: string; company_id: string; ciphertext: string; iv: string }>()
@@ -1083,7 +1167,7 @@ async function refreshRankingProfiles(env: WorkerEnv, captureHistory = true): Pr
     try {
       const apiKey = await decryptKey(env, keyRow.ciphertext, keyRow.iv)
       const client = new TornApiClient({ apiKey })
-      const { profile, employees: employeePayload, stock } = await client.getCompanySelections()
+      const { profile, employees: employeePayload, stock, timestamp: sourceTimestamp } = await client.getCompanySelections()
       const companyId = companyIdFromPayload(profile)
       if (!companyId || (keyRow.company_id && String(companyId) !== keyRow.company_id)) continue
       const root = isRecord(profile) && isRecord(profile.company) ? profile.company : isRecord(profile) && isRecord(profile.profile) ? profile.profile : isRecord(profile) ? profile : {}
@@ -1091,12 +1175,21 @@ async function refreshRankingProfiles(env: WorkerEnv, captureHistory = true): Pr
       const existing = await db.prepare("SELECT employees_json FROM companies WHERE player_id = ? AND company_id = ?").bind(keyRow.player_id, String(companyId)).first<{ employees_json: string }>()
       const employees = employeePayload === null ? existing?.employees_json ?? "{}" : asJson(employeePayload)
       const now = new Date().toISOString()
+      const sourceSnapshotAt = captureHistory ? officialSnapshotSourceTime(sourceTimestamp, snapshotSchedule) : null
       await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, employees_json = excluded.employees_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), String(root.name ?? `Company #${companyId}`), typeof type.name === "string" ? type.name : null, asJson(profile), employees, now).run()
-      if (captureHistory) await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(profile), employees, now).run()
+      if (sourceSnapshotAt) {
+        const fetchedAt = sourceSnapshotAt.toISOString()
+        await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(profile), employees, fetchedAt).run()
+      }
       await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), asJson(stock), now).run()
-      if (captureHistory) {
-        await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(stock), now).run()
-        await persistFactionDirectorSnapshot(env, profile, stock)
+      if (sourceSnapshotAt) {
+        const fetchedAt = sourceSnapshotAt.toISOString()
+        await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(stock), fetchedAt).run()
+        await persistFactionDirectorSnapshot(env, profile, stock, {
+          kind: "lock-in",
+          sourceTimestamp,
+          schedule: snapshotSchedule,
+        })
       }
       companiesChecked += 1
       await evaluateAutomationForCompany(env, keyRow.player_id, String(companyId)).catch(() => undefined)
@@ -1610,7 +1703,7 @@ async function runScheduledAutomation(controller: { scheduledTime: number; cron:
   const isRankingCaptureWindow = controller.cron.trim() === "10 18 * * *"
   const isOfficialVerificationWindow = controller.cron.trim() === "10 0 * * *"
   try { await ensureAutomationSchema(env) } catch {
-    const fallbackTasks: Promise<unknown>[] = [refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, 35)]
+    const fallbackTasks: Promise<unknown>[] = [refreshRankingProfiles(env, isRankingCaptureWindow, { cron: controller.cron, scheduledTime: controller.scheduledTime }), refreshFactionDirectoryFromAnyKey(env, 35)]
     if (isRankingCaptureWindow) fallbackTasks.push(refreshGlobalRankingCache(env, undefined, true))
     if (isOfficialVerificationWindow) fallbackTasks.push(verifyGlobalRankingsAgainstOfficialSnapshot(env, controller.scheduledTime))
     await Promise.allSettled(fallbackTasks)
@@ -1620,7 +1713,7 @@ async function runScheduledAutomation(controller: { scheduledTime: number; cron:
   const startedAt = new Date(controller.scheduledTime).toISOString()
   await db.prepare("INSERT INTO automation_runs (run_id, trigger_name, status, started_at) VALUES (?, ?, 'running', ?)").bind(runId, controller.cron || "scheduled", startedAt).run()
   const isWeeklyLock = new Date(controller.scheduledTime).getUTCDay() === 0
-  const tasks: Promise<unknown>[] = [refreshRankingProfiles(env), refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35)]
+  const tasks: Promise<unknown>[] = [refreshRankingProfiles(env, isRankingCaptureWindow, { cron: controller.cron, scheduledTime: controller.scheduledTime }), refreshFactionDirectoryFromAnyKey(env, isWeeklyLock ? 250 : 35)]
   if (isRankingCaptureWindow) tasks.push(refreshGlobalRankingCache(env, undefined, true))
   if (isOfficialVerificationWindow) tasks.push(verifyGlobalRankingsAgainstOfficialSnapshot(env, controller.scheduledTime))
   if (isWeeklyLock) tasks.push(captureWeeklyFactionStarCounts(env, startedAt))
@@ -1699,7 +1792,7 @@ async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefr
         const row = await db.prepare("SELECT player_id, ciphertext, iv FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string; ciphertext: string; iv: string }>()
         if (!row) throw new Error("No saved Torn API key is available for the faction-directory refresh.")
         const apiKey = await decryptKey(env, row.ciphertext, row.iv)
-        globalResults[endpoint] = await syncFactionDirectorDirectory(env, apiKey, 35, false, true)
+        globalResults[endpoint] = await syncFactionDirectorDirectory(env, apiKey, 35, true)
       }
       endpointStats[endpoint].attempted += 1
       endpointStats[endpoint].succeeded += 1
@@ -1842,7 +1935,7 @@ async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
       result = { companyId: String(validated.companyId), companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}` }
     } else if (job.job_type === "global-refresh") {
       const rankings = await refreshRankingProfiles(env, false)
-      await refreshFactionDirectoryFromAnyKey(env, 35, false, true)
+      await refreshFactionDirectoryFromAnyKey(env, 35, true)
       result = { ...rankings, message: "Live company ranking profiles and a forced faction-directory batch refreshed without adding historical snapshots. Global company rankings remain sourced from the dedicated endpoint refresh; the official /company/snapshot endpoint is verification-only." }
     } else if (job.job_type === "endpoint-refresh") {
       const rawConfig = parseStoredJson(job.job_payload_json)
