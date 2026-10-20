@@ -164,7 +164,7 @@ function makeFixture({
             const row = summaryStates.get(values[0] + ":" + values[1]);
             return row ? { snapshotDay: row.snapshotDay, metricsJson: JSON.stringify(row.metrics) } : null;
           }
-          if (lower.includes("select (select count(*) from discord_alert_deliveries")) return { count: 0 };
+          if (lower.includes("select count(*) as count from discord_daily_summary_deliveries")) return { count: 0 };
           if (lower.includes("select consecutive_failures as consecutivefailures")) {
             return pollStates.get(values[0]) || null;
           }
