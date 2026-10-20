@@ -90,6 +90,78 @@ export function stockOrderExpenses(stock) {
   };
 }
 
+export function stockInventorySummary(stock) {
+  if (stock === null || stock === undefined || typeof stock !== "object") {
+    return { available: false, itemCount: 0, totalQuantity: null, totalValue: null, pricedItemCount: 0, items: [] };
+  }
+
+  const rows = [];
+  const visit = (value, depth = 0, label = "", forceRow = false) => {
+    if (!value || typeof value !== "object" || depth > 7) return;
+    if (Array.isArray(value)) {
+      value.forEach((child, index) => visit(child, depth + 1, String(index + 1), true));
+      return;
+    }
+
+    const hasOwn = key => Object.prototype.hasOwnProperty.call(value, key);
+    const quantity = firstNumber(value.in_stock, value.quantity, value.amount);
+    const unitPrice = firstNumber(value.price, value.sell_price, value.selling_price, value.price_per_unit, value.rrp);
+    const hasStockField = ["in_stock", "quantity", "amount", "cost", "price", "rrp", "on_order", "onOrder", "unit_cost", "cost_per_unit", "purchase_price"].some(hasOwn);
+    if (forceRow || quantity !== undefined || hasStockField) {
+      const name = String(value.name || value.item_name || value.itemName || value.title || label || "Stock item");
+      rows.push({
+        name,
+        quantity: quantity === undefined ? null : quantity,
+        unitPrice: unitPrice === undefined ? null : unitPrice,
+        value: quantity !== undefined && unitPrice !== undefined ? quantity * unitPrice : null
+      });
+      return;
+    }
+
+    for (const [key, child] of Object.entries(value)) {
+      if (child && typeof child === "object") visit(child, depth + 1, key);
+    }
+  };
+  visit(stock);
+
+  const totalQuantity = rows.every(item => item.quantity !== null)
+    ? rows.reduce((sum, item) => sum + item.quantity, 0)
+    : null;
+  const totalValue = rows.every(item => item.quantity !== null && item.unitPrice !== null)
+    ? rows.reduce((sum, item) => sum + item.value, 0)
+    : null;
+
+  return {
+    available: true,
+    itemCount: rows.length,
+    totalQuantity,
+    totalValue,
+    pricedItemCount: rows.filter(item => item.unitPrice !== null).length,
+    items: rows
+  };
+}
+
+export function stockQuantityDeltaForReportingDays(history, currentDay, previousDay) {
+  const dayPattern = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dayPattern.test(String(currentDay)) || !dayPattern.test(String(previousDay))) return null;
+  const pointsByDay = new Map();
+
+  for (const point of Array.isArray(history) ? history : []) {
+    if (!point || !dayPattern.test(String(point.day)) || !isNumber(point.stockQuantity) || point.stockQuantity < 0) continue;
+    const existing = pointsByDay.get(point.day);
+    const currentTime = Date.parse(point.fetchedAt || "");
+    const existingTime = Date.parse(existing?.fetchedAt || "");
+    if (!existing || (Number.isFinite(currentTime) && (!Number.isFinite(existingTime) || currentTime >= existingTime))) {
+      pointsByDay.set(point.day, point);
+    }
+  }
+
+  const current = pointsByDay.get(currentDay);
+  const previous = pointsByDay.get(previousDay);
+  if (!current || !previous) return null;
+  return current.stockQuantity - previous.stockQuantity;
+}
+
 export function knownWageSummary(summary) {
   if (!summary || typeof summary !== "object") {
     return { available: false, total: null, knownCount: null, rosterCount: null };
