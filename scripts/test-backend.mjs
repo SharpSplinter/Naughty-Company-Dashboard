@@ -322,6 +322,18 @@ try {
     assert.match(source, /const comparison = useMemo\(\(\) => \{ const points = comparisonHistory/)
   })
 
+  await test("Trends workspace charts daily profit and stock quantity without treating missing points as zero", () => {
+    const source = readFileSync(join(root, "src/components/floor/insights-workspace.tsx"), "utf8")
+    assert.match(source, /type TrendPoint = \{[^}]*dailyProfit: number \| null/)
+    assert.match(source, /const profitSeries: ChartSeries.*point\.dailyProfit/)
+    assert.match(source, /const stockQuantitySeries: ChartSeries.*point\.stockQuantity/)
+    assert.match(source, /LineChart title="Daily profit" money series=\{profitSeries\}/)
+    assert.match(source, /LineChart title="Stock quantity" series=\{stockQuantitySeries\}/)
+    assert.match(source, /<th>DAILY PROFIT<\/th>/)
+    assert.match(source, /<td>\{money\(point\.dailyProfit\)\}<\/td>/)
+    assert.match(source, /const points = \(trends\?\.history \|\| \[\]\)\.filter\(\(point\) => point\[metric\] !== null && Number\.isFinite\(point\[metric\]\)\)/)
+  })
+
   await test("daily webhook digest sends every eligible alert in Discord-safe batches and logs each batch accurately", () => {
     const source = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     assert.match(source, /for \(let offset = 0; offset < eligible\.length; offset \+= 10\)/)
