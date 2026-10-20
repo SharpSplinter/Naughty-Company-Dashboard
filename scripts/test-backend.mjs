@@ -10,6 +10,7 @@ const temp = mkdtempSync(join(tmpdir(), "naughty-company-tests-"))
 writeFileSync(join(temp, "package.json"), JSON.stringify({ type: "commonjs" }))
 const sourceFiles = [
   "src/lib/automation/rules.ts",
+  "src/lib/automation/discord-poll-monitoring.ts",
   "src/lib/company/engine.ts",
   "src/lib/company/types.ts",
   "src/lib/torn/client.ts",
@@ -49,6 +50,7 @@ try {
   const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
   const { financialCosts, stockCostTotal } = require(join(temp, "components/floor/financial-utils.js"))
   const { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isWithinQuietHours, normalizeWebhookUrl, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } = require(join(temp, "lib/automation/rules.js"))
+  const { evaluateDiscordPollHealth } = require(join(temp, "lib/automation/discord-poll-monitoring.js"))
 
   let passed = 0
   async function test(name, fn) {
@@ -99,6 +101,41 @@ try {
     assert.equal(isWithinQuietHours(12 * 60, "22:00", "08:00"), false)
     assert.equal(isWithinQuietHours(300, "08:00", "08:00"), true)
     assert.equal(isWithinQuietHours(300, "bad", "08:00"), false)
+  })
+
+  await test("Discord poll monitoring raises threshold warnings and detects stale telemetry", () => {
+    const nowMs = Date.parse("2026-10-20T18:10:00.000Z")
+    const healthy = evaluateDiscordPollHealth({
+      pollCompletedAt: "2026-10-20T18:09:00.000Z", status: "healthy", consecutiveFailures: 0,
+      failed: 0, exhaustedDeliveries: 0, staleClaims: 0,
+    }, { linked: true, alertsEnabled: true, nowMs })
+    assert.equal(healthy.needsAttention, false)
+    assert.equal(healthy.badgeLabel, "Reporting normally")
+
+    const repeatedFailures = evaluateDiscordPollHealth({
+      pollCompletedAt: "2026-10-20T18:09:00.000Z", status: "error", consecutiveFailures: 3,
+      failed: 0, exhaustedDeliveries: 0, staleClaims: 0,
+    }, { linked: true, alertsEnabled: true, nowMs })
+    assert.equal(repeatedFailures.needsAttention, true)
+    assert.match(repeatedFailures.warningReasons[0], /3 times in a row/)
+
+    const stuckDeliveries = evaluateDiscordPollHealth({
+      pollCompletedAt: "2026-10-20T18:09:00.000Z", status: "partial", consecutiveFailures: 0,
+      failed: 1, exhaustedDeliveries: 2, staleClaims: 1,
+    }, { linked: true, alertsEnabled: true, nowMs })
+    assert.equal(stuckDeliveries.needsAttention, true)
+    assert.equal(stuckDeliveries.warningReasons.length, 3)
+
+    const staleTelemetry = evaluateDiscordPollHealth({
+      pollCompletedAt: "2026-10-20T17:00:00.000Z", status: "healthy", consecutiveFailures: 0,
+      exhaustedDeliveries: 0, staleClaims: 0,
+    }, { linked: true, alertsEnabled: true, nowMs })
+    assert.equal(staleTelemetry.telemetryStale, true)
+    assert.match(staleTelemetry.warningReasons[0], /30 minutes/)
+
+    const awaitingFirstReport = evaluateDiscordPollHealth(null, { linked: true, alertsEnabled: true, nowMs })
+    assert.equal(awaitingFirstReport.needsAttention, false)
+    assert.equal(awaitingFirstReport.badgeLabel, "Awaiting first report")
   })
 
   await test("automatic alert delivery honors preferences and scheduled digests", () => {
