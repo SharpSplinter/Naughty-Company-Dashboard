@@ -1,7 +1,7 @@
 import { money, numberLabel, countChangeLabel } from "./formatting.mjs";
 import { parseCommandRoute } from "./command-routing.mjs";
 import { isDuringQuietHours, severityRank } from "./alert-delivery.mjs";
-import { buildCostBreakdown, estimateDailyProfit, estimateWeeklyProfit, findAdvertisingBudget, knownWageSummary, stockOrderExpenses, summarizeMonthToDate } from "./financials.mjs";
+import { buildCostBreakdown, estimateDailyProfit, estimateWeeklyProfit, findAdvertisingBudget, knownWageSummary, stockInventorySummary, stockOrderExpenses, stockQuantityDeltaForReportingDays, summarizeMonthToDate } from "./financials.mjs";
 import { buildDailySummaryMessage, isDailySummaryDue, previousReportingDay, reportingDayAt, summaryMetricValues } from "./daily-summary.mjs";
 
 const enc = new TextEncoder();
@@ -730,10 +730,22 @@ async function replyFor(i, env) {
       const rating = [root.company_rating, root.star_rating, root.rating, root.stars].find(value => typeof value === "number" && Number.isFinite(value));
       const employeeRoot = data.employees && typeof data.employees === "object" ? data.employees : {};
       const employeeList = Array.isArray(data.employees) ? data.employees : Array.isArray(employeeRoot.employees) ? employeeRoot.employees : Array.isArray(employeeRoot.company_employees) ? employeeRoot.company_employees : [];
-      const stockRoot = Array.isArray(data.stock) ? data.stock : data.stock && Array.isArray(data.stock.stock) ? data.stock.stock : data.stock && typeof data.stock === "object" ? Object.values(data.stock).filter(value => value && typeof value === "object") : [];
-      const stockQuantity = stockRoot.reduce((sum, item) => { const value = [item.in_stock, item.quantity, item.amount].find(n => typeof n === "number" && Number.isFinite(n)); return sum + (value || 0); }, 0);
+      const stockInventory = stockInventorySummary(data.stock);
+      const stockRoot = stockInventory.items;
       const advertisingBudget = findAdvertisingBudget(profile);
       const stockOrderSummary = stockOrderExpenses(data.stock);
+      const reportingDay = reportingDayAt();
+      const priorReportingDay = previousReportingDay(reportingDay);
+      let stockHistory = [];
+      try {
+        const historyRes = await dashboardFetch(env, "/api/me/companies/" + encodeURIComponent(company.company_id) + "/history?days=7", { headers, signal: AbortSignal.timeout(8000) });
+        if (historyRes.status === 401 || historyRes.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
+        if (historyRes.ok) {
+          const historyData = await historyRes.json();
+          stockHistory = Array.isArray(historyData.history) ? historyData.history : [];
+        }
+      } catch { /* Historical movement is optional; never infer a delta from live stock alone. */ }
+      const stockDelta = stockQuantityDeltaForReportingDays(stockHistory, reportingDay, priorReportingDay);
       const wagesRes = await dashboardFetch(env, "/api/me/member-insights?companyId=" + encodeURIComponent(company.company_id), { headers, signal: AbortSignal.timeout(8000) });
       if (wagesRes.status === 401 || wagesRes.status === 403) return privateReply("Your dashboard session expired or access changed. Run /link to reconnect.");
       let wageInfo = knownWageSummary(null);
@@ -747,14 +759,50 @@ async function replyFor(i, env) {
       const dailyProfit = reportedDailyProfit !== undefined ? money(reportedDailyProfit) + " (reported)" : estimatedDaily === null ? "Not available" : money(estimatedDaily);
       const weeklyProfit = reportedWeeklyProfit !== undefined ? money(reportedWeeklyProfit) + " (reported)" : estimatedWeekly === null ? "Not available" : money(estimatedWeekly);
       const safeName = String(data.companyName || company.company_name || "Your company").replace(/@/g, "@\u200b").slice(0, 90);
+      const findMetric = (source, keys, depth = 0) => {
+        if (!source || typeof source !== "object" || depth > 5) return undefined;
+        for (const key of keys) {
+          if (typeof source[key] === "number" && Number.isFinite(source[key])) return source[key];
+        }
+        for (const nested of Object.values(source)) {
+          const found = findMetric(nested, keys, depth + 1);
+          if (found !== undefined) return found;
+        }
+        return undefined;
+      };
+      const performanceRoot = root.company_performance && typeof root.company_performance === "object"
+        ? root.company_performance
+        : root.performance && typeof root.performance === "object" ? root.performance : root;
+      const popularity = findMetric(performanceRoot, ["popularity", "company_popularity"]);
+      const efficiency = findMetric(performanceRoot, ["efficiency", "company_efficiency"]);
+      const environment = findMetric(performanceRoot, ["environment", "company_environment"]);
+      const metricText = value => typeof value === "number" && Number.isFinite(value) ? value.toLocaleString("en-US") : "Not available";
+      const wageText = wageInfo.available ? money(wageInfo.total) : "Not available";
+      const stockQuantityText = stockInventory.totalQuantity === null ? "Not available" : stockInventory.totalQuantity.toLocaleString("en-US");
+      const stockValueText = stockInventory.totalValue === null ? "Not available" : money(stockInventory.totalValue);
+      const stockPriceLines = stockRoot.slice(0, 4).map(item => {
+        const label = safeText(item.name, 28);
+        const quantity = item.quantity === null ? "quantity unavailable" : item.quantity.toLocaleString("en-US");
+        const unitPrice = item.unitPrice === null ? "unit price unavailable" : money(item.unitPrice);
+        const value = item.value === null ? "value unavailable" : money(item.value);
+        return label + ": " + quantity + " x " + unitPrice + " = " + value;
+      });
+      const stockDeltaText = stockDelta === null ? "Not available (both daily snapshots required)" : (stockDelta > 0 ? "+" : "") + stockDelta.toLocaleString("en-US");
       const lines = [
         "**Company overview | " + safeName + "**",
         "Type: " + String(data.companyType || company.company_type || "Not available").slice(0, 60),
+        "Company rating: " + (rating === undefined ? "Not available" : String(rating)),
         "Daily income: " + money(dailyIncome),
         "Weekly income: " + money(weeklyIncome),
         "Daily profit: " + dailyProfit,
         "Weekly profit: " + weeklyProfit,
-        "Stock items: " + (stockRoot.length || "Not reported") + " | Total quantity: " + (stockRoot.length ? stockQuantity.toLocaleString("en-US") : "Not available"),
+        "Advertising budget: " + money(advertisingBudget),
+        "Total employee wages: " + wageText,
+        "Performance: Popularity " + metricText(popularity) + " | Efficiency " + metricText(efficiency) + " | Environment " + metricText(environment),
+        "Stock items: " + (data.stock == null ? "Not reported" : String(stockInventory.itemCount)) + " | Total quantity: " + stockQuantityText,
+        "Stock change vs previous reporting day (" + priorReportingDay + " to " + reportingDay + "): " + stockDeltaText,
+        "On-hand stock value at listed prices: " + stockValueText,
+        "Listed unit prices and item values (up to 4): " + (stockPriceLines.length ? stockPriceLines.join("; ") : "Not available"),
         "Snapshot updated: " + String(data.fetchedAt || company.fetched_at || "Not available"),
         "Snapshot age: " + snapshotAgeLabel(data.fetchedAt || company.fetched_at)
       ];
