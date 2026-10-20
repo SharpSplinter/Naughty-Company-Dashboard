@@ -343,6 +343,13 @@ test("autocomplete dispatch returns bounded empty choices for known selectors an
       expectedDashboardPath: "/api/me/automation-webhook/deliveries"
     },
     {
+      label: "exhausted private alert selector",
+      data: { name: "automation", options: [{ type: 2, name: "notifications", options: [
+        { type: 1, name: "retry", options: [{ type: 3, name: "event", value: "failed", focused: true }] }
+      ] }] },
+      expectedDashboardPath: null
+    },
+    {
       label: "unsupported selector",
       data: { name: "company", options: [{ type: 1, name: "list", options: [
         { type: 3, name: "not_registered_for_autocomplete", value: "x", focused: true }
