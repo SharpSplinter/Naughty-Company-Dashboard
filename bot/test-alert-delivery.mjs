@@ -83,11 +83,18 @@ function makeFixture({
         async run() {
           dbRuns.push({ sql, values: [...values] });
           if (sql.startsWith("INSERT INTO discord_alert_poll_escalations")) {
-            const [user, triggeredAt] = values;
+            const [user, triggeredAt, retryCutoff] = values;
             const key = user + ":poll_failure_streak";
-            if (escalations.has(key)) return { success: true, meta: { changes: 0 } };
-            escalations.set(key, { triggeredAt, notificationDelivered: 0 });
-            return { success: true, meta: { changes: 1 } };
+            const prior = escalations.get(key);
+            if (!prior) {
+              escalations.set(key, { triggeredAt, notificationDelivered: 0 });
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (Number(prior.notificationDelivered || 0) === 0 && prior.triggeredAt < retryCutoff) {
+              escalations.set(key, { ...prior, triggeredAt });
+              return { success: true, meta: { changes: 1 } };
+            }
+            return { success: true, meta: { changes: 0 } };
           }
           if (sql.startsWith("UPDATE discord_alert_poll_escalations SET notification_delivered=1")) {
             const [user] = values;
@@ -591,6 +598,35 @@ test("a private operational escalation fires at three consecutive poll failures,
   await runScheduled(fixture);
   await runScheduled(fixture);
   assert.equal(escalationMessages().length, 2, "a later failure streak may trigger a new escalation");
+});
+
+test("a failed operational escalation DM retries only after the 15-minute cooldown", async () => {
+  const fixture = makeFixture({ dashboardThrowsFor: [accountId], messageFailureCount: 1 });
+  const escalationMessages = () => fixture.discordRequests.filter(request =>
+    request.url.pathname === "/api/v10/channels/dm-channel-test/messages" &&
+    typeof request.body?.content === "string" &&
+    request.body.content.includes("operational alert")
+  );
+
+  await runScheduled(fixture);
+  await runScheduled(fixture);
+  await runScheduled(fixture);
+  assert.equal(escalationMessages().length, 1, "the third poll failure attempts the operational DM");
+  assert.equal(fixture.escalations.get(accountId + ":poll_failure_streak").notificationDelivered, 0,
+    "a failed DM must remain retryable");
+
+  await runScheduled(fixture);
+  assert.equal(escalationMessages().length, 1, "a subsequent poll must respect the cooldown");
+
+  const marker = fixture.escalations.get(accountId + ":poll_failure_streak");
+  marker.triggeredAt = new Date(Date.now() - 16 * 60 * 1000).toISOString();
+  await runScheduled(fixture);
+  assert.equal(escalationMessages().length, 2, "the bot retries after the cooldown expires");
+  assert.equal(fixture.escalations.get(accountId + ":poll_failure_streak").notificationDelivered, 1,
+    "the retry should mark the escalation delivered when the Discord API recovers");
+
+  await runScheduled(fixture);
+  assert.equal(escalationMessages().length, 2, "a delivered escalation must not be repeated");
 });
 
 console.log("PASS private alert delivery: severity and quiet-hours filtering, duplicate suppression, retry cap, transient recovery, poll-failure escalation, and DM-channel failures.");
