@@ -70,7 +70,7 @@ export async function registerCommands({
   warn = message => console.warn(message),
   checkToken = false
 } = {}) {
-  const normalizedToken = String(token).replace(/^Bot\s+/i, "").trim();
+  const normalizedToken = String(token).trim().replace(/^Bot\s+/i, "").trim();
   if (!normalizedToken) {
     throw new Error("Missing DISCORD_TOKEN in GitHub Actions secrets. Add it as a repository Actions secret; the Cloudflare Worker secret is not automatically available to GitHub Actions.");
   }
