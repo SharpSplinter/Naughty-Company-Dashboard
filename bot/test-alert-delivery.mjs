@@ -19,10 +19,10 @@ function jsonResponse(payload, status = 200) {
   });
 }
 
-async function encryptedLink() {
+async function encryptedLink(token = sessionToken) {
   const iv = webcrypto.getRandomValues(new Uint8Array(12));
   const key = await webcrypto.subtle.importKey("raw", hexBytes(ENCRYPTION_KEY), "AES-GCM", false, ["encrypt"]);
-  const cipher = await webcrypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoder.encode(sessionToken));
+  const cipher = await webcrypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoder.encode(token));
   return { encrypted_session_token: hex(cipher), token_iv: hex(iv) };
 }
 
@@ -43,7 +43,17 @@ function deliveryKey(user, eventId) {
   return user + ":" + eventId;
 }
 
-function makeFixture({ events = [], preferences = {}, seededDeliveries = {}, messageFailureCount = 0, channelFailureCount = 0 } = {}) {
+function makeFixture({
+  events = [],
+  preferences = {},
+  seededDeliveries = {},
+  messageFailureCount = 0,
+  channelFailureCount = 0,
+  linkedAccounts = [{ discordUserId: accountId, sessionToken }],
+  eventsByAccount = {},
+  preferencesByAccount = {},
+  dashboardThrowsFor = []
+} = {}) {
   const dbRuns = [];
   const dbReads = [];
   const deliveries = new Map(Object.entries(seededDeliveries).map(([eventId, row]) => [
@@ -51,8 +61,13 @@ function makeFixture({ events = [], preferences = {}, seededDeliveries = {}, mes
   ]));
   const discordRequests = [];
   const dashboardRequests = [];
-  const linkRowPromise = encryptedLink();
-  let linkRow;
+  const linkRowPromise = Promise.all(linkedAccounts.map(async account => ({
+    account,
+    row: account.invalidCipher
+      ? { encrypted_session_token: "00", token_iv: "00" }
+      : await encryptedLink(account.sessionToken || sessionToken)
+  })));
+  let linkRows;
 
   let messageAttempts = 0;
   let channelAttempts = 0;
@@ -65,14 +80,39 @@ function makeFixture({ events = [], preferences = {}, seededDeliveries = {}, mes
         async run() {
           dbRuns.push({ sql, values: [...values] });
           if (sql.startsWith("INSERT INTO discord_alert_state")) {
-            return { success: true };
+            return { success: true, meta: { changes: 1 } };
+          }
+          if (sql.startsWith("INSERT INTO discord_alert_deliveries") && sql.includes("'processing'")) {
+            const [user, eventId, updatedAt, expiredBefore] = values;
+            const key = deliveryKey(user, eventId);
+            const prior = deliveries.get(key);
+            if (!prior) {
+              deliveries.set(key, { status: "processing", attempts: 1, updatedAt });
+              return { success: true, meta: { changes: 1 } };
+            }
+            const staleProcessing = prior.status === "processing" && prior.updatedAt < expiredBefore;
+            const canClaim = !["delivered", "filtered"].includes(prior.status) &&
+              Number(prior.attempts || 0) < 3 && (prior.status !== "processing" || staleProcessing);
+            if (canClaim) deliveries.set(key, { status: "processing", attempts: Number(prior.attempts || 0) + 1, updatedAt });
+            return { success: true, meta: { changes: canClaim ? 1 : 0 } };
           }
           if (sql.startsWith("INSERT INTO discord_alert_deliveries") && sql.includes("'filtered'")) {
             const [user, eventId, updatedAt] = values;
-            deliveries.set(deliveryKey(user, eventId), { status: "filtered", attempts: 0, updatedAt });
-          } else if (sql.startsWith("INSERT INTO discord_alert_deliveries")) {
-            const [user, eventId, status, attempts, updatedAt] = values;
-            deliveries.set(deliveryKey(user, eventId), { status, attempts: Number(attempts), updatedAt });
+            const key = deliveryKey(user, eventId);
+            const prior = deliveries.get(key);
+            if (!prior || !["delivered", "processing"].includes(prior.status)) {
+              deliveries.set(key, { status: "filtered", attempts: 0, updatedAt });
+              return { success: true, meta: { changes: 1 } };
+            }
+            return { success: true, meta: { changes: 0 } };
+          }
+          if (sql.startsWith("UPDATE discord_alert_deliveries SET status=?")) {
+            const [status, updatedAt, user, eventId, attempts] = values;
+            const key = deliveryKey(user, eventId);
+            const prior = deliveries.get(key);
+            const changed = prior?.status === "processing" && Number(prior.attempts) === Number(attempts);
+            if (changed) deliveries.set(key, { status, attempts: Number(attempts), updatedAt });
+            return { success: true, meta: { changes: changed ? 1 : 0 } };
           }
           return { success: true };
         },
@@ -86,12 +126,12 @@ function makeFixture({ events = [], preferences = {}, seededDeliveries = {}, mes
         },
         async all() {
           if (sql.includes("FROM discord_links")) {
-            linkRow = linkRow || await linkRowPromise;
-            return { results: [{
-              discordUserId: accountId,
-              cipher: linkRow.encrypted_session_token,
-              iv: linkRow.token_iv
-            }] };
+            linkRows = linkRows || await linkRowPromise;
+            return { results: linkRows.map(({ account, row }) => ({
+              discordUserId: account.discordUserId,
+              cipher: row.encrypted_session_token,
+              iv: row.token_iv
+            })) };
           }
           return { results: [] };
         }
@@ -104,9 +144,27 @@ function makeFixture({ events = [], preferences = {}, seededDeliveries = {}, mes
       const url = new URL(request.url);
       const record = { url, method: request.method, headers: request.headers };
       dashboardRequests.push(record);
+      const token = String(request.headers.get("authorization") || "").replace(/^Bearer\\s+/i, "");
+      const account = linkedAccounts.find(item => (item.sessionToken || sessionToken) === token) || linkedAccounts[0];
+      const userId = account?.discordUserId || accountId;
+      if (dashboardThrowsFor.includes(userId)) throw new Error("simulated account-specific dashboard API failure");
       if (url.pathname === "/api/me/discord-link") return jsonResponse({ linked: true, alertsEnabled: true });
-      if (url.pathname === "/api/me/automation-preferences") return jsonResponse({ preferences: { quietHoursEnabled: false, ...preferences } });
-      if (url.pathname === "/api/me/alerts") return jsonResponse({ events });
+      if (url.pathname === "/api/me/automation-preferences") {
+        return jsonResponse({ preferences: { quietHoursEnabled: false, ...preferences, ...(preferencesByAccount[userId] || {}) } });
+      }
+      if (url.pathname === "/api/me/alerts") {
+        const source = [...(eventsByAccount[userId] ?? events)];
+        let selected = source;
+        if (url.searchParams.has("after")) {
+          const after = url.searchParams.get("after") || "";
+          const afterEventId = url.searchParams.get("afterEventId") || "";
+          selected = source.filter(event => typeof event.createdAt === "string" && typeof event.eventId === "string" &&
+            (event.createdAt > after || (afterEventId && event.createdAt === after && event.eventId > afterEventId)))
+            .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)) || String(a.eventId).localeCompare(String(b.eventId)));
+        }
+        const limit = Math.min(100, Number(url.searchParams.get("limit") || 50));
+        return jsonResponse({ events: selected.slice(0, limit) });
+      }
       return jsonResponse({ error: "not found" }, 404);
     }
   };
@@ -146,16 +204,24 @@ function makeFixture({ events = [], preferences = {}, seededDeliveries = {}, mes
   };
 }
 
+async function executeScheduled(fixture) {
+  const pending = [];
+  await worker.scheduled({}, fixture.env, { waitUntil(promise) { pending.push(Promise.resolve(promise)); } });
+  await Promise.all(pending);
+}
+
 async function runScheduled(fixture) {
   const previousFetch = globalThis.fetch;
   globalThis.fetch = fixture.discordFetch;
-  const pending = [];
-  try {
-    await worker.scheduled({}, fixture.env, { waitUntil(promise) { pending.push(Promise.resolve(promise)); } });
-    await Promise.all(pending);
-  } finally {
-    globalThis.fetch = previousFetch;
-  }
+  try { await executeScheduled(fixture); }
+  finally { globalThis.fetch = previousFetch; }
+}
+
+async function runConcurrentScheduled(fixture, count = 2) {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = fixture.discordFetch;
+  try { await Promise.all(Array.from({ length: count }, () => executeScheduled(fixture))); }
+  finally { globalThis.fetch = previousFetch; }
 }
 
 test("severity levels are ordered and unknown values fail closed to informational severity", () => {
@@ -283,6 +349,51 @@ test("DM-channel creation failure is recorded and retried on the next scheduled 
   await runScheduled(fixture);
   assert.equal(fixture.deliveries.get(deliveryKey(accountId, event.eventId)).status, "delivered");
   assert.equal(fixture.deliveries.get(deliveryKey(accountId, event.eventId)).attempts, 2);
+});
+
+test("a dashboard API failure for one linked account does not block later accounts", async () => {
+  const event = alertEvent("77777777-7777-4777-8777-777777777777");
+  const brokenUser = "discord-user-broken-account";
+  const fixture = makeFixture({
+    events: [],
+    linkedAccounts: [
+      { discordUserId: brokenUser, sessionToken: "dashboard-session-broken" },
+      { discordUserId: accountId, sessionToken }
+    ],
+    eventsByAccount: { [accountId]: [event] },
+    dashboardThrowsFor: [brokenUser]
+  });
+
+  await runScheduled(fixture);
+  assert.equal(fixture.messageAttempts, 1, "the second account should still receive its eligible alert");
+  assert.equal(fixture.discordRequests.find(request => request.url.pathname === "/api/v10/users/@me/channels")?.body.recipient_id, accountId);
+  assert.equal(fixture.deliveries.get(deliveryKey(accountId, event.eventId)).status, "delivered");
+});
+
+test("the scheduled poll pages through more than 100 eligible alerts without missing the older events", async () => {
+  const events = Array.from({ length: 155 }, (_, index) => alertEvent(
+    "00000000-0000-4000-8000-" + String(index + 1).padStart(12, "0"),
+    "warning",
+    new Date(Date.parse(linkedAt) + (index + 1) * 1000).toISOString()
+  ));
+  const fixture = makeFixture({ events });
+
+  await runScheduled(fixture);
+  assert.equal(fixture.messageAttempts, 155, "all events across both pages should be attempted");
+  assert.equal(fixture.dashboardRequests.filter(request => request.url.pathname === "/api/me/alerts").length, 2,
+    "the poll should fetch a full first page then the remaining 55 events");
+  assert.equal([...fixture.deliveries.values()].filter(row => row.status === "delivered").length, 155);
+});
+
+test("overlapping scheduled polls atomically claim an event and send only one DM", async () => {
+  const event = alertEvent("88888888-8888-4888-8888-888888888888");
+  const fixture = makeFixture({ events: [event] });
+
+  await runConcurrentScheduled(fixture, 2);
+
+  assert.equal(fixture.messageAttempts, 1, "only the poll that atomically claimed the event should send");
+  assert.equal(fixture.deliveries.get(deliveryKey(accountId, event.eventId)).status, "delivered");
+  assert.equal(fixture.deliveries.get(deliveryKey(accountId, event.eventId)).attempts, 1);
 });
 
 console.log("PASS private alert delivery: severity and quiet-hours filtering, duplicate suppression, retry cap, transient recovery, and DM-channel failures.");
