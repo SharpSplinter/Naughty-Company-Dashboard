@@ -140,6 +140,17 @@ function makeFixture({
             }
             return { success: true, meta: { changes: 0 } };
           }
+          if (sql.startsWith("UPDATE discord_alert_deliveries SET status='failed',updated_at=?")) {
+            const [updatedAt, user, cutoff] = values;
+            let changes = 0;
+            for (const [key, prior] of deliveries.entries()) {
+              if (key.startsWith(user + ":") && prior.status === "processing" && Number(prior.attempts) >= 3 && prior.updatedAt < cutoff) {
+                deliveries.set(key, { ...prior, status: "failed", updatedAt });
+                changes += 1;
+              }
+            }
+            return { success: true, meta: { changes } };
+          }
           if (sql.startsWith("UPDATE discord_alert_deliveries SET status=?")) {
             const [status, updatedAt, user, eventId, attempts] = values;
             const key = deliveryKey(user, eventId);
@@ -237,7 +248,7 @@ function makeFixture({
   };
 
   return {
-    env, dbRuns, dbReads, deliveries, pollStates, discordRequests, dashboardRequests, discordFetch,
+    env, dbRuns, dbReads, deliveries, pollStates, dashboardThrowsFor, discordRequests, dashboardRequests, discordFetch,
     get messageAttempts() { return messageAttempts; },
     get channelAttempts() { return channelAttempts; },
     set messageFailureCount(value) { messageFailureCount = value; }
@@ -448,7 +459,7 @@ test("repeated dashboard API failures persist account diagnostics and reset afte
   await runScheduled(fixture);
   assert.equal(fixture.pollStates.get(accountId).consecutiveFailures, 2, "consecutive API failures should accumulate");
 
-  fixture.dashboardThrowsFor = [];
+  fixture.dashboardThrowsFor.length = 0;
   await runScheduled(fixture);
   assert.equal(fixture.pollStates.get(accountId).lastStatus, "healthy");
   assert.equal(fixture.pollStates.get(accountId).consecutiveFailures, 0, "a healthy poll clears the consecutive failure counter");
