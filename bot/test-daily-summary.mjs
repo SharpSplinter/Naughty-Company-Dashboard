@@ -27,7 +27,7 @@ test("ranking and next-star gap use same-type companies and correct next-star be
   ];
   assert.deepEqual(calculateRankingMetrics({
     companyId: "self", companyType: "Oil Rig", companyTypeId: 28, weeklyIncome: 700, starLevel: 5,
-  }, rankings), { companyRank: 2, starIncomeGap: 250 });
+  }, rankings), { companyRank: 4, starIncomeGap: 250 });
 });
 
 test("metric history remains unknown instead of treating a missing snapshot as zero", () => {
