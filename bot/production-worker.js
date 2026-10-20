@@ -1090,7 +1090,7 @@ async function replyFor(i, env) {
           lines.push("Exhausted deliveries needing manual retry: **" + Number(exhausted?.count || 0) + "** · Stale claims: **" + Number(stale?.count || 0) + "**");
           if (Number(exhausted?.count || 0) > 0) lines.push("Use /automation notifications deliveries, then /automation notifications retry to requeue a failed alert.");
           if (Number(poll?.consecutiveFailures || 0) >= 3) lines.push("⚠️ Repeated API/poll failures detected. Check the error code above and reconnect with /link if your dashboard session expired.");
-          return chunkedPrivateReply("**Your automation notification and private-DM status**", lines);
+          return chunkedPrivateReply("**Your automation notification and private-DM status**", lines.concat("Edit alert rules and notification preferences in the dashboard. Manage private Discord DM enablement under /company alerts, delivery issues under /automation notifications deliveries, and exhausted retries under /automation notifications retry."));
         }
         if (subcommand === "deliveries") {
           await reconcileExhaustedStaleClaims(env, user);
