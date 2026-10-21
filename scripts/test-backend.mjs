@@ -284,7 +284,8 @@ try {
   await test("admin endpoint refresh is admin-gated, selective, audited, and live-only", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const uiSource = readFileSync(join(root, "src/components/floor/admin-panel.tsx"), "utf8")
-    const migrationSource = readFileSync(join(root, "migrations/auth/0009_admin_step_up.sql"), "utf8")
+    const migrationSource = readFileSync(join(root, "migrations/auth/0008_admin_endpoint_refresh.sql"), "utf8")
+    const stepUpMigrationSource = readFileSync(join(root, "migrations/auth/0010_admin_step_up.sql"), "utf8")
     const adminStart = workerSource.indexOf("async function handleAdminRequest")
     const jobsRoute = workerSource.indexOf('if (url.pathname === "/api/admin/jobs" && request.method === "POST")', adminStart)
     const adminRoutes = workerSource.slice(adminStart, workerSource.indexOf("\nasync function ", adminStart + 30))
@@ -299,7 +300,7 @@ try {
     assert.match(workerSource, /admin_elevated_until/)
     assert.match(uiSource, /Unlock administration/)
     assert.match(uiSource, /\/api\/auth\/admin\/elevate/)
-    assert.match(migrationSource, /ALTER TABLE sessions ADD COLUMN admin_elevated_until/)
+    assert.match(stepUpMigrationSource, /ALTER TABLE sessions ADD COLUMN admin_elevated_until/)
     assert.match(adminRoutes, /ensureAdminJobPayloadSchema\(env\)/)
     assert.match(adminRoutes, /"endpoint-refresh"/)
     assert.match(adminRoutes, /rawIds\.length > 100/, "selected-user jobs must be bounded")
