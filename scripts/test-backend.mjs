@@ -16,6 +16,7 @@ const sourceFiles = [
   "src/lib/torn/client.ts",
   "src/lib/torn/types.ts",
   "src/worker/index.ts",
+  "src/worker/snapshot-provenance.ts",
   "src/components/floor/ranking-utils.ts",
   "src/components/floor/financial-utils.ts",
 ].map((file) => resolve(root, file))
@@ -47,6 +48,7 @@ try {
   const { runEngine } = require(join(temp, "lib/company/engine.js"))
   const { TornApiClient, TornApiClientError } = require(join(temp, "lib/torn/client.js"))
   const worker = require(join(temp, "worker/index.js")).default
+  const { officialSnapshotSourceTime } = require(join(temp, "worker/snapshot-provenance.js"))
   const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
   const { estimateWeeklyProfit, financialCosts, reportedCompanyProfit, stockCostTotal } = require(join(temp, "components/floor/financial-utils.js"))
   const { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isWithinQuietHours, normalizeWebhookUrl, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } = require(join(temp, "lib/automation/rules.js"))
@@ -58,6 +60,55 @@ try {
     passed += 1
     console.log("PASS", name)
   }
+
+  await test("official stock lock-in timestamp accepts only fresh source data from the scheduled reporting day", () => {
+    const scheduledAt = Date.parse("2026-10-21T18:10:00.000Z");
+    const schedule = { cron: "10 18 * * *", scheduledTime: scheduledAt };
+    const sourceTime = (value) => Date.parse(value) / 1000;
+
+    assert.equal(
+      officialSnapshotSourceTime(sourceTime("2026-10-21T18:10:00.000Z"), schedule)?.toISOString(),
+      "2026-10-21T18:10:00.000Z",
+    );
+    assert.equal(
+      officialSnapshotSourceTime(sourceTime("2026-10-21T18:00:00.000Z"), schedule)?.toISOString(),
+      "2026-10-21T18:00:00.000Z",
+      "the reporting-day boundary is inclusive",
+    );
+    assert.equal(
+      officialSnapshotSourceTime(sourceTime("2026-10-21T18:15:00.000Z"), schedule)?.toISOString(),
+      "2026-10-21T18:15:00.000Z",
+      "a small future skew is allowed for request processing",
+    );
+
+    for (const invalidSchedule of [
+      undefined,
+      { cron: "* * * * *", scheduledTime: scheduledAt },
+      { cron: "10 18 * * *", scheduledTime: Date.parse("2026-10-21T18:11:00.000Z") },
+      { cron: "10 18 * * *", scheduledTime: Number.NaN },
+    ]) {
+      assert.equal(officialSnapshotSourceTime(sourceTime("2026-10-21T18:10:00.000Z"), invalidSchedule), null);
+    }
+
+    for (const invalidTimestamp of [
+      null,
+      undefined,
+      0,
+      -1,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_VALUE,
+    ]) {
+      assert.equal(officialSnapshotSourceTime(invalidTimestamp, schedule), null);
+    }
+
+    assert.equal(officialSnapshotSourceTime(sourceTime("2026-10-21T17:59:59.000Z"), schedule), null,
+      "a timestamp before the reporting-day boundary belongs to yesterday");
+    assert.equal(officialSnapshotSourceTime(sourceTime("2026-10-21T18:15:01.000Z"), schedule), null,
+      "source timestamps more than five minutes ahead are rejected");
+    assert.equal(officialSnapshotSourceTime(sourceTime("2026-10-21T17:39:59.000Z"), schedule), null,
+      "stale source timestamps are rejected");
+  });
 
   await test("evaluates income increase thresholds without dividing by zero", () => {
     assert.deepEqual(evaluateIncomeIncrease(100, 120, 15), { changePercent: 20 })
@@ -158,12 +209,13 @@ try {
 
   await test("official daily stock deltas require scheduled, source-timestamped immutable snapshots", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const provenanceSource = readFileSync(join(root, "src/worker/snapshot-provenance.ts"), "utf8")
     const floorSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
     const migrationSource = readFileSync(join(root, "migrations/auth/0009_faction_director_snapshot_kind.sql"), "utf8")
-    assert.match(workerSource, /function officialSnapshotSourceTime/)
-    assert.match(workerSource, /schedule\.cron\.trim\(\) !== "10 18 \* \* \*"/)
-    assert.match(workerSource, /schedule\.scheduledTime/)
-    assert.match(workerSource, /sourceTimestamp \* 1000/)
+    assert.match(provenanceSource, /function officialSnapshotSourceTime/)
+    assert.match(provenanceSource, /schedule\.cron\.trim\(\) !== "10 18 \* \* \*"/)
+    assert.match(provenanceSource, /schedule\.scheduledTime/)
+    assert.match(provenanceSource, /sourceTimestamp \* 1000/)
     assert.match(workerSource, /snapshot_kind = excluded\.snapshot_kind/)
     assert.match(migrationSource, /snapshot_kind IN \('initialization', 'lock-in', 'legacy'\)/)
     const rankingRefresh = workerSource.slice(workerSource.indexOf("async function refreshRankingProfiles"), workerSource.indexOf("type AdminAuditOutcome"))
