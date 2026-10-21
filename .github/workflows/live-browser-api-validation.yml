@@ -2,6 +2,11 @@ name: Live browser and authenticated API validation
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/live-browser-api-validation.yml"
+      - "src/components/floor/floor-app.tsx"
   schedule:
     # Keep production health visible even when no code is being shipped.
     - cron: "23 */6 * * *"
@@ -80,6 +85,27 @@ jobs:
               if (!response?.ok() || !title || rootExists < 1 || pageErrors.length || consoleErrors.length || failedRequests.length || badResponses.length) failed = true;
               await page.close();
             }
+
+            // Isolate the live frontend from account data and test the owner-only control with a mocked session.
+            const adminPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+            await adminPage.addInitScript(() => localStorage.setItem('ncd_session', 'admin-elevation-ui-smoke'));
+            await adminPage.route('https://naughty-company-api.kboone801.workers.dev/**', async (route) => {
+              const pathname = new URL(route.request().url()).pathname;
+              if (pathname === '/api/auth/session') {
+                return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ player: { id: '351311', name: 'Admin UI Smoke Test' }, isAdmin: false, adminElevatedUntil: null, key: { saved: true }, company: { isDirector: false, key: { saved: false }, needsSecondaryKey: true } }) });
+              }
+              if (pathname === '/api/me/companies') {
+                return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ companies: [] }) });
+              }
+              return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'Isolated UI smoke test' }) });
+            });
+            const adminResponse = await adminPage.goto('https://naughty-company-dashboard.pages.dev/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => null);
+            const unlockButton = adminPage.getByRole('button', { name: 'Unlock administration' });
+            await unlockButton.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+            const unlockVisible = await unlockButton.isVisible().catch(() => false);
+            console.log(`ADMIN UI owner-session smoke -> HTTP ${adminResponse?.status() ?? 'network error'}; unlockAdministrationVisible=${unlockVisible}; viewport=390x844`);
+            if (!adminResponse?.ok() || !unlockVisible) failed = true;
+            await adminPage.close();
           } finally { await browser.close(); }
           if (failed) process.exit(1);
           NODE
@@ -100,6 +126,14 @@ jobs:
             if (!loginResponse.ok || typeof login?.token !== 'string') { console.error('Authentication failed; response body suppressed.'); failed = true; }
             else {
               token = login.token;
+              try {
+                const response = await fetch(`${base}/api/auth/session`, { headers: { authorization: `Bearer ${token}`, accept: 'application/json' } });
+                const session = await response.json().catch(() => null);
+                const ownerIdentity = session?.player?.id === '351311';
+                const elevationFlag = session?.canElevateAdmin === true;
+                console.log(`API GET /api/auth/session -> ${response.status}; ownerIdentity=${ownerIdentity}; elevationFlag=${elevationFlag}; alreadyElevated=${session?.isAdmin === true}`);
+                if (!response.ok || session === null) failed = true;
+              } catch { console.error('API GET /api/auth/session -> network error (details suppressed)'); failed = true; }
               for (const path of ['/api/dashboard-members', '/api/me/dashboard-layout', '/api/me/automation-preferences']) {
                 try { const response = await fetch(`${base}${path}`, { headers: { authorization: `Bearer ${token}`, accept: 'application/json' } }); const body = await response.json().catch(() => null); console.log(`API GET ${path} -> ${response.status}; json=${body !== null}`); if (!response.ok || body === null) failed = true; }
                 catch { console.error(`API GET ${path} -> network error (details suppressed)`); failed = true; }
