@@ -72,11 +72,13 @@ async function authenticate(request: Request, env: WorkerEnv): Promise<Session |
   const session = await requireDb(env).prepare("SELECT p.player_id, p.player_name, s.admin_elevated_until FROM sessions s JOIN players p ON p.player_id = s.player_id WHERE s.token_hash = ? AND s.expires_at > ?").bind(hash, Math.floor(Date.now() / 1000)).first<Session>()
   if (!session) return null
   const normalizedSession = { ...session, admin_elevated_until: Number(session.admin_elevated_until ?? 0) }
-  if (!isAdminElevated(normalizedSession)) {
-    const status = await requireDb(env).prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?").bind(session.player_id).first<{ disabled_at: string | null }>()
-    if (status?.disabled_at) return null
-    if (await readAdminBoolean(env, "maintenanceMode", false)) return null
-  }
+  const status = await requireDb(env).prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?").bind(session.player_id).first<{ disabled_at: string | null }>()
+  if (status?.disabled_at) return null
+  const maintenanceMode = await readAdminBoolean(env, "maintenanceMode", false)
+  const pathname = new URL(request.url).pathname
+  const ownerRecoveryRoutes = ["/api/auth/session", "/api/auth/admin/elevate", "/api/auth/admin/de-elevate", "/api/auth/sign-out-all"]
+  const recoveryAllowed = session.player_id === ADMIN_PLAYER_ID && ownerRecoveryRoutes.includes(pathname)
+  if (maintenanceMode && !isAdminElevated(normalizedSession) && !recoveryAllowed) return null
   return normalizedSession
 }
 function isAdminElevated(session: Session): boolean {
@@ -2885,7 +2887,7 @@ export default {
         const player = await validateTornKey(apiKey)
         const memberStatus = await requireDb(env).prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?").bind(player.id).first<{ disabled_at: string | null }>()
         if (memberStatus?.disabled_at) return jsonResponse({ error: "Dashboard access for this account has been disabled. Contact the dashboard administrator." }, 403, origin)
-        if (await readAdminBoolean(env, "maintenanceMode", false)) return jsonResponse({ error: "The dashboard is in maintenance mode. Please try again later." }, 503, origin)
+        if (await readAdminBoolean(env, "maintenanceMode", false) && player.id !== ADMIN_PLAYER_ID) return jsonResponse({ error: "The dashboard is in maintenance mode. Please try again later." }, 503, origin)
         const directorCheck = await inspectDirectorKey(apiKey, player.id)
         let loginCompanyData: Awaited<ReturnType<typeof validateCompanyKey>> | null = null
         let loginCompanyError: string | null = null
@@ -2914,7 +2916,10 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       let companyConnectionError: string | null = null
-      try { await ensurePrimaryCompanyConnection(env, session.player_id) } catch (error) { companyConnectionError = error instanceof Error ? error.message : "Company connection could not be verified." }
+      const maintenanceRecovery = session.player_id === ADMIN_PLAYER_ID && !isAdminElevated(session) && await readAdminBoolean(env, "maintenanceMode", false)
+      if (!maintenanceRecovery) {
+        try { await ensurePrimaryCompanyConnection(env, session.player_id) } catch (error) { companyConnectionError = error instanceof Error ? error.message : "Company connection could not be verified." }
+      }
       const key = await requireDb(env).prepare("SELECT last_four, updated_at FROM api_keys WHERE player_id = ?").bind(session.player_id).first<{ last_four: string; updated_at: string }>()
       const companyKey = await companyKeyMeta(env, session.player_id)
       const cachedDirector = await requireDb(env).prepare("SELECT is_director FROM faction_member_cache WHERE player_id = ?").bind(session.player_id).first<{ is_director: number }>()
