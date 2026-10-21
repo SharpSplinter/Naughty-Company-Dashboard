@@ -299,7 +299,7 @@ assert.equal(automationWebhook.get("retry")?.options?.find(option => option.name
 
 const dashboardCommand = commandsByName.get("dashboard");
 assert.ok(dashboardCommand, "missing top-level /dashboard command");
-assert.deepEqual((dashboardCommand.options || []).map(option => option.name), ["health", "summary"], "/dashboard should expose health and summary subcommands");
+assert.deepEqual((dashboardCommand.options || []).map(option => option.name), ["health", "summary", "panel"], "/dashboard should expose health, summary, and panel subcommands");
 for (const name of ["link", "link-code", "status", "unlink", "help", "ping", "bot"]) {
   assert.ok(commandsByName.has(name), "missing top-level /" + name);
 }
@@ -369,6 +369,10 @@ assert.match(worker, /parseCommandRoute\(interaction\)/, "Worker must use the ex
 assert.match(worker, /name === "dashboard" && \["health", "summary"\]\.includes\(commandOptions\(i\)\.subcommand\)/, "dashboard commands must route to their shared handler");
 assert.match(worker, /\/dashboard health/, "help must document /dashboard health");
 assert.match(worker, /\/dashboard summary/, "help must document /dashboard summary");
+assert.match(worker, /\/dashboard panel/, "help must document /dashboard panel");
+assert.match(worker, /name === "dashboard" && commandOptions\(i\)\.subcommand === "panel"/, "dashboard panel must route to its read-only view renderer");
+assert.match(worker, /panel\.ownerId !== user/, "dashboard component actions must be bound to the original invoker");
+assert.match(worker, /return json\(\{ type: 6 \}\)/, "dashboard components must use the deferred message-update acknowledgement");
 assert.match(worker, /helpLines\.join\("\\n"\)/, "help must join sections with real newline characters");
 assert.match(worker, /\/api\/me\/health/, "dashboard health must use the owner-scoped health endpoint");
 assert.match(worker, /\/api\/me\/alerts\?limit=10/, "dashboard summary must include recent alert status");
