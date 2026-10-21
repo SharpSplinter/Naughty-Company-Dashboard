@@ -239,6 +239,21 @@ test("valid dashboard panel components defer message updates and finish through 
 });
 
 
+test("dashboard panel rejects non-button component types before database access", async () => {
+  const result = await invoke({
+    type: 3,
+    application_id: "application-test",
+    token: "panel-select-rejected",
+    data: { component_type: 3, custom_id: dashboardPanelCustomId("discord-user-test", "home") },
+    user: { id: "discord-user-test" }
+  });
+
+  assert.equal(result.callback.type, 4);
+  assert.match(result.callback.data.content, /component type is not supported/i);
+  assert.equal(result.db.runCount, 0, "unsupported component types must not initialize D1");
+  assert.equal(result.webhookRequests.length, 0, "unsupported component types must not update a panel");
+});
+
 test("dashboard panel kill switch rejects clicks before D1 work", async () => {
   const result = await invoke({
     type: 3,
