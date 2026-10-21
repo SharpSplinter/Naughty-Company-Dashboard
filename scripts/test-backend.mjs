@@ -284,6 +284,7 @@ try {
   await test("admin endpoint refresh is admin-gated, selective, audited, and live-only", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const uiSource = readFileSync(join(root, "src/components/floor/admin-panel.tsx"), "utf8")
+    const floorAppSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
     const migrationSource = readFileSync(join(root, "migrations/auth/0008_admin_endpoint_refresh.sql"), "utf8")
     const stepUpMigrationSource = readFileSync(join(root, "migrations/auth/0010_admin_step_up.sql"), "utf8")
     const adminStart = workerSource.indexOf("async function handleAdminRequest")
@@ -300,8 +301,8 @@ try {
     assert.match(workerSource, /ADMIN_USERNAME/)
     assert.match(workerSource, /ADMIN_MAX_ATTEMPTS = 5/)
     assert.match(workerSource, /admin_elevated_until/)
-    assert.match(uiSource, /Unlock administration/)
-    assert.match(uiSource, /\/api\/auth\/admin\/elevate/)
+    assert.match(floorAppSource, /Unlock administration/)
+    assert.match(floorAppSource, /\/api\/auth\/admin\/elevate/)
     assert.match(stepUpMigrationSource, /ALTER TABLE sessions ADD COLUMN admin_elevated_until/)
     assert.match(adminRoutes, /ensureAdminJobPayloadSchema\(env\)/)
     assert.match(adminRoutes, /"endpoint-refresh"/)
