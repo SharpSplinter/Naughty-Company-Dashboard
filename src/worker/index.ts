@@ -2359,7 +2359,8 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
       const fetchedAtMs = Date.parse(String(row.fetchedAt ?? ""))
       const day = Number.isFinite(fetchedAtMs) ? new Date(fetchedAtMs - 18 * 60 * 60 * 1000).toISOString().slice(0, 10) : ""
       if (!day) continue
-      byDay.set(day, { day, fetchedAt: row.fetchedAt, snapshotId: row.snapshotId, dailyIncome: dailyIncomeFromProfile(profile), dailyProfit: numericField(profit.daily ?? root.daily_profit ?? root.dailyProfit), weeklyIncome: numericField(income.weekly), rating: ratingFromProfile(profile), employeeCount: rosterCount(employees), employeeCapacity: isRecord(root.employees) ? numericField(root.employees.capacity) : null, advertisingBudget: historicalAdvertisingBudget(profile), employeeWages: historicalEmployeeWages(employees), stockOrderExpense: null, stockQuantity: null })
+      const reportedDailyProfit = numericField(profit.daily ?? root.daily_profit ?? root.dailyProfit)
+      byDay.set(day, { day, fetchedAt: row.fetchedAt, snapshotId: row.snapshotId, dailyIncome: dailyIncomeFromProfile(profile), dailyProfit: reportedDailyProfit, dailyProfitSource: reportedDailyProfit === null ? "incomplete" : "reported", calculatedDailyProfit: null, profitReconciliationDelta: null, weeklyIncome: numericField(income.weekly), rating: ratingFromProfile(profile), employeeCount: rosterCount(employees), employeeCapacity: isRecord(root.employees) ? numericField(root.employees.capacity) : null, advertisingBudget: historicalAdvertisingBudget(profile), employeeWages: historicalEmployeeWages(employees), stockOrderExpense: null, stockQuantity: null })
     }
     const stockCutoffDay = cutoff ? cutoff.slice(0, 10) : null
     const stockQuery = db.prepare(`SELECT snapshot_day AS day, stock_json AS stockJson, snapshot_kind AS snapshotKind, fetched_at AS fetchedAt FROM faction_director_snapshots WHERE player_id = ? AND company_id = ?${stockCutoffDay ? " AND snapshot_day >= ?" : ""} ORDER BY snapshot_day ASC`)
@@ -2396,10 +2397,20 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
       point.stockSnapshotKind = stockSource?.snapshotKind ?? null
       point.stockSnapshotFetchedAt = stockSource?.fetchedAt ?? null
       point.stockOrderExpense = stockExpensesByDay.get(String(point.day)) ?? null
-      if (typeof point.dailyProfit !== "number" && typeof point.dailyIncome === "number" &&
-          typeof point.advertisingBudget === "number" && typeof point.employeeWages === "number" &&
-          typeof point.stockOrderExpense === "number") {
-        point.dailyProfit = point.dailyIncome - point.advertisingBudget - point.employeeWages - point.stockOrderExpense
+      const hasCompleteProfitInputs = [point.dailyIncome, point.advertisingBudget, point.employeeWages, point.stockOrderExpense]
+        .every((value) => typeof value === "number" && Number.isFinite(value))
+      if (hasCompleteProfitInputs) {
+        const costBasedProfit = Number(point.dailyIncome) - Number(point.advertisingBudget) -
+          Number(point.employeeWages) - Number(point.stockOrderExpense)
+        point.calculatedDailyProfit = costBasedProfit
+        if (typeof point.dailyProfit === "number") {
+          if (point.dailyProfitSource === "reported") point.profitReconciliationDelta = point.dailyProfit - costBasedProfit
+        } else {
+          point.dailyProfit = costBasedProfit
+          point.dailyProfitSource = "reconstructed"
+        }
+      } else if (typeof point.dailyProfit !== "number") {
+        point.dailyProfitSource = "incomplete"
       }
     }
     const history = Array.from(byDay.values()).sort((a, b) => String(a.day).localeCompare(String(b.day)))

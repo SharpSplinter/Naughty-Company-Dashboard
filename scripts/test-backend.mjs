@@ -1650,8 +1650,15 @@ try {
     assert.equal(payload.history[1].stockQuantity, null, "a missing/restricted item's quantity must not be silently counted as zero")
     assert.equal(payload.history[1].stockSnapshotKind, "legacy", "legacy stock rows must remain distinguishable from official lock-ins")
     assert.equal(payload.history[1].stockSnapshotFetchedAt, "2026-10-10T18:10:00.000Z", "legacy rows must retain their saved timestamp")
+    assert.equal(payload.history[0].dailyProfit, 40)
+    assert.equal(payload.history[0].dailyProfitSource, "reported")
+    assert.equal(payload.history[0].calculatedDailyProfit, 70)
+    assert.equal(payload.history[0].profitReconciliationDelta, -30, "reported profit must be compared with the complete cost-based estimate")
     assert.equal(payload.history[1].dailyIncome, 150)
     assert.equal(payload.history[1].dailyProfit, 75)
+    assert.equal(payload.history[1].dailyProfitSource, "reported")
+    assert.equal(payload.history[1].calculatedDailyProfit, -195)
+    assert.equal(payload.history[1].profitReconciliationDelta, 270)
     assert.equal(payload.history[1].employeeCount, 2)
     assert.equal(payload.history[1].advertisingBudget, 25)
     assert.equal(payload.history[1].employeeWages, 300)
@@ -1663,6 +1670,50 @@ try {
     assert.equal(payload.summary.ratingChange, 1)
     assert.equal(payload.summary.employeeCountChange, 1)
     assert.ok(queries.some((query) => query.normalized.includes("where player_id = ? and company_id = ?")))
+  })
+
+  await test("historical profit stays incomplete when any required cost input is missing", async () => {
+    const db = { prepare(sql) {
+      const normalized = sql.toLowerCase()
+      let values = []
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          if (normalized.includes("from sessions s join players p")) return { player_id: "777", player_name: "History Tester" }
+          if (normalized.includes("from companies where player_id = ? and company_id = ? limit 1")) {
+            assert.deepEqual(values, ["777", "123"])
+            return { companyId: "123", companyName: "History Co", companyType: "Oil Rig" }
+          }
+          return null
+        },
+        async all() {
+          if (normalized.includes("from faction_director_snapshots")) return { results: [] }
+          if (normalized.includes("from company_financial_snapshots")) return { results: [] }
+          if (normalized.includes("row_number() over (partition by date(fetched_at, '-18 hours')")) {
+            return { results: [{
+              snapshotId: "missing-costs",
+              fetchedAt: "2026-10-10T18:10:00.000Z",
+              profileJson: JSON.stringify({ company: { id: 123, income: { daily: 100, weekly: 700 }, profit: {}, advertisement_budget: 20, rating: 3 } }),
+              employeesJson: JSON.stringify({ employees: [{ id: 1, wage: null }] })
+            }] }
+          }
+          return { results: [] }
+        },
+        async run() { return { success: true } },
+      }
+    } }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/companies/123/history?days=30", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer history-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.history.length, 1)
+    assert.equal(payload.history[0].dailyProfit, null, "missing wages and stock-order inputs must not be substituted with zero")
+    assert.equal(payload.history[0].dailyProfitSource, "incomplete")
+    assert.equal(payload.history[0].calculatedDailyProfit, null)
+    assert.equal(payload.history[0].profitReconciliationDelta, null)
+    assert.equal(payload.history[0].employeeWages, null)
+    assert.equal(payload.history[0].stockOrderExpense, null)
   })
 
   await test("reconstructed historical wage aggregates reconcile to documented inputs", async () => {
@@ -1716,6 +1767,10 @@ try {
     assert.equal(payload.history[0].advertisingBudget, 5200000)
     assert.equal(payload.history[0].employeeWages, 78744770)
     assert.equal(payload.history[0].stockOrderExpense, 0)
+    assert.equal(payload.history[0].dailyProfit, 35168670)
+    assert.equal(payload.history[0].dailyProfitSource, "reconstructed", "fallback profit must disclose that it was derived from saved costs")
+    assert.equal(payload.history[0].calculatedDailyProfit, 35168670)
+    assert.equal(payload.history[0].profitReconciliationDelta, null, "derived profit must not present its own calculation as an independent reconciliation")
     assert.equal(payload.history[0].stockSnapshotKind, null, "missing canonical stock provenance must remain unknown")
     assert.equal(payload.history[0].stockSnapshotFetchedAt, null, "a historical point without a stock row must not borrow a profile timestamp")
   })
