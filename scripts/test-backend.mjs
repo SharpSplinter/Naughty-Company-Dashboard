@@ -1019,6 +1019,7 @@ try {
         async all() { return { results: [] } },
         async run() {
           if (sql.toLowerCase().startsWith("update sessions set admin_elevated_until = ?")) elevatedUntil = Number(values[0])
+          else if (sql.toLowerCase().startsWith("update sessions set admin_elevated_until = 0")) elevatedUntil = 0
           return { success: true, meta: { changes: 1 } }
         },
       }
