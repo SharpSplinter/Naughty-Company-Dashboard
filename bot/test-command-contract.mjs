@@ -306,6 +306,7 @@ for (const name of ["link", "link-code", "status", "unlink", "help", "ping", "bo
 
 const worker = readFileSync(new URL("./production-worker.js", import.meta.url), "utf8");
 const registration = readFileSync(new URL("./register-commands.mjs", import.meta.url), "utf8");
+const productionConfig = readFileSync(new URL("./wrangler.production.toml", import.meta.url), "utf8");
 const financials = readFileSync(new URL("./financials.mjs", import.meta.url), "utf8");
 assert.match(worker, /method: "DELETE", headers, signal: AbortSignal.timeout\(8000\)/, "webhook delete must use the authenticated delete endpoint");
 assert.match(worker, /JSON.stringify\(\{ digestMode: "off" \}\)/, "webhook delete must turn off external webhook digests");
@@ -373,6 +374,9 @@ assert.match(worker, /\/dashboard panel/, "help must document /dashboard panel")
 assert.match(worker, /name === "dashboard" && commandOptions\(i\)\.subcommand === "panel"/, "dashboard panel must route to its read-only view renderer");
 assert.match(worker, /panel\.ownerId !== user/, "dashboard component actions must be bound to the original invoker");
 assert.match(worker, /return json\(\{ type: 6 \}\)/, "dashboard components must use the deferred message-update acknowledgement");
+assert.match(worker, /DASHBOARD_PANEL_ENABLED/, "interactive dashboard must have a fast feature flag");
+assert.match(productionConfig, /DASHBOARD_PANEL_ENABLED = "false"/, "production dashboard panel must stay disabled until manual rollout gates pass");
+assert.match(worker, /currently disabled/, "disabled dashboard panel must provide a clear private fallback");
 assert.match(worker, /helpLines\.join\("\\n"\)/, "help must join sections with real newline characters");
 assert.match(worker, /\/api\/me\/health/, "dashboard health must use the owner-scoped health endpoint");
 assert.match(worker, /\/api\/me\/alerts\?limit=10/, "dashboard summary must include recent alert status");
