@@ -1555,6 +1555,14 @@ try {
           return null
         },
         async all() {
+          if (normalized.includes("from faction_director_snapshots")) {
+            assert.deepEqual(values.slice(0, 2), ["777", "123"], "official stock history must filter by authenticated owner and selected company")
+            assert.equal(values.length, 3, "official stock history must bind the selected range cutoff")
+            return { results: [
+              { day: "2026-10-08", stockJson: JSON.stringify({ Oil: { in_stock: 100 } }) },
+              { day: "2026-10-10", stockJson: JSON.stringify({ Tealight: { in_stock: 10 }, Restricted: { cost: "Cannot be ordered" } }) },
+            ] }
+          }
           if (normalized.includes("from company_financial_snapshots")) {
             assert.deepEqual(values.slice(0, 2), ["777", "123"], "historical stock costs must filter by authenticated owner and selected company")
             assert.equal(values.length, 3, "a selected range must bind its cutoff")
@@ -1584,6 +1592,8 @@ try {
     assert.equal(payload.company.companyName, "History Co")
     assert.equal(payload.range, "30")
     assert.deepEqual(payload.history.map((point) => point.day), ["2026-10-08", "2026-10-10"])
+    assert.equal(payload.history[0].stockQuantity, 100, "complete stock rows should produce an exact daily total")
+    assert.equal(payload.history[1].stockQuantity, null, "a missing/restricted item's quantity must not be silently counted as zero")
     assert.equal(payload.history[1].dailyIncome, 150)
     assert.equal(payload.history[1].dailyProfit, 75)
     assert.equal(payload.history[1].employeeCount, 2)
