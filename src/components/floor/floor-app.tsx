@@ -1028,7 +1028,7 @@ export function FloorApp() {
         </nav>
         <div className="sidebar-bottom">
           {canElevateAdmin && !demoMode && <button className="signout-button" type="button" disabled={adminAuthBusy} onClick={() => isAdmin ? void deElevateAdmin() : (setAdminAuthError(""), setAdminAuthOpen(true))}>{adminAuthBusy ? "Please wait…" : isAdmin ? "Lock administration" : "Unlock administration"}</button>}
-          <div className="connection-indicator"/>><span className={result ? "status-dot live" : "status-dot"} />{demoMode ? "Demo workspace · sample data" : keySaved ? `Signed in${playerName ? ` as ${playerName}` : ""}` : "Player signed in · key deleted"}</div><button className="signout-button" onClick={demoMode ? exitDemo : () => signOut()}>{demoMode ? "Exit demo" : "Sign out"}</button>
+          <div className="connection-indicator"><span className={result ? "status-dot live" : "status-dot"} />{demoMode ? "Demo workspace · sample data" : keySaved ? `Signed in${playerName ? ` as ${playerName}` : ""}` : "Player signed in · key deleted"}</div><button className="signout-button" onClick={demoMode ? exitDemo : () => signOut()}>{demoMode ? "Exit demo" : "Sign out"}</button>
           <div className="sidebar-foot">EARLY ACCESS <span>•</span> BUILD 0.2</div>
         </div>
       </aside>
