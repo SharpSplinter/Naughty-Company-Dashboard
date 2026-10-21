@@ -1559,8 +1559,8 @@ try {
             assert.deepEqual(values.slice(0, 2), ["777", "123"], "official stock history must filter by authenticated owner and selected company")
             assert.equal(values.length, 3, "official stock history must bind the selected range cutoff")
             return { results: [
-              { day: "2026-10-08", stockJson: JSON.stringify({ Oil: { in_stock: 100 } }) },
-              { day: "2026-10-10", stockJson: JSON.stringify({ Tealight: { in_stock: 10 }, Restricted: { cost: "Cannot be ordered" } }) },
+              { day: "2026-10-08", stockJson: JSON.stringify({ stock: [{ name: "Oil", in_stock: 100 }] }) },
+              { day: "2026-10-10", stockJson: JSON.stringify({ stock: [{ name: "Tealight", in_stock: 10 }, { name: "Restricted", cost: "Cannot be ordered" }] }) },
             ] }
           }
           if (normalized.includes("from company_financial_snapshots")) {
