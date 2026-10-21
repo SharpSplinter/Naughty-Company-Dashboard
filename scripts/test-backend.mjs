@@ -997,6 +997,49 @@ try {
     assert.match((await response.json()).error, /not configured/i)
   })
 
+  await test("administrator elevation is session-scoped, expires, and can be explicitly revoked", async () => {
+    const { pbkdf2Sync } = require("node:crypto")
+    const password = "correct-horse-battery-staple-test"
+    const salt = Buffer.alloc(16, 7)
+    const digest = pbkdf2Sync(password, salt, 210000, 32, "sha256")
+    const passwordHash = `pbkdf2-sha256$210000${salt.toString("base64")}${digest.toString("base64")}`
+    let elevatedUntil = 0
+    const db = { prepare(sql) {
+      let values = []
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          const normalized = sql.toLowerCase()
+          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: elevatedUntil }
+          return null
+        },
+        async all() { return { results: [] } },
+        async run() {
+          if (sql.toLowerCase().startsWith("update sessions set admin_elevated_until = ?")) elevatedUntil = Number(values[0])
+          return { success: true, meta: { changes: 1 } }
+        },
+      }
+    } }
+    const env = { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: passwordHash }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-session", "Content-Type": "application/json", "cf-connecting-ip": "192.0.2.10" }
+    const elevated = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
+      method: "POST", headers, body: JSON.stringify({ username: "owner", password }),
+    }), env)
+    assert.equal(elevated.status, 200)
+    const elevatedPayload = await elevated.json()
+    assert.equal(elevatedPayload.isAdmin, true)
+    assert.ok(elevatedUntil > Math.floor(Date.now() / 1000))
+    assert.ok(elevatedUntil <= Math.floor(Date.now() / 1000) + 1800)
+
+    const revoked = await worker.fetch(new Request("https://worker.test/api/auth/admin/de-elevate", { method: "POST", headers }), env)
+    assert.equal(revoked.status, 200)
+    assert.equal((await revoked.json()).isAdmin, false)
+    assert.equal(elevatedUntil, 0)
+
+    const adminRequest = await worker.fetch(new Request("https://worker.test/api/admin/overview", { headers }), env)
+    assert.equal(adminRequest.status, 403)
+  })
+
   await test("administrator elevation is denied to non-allowlisted Torn identities", async () => {
     const db = { prepare(sql) { return {
       bind() { return this },
