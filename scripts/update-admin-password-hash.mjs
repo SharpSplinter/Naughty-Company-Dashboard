@@ -1,4 +1,5 @@
-import { pbkdf2Sync, randomBytes, webcrypto } from "node:crypto";
+import { createHash, pbkdf2Sync, randomBytes, webcrypto } from "node:crypto";
+import { appendFile } from "node:fs/promises";
 import { validateAdminPassword } from "../src/lib/admin-password-policy.js";
 
 const password = process.env.ADMIN_PASSWORD_ONESHOT ?? "";
@@ -41,6 +42,13 @@ const encodedHash = [
   salt.toString("base64"),
   digest.toString("base64"),
 ].join("$");
+
+// Emit only a one-way integrity fingerprint for an owner-only runtime comparison.
+// The encoded hash itself is never logged or written to GitHub Actions outputs.
+const hashFingerprint = createHash("sha256").update(encodedHash, "utf8").digest("hex");
+if (process.env.GITHUB_OUTPUT) {
+  await appendFile(process.env.GITHUB_OUTPUT, `hash_fingerprint=${hashFingerprint}\n`, { encoding: "utf8", mode: 0o600 });
+}
 delete process.env.ADMIN_PASSWORD_ONESHOT;
 
 const headers = {

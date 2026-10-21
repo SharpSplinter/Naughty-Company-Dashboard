@@ -865,7 +865,7 @@ export function FloorApp() {
           username_mismatch: "The username does not match the configured ADMIN_USERNAME secret.",
           stored_hash_invalid: "The configured ADMIN_PASSWORD_HASH is malformed or incomplete. Generate a new hash and replace the entire hash line in Cloudflare.",
           password_policy: "The password does not meet the current policy. Use at least 8 characters with a letter, digit, and symbol, and avoid sequences such as abc, cba, 123, or 321.",
-          password_mismatch: "The entered password does not match the stored hash. Use the GitHub Actions recovery workflow with the temporary ADMIN_PASSWORD_ONESHOT secret to reset it; do not copy hashes manually or share secrets in chat or logs.",
+          password_mismatch: "The credential does not match the active Worker hash. Do not repeat resets blindly; use the direct-API recovery workflow and check its hash-binding fingerprint diagnostic. Never copy or share passwords or hashes.",
         }
         const detail = payload.diagnostic ? diagnosticMessages[payload.diagnostic] : undefined
         const missingDiagnostic = response.status === 401 && payload.error === "Administrator sign-in failed."

@@ -77,7 +77,7 @@ async function authenticate(request: Request, env: WorkerEnv): Promise<Session |
   if (status?.disabled_at) return null
   const maintenanceMode = await readAdminBoolean(env, "maintenanceMode", false)
   const pathname = new URL(request.url).pathname
-  const ownerRecoveryRoutes = ["/api/auth/session", "/api/auth/admin/elevate", "/api/auth/admin/de-elevate", "/api/auth/sign-out-all"]
+  const ownerRecoveryRoutes = ["/api/auth/session", "/api/auth/admin/elevate", "/api/auth/admin/hash-diagnostics", "/api/auth/admin/de-elevate", "/api/auth/sign-out-all"]
   const recoveryAllowed = session.player_id === ADMIN_PLAYER_ID && ownerRecoveryRoutes.includes(pathname)
   if (maintenanceMode && !isAdminElevated(normalizedSession) && !recoveryAllowed) return null
   return normalizedSession
@@ -2844,6 +2844,20 @@ export default {
       const checkedAt = new Date().toISOString()
       try { await requireDb(env).prepare("SELECT 1 AS ok").first<{ ok: number }>(); return jsonResponse({ ok: true, service: "naughty-company-api", database: "ok", checkedAt }, 200, origin) }
       catch { return jsonResponse({ ok: false, service: "naughty-company-api", database: "error", checkedAt }, 503, origin) }
+    }
+    if (url.pathname === "/api/auth/admin/hash-diagnostics" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "An active dashboard session is required." }, 401, origin)
+      if (session.player_id !== ADMIN_PLAYER_ID) return jsonResponse({ error: "Administrator diagnostics are owner-only." }, 403, origin)
+
+      const passwordHash = env.ADMIN_PASSWORD_HASH?.trim() || ""
+      if (!passwordHash) return jsonResponse({ error: "Administrator password hash is not configured." }, 503, origin)
+      const parts = passwordHash.split("$")
+      return jsonResponse({
+        hashFingerprint: await sha256(passwordHash),
+        hashFormatValid: isWellFormedAdminPasswordHash(passwordHash),
+        iterations: parts.length === 4 ? Number(parts[1]) : null,
+      }, 200, origin, { "cache-control": "no-store", pragma: "no-cache" })
     }
     if (url.pathname === "/api/auth/admin/elevate" && request.method === "POST") {
       const session = await authenticate(request, env)

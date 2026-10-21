@@ -1085,8 +1085,29 @@ try {
     assert.equal(JSON.stringify(payload).includes("malformed"), false, "diagnostics must not echo secret values")
   })
 
+  await test("administrator hash diagnostics are owner-only", async () => {
+    const db = { prepare(sql) { return {
+      bind() { return this },
+      async first() {
+        const normalized = sql.toLowerCase()
+        if (normalized.includes("from sessions s join players p")) return { player_id: "123456", player_name: "RegularMember", admin_elevated_until: 0 }
+        return null
+      },
+      async all() { return { results: [] } },
+      async run() { return { success: true, meta: { changes: 1 } } },
+    } } }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session" }
+    const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/hash-diagnostics", { headers }), {
+      DB: db,
+      ADMIN_PASSWORD_HASH: "pbkdf2-sha256$210000$c2FsdHNhbHRzYWx0c2FsdA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    })
+    assert.equal(response.status, 403)
+    const payload = await response.json()
+    assert.equal(Object.hasOwn(payload, "hashFingerprint"), false)
+  })
+
   await test("administrator elevation is session-scoped, expires, and can be explicitly revoked", async () => {
-    const { pbkdf2Sync } = require("node:crypto")
+    const { createHash, pbkdf2Sync } = require("node:crypto")
     const password = "Correct!7Horse?9"
     const salt = Buffer.alloc(16, 7)
     const digest = pbkdf2Sync(password, salt, 210000, 32, "sha256")
@@ -1119,6 +1140,15 @@ try {
     assert.equal(elevatedPayload.isAdmin, true)
     assert.ok(elevatedUntil > Math.floor(Date.now() / 1000))
     assert.ok(elevatedUntil <= Math.floor(Date.now() / 1000) + 1800)
+
+    const diagnostics = await worker.fetch(new Request("https://worker.test/api/auth/admin/hash-diagnostics", { headers }), env)
+    assert.equal(diagnostics.status, 200)
+    const diagnosticsPayload = await diagnostics.json()
+    assert.equal(diagnosticsPayload.hashFingerprint, createHash("sha256").update(passwordHash, "utf8").digest("hex"))
+    assert.equal(diagnosticsPayload.hashFormatValid, true)
+    assert.equal(diagnosticsPayload.iterations, 210000)
+    assert.equal(Object.hasOwn(diagnosticsPayload, "passwordHash"), false)
+    assert.equal(JSON.stringify(diagnosticsPayload).includes(passwordHash), false, "hash diagnostics must not expose the stored hash")
 
     const revoked = await worker.fetch(new Request("https://worker.test/api/auth/admin/de-elevate", { method: "POST", headers }), env)
     assert.equal(revoked.status, 200)
