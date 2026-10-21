@@ -55,6 +55,21 @@ Do this before deploying the step-up implementation, or administration will rema
 
 The regular sign-out action revokes the current server-side session and its elevation. An authenticated all-devices action revokes every active session for that player. Members can also remove a single saved company key without deleting its company history; removing a key that is also required as the login key is blocked until the login key is replaced. Deleting all saved credentials preserves company history. CORS restrictions are useful browser hygiene but are not a replacement for authentication.
 
+## Administrator step-up authentication
+
+Every Torn sign-in receives standard-user access. The primary owner Torn player ID is only an allowlist for *requesting* administrator elevation; it does not grant administrator privileges by itself. Access to every `/api/admin/*` route requires an active, server-checked elevation bound to the authenticated session. Elevation lasts 30 minutes and can be revoked explicitly or by signing out.
+
+Before deploying a Worker version that requires step-up authentication, configure both secrets. If either is absent or invalid, administrator elevation fails closed and admin endpoints remain inaccessible.
+
+1. Run `node scripts/generate-admin-password-hash.mjs` in a private interactive terminal. Type a unique passphrase of at least 14 characters; it is not echoed. The script prints a PBKDF2-SHA-256 hash, not the password.
+2. Configure the administrator username as a Worker secret: `npx wrangler secret put ADMIN_USERNAME`.
+3. Configure the generated hash as a Worker secret: `npx wrangler secret put ADMIN_PASSWORD_HASH`. Paste the generated hash into Wrangler's prompt. Never commit the username, password, or hash to the repository or expose them in build logs.
+4. Deploy only after both secrets are present, then test that a normal Torn session is non-admin by default, the owner can elevate with the separate credentials, wrong credentials are rejected, and an unelevated session receives HTTP 403 for admin APIs.
+
+The Worker verifies hashes in the format `pbkdf2-sha256$iterations$salt-base64$digest-base64`, using PBKDF2 with SHA-256 and 210,000 iterations from the supplied helper. Five failed attempts within 15 minutes trigger a 15-minute lockout keyed by the owner identity and a hashed Cloudflare client-IP value. Failure messages are generic; secrets and raw passwords are never written to D1 or application logs.
+
+The account allowlist is intentionally narrow: only the configured primary owner Torn player ID can elevate. The username/password pair does not let arbitrary faction members obtain admin access. Keep the owner player ID allowlist under source review and do not add other identities without an explicit security review.
+
 ## Local development
 
 - Node.js 20+
