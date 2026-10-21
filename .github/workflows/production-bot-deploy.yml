@@ -22,6 +22,8 @@ on:
       - "bot/command-schema-contract.mjs"
       - "bot/command-options.mjs"
       - "bot/command-routing.mjs"
+      - "bot/dashboard-panel.mjs"
+      - "bot/test-dashboard-panel.mjs"
       - "bot/test-command-dispatch.mjs"
       - "bot/commands/**"
       - "bot/test-command-contract.mjs"
@@ -53,6 +55,8 @@ on:
       - "bot/command-schema-contract.mjs"
       - "bot/command-options.mjs"
       - "bot/command-routing.mjs"
+      - "bot/dashboard-panel.mjs"
+      - "bot/test-dashboard-panel.mjs"
       - "bot/test-command-dispatch.mjs"
       - "bot/commands/**"
       - "bot/test-command-contract.mjs"
@@ -108,12 +112,18 @@ jobs:
         run: node --check bot/command-options.mjs
       - name: Validate nested interaction router syntax
         run: node --check bot/command-routing.mjs
+      - name: Validate dashboard panel component contract
+        run: |
+          node --check bot/dashboard-panel.mjs
+          node --check bot/test-dashboard-panel.mjs
       - name: Validate command dispatch integration tests
         run: node --check bot/test-command-dispatch.mjs
       - name: Validate individual command definitions
         run: for file in bot/commands/*.mjs; do node --check "$file"; done
       - name: Test Discord command contract and production safeguards
         run: node bot/test-command-contract.mjs
+      - name: Test private dashboard panel routing and component contract
+        run: node bot/test-dashboard-panel.mjs
       - name: Test canonical command dispatch, invalid routes, and autocomplete
         run: node bot/test-command-dispatch.mjs
       - name: Test Discord command registration API behavior
