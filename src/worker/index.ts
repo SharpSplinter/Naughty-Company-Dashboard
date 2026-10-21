@@ -627,7 +627,7 @@ async function completeLinkedAdminRankingJob(env: WorkerEnv, run: GlobalRankingR
   const now = new Date().toISOString()
   await db.prepare("UPDATE admin_jobs SET status = 'completed', finished_at = ?, result_json = ?, error_message = NULL WHERE job_id = ? AND status = 'running'")
     .bind(now, asJson(result), run.admin_job_id).run()
-  const actor = { player_id: ADMIN_PLAYER_ID, player_name: "SharpSplinter" }
+  const actor = { player_id: ADMIN_PLAYER_ID, player_name: "SharpSplinter", admin_elevated_until: 0 }
   await writeAdminAudit(env, actor, "job.completed", "job", run.admin_job_id, succeeded ? "succeeded" : "failed",
     succeeded ? "Administrative endpoint refresh completed, including resumable global company rankings." : "Administrative endpoint refresh completed with a failed global company ranking endpoint.",
     { jobType: "endpoint-refresh", refreshRunId: run.run_id, partialFailure: !succeeded })
