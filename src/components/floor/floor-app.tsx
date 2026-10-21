@@ -96,7 +96,6 @@ export function FloorApp() {
   const [playerName, setPlayerName] = useState("")
   const [playerId, setPlayerId] = useState("")
   const [isAdmin, setIsAdmin] = useState(false)
-  const [canElevateAdmin, setCanElevateAdmin] = useState(false)
   const [adminElevatedUntil, setAdminElevatedUntil] = useState<number | null>(null)
   const [adminAuthOpen, setAdminAuthOpen] = useState(false)
   const [adminUsername, setAdminUsername] = useState("")
@@ -183,13 +182,12 @@ export function FloorApp() {
       try {
         const response = await fetch(`${API_BASE}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } })
         if (!response.ok) throw new Error("Session expired")
-        const session = await response.json() as { player: { id: string; name: string }; isAdmin?: boolean; canElevateAdmin?: boolean; adminElevatedUntil?: number | null; key: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
+        const session = await response.json() as { player: { id: string; name: string }; isAdmin?: boolean; adminElevatedUntil?: number | null; key: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
         if (cancelled) return
         setSessionToken(token)
         setPlayerName(session.player.name)
         setPlayerId(session.player.id)
         setIsAdmin(session.isAdmin === true && session.player.id === "351311")
-        setCanElevateAdmin(session.canElevateAdmin === true && session.player.id === "351311")
         setAdminElevatedUntil(typeof session.adminElevatedUntil === "number" ? session.adminElevatedUntil : null)
         setKeySaved(session.key.saved)
         setIsDirector(session.company?.isDirector ?? false)
@@ -797,7 +795,7 @@ export function FloorApp() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ apiKey: apiKey.trim(), secondaryCompanyKey: secondaryCompanyKey.trim() }),
       })
-      const payload = await response.json() as { error?: string; token?: string; isAdmin?: boolean; canElevateAdmin?: boolean; player?: { id: string; name: string }; key?: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
+      const payload = await response.json() as { error?: string; token?: string; isAdmin?: boolean; player?: { id: string; name: string }; key?: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
       if (!response.ok) throw new Error(payload.error || "Sign-in failed. Check that your Torn key is valid and has limited permissions.")
       if (!payload.token) throw new Error("The sign-in service did not return a session. Please try again.")
       localStorage.setItem("ncd_session", payload.token)
@@ -805,7 +803,6 @@ export function FloorApp() {
       setPlayerName(payload.player?.name || "Torn member")
       setPlayerId(payload.player?.id || "")
       setIsAdmin(false)
-      setCanElevateAdmin(payload.canElevateAdmin === true && payload.player?.id === "351311")
       setAdminElevatedUntil(null)
       setKeySaved(payload.key?.saved ?? true)
       setIsDirector(payload.company?.isDirector ?? false)
@@ -853,7 +850,7 @@ export function FloorApp() {
 
   async function elevateAdmin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!sessionToken || !canElevateAdmin || adminAuthBusy) return
+    if (!sessionToken || playerId !== "351311" || adminAuthBusy) return
     setAdminAuthBusy(true)
     setAdminAuthError("")
     try {
@@ -902,7 +899,6 @@ export function FloorApp() {
     setPlayerName("")
     setPlayerId("")
     setIsAdmin(false)
-    setCanElevateAdmin(false)
     setAdminElevatedUntil(null)
     setAdminAuthOpen(false)
     setAdminUsername("")
@@ -1011,7 +1007,7 @@ export function FloorApp() {
 
   return (
     <div className={`app-shell dashboard-density-${dashboardPreferences.density} dashboard-width-${dashboardPreferences.contentWidth}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
-      {adminAuthOpen && canElevateAdmin && !isAdmin && !demoMode && <div className="login-screen admin-elevation-screen"><section className="login-card" role="dialog" aria-modal="true" aria-labelledby="admin-elevation-title"><div className="login-brand"><span className="brand-mark">NC</span><span><strong>NAUGHTY</strong><small>ADMINISTRATOR VERIFICATION</small></span></div><div className="login-eyebrow"><span className="eyebrow-line" /> STEP-UP AUTHENTICATION</div><h1 id="admin-elevation-title">Unlock administration</h1><p className="login-subtitle">Your Torn session is standard access. Verify your separate administrator credentials to unlock privileged controls for 30 minutes.</p><form className="login-form" onSubmit={elevateAdmin}><label htmlFor="admin-username">Administrator username</label><input id="admin-username" type="text" autoComplete="username" value={adminUsername} onChange={(event) => setAdminUsername(event.target.value)} required maxLength={120} /><label htmlFor="admin-password">Administrator password</label><input id="admin-password" type="password" autoComplete="current-password" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} required maxLength={1024} />{adminAuthError && <div className="error-banner" role="alert">{adminAuthError}</div>}<button className="primary-button form-submit" disabled={adminAuthBusy}>{adminAuthBusy ? "Verifying…" : "Verify and unlock"}</button><button className="text-button" type="button" disabled={adminAuthBusy} onClick={() => { setAdminAuthOpen(false); setAdminPassword(""); setAdminAuthError("") }}>Cancel</button></form><p className="login-hint">Repeated failed attempts are rate-limited. Administrator access expires automatically.</p></section></div>}
+      {adminAuthOpen && playerId === "351311" && !isAdmin && !demoMode && <div className="login-screen admin-elevation-screen"><section className="login-card" role="dialog" aria-modal="true" aria-labelledby="admin-elevation-title"><div className="login-brand"><span className="brand-mark">NC</span><span><strong>NAUGHTY</strong><small>ADMINISTRATOR VERIFICATION</small></span></div><div className="login-eyebrow"><span className="eyebrow-line" /> STEP-UP AUTHENTICATION</div><h1 id="admin-elevation-title">Unlock administration</h1><p className="login-subtitle">Your Torn session is standard access. Verify your separate administrator credentials to unlock privileged controls for 30 minutes.</p><form className="login-form" onSubmit={elevateAdmin}><label htmlFor="admin-username">Administrator username</label><input id="admin-username" type="text" autoComplete="username" value={adminUsername} onChange={(event) => setAdminUsername(event.target.value)} required maxLength={120} /><label htmlFor="admin-password">Administrator password</label><input id="admin-password" type="password" autoComplete="current-password" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} required maxLength={1024} />{adminAuthError && <div className="error-banner" role="alert">{adminAuthError}</div>}<button className="primary-button form-submit" disabled={adminAuthBusy}>{adminAuthBusy ? "Verifying…" : "Verify and unlock"}</button><button className="text-button" type="button" disabled={adminAuthBusy} onClick={() => { setAdminAuthOpen(false); setAdminPassword(""); setAdminAuthError("") }}>Cancel</button></form><p className="login-hint">Repeated failed attempts are rate-limited. Administrator access expires automatically.</p></section></div>}
       <aside className="sidebar">
         <a className="brand" href="#" onClick={(event) => { event.preventDefault(); setActiveView("overview") }}>
           <span className="brand-mark">NC</span>
@@ -1027,7 +1023,6 @@ export function FloorApp() {
           {isAdmin && <div className="nav-group admin-nav-group"><div className="side-label">ADMINISTRATION</div><button type="button" className={activeView === "admin" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("admin")}><span aria-hidden="true">♜</span><span className="nav-label">Administration</span><em>ADMIN</em></button></div>}
         </nav>
         <div className="sidebar-bottom">
-          {canElevateAdmin && !demoMode && <button className="signout-button" type="button" disabled={adminAuthBusy} onClick={() => isAdmin ? void deElevateAdmin() : (setAdminAuthError(""), setAdminAuthOpen(true))}>{adminAuthBusy ? "Please wait…" : isAdmin ? "Lock administration" : "Unlock administration"}</button>}
           <div className="connection-indicator"><span className={result ? "status-dot live" : "status-dot"} />{demoMode ? "Demo workspace · sample data" : keySaved ? `Signed in${playerName ? ` as ${playerName}` : ""}` : "Player signed in · key deleted"}</div><button className="signout-button" onClick={demoMode ? exitDemo : () => signOut()}>{demoMode ? "Exit demo" : "Sign out"}</button>
           <div className="sidebar-foot">EARLY ACCESS <span>•</span> BUILD 0.2</div>
         </div>
@@ -1037,7 +1032,7 @@ export function FloorApp() {
         {demoMode && <div className="demo-banner"><strong>DEMO MODE</strong><span>All player, company, employee and income data below is fictional. Live Torn connections are disabled.</span><button type="button" onClick={exitDemo}>Exit demo ×</button></div>}
         <header className="topbar">
           <div className="topbar-leading"><button className="sidebar-toggle" type="button" onClick={() => setSidebarCollapsed((collapsed) => !collapsed)} aria-label={sidebarCollapsed ? "Expand navigation sidebar" : "Minimize navigation sidebar"} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? "Expand navigation" : "Minimize navigation"}><span aria-hidden="true">{sidebarCollapsed ? "☰" : "‹"}</span></button><div className="breadcrumbs">Workspace <span>/</span> {activePageGroup} <span>/</span> <strong>{activePageTitle}</strong></div></div>
-          <div className="topbar-right"><span className="environment-pill"><i /> {demoMode ? "DEMO DATA" : "CLOUDFLARE WORKER"}</span><div className="user-company-switcher"><button className="user-company-trigger" type="button" aria-expanded={showCompanySelector} onClick={() => setShowCompanySelector((open) => !open)}><span className="avatar">{playerName.slice(0, 2).toUpperCase() || "NC"}</span><span className="user-company-label"><strong>{playerName || "Connected user"}</strong><small>Torn ID {playerId || "—"} · {result?.model.company.name || "No company loaded"} · {result?.model.company.typeName || "No company type"}</small></span><span className="switch-chevron">⌄</span></button>{showCompanySelector && <div className="company-switcher-menu"><div className="company-switcher-menu-heading"><strong>Choose a company</strong><button type="button" className="company-connect-plus" onClick={() => { setShowCompanySelector(false); setActiveView("connect") }} aria-label="Connect company" title="Connect company">＋</button></div>{savedCompanies.length ? savedCompanies.map((company) => <button key={company.company_id} type="button" className={selectedCompanyId === company.company_id ? "company-switcher-option selected" : "company-switcher-option"} onClick={() => void loadSavedCompany(company.company_id)}><span>{company.company_name || `Company #${company.company_id}`}</span><small>{company.company_type || "Company"} · #{company.company_id}</small></button>) : <p>No saved companies yet. Connect a company key to add one.</p>}</div>}</div></div>
+          <div className="topbar-right">{playerId === "351311" && !demoMode && <button className="admin-step-up-button" type="button" aria-label={isAdmin ? "Lock administration" : "Unlock administration"} title={isAdmin ? "Lock administration" : "Unlock administration"} disabled={adminAuthBusy} onClick={() => isAdmin ? void deElevateAdmin() : (setAdminAuthError(""), setAdminAuthOpen(true))}>{adminAuthBusy ? "Please wait…" : isAdmin ? "Lock admin" : "Unlock admin"}</button>}<span className="environment-pill"><i /> {demoMode ? "DEMO DATA" : "CLOUDFLARE WORKER"}</span><div className="user-company-switcher"><button className="user-company-trigger" type="button" aria-expanded={showCompanySelector} onClick={() => setShowCompanySelector((open) => !open)}><span className="avatar">{playerName.slice(0, 2).toUpperCase() || "NC"}</span><span className="user-company-label"><strong>{playerName || "Connected user"}</strong><small>Torn ID {playerId || "—"} · {result?.model.company.name || "No company loaded"} · {result?.model.company.typeName || "No company type"}</small></span><span className="switch-chevron">⌄</span></button>{showCompanySelector && <div className="company-switcher-menu"><div className="company-switcher-menu-heading"><strong>Choose a company</strong><button type="button" className="company-connect-plus" onClick={() => { setShowCompanySelector(false); setActiveView("connect") }} aria-label="Connect company" title="Connect company">＋</button></div>{savedCompanies.length ? savedCompanies.map((company) => <button key={company.company_id} type="button" className={selectedCompanyId === company.company_id ? "company-switcher-option selected" : "company-switcher-option"} onClick={() => void loadSavedCompany(company.company_id)}><span>{company.company_name || `Company #${company.company_id}`}</span><small>{company.company_type || "Company"} · #{company.company_id}</small></button>) : <p>No saved companies yet. Connect a company key to add one.</p>}</div>}</div></div>
         </header>
 
         <div className="page-content">

@@ -737,3 +737,24 @@ th.numeric-cell {
 .discord-poll-monitor-footer{align-items:center}
 .discord-poll-monitor-footer .field-hint{margin:0}
 @media(max-width:720px){.discord-poll-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.discord-poll-history li{grid-template-columns:1fr auto}.discord-poll-history li>span:nth-of-type(2){grid-column:1}.discord-poll-history li>span:nth-of-type(3){grid-column:2;grid-row:2}.discord-poll-monitor-heading{flex-direction:column}}
+
+
+/* Keep owner step-up authentication available when the mobile sidebar is collapsed. */
+.admin-step-up-button { flex: 0 0 auto; min-height: 32px; padding: 7px 10px; border: 1px solid #6759a5; border-radius: 8px; background: #282345; color: #cfc7ff; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.admin-step-up-button:hover:not(:disabled) { border-color: #a89aff; background: #342d58; color: #f0edff; }
+.admin-step-up-button:disabled { opacity: .65; cursor: wait; }
+@media (max-width: 640px) {
+  .topbar { padding: 0 10px; }
+  .topbar-leading { min-width: 0; gap: 6px; }
+  .breadcrumbs { min-width: 0; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar-right { flex-shrink: 0; gap: 6px; }
+  .admin-step-up-button { padding: 6px 7px; font-size: 9px; }
+  .user-company-trigger { gap: 6px; padding: 4px 2px; }
+  .user-company-label { max-width: 70px; }
+  .user-company-label strong { max-width: 70px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .user-company-label small { max-width: 70px; }
+}
+@media (max-width: 360px) {
+  .breadcrumbs { display: none; }
+  .user-company-label, .user-company-label strong, .user-company-label small { max-width: 48px; }
+}
