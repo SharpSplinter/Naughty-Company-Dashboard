@@ -538,4 +538,45 @@ test("command route parser safely ignores malformed route payload shapes", () =>
     { group: null, subcommand: "list", options: [{ type: 3, name: "q", value: "test" }] });
 });
 
+test("private dashboard panel exposes owner-bound navigation and component clicks update the selected read-only view", async () => {
+  const linkedRow = await encryptedSession("dashboard-session-test");
+  const opened = await invoke({
+    type: 2,
+    application_id: "application-test",
+    token: "dashboard-panel-open-token",
+    data: { name: "dashboard", options: [{ type: 1, name: "panel" }] },
+    user: { id: "discord-user-test" }
+  }, { linkedRow });
+
+  assert.deepEqual(opened.payload, { type: 5, data: { flags: 64 } });
+  const original = opened.discordRequests.find(request =>
+    request.method === "PATCH" && request.url.endsWith("/messages/@original"));
+  assert.ok(original, "the initial panel should replace its private deferred response");
+  const rows = original.body.components;
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].components.map(button => button.label), ["Home", "Company", "Rankings", "Automation", "Refresh"]);
+  assert.ok(rows[0].components.every(button => button.custom_id.includes("discord-user-test")),
+    "every navigation control must bind to the invoking Discord user");
+  assert.ok(opened.dashboardRequests.every(request => request.method === "GET"),
+    "opening the panel must reuse read-only dashboard handlers");
+
+  const companyButton = rows[0].components.find(button => button.label === "Company");
+  const navigated = await invoke({
+    type: 3,
+    application_id: "application-test",
+    token: "dashboard-panel-company-token",
+    data: { component_type: 2, custom_id: companyButton.custom_id },
+    user: { id: "discord-user-test" }
+  }, { linkedRow });
+
+  assert.deepEqual(navigated.payload, { type: 6 }, "navigation should defer the update of the current ephemeral message");
+  const updated = navigated.discordRequests.find(request =>
+    request.method === "PATCH" && request.url.endsWith("/messages/@original"));
+  assert.ok(updated);
+  assert.match(updated.body.content, /Company rating: 4/);
+  assert.equal(updated.body.components[0].components.length, 5, "navigation controls should persist after a view change");
+  assert.ok(navigated.dashboardRequests.every(request => request.method === "GET"),
+    "panel navigation must not trigger a profile refresh or write to dashboard APIs");
+});
+
 console.log("PASS Discord command dispatch: canonical route matrix, invalid-route short circuit, autocomplete safety, and malformed parser inputs.");
