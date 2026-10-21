@@ -71,12 +71,13 @@ async function authenticate(request: Request, env: WorkerEnv): Promise<Session |
   const hash = await sha256(token)
   const session = await requireDb(env).prepare("SELECT p.player_id, p.player_name, s.admin_elevated_until FROM sessions s JOIN players p ON p.player_id = s.player_id WHERE s.token_hash = ? AND s.expires_at > ?").bind(hash, Math.floor(Date.now() / 1000)).first<Session>()
   if (!session) return null
-  if (session.player_id !== ADMIN_PLAYER_ID) {
+  const normalizedSession = { ...session, admin_elevated_until: Number(session.admin_elevated_until ?? 0) }
+  if (!isAdminElevated(normalizedSession)) {
     const status = await requireDb(env).prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?").bind(session.player_id).first<{ disabled_at: string | null }>()
     if (status?.disabled_at) return null
     if (await readAdminBoolean(env, "maintenanceMode", false)) return null
   }
-  return { ...session, admin_elevated_until: Number(session.admin_elevated_until ?? 0) }
+  return normalizedSession
 }
 function isAdminElevated(session: Session): boolean {
   return session.player_id === ADMIN_PLAYER_ID && Number(session.admin_elevated_until) > Math.floor(Date.now() / 1000)
@@ -2837,7 +2838,9 @@ export default {
         await writeAdminAudit(env, session, "authorization.denied", "admin-elevation", session.player_id, "denied", "A non-allowlisted member attempted administrator elevation.")
         return jsonResponse({ error: "Administrator verification failed." }, 403, origin)
       }
-      if (!env.ADMIN_USERNAME || !env.ADMIN_PASSWORD_HASH) return jsonResponse({ error: "Administrator sign-in is not configured. Contact the deployment owner." }, 503, origin)
+      const configuredUsername = env.ADMIN_USERNAME?.trim() || ""
+      const passwordHash = env.ADMIN_PASSWORD_HASH?.trim() || ""
+      if (!configuredUsername || !passwordHash || passwordHash.length > 1024) return jsonResponse({ error: "Administrator sign-in is not configured. Contact the deployment owner." }, 503, origin)
       const now = Math.floor(Date.now() / 1000)
       const ip = request.headers.get("cf-connecting-ip")?.trim() || "unknown"
       const attemptKey = await sha256(`admin-elevation:${session.player_id}:${ip}`)
@@ -2850,8 +2853,8 @@ export default {
         const attempt = await recordAdminAttempt(env, attemptKey, now)
         return jsonResponse({ error: attempt.locked ? "Too many failed administrator sign-in attempts. Try again later." : "Administrator sign-in failed." }, attempt.locked ? 429 : 401, origin)
       }
-      const validUsername = constantTimeEqual(username, env.ADMIN_USERNAME)
-      const validPassword = await verifyAdminPassword(password, env.ADMIN_PASSWORD_HASH)
+      const validUsername = constantTimeEqual(username, configuredUsername)
+      const validPassword = await verifyAdminPassword(password, passwordHash)
       if (!validUsername || !validPassword) {
         const attempt = await recordAdminAttempt(env, attemptKey, now)
         await writeAdminAudit(env, session, "admin.elevation.failed", "admin-elevation", session.player_id, "denied", "Administrator credentials were rejected.")
@@ -2860,7 +2863,8 @@ export default {
       await clearAdminAttempts(env, attemptKey)
       const elevatedUntil = now + ADMIN_ELEVATION_SECONDS
       const token = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || ""
-      await requireDb(env).prepare("UPDATE sessions SET admin_elevated_until = ? WHERE token_hash = ? AND player_id = ? AND expires_at > ?").bind(elevatedUntil, await sha256(token), session.player_id, now).run()
+      const updatedSession = await requireDb(env).prepare("UPDATE sessions SET admin_elevated_until = ? WHERE token_hash = ? AND player_id = ? AND expires_at > ?").bind(elevatedUntil, await sha256(token), session.player_id, now).run()
+      if (Number(updatedSession.meta?.changes ?? 0) !== 1) return jsonResponse({ error: "The dashboard session expired. Sign in again." }, 401, origin)
       await writeAdminAudit(env, session, "admin.elevation.granted", "admin-elevation", session.player_id, "succeeded", "Administrator access was elevated after separate credential verification.", { expiresAt: new Date(elevatedUntil * 1000).toISOString() })
       return jsonResponse({ isAdmin: true, adminElevatedUntil: elevatedUntil }, 200, origin)
     }
@@ -2879,11 +2883,9 @@ export default {
         const secondaryCompanyKey = isRecord(body) && typeof body.secondaryCompanyKey === "string" ? body.secondaryCompanyKey.trim() : ""
         if (!apiKey) return jsonResponse({ error: "A Torn API key is required." }, 400, origin)
         const player = await validateTornKey(apiKey)
-        if (player.id !== ADMIN_PLAYER_ID) {
-          const memberStatus = await requireDb(env).prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?").bind(player.id).first<{ disabled_at: string | null }>()
-          if (memberStatus?.disabled_at) return jsonResponse({ error: "Dashboard access for this account has been disabled. Contact the dashboard administrator." }, 403, origin)
-          if (await readAdminBoolean(env, "maintenanceMode", false)) return jsonResponse({ error: "The dashboard is in maintenance mode. Please try again later." }, 503, origin)
-        }
+        const memberStatus = await requireDb(env).prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?").bind(player.id).first<{ disabled_at: string | null }>()
+        if (memberStatus?.disabled_at) return jsonResponse({ error: "Dashboard access for this account has been disabled. Contact the dashboard administrator." }, 403, origin)
+        if (await readAdminBoolean(env, "maintenanceMode", false)) return jsonResponse({ error: "The dashboard is in maintenance mode. Please try again later." }, 503, origin)
         const directorCheck = await inspectDirectorKey(apiKey, player.id)
         let loginCompanyData: Awaited<ReturnType<typeof validateCompanyKey>> | null = null
         let loginCompanyError: string | null = null
