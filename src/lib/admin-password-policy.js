@@ -20,7 +20,7 @@ export function validateAdminPassword(password) {
     return { valid: false, reason: "Include at least one special character, such as punctuation." }
   }
 
-  const normalized = password.toLowerCase()
+  const normalized = Array.from(password.toLowerCase())
   const category = (character) => {
     if (/[0-9]/.test(character)) return "digit"
     if (/[a-z]/.test(character)) return "letter"
