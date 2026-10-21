@@ -80,7 +80,7 @@ pkg update
 pkg install git nodejs
 git clone https://github.com/SharpSplinter/Naughty-Company-Dashboard.git
 cd Naughty-Company-Dashboard
-git checkout feat/admin-step-up-auth
+git checkout main
 node scripts/generate-admin-password-hash.mjs
 ```
 
