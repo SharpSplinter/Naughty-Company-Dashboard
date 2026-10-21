@@ -859,8 +859,17 @@ export function FloorApp() {
         headers: { "content-type": "application/json", Authorization: `Bearer ${sessionToken}` },
         body: JSON.stringify({ username: adminUsername, password: adminPassword }),
       })
-      const payload = await response.json() as { error?: string; isAdmin?: boolean; adminElevatedUntil?: number }
-      if (!response.ok || payload.isAdmin !== true || typeof payload.adminElevatedUntil !== "number") throw new Error(payload.error || "Administrator sign-in failed.")
+      const payload = await response.json() as { error?: string; diagnostic?: string; isAdmin?: boolean; adminElevatedUntil?: number }
+      if (!response.ok || payload.isAdmin !== true || typeof payload.adminElevatedUntil !== "number") {
+        const diagnosticMessages: Record<string, string> = {
+          username_mismatch: "The username does not match the configured ADMIN_USERNAME secret.",
+          stored_hash_invalid: "The configured ADMIN_PASSWORD_HASH is malformed or incomplete. Generate a new hash and replace the entire hash line in Cloudflare.",
+          password_policy: "The password does not meet the current policy. Use at least 8 characters with a letter, digit, and symbol, and avoid sequences such as abc, cba, 123, or 321.",
+          password_mismatch: "The password does not match ADMIN_PASSWORD_HASH. Generate the hash from exactly the password you intend to enter, then replace the entire hash secret in Cloudflare.",
+        }
+        const detail = payload.diagnostic ? diagnosticMessages[payload.diagnostic] : undefined
+        throw new Error([payload.error || "Administrator sign-in failed.", detail].filter(Boolean).join(" "))
+      }
       setIsAdmin(true)
       setAdminElevatedUntil(payload.adminElevatedUntil)
       setAdminAuthOpen(false)

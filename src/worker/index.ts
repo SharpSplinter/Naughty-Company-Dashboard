@@ -91,6 +91,17 @@ function constantTimeEqual(left: string, right: string): boolean {
   for (let i = 0; i < Math.max(a.length, b.length); i++) difference |= (a[i] ?? 0) ^ (b[i] ?? 0)
   return difference === 0
 }
+function isWellFormedAdminPasswordHash(encoded: string): boolean {
+  const parts = encoded.split("$")
+  if (parts.length !== 4 || parts[0] !== "pbkdf2-sha256") return false
+  const iterations = Number(parts[1])
+  if (!Number.isInteger(iterations) || iterations < 150000 || iterations > 600000) return false
+  try {
+    const decode = (value: string) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0))
+    const salt = decode(parts[2]), expected = decode(parts[3])
+    return salt.length >= 16 && expected.length === 32
+  } catch { return false }
+}
 async function verifyAdminPassword(password: string, encoded: string): Promise<boolean> {
   const parts = encoded.split("$")
   if (parts.length !== 4 || parts[0] !== "pbkdf2-sha256") return false
@@ -2858,11 +2869,20 @@ export default {
       }
       const validUsername = constantTimeEqual(username, configuredUsername)
       const passwordPolicy = validateAdminPassword(password)
-      const validPassword = passwordPolicy.valid && await verifyAdminPassword(password, passwordHash)
+      const passwordHashFormatValid = isWellFormedAdminPasswordHash(passwordHash)
+      const validPassword = passwordPolicy.valid && passwordHashFormatValid && await verifyAdminPassword(password, passwordHash)
       if (!validUsername || !validPassword) {
         const attempt = await recordAdminAttempt(env, attemptKey, now)
         await writeAdminAudit(env, session, "admin.elevation.failed", "admin-elevation", session.player_id, "denied", "Administrator credentials were rejected.")
-        return jsonResponse({ error: attempt.locked ? "Too many failed administrator sign-in attempts. Try again later." : "Administrator sign-in failed." }, attempt.locked ? 429 : 401, origin)
+        const diagnostic = session.player_id !== ADMIN_PLAYER_ID ? undefined
+          : !validUsername ? "username_mismatch"
+          : !passwordHashFormatValid ? "stored_hash_invalid"
+          : !passwordPolicy.valid ? "password_policy"
+          : "password_mismatch"
+        return jsonResponse({
+          error: attempt.locked ? "Too many failed administrator sign-in attempts. Try again later." : "Administrator sign-in failed.",
+          ...(diagnostic ? { diagnostic } : {}),
+        }, attempt.locked ? 429 : 401, origin)
       }
       await clearAdminAttempts(env, attemptKey)
       const elevatedUntil = now + ADMIN_ELEVATION_SECONDS
