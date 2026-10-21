@@ -284,7 +284,7 @@ try {
   await test("admin endpoint refresh is admin-gated, selective, audited, and live-only", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const uiSource = readFileSync(join(root, "src/components/floor/admin-panel.tsx"), "utf8")
-    const migrationSource = readFileSync(join(root, "migrations/auth/0008_admin_endpoint_refresh.sql"), "utf8")
+    const migrationSource = readFileSync(join(root, "migrations/auth/0009_admin_step_up.sql"), "utf8")
     const adminStart = workerSource.indexOf("async function handleAdminRequest")
     const jobsRoute = workerSource.indexOf('if (url.pathname === "/api/admin/jobs" && request.method === "POST")', adminStart)
     const adminRoutes = workerSource.slice(adminStart, workerSource.indexOf("\nasync function ", adminStart + 30))
@@ -292,7 +292,14 @@ try {
     const refreshEnd = workerSource.indexOf("async function runAdminJob", refreshStart)
     const refreshBody = workerSource.slice(refreshStart, refreshEnd)
     assert.ok(adminStart >= 0 && jobsRoute > adminStart)
-    assert.match(adminRoutes, /session\.player_id !== ADMIN_PLAYER_ID/, "admin routes must remain behind administrator session authorization")
+    assert.match(adminRoutes, /!isAdminElevated\\(session\\)/, "admin routes must require active session-scoped elevation")
+    assert.match(workerSource, /ADMIN_PASSWORD_HASH/)
+    assert.match(workerSource, /ADMIN_USERNAME/)
+    assert.match(workerSource, /ADMIN_MAX_ATTEMPTS = 5/)
+    assert.match(workerSource, /admin_elevated_until/)
+    assert.match(uiSource, /Unlock administration/)
+    assert.match(uiSource, /\/api\/auth\/admin\/elevate/)
+    assert.match(migrationSource, /ALTER TABLE sessions ADD COLUMN admin_elevated_until/)
     assert.match(adminRoutes, /ensureAdminJobPayloadSchema\(env\)/)
     assert.match(adminRoutes, /"endpoint-refresh"/)
     assert.match(adminRoutes, /rawIds\.length > 100/, "selected-user jobs must be bounded")
@@ -970,6 +977,44 @@ try {
     assert.equal(response.status, 403)
   })
 
+  await test("administrator elevation fails closed when Worker secrets are not configured", async () => {
+    const db = { prepare(sql) { return {
+      bind() { return this },
+      async first() {
+        if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
+        return null
+      },
+      async all() { return { results: [] } },
+      async run() { return { success: true, meta: { changes: 1 } } },
+    } } }
+    const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
+      method: "POST",
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-session", "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "owner", password: "not-a-real-password" }),
+    }), { DB: db })
+    assert.equal(response.status, 503)
+    assert.match((await response.json()).error, /not configured/i)
+  })
+
+  await test("administrator elevation is denied to non-allowlisted Torn identities", async () => {
+    const db = { prepare(sql) { return {
+      bind() { return this },
+      async first() {
+        if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "777", player_name: "Member Tester", admin_elevated_until: 0 }
+        return null
+      },
+      async all() { return { results: [] } },
+      async run() { return { success: true, meta: { changes: 1 } } },
+    } } }
+    const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
+      method: "POST",
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session", "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "owner", password: "some-password" }),
+    }), { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: "malformed" })
+    assert.equal(response.status, 403)
+    assert.match((await response.json()).error, /verification failed/i)
+  })
+
   await test("admin API rejects requests without an authenticated dashboard session", async () => {
     const response = await worker.fetch(new Request("https://worker.test/api/admin/overview", {
       headers: { Origin: "https://naughty-company-dashboard.pages.dev" },
@@ -1004,7 +1049,7 @@ try {
         bind(...args) { values = args; return this },
         async first() {
           const normalized = sql.toLowerCase()
-          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter" }
+          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: Math.floor(Date.now() / 1000) + 1800 }
           if (normalized.includes("count(*) as totalruns")) return { totalRuns: 4, succeededRuns: 2, failedRuns: 1, partialRuns: 1, runningRuns: 0, completedRuns: 4, avgDurationSeconds: 65.2, companiesFailed: 3, alertsCreated: 5, latestRunAt: "2026-10-10T18:00:00.000Z" }
           return null
         },
@@ -1036,7 +1081,7 @@ try {
     const writes = []
     const db = { prepare(sql) { let values = []; return {
       bind(...args) { values = args; return this },
-      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter" }; return null },
+      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: Math.floor(Date.now() / 1000) + 1800 }; return null },
       async all() { return { results: [] } },
       async run() { if (sql.toLowerCase().includes("insert into admin_settings")) writes.push(values); return { success: true, meta: { changes: 1 } } },
     } } }
@@ -1052,7 +1097,7 @@ try {
   await test("admin panel cannot disable its primary administrator account", async () => {
     const db = { prepare(sql) { return {
       bind() { return this },
-      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter" }; return null },
+      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: Math.floor(Date.now() / 1000) + 1800 }; return null },
       async all() { return { results: [] } },
       async run() { return { success: true, meta: { changes: 1 } } },
     } } }
