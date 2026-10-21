@@ -6,6 +6,8 @@ compatibility_date = "2026-10-11"
 [vars]
 # Discord application verification key is public and is required for HTTP interaction signature checks.
 DISCORD_PUBLIC_KEY = "631123be1afcaf7bb172fc408f649813590972646370b5a795fc475d5eae7d25"
+# Keep the interactive dashboard off until non-admin acceptance and live rollout gates pass.
+DASHBOARD_PANEL_ENABLED = "false"
 
 [observability]
 enabled = true
