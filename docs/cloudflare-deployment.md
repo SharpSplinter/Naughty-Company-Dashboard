@@ -6,7 +6,7 @@
 - **Pages URL:** https://naughty-company-dashboard.pages.dev
 - **API Worker:** https://naughty-company-api.kboone801.workers.dev
 - **Git repository:** `SharpSplinter/Naughty-Company-Dashboard`
-- **Cloudflare Pages production branch:** `fix/missing-grok-pwa-plugin` while the project is under development; `main` is intentionally untouched.
+- **Cloudflare Pages production branch:** `main`
 
 Pages build settings:
 
@@ -41,4 +41,4 @@ The regular sign-out action revokes the current server-side session. An authenti
 - `npm run build`
 - `npm run typecheck`
 
-Cloudflare Pages is configured to build the repository with `npm run build` and publish `dist/`. The first deployment is triggered from the feature branch while `main` remains unchanged.
+Cloudflare Pages production deployments are built from `main` with `npm run build` and published from `dist/`. Feature branches are not the production source.
