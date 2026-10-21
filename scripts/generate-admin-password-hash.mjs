@@ -3,7 +3,7 @@ import { pbkdf2Sync, randomBytes } from "node:crypto";
 import { emitKeypressEvents } from "node:readline";
 
 const ITERATIONS = 210_000;
-const MIN_LENGTH = 14;
+const MIN_LENGTH = 16;
 
 function promptHidden(prompt) {
   if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== "function") {
@@ -51,7 +51,7 @@ function promptHidden(prompt) {
 try {
   const password = await promptHidden("Administrator password (input hidden): ");
   if (Array.from(password).length < MIN_LENGTH) {
-    throw new Error(`Use a passphrase of at least ${MIN_LENGTH} characters.`);
+    throw new Error(\`Use a passphrase of at least \${MIN_LENGTH} characters.\`);
   }
   const salt = randomBytes(16);
   const digest = pbkdf2Sync(password, salt, ITERATIONS, 32, "sha256");
