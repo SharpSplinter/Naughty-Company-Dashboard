@@ -1985,12 +1985,12 @@ async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
       throw new Error("Unsupported administrative job type.")
     }
     await db.prepare("UPDATE admin_jobs SET status = 'completed', finished_at = ?, result_json = ?, error_message = NULL WHERE job_id = ?").bind(new Date().toISOString(), asJson(result), jobId).run()
-    const actor = { player_id: "351311", player_name: "SharpSplinter" }
+    const actor = { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
     await writeAdminAudit(env, actor, "job.completed", "job", jobId, "succeeded", `Administrative job ${job.job_type} completed.`, { jobType: job.job_type, targetPlayerId: job.target_player_id, targetCompanyId: job.target_company_id })
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 220) : "The operation failed unexpectedly."
     await db.prepare("UPDATE admin_jobs SET status = 'failed', finished_at = ?, error_message = ? WHERE job_id = ?").bind(new Date().toISOString(), message, jobId).run()
-    const actor = { player_id: "351311", player_name: "SharpSplinter" }
+    const actor = { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
     await writeAdminAudit(env, actor, "job.failed", "job", jobId, "failed", `Administrative job ${job.job_type} failed.`, { jobType: job.job_type, targetPlayerId: job.target_player_id, targetCompanyId: job.target_company_id, error: message })
   }
 }
