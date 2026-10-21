@@ -1598,6 +1598,9 @@ export default {
     }
 
     if (interaction?.type === 3) {
+      if (interaction.data?.component_type !== 2) {
+        return json(privateReply("This dashboard component type is not supported. Please use the panel buttons."));
+      }
       if (!dashboardPanelEnabled(env)) {
         return json(privateReply("The interactive dashboard panel is currently disabled. Use /dashboard health, /dashboard summary, or the existing company and automation commands."));
       }
