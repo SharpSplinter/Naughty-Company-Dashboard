@@ -3,10 +3,12 @@ import { parseCommandRoute } from "./command-routing.mjs";
 import { isDuringQuietHours, severityRank } from "./alert-delivery.mjs";
 import { buildCostBreakdown, estimateDailyProfit, estimateWeeklyProfit, findAdvertisingBudget, knownWageSummary, stockInventorySummary, stockOrderExpenses, stockQuantityDeltaForReportingDays, summarizeMonthToDate } from "./financials.mjs";
 import { buildDailySummaryMessage, isDailySummaryDue, previousReportingDay, reportingDayAt, summaryMetricValues } from "./daily-summary.mjs";
+import { buildDashboardPanelComponents, isDashboardPanelView, parseDashboardPanelCustomId } from "./dashboard-panel.mjs";
 
 const enc = new TextEncoder();
 const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 const privateReply = content => ({ type: 4, data: { content, flags: 64, allowed_mentions: { parse: [] } } });
+const dashboardPanelEnabled = env => String(env?.DASHBOARD_PANEL_ENABLED || "").toLowerCase() === "true";
 async function dashboardFetch(env, path, init = {}) {
   if (!env.DASHBOARD_API) throw new Error("dashboard_binding_missing");
   return env.DASHBOARD_API.fetch(new Request("https://naughty-company-api" + path, init));
@@ -393,9 +395,44 @@ function chunkedPrivateReply(title, lines, maxLength = 1750) {
   return reply;
 }
 
+function dashboardPanelRoute(view) {
+  if (view === "home") return { name: "dashboard", options: [{ type: 1, name: "health" }] };
+  if (view === "company") return { name: "company", options: [{ type: 1, name: "overview" }] };
+  if (view === "rankings") return { name: "company", options: [{ type: 2, name: "rankings", options: [{ type: 1, name: "global" }] }] };
+  if (view === "automation") return { name: "automation", options: [{ type: 2, name: "notifications", options: [{ type: 1, name: "status" }] }] };
+  return null;
+}
+
+async function renderDashboardPanel(interaction, env, view, user) {
+  if (!dashboardPanelEnabled(env)) {
+    return privateReply("The interactive dashboard panel is currently disabled. Use /dashboard health, /dashboard summary, or the existing company and automation commands.");
+  }
+  const route = dashboardPanelRoute(view);
+  if (!route || !isDashboardPanelView(view) || typeof user !== "string") {
+    return privateReply("This dashboard panel is invalid or outdated. Run /dashboard panel to open a fresh panel.");
+  }
+  // Reuse the existing read-only command handlers as the panel's data source.
+  // This avoids a second implementation of account scoping or metric formatting.
+  const panelInteraction = { ...interaction, type: 2, data: route };
+  const reply = await replyFor(panelInteraction, env);
+  if (reply?.type !== 4 || !reply.data || typeof reply.data.content !== "string") return reply;
+  if (/Link your dashboard first with \/link|Your dashboard session expired or access changed/i.test(reply.data.content)) {
+    return reply;
+  }
+  reply.data.components = buildDashboardPanelComponents(user, view);
+  return reply;
+}
+
 async function replyFor(i, env) {
   const name = i.data?.name, user = i.member?.user?.id || i.user?.id;
   if (i.type === 1) return { type: 1 };
+  if (i.type === 3) {
+    const panel = parseDashboardPanelCustomId(i.data?.custom_id);
+    if (!panel || panel.ownerId !== user || !isDashboardPanelView(panel.view)) {
+      return privateReply("This dashboard panel is stale or invalid. Run /dashboard panel to open a fresh panel.");
+    }
+    return renderDashboardPanel(i, env, panel.view, user);
+  }
   if (i.type === 5 && i.data?.custom_id === "link_code_submit") {
     const findValue = (items) => { for (const item of items || []) { if (item?.custom_id === "link_code" && typeof item.value === "string") return item.value; const nested = findValue([...(Array.isArray(item?.components) ? item.components : []), ...(item?.component ? [item.component] : [])]); if (nested !== undefined) return nested; } return undefined; };
     const code = String(findValue(i.data.components || []) || "").trim().toLowerCase();
@@ -497,6 +534,7 @@ async function replyFor(i, env) {
       "**Dashboard**",
       "- `/dashboard health`  Check API, database, and company freshness.",
       "- `/dashboard summary`  View coverage, scheduled runs, and recent alerts.",
+      "- `/dashboard panel`  Open a private dashboard with Home, Company, Rankings, and Automation views.",
       "",
       "**Company data**",
       "- `/company list`  List connected companies.",
@@ -1380,6 +1418,8 @@ async function replyFor(i, env) {
       return privateReply("Automation settings are temporarily unavailable. Please try again later.");
     }
   }
+    if (name === "dashboard" && commandOptions(i).subcommand === "panel") return renderDashboardPanel(i, env, "home", user);
+
     if (name === "dashboard" && ["health", "summary"].includes(commandOptions(i).subcommand)) {
     const subcommand = commandOptions(i).subcommand;
     const row = await env.BOT_DB.prepare("SELECT encrypted_session_token, token_iv FROM discord_links WHERE discord_user_id=?1").bind(user).first();
@@ -1558,7 +1598,29 @@ export default {
     }
 
     if (interaction?.type === 3) {
-      return json(privateReply("This component interaction is not supported."));
+      if (interaction.data?.component_type !== 2) {
+        return json(privateReply("This dashboard component type is not supported. Please use the panel buttons."));
+      }
+      if (!dashboardPanelEnabled(env)) {
+        return json(privateReply("The interactive dashboard panel is currently disabled. Use /dashboard health, /dashboard summary, or the existing company and automation commands."));
+      }
+      const panel = parseDashboardPanelCustomId(interaction.data?.custom_id);
+      const user = interaction.member?.user?.id || interaction.user?.id;
+      // Component custom IDs are versioned, allowlisted, and bound to the original invoker.
+      // Read-only panel actions are safe to repeat, so no mutable action is dispatched here.
+      if (!panel || panel.ownerId !== user || !isDashboardPanelView(panel.view)) {
+        return json(privateReply("This dashboard panel is stale or invalid. Run /dashboard panel to open a fresh panel."));
+      }
+      if (typeof ctx?.waitUntil !== "function") {
+        return json(privateReply("This panel cannot be updated safely right now. Please reopen /dashboard panel."));
+      }
+      ctx.waitUntil(completeDeferredInteraction(interaction, env));
+      return json({ type: 6 });
+    }
+
+    if (interaction?.type === 2 && interaction?.data?.name === "dashboard" &&
+        parseCommandRoute(interaction).subcommand === "panel" && !dashboardPanelEnabled(env)) {
+      return json(privateReply("The interactive dashboard panel is currently disabled. Use /dashboard health, /dashboard summary, or the existing company and automation commands."));
     }
 
     const commandName = interaction?.data?.name;

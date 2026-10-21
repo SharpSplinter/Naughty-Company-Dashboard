@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { webcrypto } from "node:crypto";
 import worker from "./production-worker.js";
+import { dashboardPanelCustomId } from "./dashboard-panel.mjs";
 
 const encoder = new TextEncoder();
 const { publicKey, privateKey } = await webcrypto.subtle.generateKey(
@@ -68,7 +69,8 @@ async function invoke(interaction, {
   dbFirstDelayMs = 0,
   failSchema = false,
   apiDelayMs = 0,
-  failApi = false
+  failApi = false,
+  dashboardPanelEnabled = true
 } = {}) {
   const previousFetch = globalThis.fetch;
   const webhookRequests = [];
@@ -85,6 +87,7 @@ async function invoke(interaction, {
   const env = {
     DISCORD_PUBLIC_KEY: publicKeyHex,
     BOT_ENCRYPTION_KEY: "0".repeat(64),
+    DASHBOARD_PANEL_ENABLED: dashboardPanelEnabled ? "true" : "false",
     BOT_DB: db,
     DASHBOARD_API: {
       async fetch(request) {
@@ -197,4 +200,73 @@ test("fast private replies explicitly suppress mention parsing", async () => {
   assert.equal(result.callback.type, 4);
   assert.equal(result.callback.data.flags, 64);
   assert.deepEqual(result.callback.data.allowed_mentions, { parse: [] });
+});
+
+
+test("dashboard panel component ownership is validated before database access", async () => {
+  const result = await invoke({
+    type: 3,
+    application_id: "application-test",
+    token: "panel-owner-mismatch",
+    data: { component_type: 2, custom_id: dashboardPanelCustomId("another-discord-user", "home") },
+    user: { id: "discord-user-test" }
+  }, { failSchema: true });
+
+  assert.equal(result.response.status, 200);
+  assert.equal(result.callback.type, 4);
+  assert.equal(result.callback.data.flags, 64);
+  assert.match(result.callback.data.content, /stale or invalid/i);
+  assert.equal(result.db.runCount, 0, "a component for a different user must not initialize D1 or touch account data");
+  assert.equal(result.webhookRequests.length, 0, "rejected component clicks must not edit Discord messages");
+});
+
+test("valid dashboard panel components defer message updates and finish through the original-message webhook", async () => {
+  const result = await invoke({
+    type: 3,
+    application_id: "application-test",
+    token: "panel-update-token",
+    data: { component_type: 2, custom_id: dashboardPanelCustomId("discord-user-test", "home") },
+    user: { id: "discord-user-test" }
+  }, { dbDelayMs: 50 });
+
+  assert.deepEqual(result.callback, { type: 6 }, "component clicks must acknowledge with DEFERRED_UPDATE_MESSAGE");
+  assert.equal(result.finishedImmediately, false, "the component update must be acknowledged before database work completes");
+  const edit = result.webhookRequests.find(request =>
+    request.method === "PATCH" && request.url.endsWith("/messages/@original"));
+  assert.ok(edit, "the accepted component action must edit the original dashboard message");
+  assert.match(edit.body.content, /Link your dashboard first/i, "unlinked users should receive a safe, actionable result");
+  assert.deepEqual(edit.body.allowed_mentions, { parse: [] });
+});
+
+
+test("dashboard panel rejects non-button component types before database access", async () => {
+  const result = await invoke({
+    type: 3,
+    application_id: "application-test",
+    token: "panel-select-rejected",
+    data: { component_type: 3, custom_id: dashboardPanelCustomId("discord-user-test", "home") },
+    user: { id: "discord-user-test" }
+  });
+
+  assert.equal(result.callback.type, 4);
+  assert.match(result.callback.data.content, /component type is not supported/i);
+  assert.equal(result.db.runCount, 0, "unsupported component types must not initialize D1");
+  assert.equal(result.webhookRequests.length, 0, "unsupported component types must not update a panel");
+});
+
+test("dashboard panel kill switch rejects clicks before D1 work", async () => {
+  const result = await invoke({
+    type: 3,
+    application_id: "application-test",
+    token: "panel-disabled-lifecycle",
+    data: { component_type: 2, custom_id: dashboardPanelCustomId("discord-user-test", "home") },
+    user: { id: "discord-user-test" }
+  }, { dashboardPanelEnabled: false, failSchema: true });
+
+  assert.equal(result.response.status, 200);
+  assert.equal(result.callback.type, 4);
+  assert.equal(result.callback.data.flags, 64);
+  assert.match(result.callback.data.content, /currently disabled/i);
+  assert.equal(result.db.runCount, 0, "disabled panel interactions must bypass D1 initialization");
+  assert.equal(result.webhookRequests.length, 0, "disabled components should not attempt message updates");
 });

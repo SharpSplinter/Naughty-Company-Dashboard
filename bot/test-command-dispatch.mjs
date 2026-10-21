@@ -42,6 +42,13 @@ function jsonResponse(value, status = 200) {
 function dashboardFixture(request) {
   const path = request.url.pathname;
   if (path === "/health") return jsonResponse({ ok: true, checkedAt: "2026-10-20T00:00:00.000Z" });
+  if (path === "/api/me/health") return jsonResponse({
+    checkedAt: "2026-10-20T00:00:00.000Z",
+    worker: { status: "healthy", latencyMs: 1 },
+    database: { status: "healthy", latencyMs: 1 },
+    summary: { companyCount: 1, snapshotCount: 1, staleCompanies: 0, latestSnapshotAt: "2026-10-20T00:00:00.000Z" },
+    companies: []
+  });
   if (path === "/api/me/companies") {
     return jsonResponse({ companies: [{
       company_id: "company-123",
@@ -174,7 +181,7 @@ async function signRequest(interaction) {
   });
 }
 
-async function invoke(interaction, { linkedRow = null, dashboardHandler = dashboardFixture, dbOptions = {} } = {}) {
+async function invoke(interaction, { linkedRow = null, dashboardHandler = dashboardFixture, dbOptions = {}, dashboardPanelEnabled = true } = {}) {
   const oldFetch = globalThis.fetch;
   const discordRequests = [];
   const dashboardRequests = [];
@@ -191,6 +198,7 @@ async function invoke(interaction, { linkedRow = null, dashboardHandler = dashbo
     DISCORD_PUBLIC_KEY: publicKeyHex,
     BOT_ENCRYPTION_KEY: encryptionKeyHex,
     DISCORD_TOKEN: "mock-discord-token",
+    DASHBOARD_PANEL_ENABLED: dashboardPanelEnabled ? "true" : "false",
     BOT_DB: db,
     DASHBOARD_API: {
       async fetch(request) {
@@ -536,6 +544,90 @@ test("command route parser safely ignores malformed route payload shapes", () =>
     { group: "alerts", subcommand: null, options: [] }, "an empty group must be represented as an incomplete route");
   assert.deepEqual(parseCommandRoute({ data: { options: [{ type: 1, name: "list", options: [null, { type: 3, name: "q", value: "test" }] }] } }),
     { group: null, subcommand: "list", options: [{ type: 3, name: "q", value: "test" }] });
+});
+
+test("private dashboard panel exposes owner-bound navigation and component clicks update the selected read-only view", async () => {
+  const linkedRow = await encryptedSession("dashboard-session-test");
+  const opened = await invoke({
+    type: 2,
+    application_id: "application-test",
+    token: "dashboard-panel-open-token",
+    data: { name: "dashboard", options: [{ type: 1, name: "panel" }] },
+    user: { id: "discord-user-test" }
+  }, { linkedRow });
+
+  assert.deepEqual(opened.payload, { type: 5, data: { flags: 64 } });
+  const original = opened.discordRequests.find(request =>
+    request.method === "PATCH" && request.url.endsWith("/messages/@original"));
+  assert.ok(original, "the initial panel should replace its private deferred response");
+  const rows = original.body.components;
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].components.map(button => button.label), ["Home", "Company", "Rankings", "Automation", "Refresh"]);
+  assert.ok(rows[0].components.every(button => button.custom_id.includes("discord-user-test")),
+    "every navigation control must bind to the invoking Discord user");
+  assert.ok(opened.dashboardRequests.every(request => request.method === "GET"),
+    "opening the panel must reuse read-only dashboard handlers");
+
+  const companyButton = rows[0].components.find(button => button.label === "Company");
+  const navigated = await invoke({
+    type: 3,
+    application_id: "application-test",
+    token: "dashboard-panel-company-token",
+    data: { component_type: 2, custom_id: companyButton.custom_id },
+    user: { id: "discord-user-test" }
+  }, { linkedRow });
+
+  assert.deepEqual(navigated.payload, { type: 6 }, "navigation should defer the update of the current ephemeral message");
+  const updated = navigated.discordRequests.find(request =>
+    request.method === "PATCH" && request.url.endsWith("/messages/@original"));
+  assert.ok(updated);
+  assert.match(updated.body.content, /Company rating: 4/);
+  assert.equal(updated.body.components[0].components.length, 5, "navigation controls should persist after a view change");
+  assert.ok(navigated.dashboardRequests.every(request => request.method === "GET"),
+    "panel navigation must not trigger a profile refresh or write to dashboard APIs");
+});
+
+test("dashboard panel can be disabled without database or dashboard access while legacy routes stay available", async () => {
+  const disabled = await invoke({
+    type: 2,
+    application_id: "application-test",
+    token: "dashboard-panel-disabled",
+    data: { name: "dashboard", options: [{ type: 1, name: "panel" }] },
+    user: { id: "discord-user-test" }
+  }, { dashboardPanelEnabled: false });
+
+  assert.equal(disabled.payload.type, 4);
+  assert.equal(disabled.payload.data.flags, 64);
+  assert.match(disabled.payload.data.content, /currently disabled/i);
+  assert.equal(disabled.db.runs.length, 0, "disabled panel opens must not run DDL or query account data");
+  assert.equal(disabled.dashboardRequests.length, 0, "disabled panel opens must not call dashboard APIs");
+
+  const disabledClick = await invoke({
+    type: 3,
+    application_id: "application-test",
+    token: "dashboard-panel-click-disabled",
+    data: { component_type: 2, custom_id: "ncdash:v1:discord-user-test:home" },
+    user: { id: "discord-user-test" }
+  }, { dashboardPanelEnabled: false });
+
+  assert.equal(disabledClick.payload.type, 4);
+  assert.match(disabledClick.payload.data.content, /currently disabled/i);
+  assert.equal(disabledClick.db.runs.length, 0, "disabled component clicks must fail closed before D1 access");
+  assert.equal(disabledClick.discordRequests.length, 0, "disabled component clicks must not update the original panel");
+
+  const legacy = await invoke({
+    type: 2,
+    application_id: "application-test",
+    token: "dashboard-health-still-works",
+    data: { name: "dashboard", options: [{ type: 1, name: "health" }] },
+    user: { id: "discord-user-test" }
+  }, { linkedRow: await encryptedSession("dashboard-session-test"), dashboardPanelEnabled: false });
+
+  assert.deepEqual(legacy.payload, { type: 5, data: { flags: 64 } });
+  const legacyEdit = legacy.discordRequests.find(request =>
+    request.method === "PATCH" && request.url.endsWith("/messages/@original"));
+  assert.ok(legacyEdit);
+  assert.match(legacyEdit.body.content, /Dashboard Worker:/, "existing dashboard health command remains available when the panel flag is off");
 });
 
 console.log("PASS Discord command dispatch: canonical route matrix, invalid-route short circuit, autocomplete safety, and malformed parser inputs.");
