@@ -18,6 +18,8 @@
 .saved-company-link:hover { border-color: var(--accent, #8b78e6); }
 .saved-company-link span { color: var(--muted, #778094); font-size: 11px; }
 
+.admin-elevation-screen{position:fixed;inset:0;z-index:1000;overflow:auto;background:rgba(7,10,22,.96);backdrop-filter:blur(10px)}
+
 /* Member-only Torn-key sign-in gate */
 .login-screen{min-height:100vh;display:grid;place-items:center;padding:30px 16px;background:radial-gradient(ellipse at 50% 0%,#29234f 0,transparent 48%),#0b1020}
 .login-card{width:min(100%,500px);padding:34px;background:linear-gradient(145deg,#131b30,#101729);border:1px solid #303753;border-radius:16px;box-shadow:0 25px 90px #0005}
