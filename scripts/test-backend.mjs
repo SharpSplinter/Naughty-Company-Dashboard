@@ -1044,6 +1044,32 @@ try {
     assert.equal(adminRequest.status, 403)
   })
 
+  await test("maintenance mode permits owner recovery authentication but blocks ordinary APIs until elevation", async () => {
+    let companyAutoConnectLookup = false
+    const db = { prepare(sql) { return {
+      bind() { return this },
+      async first() {
+        const normalized = sql.toLowerCase()
+        if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
+        if (normalized.includes("from admin_settings")) return { value_json: "true" }
+        if (normalized.includes("select company_id from company_api_keys") && normalized.includes("order by updated_at desc limit 1")) companyAutoConnectLookup = true
+        return null
+      },
+      async all() { return { results: [] } },
+      async run() { return { success: true, meta: { changes: 1 } } },
+    } } }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-maintenance-session" }
+    const restored = await worker.fetch(new Request("https://worker.test/api/auth/session", { headers }), { DB: db })
+    assert.equal(restored.status, 200, "the allowlisted owner must be able to reach the separate elevation prompt")
+    const session = await restored.json()
+    assert.equal(session.isAdmin, false, "maintenance recovery must not confer admin privileges")
+    assert.equal(session.canElevateAdmin, true)
+    assert.equal(companyAutoConnectLookup, false, "maintenance recovery should not trigger automatic company connection work")
+
+    const protectedData = await worker.fetch(new Request("https://worker.test/api/me/health", { headers }), { DB: db })
+    assert.equal(protectedData.status, 401, "normal authenticated API routes remain blocked during maintenance before elevation")
+  })
+
   await test("expired administrator elevation is denied at the Worker even if the browser still has stale admin state", async () => {
     const db = { prepare(sql) { return {
       bind() { return this },
