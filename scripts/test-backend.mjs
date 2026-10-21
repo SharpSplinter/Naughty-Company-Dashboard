@@ -294,6 +294,8 @@ try {
     const refreshBody = workerSource.slice(refreshStart, refreshEnd)
     assert.ok(adminStart >= 0 && jobsRoute > adminStart)
     assert.match(adminRoutes, /!isAdminElevated\(session\)/, "admin routes must require active session-scoped elevation")
+    assert.match(workerSource, /isAdmin: false, canElevateAdmin:/, "normal Torn sign-in must never grant admin")
+    assert.doesNotMatch(workerSource, /isAdmin: player\.id === ADMIN_PLAYER_ID/, "Torn player ID is only an elevation allowlist")
     assert.match(workerSource, /ADMIN_PASSWORD_HASH/)
     assert.match(workerSource, /ADMIN_USERNAME/)
     assert.match(workerSource, /ADMIN_MAX_ATTEMPTS = 5/)
@@ -1065,6 +1067,23 @@ try {
     }), { DB: { prepare() { return { bind() { return this }, async first() { return null }, async all() { return { results: [] } }, async run() { return { success: true } } } } } })
     assert.equal(response.status, 401)
     assert.match((await response.json()).error, /active dashboard session/i)
+  })
+
+  await test("owner Torn session has no admin access until step-up verification", async () => {
+    const db = { prepare(sql) { return {
+      bind() { return this },
+      async first() {
+        if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
+        return null
+      },
+      async all() { return { results: [] } },
+      async run() { return { success: true, meta: { changes: 1 } } },
+    } } }
+    const response = await worker.fetch(new Request("https://worker.test/api/admin/overview", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-standard-session" },
+    }), { DB: db })
+    assert.equal(response.status, 403)
+    assert.match((await response.json()).error, /administrator verification/i)
   })
 
   await test("admin API rejects an authenticated non-administrator", async () => {
