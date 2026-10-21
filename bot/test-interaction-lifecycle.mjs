@@ -69,7 +69,8 @@ async function invoke(interaction, {
   dbFirstDelayMs = 0,
   failSchema = false,
   apiDelayMs = 0,
-  failApi = false
+  failApi = false,
+  dashboardPanelEnabled = true
 } = {}) {
   const previousFetch = globalThis.fetch;
   const webhookRequests = [];
@@ -86,6 +87,7 @@ async function invoke(interaction, {
   const env = {
     DISCORD_PUBLIC_KEY: publicKeyHex,
     BOT_ENCRYPTION_KEY: "0".repeat(64),
+    DASHBOARD_PANEL_ENABLED: dashboardPanelEnabled ? "true" : "false",
     BOT_DB: db,
     DASHBOARD_API: {
       async fetch(request) {
@@ -234,4 +236,22 @@ test("valid dashboard panel components defer message updates and finish through 
   assert.ok(edit, "the accepted component action must edit the original dashboard message");
   assert.match(edit.body.content, /Link your dashboard first/i, "unlinked users should receive a safe, actionable result");
   assert.deepEqual(edit.body.allowed_mentions, { parse: [] });
+});
+
+
+test("dashboard panel kill switch rejects clicks before D1 work", async () => {
+  const result = await invoke({
+    type: 3,
+    application_id: "application-test",
+    token: "panel-disabled-lifecycle",
+    data: { component_type: 2, custom_id: dashboardPanelCustomId("discord-user-test", "home") },
+    user: { id: "discord-user-test" }
+  }, { dashboardPanelEnabled: false, failSchema: true });
+
+  assert.equal(result.response.status, 200);
+  assert.equal(result.callback.type, 4);
+  assert.equal(result.callback.data.flags, 64);
+  assert.match(result.callback.data.content, /currently disabled/i);
+  assert.equal(result.db.runCount, 0, "disabled panel interactions must bypass D1 initialization");
+  assert.equal(result.webhookRequests.length, 0, "disabled components should not attempt message updates");
 });
