@@ -1005,7 +1005,7 @@ try {
     const password = "correct-horse-battery-staple-test"
     const salt = Buffer.alloc(16, 7)
     const digest = pbkdf2Sync(password, salt, 210000, 32, "sha256")
-    const passwordHash = `pbkdf2-sha256$210000${salt.toString("base64")}${digest.toString("base64")}`
+    const passwordHash = ["pbkdf2-sha256", "210000", salt.toString("base64"), digest.toString("base64")].join("$")
     let elevatedUntil = 0
     const db = { prepare(sql) {
       let values = []
