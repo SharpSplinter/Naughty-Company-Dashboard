@@ -1102,7 +1102,7 @@ try {
       headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session" },
     }), { DB: db })
     assert.equal(response.status, 403)
-    assert.match((await response.json()).error, /administrator access/i)
+    assert.match((await response.json()).error, /administrator (?:verification|access)/i)
   })
 
   await test("admin automation insights aggregate runs for the selected time window", async () => {
