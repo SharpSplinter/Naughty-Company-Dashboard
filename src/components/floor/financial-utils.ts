@@ -86,6 +86,29 @@ export function getObject(value: unknown): Record<string, unknown> | null {
     : null
 }
 
+export function reportedCompanyProfit(profile: unknown, period: "daily" | "weekly"): number | null {
+  let root = getObject(profile)
+  for (let depth = 0; root && depth < 4; depth++) {
+    const nested = getObject(root.company) ?? getObject(root.profile)
+    if (!nested) break
+    root = nested
+  }
+  const profit = getObject(root?.profit)
+  const candidates = period === "weekly"
+    ? [profit?.weekly, root?.weekly_profit, root?.weeklyProfit, root?.profit_weekly]
+    : [profit?.daily, root?.daily_profit, root?.dailyProfit, root?.profit_daily, typeof root?.profit === "number" ? root.profit : null]
+  return candidates.find((value): value is number => typeof value === "number" && Number.isFinite(value)) ?? null
+}
+
+export function estimateWeeklyProfit(
+  weeklyIncome: number | null | undefined,
+  dailyRecurringCosts: number | null | undefined,
+  stockCosts: number | null | undefined,
+): number | null {
+  if (![weeklyIncome, dailyRecurringCosts, stockCosts].every((value) => typeof value === "number" && Number.isFinite(value))) return null
+  return (weeklyIncome as number) - (dailyRecurringCosts as number) * 7 - (stockCosts as number)
+}
+
 export function pretty(value: unknown): string {
   return JSON.stringify(value, null, 2) ?? "No data returned."
 }
