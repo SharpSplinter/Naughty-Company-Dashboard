@@ -9,7 +9,7 @@ import { placement } from "./ranking-utils"
 import { AdminPanel } from "./admin-panel"
 import { InsightsWorkspace } from "./insights-workspace"
 import { AlertsPanel, NotificationSettingsPanel } from "./alerts-panel"
-import { companyTypeIdFromProfile, financialCosts, formatMoney, formatNumber, getObject, pretty, stockPriceRows } from "./financial-utils"
+import { companyTypeIdFromProfile, estimateWeeklyProfit, financialCosts, formatMoney, formatNumber, getObject, pretty, reportedCompanyProfit, stockPriceRows } from "./financial-utils"
 
 const catalog = positionsData as CompanyPositionCatalog
 const companyNames = Object.keys(catalog.companies).sort()
@@ -547,8 +547,9 @@ export function FloorApp() {
   const latestReportedWeeklyProfit = archivedWeekPoints.filter((point) => point.weeklyProfit !== null).at(-1)?.weeklyProfit ?? null
   const archivedMonthProfit = archivedMonthPoints.filter((point) => point.dailyProfit !== null)
   const operatingDailyCosts = costs?.dailyRecurringCosts ?? null
-  const weeklyCostDays = Math.max(weekSamples.length, archivedWeekPoints.length)
-  const weeklyProfit = latestReportedWeeklyProfit ?? (weeklyIncome === null || operatingDailyCosts === null || costs?.stockCosts == null || weeklyCostDays === 0 ? null : weeklyIncome - operatingDailyCosts * weeklyCostDays - costs.stockCosts)
+  const reportedWeeklyProfit = reportedCompanyProfit(result?.profile, "weekly")
+  const estimatedWeeklyProfit = estimateWeeklyProfit(weeklyIncome, operatingDailyCosts, costs?.stockCosts)
+  const weeklyProfit = reportedWeeklyProfit ?? estimatedWeeklyProfit ?? latestReportedWeeklyProfit
   const monthlyProfit = archivedMonthProfit.length
     ? archivedMonthProfit.reduce((sum, point) => sum + (point.dailyProfit ?? 0), 0)
     : monthlyIncome === null || operatingDailyCosts === null || costs?.stockCosts == null || Math.max(monthSamples.length, archivedMonthPoints.length) === 0 ? null : monthlyIncome - operatingDailyCosts * Math.max(monthSamples.length, archivedMonthPoints.length) - costs.stockCosts
