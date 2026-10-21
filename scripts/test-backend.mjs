@@ -1611,8 +1611,8 @@ try {
             assert.deepEqual(values.slice(0, 2), ["777", "123"], "official stock history must filter by authenticated owner and selected company")
             assert.equal(values.length, 3, "official stock history must bind the selected range cutoff")
             return { results: [
-              { day: "2026-10-08", stockJson: JSON.stringify({ stock: [{ name: "Oil", in_stock: 100 }] }) },
-              { day: "2026-10-10", stockJson: JSON.stringify({ stock: [{ name: "Tealight", in_stock: 10 }, { name: "Restricted", cost: "Cannot be ordered" }] }) },
+              { day: "2026-10-08", stockJson: JSON.stringify({ stock: [{ name: "Oil", in_stock: 100 }] }), snapshotKind: "lock-in", fetchedAt: "2026-10-08T18:10:00.000Z" },
+              { day: "2026-10-10", stockJson: JSON.stringify({ stock: [{ name: "Tealight", in_stock: 10 }, { name: "Restricted", cost: "Cannot be ordered" }] }), snapshotKind: "legacy", fetchedAt: "2026-10-10T18:10:00.000Z" },
             ] }
           }
           if (normalized.includes("from company_financial_snapshots")) {
@@ -1645,7 +1645,11 @@ try {
     assert.equal(payload.range, "30")
     assert.deepEqual(payload.history.map((point) => point.day), ["2026-10-08", "2026-10-10"])
     assert.equal(payload.history[0].stockQuantity, 100, "complete stock rows should produce an exact daily total")
+    assert.equal(payload.history[0].stockSnapshotKind, "lock-in", "history must expose the official stock snapshot kind")
+    assert.equal(payload.history[0].stockSnapshotFetchedAt, "2026-10-08T18:10:00.000Z", "history must expose the saved canonical stock timestamp")
     assert.equal(payload.history[1].stockQuantity, null, "a missing/restricted item's quantity must not be silently counted as zero")
+    assert.equal(payload.history[1].stockSnapshotKind, "legacy", "legacy stock rows must remain distinguishable from official lock-ins")
+    assert.equal(payload.history[1].stockSnapshotFetchedAt, "2026-10-10T18:10:00.000Z", "legacy rows must retain their saved timestamp")
     assert.equal(payload.history[1].dailyIncome, 150)
     assert.equal(payload.history[1].dailyProfit, 75)
     assert.equal(payload.history[1].employeeCount, 2)
@@ -1712,6 +1716,8 @@ try {
     assert.equal(payload.history[0].advertisingBudget, 5200000)
     assert.equal(payload.history[0].employeeWages, 78744770)
     assert.equal(payload.history[0].stockOrderExpense, 0)
+    assert.equal(payload.history[0].stockSnapshotKind, null, "missing canonical stock provenance must remain unknown")
+    assert.equal(payload.history[0].stockSnapshotFetchedAt, null, "a historical point without a stock row must not borrow a profile timestamp")
   })
 
   await test("historical company trends refuse to disclose an unowned company", async () => {
