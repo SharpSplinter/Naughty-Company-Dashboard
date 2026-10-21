@@ -1,5 +1,6 @@
 import { TornApiClient, TornApiClientError } from "../lib/torn/client"
 import { officialSnapshotSourceTime } from "./snapshot-provenance"
+import { validateAdminPassword } from "../lib/admin-password-policy.js"
 import { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isSnapshotStale, normalizeWebhookUrl, normalizeAlertThreshold, normalizeCooldownHours } from "../lib/automation/rules"
 
 type D1Result<T = Record<string, unknown>> = { results?: T[]; success?: boolean; meta?: { changes?: number } }
@@ -2856,7 +2857,8 @@ export default {
         return jsonResponse({ error: attempt.locked ? "Too many failed administrator sign-in attempts. Try again later." : "Administrator sign-in failed." }, attempt.locked ? 429 : 401, origin)
       }
       const validUsername = constantTimeEqual(username, configuredUsername)
-      const validPassword = await verifyAdminPassword(password, passwordHash)
+      const passwordPolicy = validateAdminPassword(password)
+      const validPassword = passwordPolicy.valid && await verifyAdminPassword(password, passwordHash)
       if (!validUsername || !validPassword) {
         const attempt = await recordAdminAttempt(env, attemptKey, now)
         await writeAdminAudit(env, session, "admin.elevation.failed", "admin-elevation", session.player_id, "denied", "Administrator credentials were rejected.")
