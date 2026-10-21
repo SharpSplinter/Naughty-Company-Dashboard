@@ -69,6 +69,27 @@ Run the following from the repository root in a private interactive terminal:
 
    This lists secret names/types, not their values. Check that `ADMIN_USERNAME` and `ADMIN_PASSWORD_HASH` are listed; do not print, screenshot, or share secret values.
 
+### Android-only path (no desktop computer)
+
+You can generate the hash locally on an Android phone. Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or the [official Termux GitHub releases](https://github.com/termux/termux-app/releases). Avoid unofficial APK download sites, and do not mix Termux installations from different sources.
+
+Open Termux and run these commands one at a time:
+
+```sh
+pkg update
+pkg install git nodejs
+git clone https://github.com/SharpSplinter/Naughty-Company-Dashboard.git
+cd Naughty-Company-Dashboard
+git checkout feat/admin-step-up-auth
+node scripts/generate-admin-password-hash.mjs
+```
+
+At the hidden prompt, type your new passphrase and press Enter. Copy only the generated `pbkdf2-sha256$...` hash line. Never paste the password or hash into ChatGPT, a message, or a screenshot. Keep the hash temporarily on your phone and clear it from the clipboard after you have entered it into Cloudflare.
+
+To configure the secrets without a desktop, open the [Cloudflare dashboard](https://dash.cloudflare.com/) in your Android browser. If needed, use the browser menu's **Desktop site** option. Go to **Workers & Pages** > **naughty-company-api** > **Settings** > **Variables and Secrets**. Choose **Add**, select type **Secret**, and add `ADMIN_USERNAME` and `ADMIN_PASSWORD_HASH`. Add both before clicking **Deploy** once.
+
+**Do not click Deploy until the production configuration change is approved.** Cloudflare deploys a new version of the currently deployed Worker when you save and deploy secret changes; this does not deploy the PR's feature-branch code. See [Cloudflare's official secret setup guide](https://developers.cloudflare.com/workers/configuration/secrets/).
+
 Do not place either value in `wrangler.toml`, a public `vars` entry, a frontend environment variable, a GitHub Actions output, or source control. Do not send the password or hash in chat. If you are not ready for Wrangler to publish a new version of the currently deployed Worker, do not run `secret put` yet.
 
 After the feature is deployed, verify that a normal Torn session is non-admin by default, only the allowlisted owner identity can attempt elevation, correct credentials elevate that session, incorrect credentials are rejected and rate-limited, a standard session receives HTTP 403 from admin APIs, and explicit revocation, sign-out, or expiry removes elevated access.
