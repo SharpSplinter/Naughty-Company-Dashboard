@@ -1,5 +1,5 @@
 import { pbkdf2Sync, randomBytes, webcrypto } from "node:crypto";
-import { validateAdminPassword } from "./src/lib/admin-password-policy.js";
+import { validateAdminPassword } from "../src/lib/admin-password-policy.js";
 
 const password = process.env.ADMIN_PASSWORD_ONESHOT ?? "";
 const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
