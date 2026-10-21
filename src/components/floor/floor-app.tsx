@@ -868,7 +868,10 @@ export function FloorApp() {
           password_mismatch: "The password does not match ADMIN_PASSWORD_HASH. Generate the hash from exactly the password you intend to enter, then replace the entire hash secret in Cloudflare.",
         }
         const detail = payload.diagnostic ? diagnosticMessages[payload.diagnostic] : undefined
-        throw new Error([payload.error || "Administrator sign-in failed.", detail].filter(Boolean).join(" "))
+        const missingDiagnostic = response.status === 401 && payload.error === "Administrator sign-in failed."
+          ? "The API did not return an owner-only diagnostic. This usually means the active Torn session is not being recognized as the allowlisted owner, or the dashboard API deployment is out of sync. Confirm this is the owner Torn account (player ID 351311), reload the dashboard, and try only once more. Do not regenerate the password hash yet."
+          : undefined
+        throw new Error([payload.error || "Administrator sign-in failed.", detail ?? missingDiagnostic].filter(Boolean).join(" "))
       }
       setIsAdmin(true)
       setAdminElevatedUntil(payload.adminElevatedUntil)

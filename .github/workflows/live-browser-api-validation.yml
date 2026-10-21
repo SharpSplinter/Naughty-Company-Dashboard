@@ -97,6 +97,9 @@ jobs:
               if (pathname === '/api/me/companies') {
                 return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ companies: [] }) });
               }
+              if (pathname === '/api/auth/admin/elevate') {
+                return route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Administrator sign-in failed.' }) });
+              }
               return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'Isolated UI smoke test' }) });
             });
             const adminResponse = await adminPage.goto('https://naughty-company-dashboard.pages.dev/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => null);
@@ -105,8 +108,19 @@ jobs:
             const unlockVisible = await unlockButton.isVisible().catch(() => false);
             const unlockBox = await unlockButton.boundingBox().catch(() => null);
             const unlockWithinViewport = !!unlockBox && unlockBox.x >= 0 && unlockBox.y >= 0 && unlockBox.x + unlockBox.width <= 390 && unlockBox.y + unlockBox.height <= 844;
-            console.log(`ADMIN UI owner-session smoke -> HTTP ${adminResponse?.status() ?? 'network error'}; unlockAdministrationVisible=${unlockVisible}; withinViewport=${unlockWithinViewport}; viewport=390x844`);
-            if (!adminResponse?.ok() || !unlockVisible || !unlockWithinViewport) failed = true;
+            let diagnosticFallbackVisible = false;
+            if (adminResponse?.ok() && unlockVisible && unlockWithinViewport) {
+              await unlockButton.click();
+              await adminPage.locator('#admin-username').fill('diagnostic-smoke-user');
+              await adminPage.locator('#admin-password').fill('Smoke!Password8');
+              await adminPage.getByRole('button', { name: 'Verify and unlock' }).click();
+              const alert = adminPage.getByRole('alert');
+              await alert.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+              const alertText = await alert.textContent().catch(() => '');
+              diagnosticFallbackVisible = alertText.includes('The API did not return an owner-only diagnostic.');
+            }
+            console.log(`ADMIN UI owner-session smoke -> HTTP ${adminResponse?.status() ?? 'network error'}; unlockAdministrationVisible=${unlockVisible}; withinViewport=${unlockWithinViewport}; missingDiagnosticFallbackVisible=${diagnosticFallbackVisible}; viewport=390x844`);
+            if (!adminResponse?.ok() || !unlockVisible || !unlockWithinViewport || !diagnosticFallbackVisible) failed = true;
             await adminPage.close();
           } finally { await browser.close(); }
           if (failed) process.exit(1);
