@@ -84,7 +84,7 @@ git checkout feat/admin-step-up-auth
 node scripts/generate-admin-password-hash.mjs
 ```
 
-At the hidden prompt, type your new passphrase and press Enter. Copy only the generated `pbkdf2-sha256$...` hash line. Never paste the password or hash into ChatGPT, a message, or a screenshot. Keep the hash temporarily on your phone and clear it from the clipboard after you have entered it into Cloudflare.
+At the hidden prompt, type your new passphrase and press Enter. Copy only the generated `pbkdf2-sha256$...` hash line. Never paste the password or hash into ChatGPT, a message, or a screenshot. The hash is still sensitive because it can be targeted for offline password guessing, so store it only as a Worker Secret. Keep the hash temporarily on your phone and clear it from the clipboard after you have entered it into Cloudflare.
 
 To configure the secrets without a desktop, open the [Cloudflare dashboard](https://dash.cloudflare.com/) in your Android browser. If needed, use the browser menu's **Desktop site** option. Go to **Workers & Pages** > **naughty-company-api** > **Settings** > **Variables and Secrets**. Choose **Add**, select type **Secret**, and add `ADMIN_USERNAME` and `ADMIN_PASSWORD_HASH`. Add both before clicking **Deploy** once.
 
