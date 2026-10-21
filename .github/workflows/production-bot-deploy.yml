@@ -154,6 +154,7 @@ jobs:
           ! grep -qi 'staging' bot/wrangler.production.toml
           grep -Fq 'naughty-company-bot-production' bot/wrangler.production.toml
           grep -Fq 'DISCORD_PUBLIC_KEY = "' bot/wrangler.production.toml
+          grep -Fq 'DASHBOARD_PANEL_ENABLED = "false"' bot/wrangler.production.toml
           test -f bot/migrations/0001_bot_schema.sql
           grep -Fq 'CREATE TABLE IF NOT EXISTS discord_links' bot/migrations/0001_bot_schema.sql
           grep -Fq 'CREATE TABLE IF NOT EXISTS alert_preferences' bot/migrations/0001_bot_schema.sql
