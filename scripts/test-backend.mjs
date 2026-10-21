@@ -1044,6 +1044,42 @@ try {
     assert.equal(adminRequest.status, 403)
   })
 
+  await test("administrator elevation rate-limits repeated invalid credentials", async () => {
+    let attempt = { failures: 0, windowStartedAt: Math.floor(Date.now() / 1000), lockedUntil: 0 }
+    const db = { prepare(sql) {
+      let values = []
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          const normalized = sql.toLowerCase()
+          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
+          if (normalized.includes("from admin_auth_attempts") && normalized.includes("select locked_until")) return { lockedUntil: attempt.lockedUntil }
+          if (normalized.includes("from admin_auth_attempts") && normalized.includes("select failures")) return { ...attempt, windowStartedAt: attempt.windowStartedAt, lockedUntil: attempt.lockedUntil }
+          return null
+        },
+        async all() { return { results: [] } },
+        async run() {
+          if (sql.toLowerCase().startsWith("insert into admin_auth_attempts")) attempt = { failures: Number(values[1]), windowStartedAt: Number(values[2]), lockedUntil: Number(values[3]) }
+          return { success: true, meta: { changes: 1 } }
+        },
+      }
+    } }
+    const env = { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: "malformed" }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-session", "Content-Type": "application/json", "cf-connecting-ip": "192.0.2.11" }
+    for (let index = 0; index < 5; index++) {
+      const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
+        method: "POST", headers, body: JSON.stringify({ username: "wrong", password: "incorrect-password" }),
+      }), env)
+      assert.equal(response.status, index === 4 ? 429 : 401)
+    }
+    assert.equal(attempt.failures, 5)
+    assert.ok(attempt.lockedUntil > Math.floor(Date.now() / 1000))
+    const locked = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
+      method: "POST", headers, body: JSON.stringify({ username: "owner", password: "incorrect-password" }),
+    }), env)
+    assert.equal(locked.status, 429)
+  })
+
   await test("administrator elevation is denied to non-allowlisted Torn identities", async () => {
     const db = { prepare(sql) { return {
       bind() { return this },
