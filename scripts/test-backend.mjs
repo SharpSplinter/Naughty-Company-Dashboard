@@ -293,7 +293,7 @@ try {
     const refreshEnd = workerSource.indexOf("async function runAdminJob", refreshStart)
     const refreshBody = workerSource.slice(refreshStart, refreshEnd)
     assert.ok(adminStart >= 0 && jobsRoute > adminStart)
-    assert.match(adminRoutes, /!isAdminElevated\\(session\\)/, "admin routes must require active session-scoped elevation")
+    assert.match(adminRoutes, /!isAdminElevated\(session\)/, "admin routes must require active session-scoped elevation")
     assert.match(workerSource, /ADMIN_PASSWORD_HASH/)
     assert.match(workerSource, /ADMIN_USERNAME/)
     assert.match(workerSource, /ADMIN_MAX_ATTEMPTS = 5/)
