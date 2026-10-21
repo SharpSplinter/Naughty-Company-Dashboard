@@ -103,8 +103,10 @@ jobs:
             const unlockButton = adminPage.getByRole('button', { name: 'Unlock administration' });
             await unlockButton.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
             const unlockVisible = await unlockButton.isVisible().catch(() => false);
-            console.log(`ADMIN UI owner-session smoke -> HTTP ${adminResponse?.status() ?? 'network error'}; unlockAdministrationVisible=${unlockVisible}; viewport=390x844`);
-            if (!adminResponse?.ok() || !unlockVisible) failed = true;
+            const unlockBox = await unlockButton.boundingBox().catch(() => null);
+            const unlockWithinViewport = !!unlockBox && unlockBox.x >= 0 && unlockBox.y >= 0 && unlockBox.x + unlockBox.width <= 390 && unlockBox.y + unlockBox.height <= 844;
+            console.log(`ADMIN UI owner-session smoke -> HTTP ${adminResponse?.status() ?? 'network error'}; unlockAdministrationVisible=${unlockVisible}; withinViewport=${unlockWithinViewport}; viewport=390x844`);
+            if (!adminResponse?.ok() || !unlockVisible || !unlockWithinViewport) failed = true;
             await adminPage.close();
           } finally { await browser.close(); }
           if (failed) process.exit(1);
