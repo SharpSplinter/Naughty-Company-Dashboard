@@ -400,6 +400,7 @@ function dashboardPanelRoute(view) {
   if (view === "company") return { name: "company", options: [{ type: 1, name: "overview" }] };
   if (view === "rankings") return { name: "company", options: [{ type: 2, name: "rankings", options: [{ type: 1, name: "global" }] }] };
   if (view === "automation") return { name: "automation", options: [{ type: 2, name: "notifications", options: [{ type: 1, name: "status" }] }] };
+  if (view === "alerts") return { name: "company", options: [{ type: 2, name: "alerts", options: [{ type: 1, name: "recent", options: [{ type: 4, name: "limit", value: 10 }] }] }] };
   return null;
 }
 
