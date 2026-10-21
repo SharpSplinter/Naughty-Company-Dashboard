@@ -1,5 +1,5 @@
 // Private, read-only Discord dashboard panel component contract.
-const VIEWS = Object.freeze(["home", "company", "rankings", "automation", "alerts"]);
+const VIEWS = Object.freeze(["home", "company", "rankings", "automation", "alerts", "trends"]);
 const ACTIONS = Object.freeze([...VIEWS, ...VIEWS.map(view => "refresh-" + view)]);
 const USER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 
@@ -9,7 +9,7 @@ export function isDashboardPanelView(value) {
 
 export function parseDashboardPanelCustomId(value) {
   if (typeof value !== "string") return null;
-  const match = /^ncdash:v1:([A-Za-z0-9_-]{1,32}):(home|company|rankings|automation|alerts|refresh-(home|company|rankings|automation|alerts))$/.exec(value);
+  const match = /^ncdash:v1:([A-Za-z0-9_-]{1,32}):(home|company|rankings|automation|alerts|trends|refresh-(home|company|rankings|automation|alerts|trends))$/.exec(value);
   if (!match) return null;
 
   const action = match[2];
@@ -41,7 +41,8 @@ export function buildDashboardPanelComponents(userId, activeView) {
     ["company", "Company"],
     ["rankings", "Rankings"],
     ["automation", "Automation"],
-    ["alerts", "Alerts"]
+    ["alerts", "Alerts"],
+    ["trends", "Trends"]
   ];
   const buttons = views.map(([view, label]) => ({
     type: 2,
