@@ -42,6 +42,13 @@ function jsonResponse(value, status = 200) {
 function dashboardFixture(request) {
   const path = request.url.pathname;
   if (path === "/health") return jsonResponse({ ok: true, checkedAt: "2026-10-20T00:00:00.000Z" });
+  if (path === "/api/me/health") return jsonResponse({
+    checkedAt: "2026-10-20T00:00:00.000Z",
+    worker: { status: "healthy", latencyMs: 1 },
+    database: { status: "healthy", latencyMs: 1 },
+    summary: { companyCount: 1, snapshotCount: 1, staleCompanies: 0, latestSnapshotAt: "2026-10-20T00:00:00.000Z" },
+    companies: []
+  });
   if (path === "/api/me/companies") {
     return jsonResponse({ companies: [{
       company_id: "company-123",
