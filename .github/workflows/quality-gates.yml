@@ -40,9 +40,11 @@ jobs:
 
           const helperUrl = pathToFileURL(resolve("scripts/update-admin-password-hash.mjs"));
           const source = await readFile(helperUrl, "utf8");
-          const match = source.match(/import\\s+\\{\\s*validateAdminPassword\\s*\\}\\s+from\\s+["']([^"']+)["']/);
-          if (!match) throw new Error("The recovery helper must import validateAdminPassword.");
-          const policyModule = await import(new URL(match[1], helperUrl).href);
+          const expectedImport = 'import { validateAdminPassword } from "../src/lib/admin-password-policy.js";';
+          if (!source.includes(expectedImport)) {
+            throw new Error("The recovery helper password-policy import path is incorrect.");
+          }
+          const policyModule = await import(new URL("../src/lib/admin-password-policy.js", helperUrl).href);
           if (typeof policyModule.validateAdminPassword !== "function") {
             throw new Error("The recovery helper's password-policy import does not export validateAdminPassword.");
           }
