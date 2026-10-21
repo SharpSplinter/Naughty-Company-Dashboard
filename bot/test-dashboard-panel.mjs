@@ -41,6 +41,7 @@ test("panel exposes six destinations over two valid button rows and includes a s
   assert.equal(rows.length, 2);
   assert.ok(rows.every(row => row.type === 1));
   assert.ok(rows.every(row => row.components.length <= 5));
+  assert.deepEqual(rows.map(row => row.components.length), [3, 4]);
   const buttons = rows.flatMap(row => row.components);
   assert.deepEqual(buttons.map(button => button.label), ["Home", "Company", "Rankings", "Automation", "Alerts", "Trends", "Refresh"]);
   assert.ok(buttons.every(component => component.type === 2));
@@ -48,6 +49,7 @@ test("panel exposes six destinations over two valid button rows and includes a s
   assert.equal(buttons.find(component => component.label === "Company").style, 1);
   assert.equal(buttons.find(component => component.label === "Home").style, 2);
   assert.equal(buttons.find(component => component.label === "Alerts").style, 2);
+  assert.equal(buttons.find(component => component.label === "Trends").style, 2);
   assert.deepEqual(parseDashboardPanelCustomId(buttons.find(component => component.label === "Refresh").custom_id), {
     version: 1, ownerId: userId, view: "company", refresh: true
   });
