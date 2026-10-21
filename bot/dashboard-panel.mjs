@@ -1,5 +1,5 @@
 // Private, read-only Discord dashboard panel component contract.
-const VIEWS = Object.freeze(["home", "company", "rankings", "automation"]);
+const VIEWS = Object.freeze(["home", "company", "rankings", "automation", "alerts"]);
 const ACTIONS = Object.freeze([...VIEWS, ...VIEWS.map(view => "refresh-" + view)]);
 const USER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 
@@ -9,7 +9,7 @@ export function isDashboardPanelView(value) {
 
 export function parseDashboardPanelCustomId(value) {
   if (typeof value !== "string") return null;
-  const match = /^ncdash:v1:([A-Za-z0-9_-]{1,32}):(home|company|rankings|automation|refresh-(home|company|rankings|automation))$/.exec(value);
+  const match = /^ncdash:v1:([A-Za-z0-9_-]{1,32}):(home|company|rankings|automation|alerts|refresh-(home|company|rankings|automation|alerts))$/.exec(value);
   if (!match) return null;
 
   const action = match[2];
@@ -40,7 +40,8 @@ export function buildDashboardPanelComponents(userId, activeView) {
     ["home", "Home"],
     ["company", "Company"],
     ["rankings", "Rankings"],
-    ["automation", "Automation"]
+    ["automation", "Automation"],
+    ["alerts", "Alerts"]
   ];
   const buttons = views.map(([view, label]) => ({
     type: 2,
@@ -48,11 +49,16 @@ export function buildDashboardPanelComponents(userId, activeView) {
     label,
     custom_id: dashboardPanelCustomId(userId, view)
   }));
-  buttons.push({
+  const refreshButton = {
     type: 2,
     style: 2,
     label: "Refresh",
     custom_id: dashboardPanelCustomId(userId, "refresh-" + activeView)
-  });
-  return [{ type: 1, components: buttons }];
+  };
+  // Keep each Discord action row within its five-button limit and group the less
+  // frequently used monitoring views together on a second row.
+  return [
+    { type: 1, components: buttons.slice(0, 3) },
+    { type: 1, components: [...buttons.slice(3), refreshButton] }
+  ];
 }

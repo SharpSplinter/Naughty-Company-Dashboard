@@ -561,14 +561,16 @@ test("private dashboard panel exposes owner-bound navigation and component click
     request.method === "PATCH" && request.url.endsWith("/messages/@original"));
   assert.ok(original, "the initial panel should replace its private deferred response");
   const rows = original.body.components;
-  assert.equal(rows.length, 1);
-  assert.deepEqual(rows[0].components.map(button => button.label), ["Home", "Company", "Rankings", "Automation", "Refresh"]);
-  assert.ok(rows[0].components.every(button => button.custom_id.includes("discord-user-test")),
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every(row => row.type === 1 && row.components.length <= 5));
+  const buttons = rows.flatMap(row => row.components);
+  assert.deepEqual(buttons.map(button => button.label), ["Home", "Company", "Rankings", "Automation", "Alerts", "Refresh"]);
+  assert.ok(buttons.every(button => button.custom_id.includes("discord-user-test")),
     "every navigation control must bind to the invoking Discord user");
   assert.ok(opened.dashboardRequests.every(request => request.method === "GET"),
     "opening the panel must reuse read-only dashboard handlers");
 
-  const companyButton = rows[0].components.find(button => button.label === "Company");
+  const companyButton = buttons.find(button => button.label === "Company");
   const navigated = await invoke({
     type: 3,
     application_id: "application-test",
@@ -582,9 +584,32 @@ test("private dashboard panel exposes owner-bound navigation and component click
     request.method === "PATCH" && request.url.endsWith("/messages/@original"));
   assert.ok(updated);
   assert.match(updated.body.content, /Company rating: 4/);
-  assert.equal(updated.body.components[0].components.length, 5, "navigation controls should persist after a view change");
+  assert.equal(updated.body.components.length, 2, "navigation rows should persist after a view change");
+  assert.equal(updated.body.components.flatMap(row => row.components).length, 6, "all views and refresh should remain available after navigation");
   assert.ok(navigated.dashboardRequests.every(request => request.method === "GET"),
     "panel navigation must not trigger a profile refresh or write to dashboard APIs");
+
+  const alertsButton = buttons.find(button => button.label === "Alerts");
+  const alerts = await invoke({
+    type: 3,
+    application_id: "application-test",
+    token: "dashboard-panel-alerts-token",
+    data: { component_type: 2, custom_id: alertsButton.custom_id },
+    user: { id: "discord-user-test" }
+  }, { linkedRow });
+
+  assert.deepEqual(alerts.payload, { type: 6 });
+  const alertsUpdate = alerts.discordRequests.find(request =>
+    request.method === "PATCH" && request.url.endsWith("/messages/@original"));
+  assert.ok(alertsUpdate);
+  assert.match(alertsUpdate.body.content, /No recent dashboard alerts were found/i);
+  assert.equal(alertsUpdate.body.components.length, 2);
+  assert.ok(alerts.dashboardRequests.every(request => request.method === "GET"),
+    "Alerts view must use the existing account-scoped read-only recent-alerts handler");
+  const alertsRequest = alerts.dashboardRequests.find(request => request.url.pathname === "/api/me/alerts");
+  assert.ok(alertsRequest);
+  assert.equal(alertsRequest.url.searchParams.get("limit"), "100");
+  assert.equal(alertsRequest.headers.get("authorization"), "Bearer dashboard-session-test");
 });
 
 test("dashboard panel can be disabled without database or dashboard access while legacy routes stay available", async () => {

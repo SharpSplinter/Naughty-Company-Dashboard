@@ -9,7 +9,7 @@ import {
 
 test("panel custom IDs bind every action to a single owner and supported view", () => {
   const ownerId = "123456789012345678";
-  for (const view of ["home", "company", "rankings", "automation"]) {
+  for (const view of ["home", "company", "rankings", "automation", "alerts"]) {
     const id = dashboardPanelCustomId(ownerId, view);
     assert.ok(id.length <= 100);
     assert.deepEqual(parseDashboardPanelCustomId(id), { version: 1, ownerId, view, refresh: false });
@@ -35,17 +35,20 @@ test("panel router rejects unknown actions, versions, malformed payloads, and ov
   assert.equal(isDashboardPanelView("settings"), false);
 });
 
-test("panel components remain a single valid action row, highlight current view, and include a scoped refresh", () => {
+test("panel exposes five destinations over two valid button rows and includes a scoped refresh", () => {
   const userId = "123456789012345678";
   const rows = buildDashboardPanelComponents(userId, "company");
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].type, 1);
-  assert.equal(rows[0].components.length, 5);
-  assert.ok(rows[0].components.every(component => component.type === 2));
-  assert.ok(rows[0].components.every(component => component.custom_id.length <= 100));
-  assert.equal(rows[0].components.find(component => component.label === "Company").style, 1);
-  assert.equal(rows[0].components.find(component => component.label === "Home").style, 2);
-  assert.deepEqual(parseDashboardPanelCustomId(rows[0].components.find(component => component.label === "Refresh").custom_id), {
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every(row => row.type === 1));
+  assert.ok(rows.every(row => row.components.length <= 5));
+  const buttons = rows.flatMap(row => row.components);
+  assert.deepEqual(buttons.map(button => button.label), ["Home", "Company", "Rankings", "Automation", "Alerts", "Refresh"]);
+  assert.ok(buttons.every(component => component.type === 2));
+  assert.ok(buttons.every(component => component.custom_id.length <= 100));
+  assert.equal(buttons.find(component => component.label === "Company").style, 1);
+  assert.equal(buttons.find(component => component.label === "Home").style, 2);
+  assert.equal(buttons.find(component => component.label === "Alerts").style, 2);
+  assert.deepEqual(parseDashboardPanelCustomId(buttons.find(component => component.label === "Refresh").custom_id), {
     version: 1, ownerId: userId, view: "company", refresh: true
   });
   assert.throws(() => buildDashboardPanelComponents(userId, "settings"), /allowlisted/);
