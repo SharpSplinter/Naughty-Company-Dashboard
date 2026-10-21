@@ -43,7 +43,7 @@ jobs:
           const linkRows = await query(botId,
             "SELECT dashboard_player_id AS playerId, substr(discord_user_id, -4) AS accountSuffix " +
             "FROM discord_links WHERE substr(discord_user_id, -4) = '7024' LIMIT 2");
-          if (linkRows.length !== 1 || !/^\\d+$/.test(String(linkRows[0].playerId))) {
+          if (linkRows.length !== 1 || !/^[0-9]+$/.test(String(linkRows[0].playerId))) {
             throw new Error("Expected one linked dashboard account for the previously confirmed masked Discord suffix.");
           }
           const playerId = String(linkRows[0].playerId);
