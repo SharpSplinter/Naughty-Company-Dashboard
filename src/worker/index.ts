@@ -2391,12 +2391,14 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
       const stock = parseStoredJson(row.stockJson)
       const stockRows = Array.isArray(stock) ? stock : isRecord(stock) && Array.isArray(stock.stock) ? stock.stock : []
       if (!stockRows.length) continue
-      const quantity = stockRows.reduce((sum, item) => {
-        if (!isRecord(item)) return sum
-        const value = [item.in_stock, item.quantity, item.amount].find((candidate) => typeof candidate === "number" && Number.isFinite(candidate)) as number | undefined
-        return sum + (value ?? 0)
-      }, 0)
-      stockByDay.set(row.day, quantity)
+      const quantities = stockRows.map((item) => {
+        if (!isRecord(item)) return null
+        return [item.in_stock, item.quantity, item.amount]
+          .find((candidate): candidate is number => typeof candidate === "number" && Number.isFinite(candidate)) ?? null
+      })
+      // Preserve uncertainty: a partial/restricted stock payload cannot support a reliable total.
+      if (quantities.some((quantity) => quantity === null)) continue
+      stockByDay.set(row.day, (quantities as number[]).reduce((sum, quantity) => sum + quantity, 0))
     }
     const financialStockQuery = db.prepare(`SELECT day, stockJson FROM (SELECT date(fetched_at, '-18 hours') AS day, stock_json AS stockJson, fetched_at AS fetchedAt, snapshot_id AS snapshotId, ROW_NUMBER() OVER (PARTITION BY date(fetched_at, '-18 hours') ORDER BY fetched_at DESC, snapshot_id DESC) AS dayRank FROM company_financial_snapshots WHERE player_id = ? AND company_id = ?${cutoffSql}) WHERE dayRank = 1 ORDER BY fetchedAt ASC LIMIT 2000`)
     const financialStockRaw = await (cutoff ? financialStockQuery.bind(session.player_id, companyId, cutoff) : financialStockQuery.bind(session.player_id, companyId)).all<{ day: string; stockJson: string | null }>()
