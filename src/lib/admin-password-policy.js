@@ -16,7 +16,7 @@ export function validateAdminPassword(password) {
   if (!/[0-9]/.test(password)) {
     return { valid: false, reason: "Include at least one digit." }
   }
-  if (!/[^A-Za-z0-9\\s]/.test(password)) {
+  if (!/[^A-Za-z0-9\s]/.test(password)) {
     return { valid: false, reason: "Include at least one special character, such as punctuation." }
   }
 
