@@ -1044,6 +1044,25 @@ try {
     assert.equal(adminRequest.status, 403)
   })
 
+  await test("expired administrator elevation is denied at the Worker even if the browser still has stale admin state", async () => {
+    const db = { prepare(sql) { return {
+      bind() { return this },
+      async first() {
+        if (sql.toLowerCase().includes("from sessions s join players p")) {
+          return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: Math.floor(Date.now() / 1000) - 60 }
+        }
+        return null
+      },
+      async all() { return { results: [] } },
+      async run() { return { success: true, meta: { changes: 1 } } },
+    } } }
+    const response = await worker.fetch(new Request("https://worker.test/api/admin/overview", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer stale-admin-session" },
+    }), { DB: db })
+    assert.equal(response.status, 403)
+    assert.match((await response.json()).error, /administrator verification/i)
+  })
+
   await test("administrator elevation rate-limits repeated invalid credentials", async () => {
     let attempt = { failures: 0, windowStartedAt: Math.floor(Date.now() / 1000), lockedUntil: 0 }
     const db = { prepare(sql) {
