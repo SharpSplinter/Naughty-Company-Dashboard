@@ -1051,7 +1051,38 @@ try {
       body: JSON.stringify({ username: "owner", password: weakPassword }),
     }), { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: passwordHash })
     assert.equal(response.status, 401)
-    assert.match((await response.json()).error, /administrator sign-in failed/i)
+    const payload = await response.json()
+    assert.match(payload.error, /administrator sign-in failed/i)
+    assert.equal(payload.diagnostic, "password_policy")
+  })
+
+  await test("owner elevation diagnostics identify username mismatch and malformed hash without exposing secrets", async () => {
+    const db = { prepare(sql) { return {
+      bind() { return this },
+      async first() {
+        if (sql.toLowerCase().includes("from sessions s join players p")) {
+          return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
+        }
+        return null
+      },
+      async all() { return { results: [] } },
+      async run() { return { success: true, meta: { changes: 1 } } },
+    } } }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-diagnostics-session", "Content-Type": "application/json" }
+    const wrongUsername = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
+      method: "POST", headers, body: JSON.stringify({ username: "wrong", password: "Correct!7Horse?9" }),
+    }), { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: "malformed" })
+    assert.equal(wrongUsername.status, 401)
+    assert.equal((await wrongUsername.json()).diagnostic, "username_mismatch")
+
+    const malformedHash = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
+      method: "POST", headers, body: JSON.stringify({ username: "owner", password: "Correct!7Horse?9" }),
+    }), { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: "malformed" })
+    assert.equal(malformedHash.status, 401)
+    const payload = await malformedHash.json()
+    assert.equal(payload.diagnostic, "stored_hash_invalid")
+    assert.equal(Object.hasOwn(payload, "password"), false)
+    assert.equal(JSON.stringify(payload).includes("malformed"), false, "diagnostics must not echo secret values")
   })
 
   await test("administrator elevation is session-scoped, expires, and can be explicitly revoked", async () => {
