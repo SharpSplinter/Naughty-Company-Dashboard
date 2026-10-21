@@ -31,6 +31,25 @@ jobs:
         run: npm ci
       - name: Check admin recovery helper syntax
         run: node --check scripts/update-admin-password-hash.mjs
+      - name: Check admin recovery helper imports
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from "node:fs/promises";
+          import { resolve } from "node:path";
+          import { pathToFileURL } from "node:url";
+
+          const helperUrl = pathToFileURL(resolve("scripts/update-admin-password-hash.mjs"));
+          const source = await readFile(helperUrl, "utf8");
+          const match = source.match(/import\\s+\\{\\s*validateAdminPassword\\s*\\}\\s+from\\s+["']([^"']+)["']/);
+          if (!match) throw new Error("The recovery helper must import validateAdminPassword.");
+          const policyModule = await import(new URL(match[1], helperUrl).href);
+          if (typeof policyModule.validateAdminPassword !== "function") {
+            throw new Error("The recovery helper's password-policy import does not export validateAdminPassword.");
+          }
+          const result = policyModule.validateAdminPassword("Harbor!582Lake");
+          if (!result || result.valid !== true) throw new Error("The recovery helper password-policy smoke test failed.");
+          console.log("Admin recovery policy import and password-policy smoke test passed.");
+          NODE
       - name: Type-check application
         run: npm run typecheck
       - name: Build production frontend
