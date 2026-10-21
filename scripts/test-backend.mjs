@@ -1672,6 +1672,50 @@ try {
     assert.ok(queries.some((query) => query.normalized.includes("where player_id = ? and company_id = ?")))
   })
 
+  await test("historical profit stays incomplete when any required cost input is missing", async () => {
+    const db = { prepare(sql) {
+      const normalized = sql.toLowerCase()
+      let values = []
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          if (normalized.includes("from sessions s join players p")) return { player_id: "777", player_name: "History Tester" }
+          if (normalized.includes("from companies where player_id = ? and company_id = ? limit 1")) {
+            assert.deepEqual(values, ["777", "123"])
+            return { companyId: "123", companyName: "History Co", companyType: "Oil Rig" }
+          }
+          return null
+        },
+        async all() {
+          if (normalized.includes("from faction_director_snapshots")) return { results: [] }
+          if (normalized.includes("from company_financial_snapshots")) return { results: [] }
+          if (normalized.includes("row_number() over (partition by date(fetched_at, '-18 hours')")) {
+            return { results: [{
+              snapshotId: "missing-costs",
+              fetchedAt: "2026-10-10T18:10:00.000Z",
+              profileJson: JSON.stringify({ company: { id: 123, income: { daily: 100, weekly: 700 }, profit: {}, advertisement_budget: 20, rating: 3 } }),
+              employeesJson: JSON.stringify({ employees: [{ id: 1, wage: null }] })
+            }] }
+          }
+          return { results: [] }
+        },
+        async run() { return { success: true } },
+      }
+    } }
+    const response = await worker.fetch(new Request("https://worker.test/api/me/companies/123/history?days=30", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer history-session" },
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.history.length, 1)
+    assert.equal(payload.history[0].dailyProfit, null, "missing wages and stock-order inputs must not be substituted with zero")
+    assert.equal(payload.history[0].dailyProfitSource, "incomplete")
+    assert.equal(payload.history[0].calculatedDailyProfit, null)
+    assert.equal(payload.history[0].profitReconciliationDelta, null)
+    assert.equal(payload.history[0].employeeWages, null)
+    assert.equal(payload.history[0].stockOrderExpense, null)
+  })
+
   await test("reconstructed historical wage aggregates reconcile to documented inputs", async () => {
     const db = { prepare(sql) {
       const normalized = sql.toLowerCase()
