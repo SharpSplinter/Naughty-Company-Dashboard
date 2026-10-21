@@ -1615,6 +1615,11 @@ export default {
       return json({ type: 6 });
     }
 
+    if (interaction?.type === 2 && interaction?.data?.name === "dashboard" &&
+        parseCommandRoute(interaction).subcommand === "panel" && !dashboardPanelEnabled(env)) {
+      return json(privateReply("The interactive dashboard panel is currently disabled. Use /dashboard health, /dashboard summary, or the existing company and automation commands."));
+    }
+
     const commandName = interaction?.data?.name;
     const requiresDeferredResponse =
       interaction?.type === 5 ||
