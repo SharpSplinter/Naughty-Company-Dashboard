@@ -1310,6 +1310,7 @@ async function replyFor(i, env) {
           const webhook = webhookRes.ok ? await webhookRes.json() : {};
           await reconcileExhaustedStaleClaims(env, user);
           const poll = await env.BOT_DB.prepare("SELECT last_started_at AS lastStartedAt,last_completed_at AS lastCompletedAt,last_success_at AS lastSuccessAt,last_status AS lastStatus,last_error_code AS lastErrorCode,last_error_at AS lastErrorAt,consecutive_failures AS consecutiveFailures,last_page_count AS lastPageCount,last_events_seen AS lastEventsSeen,last_delivered AS lastDelivered,last_filtered AS lastFiltered,last_failed AS lastFailed,last_exhausted AS lastExhausted,last_stale_recovered AS lastStaleRecovered FROM discord_alert_poll_state WHERE discord_user_id=?").bind(user).first();
+          const dailySummary = await env.BOT_DB.prepare("SELECT reporting_day AS reportingDay,status,attempts,updated_at AS updatedAt FROM discord_daily_summary_deliveries WHERE discord_user_id=? ORDER BY reporting_day DESC LIMIT 1").bind(user).first();
           const exhausted = await env.BOT_DB.prepare("SELECT COUNT(*) AS count FROM discord_alert_deliveries WHERE discord_user_id=? AND status='failed' AND attempts>=3").bind(user).first();
           const staleCutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
           const stale = await env.BOT_DB.prepare("SELECT COUNT(*) AS count FROM discord_alert_deliveries WHERE discord_user_id=? AND status='processing' AND updated_at<?").bind(user, staleCutoff).first();
@@ -1320,6 +1321,13 @@ async function replyFor(i, env) {
             "External webhook: **" + (webhook.configured ? "configured" : "not configured") + "**",
             "External webhook digest mode: **" + String(prefs.digestMode || "instant") + "**"
           ];
+          if (dailySummary) {
+            lines.push("Consolidated daily summary: **" + safeText(String(dailySummary.status || "unknown").toUpperCase(), 20) +
+              "** · Reporting day: " + safeText(dailySummary.reportingDay || "unknown", 10) +
+              " · Attempts: " + Number(dailySummary.attempts || 0) + "/3 · Last update: " + safeText(dailySummary.updatedAt || "time unavailable", 40));
+          } else {
+            lines.push("Consolidated daily summary: **no delivery record yet**");
+          }
           if (poll) {
             const inProgress = poll.lastStatus === "running" && Date.parse(poll.lastStartedAt || "") > Date.parse(poll.lastCompletedAt || "1970-01-01T00:00:00.000Z");
             const looksStale = inProgress && Number.isFinite(Date.parse(poll.lastStartedAt || "")) && Date.now() - Date.parse(poll.lastStartedAt) > 10 * 60 * 1000;

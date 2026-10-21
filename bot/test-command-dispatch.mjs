@@ -113,7 +113,7 @@ function dashboardFixture(request) {
   return jsonResponse({});
 }
 
-function fakeDatabase(linkedRow, { alertDeliveries = [], pollState = null } = {}) {
+function fakeDatabase(linkedRow, { alertDeliveries = [], pollState = null, dailySummaryDelivery = null } = {}) {
   const runs = [];
   const firstCalls = [];
   const storedDeliveries = structuredClone(alertDeliveries);
@@ -145,6 +145,7 @@ function fakeDatabase(linkedRow, { alertDeliveries = [], pollState = null } = {}
           firstCalls.push({ sql, values: [...values] });
           if (linkedRow && /FROM discord_links/.test(sql)) return linkedRow;
           if (sql.includes("FROM discord_alert_poll_state")) return pollState;
+          if (sql.includes("FROM discord_daily_summary_deliveries") && sql.includes("ORDER BY reporting_day DESC")) return dailySummaryDelivery;
           if (sql.includes("COUNT(*) AS count") && sql.includes("status='failed'") && sql.includes("attempts>=3")) {
             return { count: storedDeliveries.filter(item => item.status === "failed" && Number(item.attempts) >= 3).length };
           }
@@ -495,6 +496,12 @@ test("private notification status and exhausted-delivery recovery stay account-s
   const eventId = "11111111-1111-4111-8111-111111111111";
   const dbOptions = {
     pollState,
+    dailySummaryDelivery: {
+      reportingDay: "2026-10-20",
+      status: "delivered",
+      attempts: 1,
+      updatedAt: "2026-10-20T00:00:02.000Z"
+    },
     alertDeliveries: [{ eventId, status: "failed", attempts: 3, updatedAt: "2026-10-20T00:00:01.000Z" }]
   };
   const statusResult = await invoke({
@@ -504,10 +511,16 @@ test("private notification status and exhausted-delivery recovery stay account-s
   }, { linkedRow, dbOptions });
   const statusText = finalReplyText(statusResult);
   assert.match(statusText, /dashboard_alerts_http_503/, "status must display a safe, diagnostic error code");
+  assert.ok(statusText.includes("Consolidated daily summary: **DELIVERED** · Reporting day: 2026-10-20 · Attempts: 1/3 · Last update: 2026-10-20T00:00:02.000Z"),
+    "status must expose the last summary reporting day, delivery state, retry count, and update time");
   assert.match(statusText, /Consecutive poll failures: \*\*3\*\*/, "status must make repeated failures visible");
   assert.match(statusText, /Exhausted deliveries needing manual retry: \*\*1\*\*/, "status must surface exhausted delivery count");
   assert.ok(statusResult.db.firstCalls.some(call => call.sql.includes("WHERE discord_user_id=?") && call.values[0] === "discord-user-test"),
     "delivery counts must be scoped to the invoking Discord account");
+  assert.ok(statusResult.db.firstCalls.some(call =>
+    call.sql.includes("FROM discord_daily_summary_deliveries WHERE discord_user_id=?") &&
+    call.values[0] === "discord-user-test"),
+    "daily summary delivery status must be scoped to the invoking Discord account");
 
   const retryResult = await invoke({
     type: 2, application_id: "application-test", token: "alert-poll-retry-token",
