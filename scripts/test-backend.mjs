@@ -209,12 +209,13 @@ try {
 
   await test("official daily stock deltas require scheduled, source-timestamped immutable snapshots", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const provenanceSource = readFileSync(join(root, "src/worker/snapshot-provenance.ts"), "utf8")
     const floorSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
     const migrationSource = readFileSync(join(root, "migrations/auth/0009_faction_director_snapshot_kind.sql"), "utf8")
-    assert.match(workerSource, /function officialSnapshotSourceTime/)
-    assert.match(workerSource, /schedule\.cron\.trim\(\) !== "10 18 \* \* \*"/)
+    assert.match(provenanceSource, /function officialSnapshotSourceTime/)
+    assert.match(provenanceSource, /schedule\.cron\.trim\(\) !== "10 18 \* \* \*"/)
     assert.match(workerSource, /schedule\.scheduledTime/)
-    assert.match(workerSource, /sourceTimestamp \* 1000/)
+    assert.match(provenanceSource, /sourceTimestamp \* 1000/)
     assert.match(workerSource, /snapshot_kind = excluded\.snapshot_kind/)
     assert.match(migrationSource, /snapshot_kind IN \('initialization', 'lock-in', 'legacy'\)/)
     const rankingRefresh = workerSource.slice(workerSource.indexOf("async function refreshRankingProfiles"), workerSource.indexOf("type AdminAuditOutcome"))
