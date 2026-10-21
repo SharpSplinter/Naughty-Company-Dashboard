@@ -2362,10 +2362,17 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
       byDay.set(day, { day, fetchedAt: row.fetchedAt, snapshotId: row.snapshotId, dailyIncome: dailyIncomeFromProfile(profile), dailyProfit: numericField(profit.daily ?? root.daily_profit ?? root.dailyProfit), weeklyIncome: numericField(income.weekly), rating: ratingFromProfile(profile), employeeCount: rosterCount(employees), employeeCapacity: isRecord(root.employees) ? numericField(root.employees.capacity) : null, advertisingBudget: historicalAdvertisingBudget(profile), employeeWages: historicalEmployeeWages(employees), stockOrderExpense: null, stockQuantity: null })
     }
     const stockCutoffDay = cutoff ? cutoff.slice(0, 10) : null
-    const stockQuery = db.prepare(`SELECT snapshot_day AS day, stock_json AS stockJson FROM faction_director_snapshots WHERE player_id = ? AND company_id = ?${stockCutoffDay ? " AND snapshot_day >= ?" : ""} ORDER BY snapshot_day ASC`)
-    const stockRaw = await (stockCutoffDay ? stockQuery.bind(session.player_id, companyId, stockCutoffDay) : stockQuery.bind(session.player_id, companyId)).all<{ day: string; stockJson: string | null }>()
+    const stockQuery = db.prepare(`SELECT snapshot_day AS day, stock_json AS stockJson, snapshot_kind AS snapshotKind, fetched_at AS fetchedAt FROM faction_director_snapshots WHERE player_id = ? AND company_id = ?${stockCutoffDay ? " AND snapshot_day >= ?" : ""} ORDER BY snapshot_day ASC`)
+    const stockRaw = await (stockCutoffDay ? stockQuery.bind(session.player_id, companyId, stockCutoffDay) : stockQuery.bind(session.player_id, companyId)).all<{ day: string; stockJson: string | null; snapshotKind: string | null; fetchedAt: string | null }>()
     const stockByDay = new Map<string, number>()
+    const stockSourceByDay = new Map<string, { snapshotKind: string | null; fetchedAt: string | null }>()
     for (const row of stockRaw.results ?? []) {
+      // Preserve canonical snapshot provenance separately from quantity completeness.
+      // A present lock-in with incomplete stock still proves the source but not a total.
+      stockSourceByDay.set(row.day, {
+        snapshotKind: typeof row.snapshotKind === "string" ? row.snapshotKind : null,
+        fetchedAt: typeof row.fetchedAt === "string" ? row.fetchedAt : null,
+      })
       if (!row.stockJson) continue
       const stock = parseStoredJson(row.stockJson)
       const stockRows = Array.isArray(stock) ? stock : isRecord(stock) && Array.isArray(stock.stock) ? stock.stock : []
@@ -2384,7 +2391,10 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
     const stockExpensesByDay = new Map<string, number | null>()
     for (const row of financialStockRaw.results ?? []) stockExpensesByDay.set(row.day, historicalStockOrderExpense(parseStoredJson(row.stockJson)))
     for (const point of byDay.values()) {
+      const stockSource = stockSourceByDay.get(String(point.day))
       point.stockQuantity = stockByDay.get(String(point.day)) ?? null
+      point.stockSnapshotKind = stockSource?.snapshotKind ?? null
+      point.stockSnapshotFetchedAt = stockSource?.fetchedAt ?? null
       point.stockOrderExpense = stockExpensesByDay.get(String(point.day)) ?? null
       if (typeof point.dailyProfit !== "number" && typeof point.dailyIncome === "number" &&
           typeof point.advertisingBudget === "number" && typeof point.employeeWages === "number" &&
