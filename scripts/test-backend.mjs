@@ -214,7 +214,7 @@ try {
     const migrationSource = readFileSync(join(root, "migrations/auth/0009_faction_director_snapshot_kind.sql"), "utf8")
     assert.match(provenanceSource, /function officialSnapshotSourceTime/)
     assert.match(provenanceSource, /schedule\.cron\.trim\(\) !== "10 18 \* \* \*"/)
-    assert.match(workerSource, /schedule\.scheduledTime/)
+    assert.match(provenanceSource, /schedule\.scheduledTime/)
     assert.match(provenanceSource, /sourceTimestamp \* 1000/)
     assert.match(workerSource, /snapshot_kind = excluded\.snapshot_kind/)
     assert.match(migrationSource, /snapshot_kind IN \('initialization', 'lock-in', 'legacy'\)/)
