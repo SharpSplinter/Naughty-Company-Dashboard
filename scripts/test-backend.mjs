@@ -5,11 +5,13 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { createRequire } from "node:module"
 import ts from "typescript"
+import { validateAdminPassword } from "../src/lib/admin-password-policy.js"
 
 const root = process.cwd()
 const temp = mkdtempSync(join(tmpdir(), "naughty-company-tests-"))
 writeFileSync(join(temp, "package.json"), JSON.stringify({ type: "commonjs" }))
 const sourceFiles = [
+  "src/lib/admin-password-policy.js",
   "src/lib/automation/rules.ts",
   "src/lib/automation/discord-poll-monitoring.ts",
   "src/lib/company/engine.ts",
@@ -27,6 +29,7 @@ try {
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.CommonJS,
     moduleResolution: ts.ModuleResolutionKind.Node10,
+    allowJs: true,
     strict: true,
     skipLibCheck: true,
     rootDir: resolve(root, "src"),
@@ -65,6 +68,26 @@ try {
   await test("administrator password hash generator passes Node syntax validation without running", () => {
     execFileSync(process.execPath, ["--check", join(root, "scripts/generate-admin-password-hash.mjs")], { stdio: "pipe" })
   })
+
+  await test("administrator password policy requires 8 characters, all character classes, and rejects alphabetic/numeric sequences", () => {
+    for (const password of ["Tr7!xP9@", "Ax12!Qz9", "Mix8#Tree2"]) {
+      assert.deepEqual(validateAdminPassword(password), { valid: true }, `${password} should meet the policy`)
+    }
+    for (const [password, reason] of [
+      ["Ab1!", /at least 8 characters/i],
+      ["123456!@", /at least one letter/i],
+      ["Abcdef12", /special character/i],
+      ["Abc!7xQ9", /consecutive letters or digits/i],
+      ["Cba!7xQ9", /consecutive letters or digits/i],
+      ["Ax123!Qz", /consecutive letters or digits/i],
+      ["Ax321!Qz", /consecutive letters or digits/i],
+    ]) {
+      const result = validateAdminPassword(password)
+      assert.equal(result.valid, false, `${password} should be rejected`)
+      if (!result.valid) assert.match(result.reason, reason)
+    }
+  })
+
 
   await test("official stock lock-in timestamp accepts only fresh source data from the scheduled reporting day", () => {
     const scheduledAt = Date.parse("2026-10-21T18:10:00.000Z");
@@ -1005,9 +1028,35 @@ try {
     assert.match((await response.json()).error, /not configured/i)
   })
 
+  await test("administrator elevation rejects a sequential password even when its stored hash matches", async () => {
+    const { pbkdf2Sync } = require("node:crypto")
+    const weakPassword = "abc123!x"
+    const salt = Buffer.alloc(16, 9)
+    const digest = pbkdf2Sync(weakPassword, salt, 210000, 32, "sha256")
+    const passwordHash = ["pbkdf2-sha256", "210000", salt.toString("base64"), digest.toString("base64")].join("$")
+    const db = { prepare(sql) { return {
+      bind() { return this },
+      async first() {
+        if (sql.toLowerCase().includes("from sessions s join players p")) {
+          return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
+        }
+        return null
+      },
+      async all() { return { results: [] } },
+      async run() { return { success: true, meta: { changes: 1 } } },
+    } } }
+    const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
+      method: "POST",
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-policy-session", "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "owner", password: weakPassword }),
+    }), { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: passwordHash })
+    assert.equal(response.status, 401)
+    assert.match((await response.json()).error, /administrator sign-in failed/i)
+  })
+
   await test("administrator elevation is session-scoped, expires, and can be explicitly revoked", async () => {
     const { pbkdf2Sync } = require("node:crypto")
-    const password = "correct-horse-battery-staple-test"
+    const password = "Correct!7Horse?9"
     const salt = Buffer.alloc(16, 7)
     const digest = pbkdf2Sync(password, salt, 210000, 32, "sha256")
     const passwordHash = ["pbkdf2-sha256", "210000", salt.toString("base64"), digest.toString("base64")].join("$")

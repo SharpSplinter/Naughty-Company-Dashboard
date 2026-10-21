@@ -36,14 +36,14 @@ All Torn sign-ins start with standard-user permissions. The primary owner Torn p
 Run the following from the repository root in a private interactive terminal:
 
 1. Verify that Wrangler is authenticated to the intended Cloudflare account with `npx wrangler whoami`. The repository's `wrangler.toml` names the Worker `naughty-company-api`; the commands below target that Worker explicitly.
-2. Choose a strong, unique administrator passphrase of at least 16 characters. Do not send it in chat or commit it to the repository.
+2. Choose a unique administrator passphrase of at least 8 characters, containing at least one letter, one digit, and one punctuation/symbol character. Do not use three or more ascending or descending letters/digits in a row (for example `abc`, `cba`, `123`, or `321`). Do not send it in chat or commit it to the repository.
 3. Generate the hash by running:
 
    ```sh
    node scripts/generate-admin-password-hash.mjs
    ```
 
-   At `Administrator password (input hidden):`, type the passphrase and press Enter. The helper does not echo the passphrase. It prints one hash line beginning with `pbkdf2-sha256$210000$` and containing a random salt and derived hash. Keep that line available for the next step; do not commit or publish it.
+   At `Administrator password (input hidden):`, type the passphrase and press Enter. The helper does not echo the passphrase and rejects passwords that fail the composition or sequence rules. It prints one hash line beginning with `pbkdf2-sha256$210000$` and containing a random salt and derived hash. Keep that line available for the next step; do not commit or publish it.
 
 4. Set the separate administrator username:
 
@@ -80,7 +80,7 @@ pkg update
 pkg install git nodejs
 git clone https://github.com/SharpSplinter/Naughty-Company-Dashboard.git
 cd Naughty-Company-Dashboard
-git checkout feat/admin-step-up-auth
+git checkout main
 node scripts/generate-admin-password-hash.mjs
 ```
 

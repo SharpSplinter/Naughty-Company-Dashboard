@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { pbkdf2Sync, randomBytes } from "node:crypto";
 import { emitKeypressEvents } from "node:readline";
+import { validateAdminPassword } from "../src/lib/admin-password-policy.js";
 
 const ITERATIONS = 210_000;
-const MIN_LENGTH = 16;
 
 function promptHidden(prompt) {
   if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== "function") {
@@ -50,9 +50,8 @@ function promptHidden(prompt) {
 
 try {
   const password = await promptHidden("Administrator password (input hidden): ");
-  if (Array.from(password).length < MIN_LENGTH) {
-    throw new Error(`Use a passphrase of at least ${MIN_LENGTH} characters.`);
-  }
+  const policy = validateAdminPassword(password);
+  if (!policy.valid) throw new Error(policy.reason);
   const salt = randomBytes(16);
   const digest = pbkdf2Sync(password, salt, ITERATIONS, 32, "sha256");
   const encoded = [
