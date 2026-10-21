@@ -744,9 +744,17 @@ th.numeric-cell {
 .admin-step-up-button:hover:not(:disabled) { border-color: #a89aff; background: #342d58; color: #f0edff; }
 .admin-step-up-button:disabled { opacity: .65; cursor: wait; }
 @media (max-width: 640px) {
-  .topbar-right { gap: 7px; }
-  .admin-step-up-button { padding: 7px 8px; font-size: 9px; }
-  .user-company-label { max-width: 96px; }
-  .user-company-label strong { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .user-company-label small { max-width: 96px; }
+  .topbar { padding: 0 10px; }
+  .topbar-leading { min-width: 0; gap: 6px; }
+  .breadcrumbs { min-width: 0; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar-right { flex-shrink: 0; gap: 6px; }
+  .admin-step-up-button { padding: 6px 7px; font-size: 9px; }
+  .user-company-trigger { gap: 6px; padding: 4px 2px; }
+  .user-company-label { max-width: 70px; }
+  .user-company-label strong { max-width: 70px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .user-company-label small { max-width: 70px; }
+}
+@media (max-width: 360px) {
+  .breadcrumbs { display: none; }
+  .user-company-label, .user-company-label strong, .user-company-label small { max-width: 48px; }
 }
