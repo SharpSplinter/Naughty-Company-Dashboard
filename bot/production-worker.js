@@ -8,6 +8,7 @@ import { buildDashboardPanelComponents, isDashboardPanelView, parseDashboardPane
 const enc = new TextEncoder();
 const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 const privateReply = content => ({ type: 4, data: { content, flags: 64, allowed_mentions: { parse: [] } } });
+const dashboardPanelEnabled = env => String(env?.DASHBOARD_PANEL_ENABLED || "").toLowerCase() === "true";
 async function dashboardFetch(env, path, init = {}) {
   if (!env.DASHBOARD_API) throw new Error("dashboard_binding_missing");
   return env.DASHBOARD_API.fetch(new Request("https://naughty-company-api" + path, init));
@@ -403,6 +404,9 @@ function dashboardPanelRoute(view) {
 }
 
 async function renderDashboardPanel(interaction, env, view, user) {
+  if (!dashboardPanelEnabled(env)) {
+    return privateReply("The interactive dashboard panel is currently disabled. Use /dashboard health, /dashboard summary, or the existing company and automation commands.");
+  }
   const route = dashboardPanelRoute(view);
   if (!route || !isDashboardPanelView(view) || typeof user !== "string") {
     return privateReply("This dashboard panel is invalid or outdated. Run /dashboard panel to open a fresh panel.");
@@ -1594,6 +1598,9 @@ export default {
     }
 
     if (interaction?.type === 3) {
+      if (!dashboardPanelEnabled(env)) {
+        return json(privateReply("The interactive dashboard panel is currently disabled. Use /dashboard health, /dashboard summary, or the existing company and automation commands."));
+      }
       const panel = parseDashboardPanelCustomId(interaction.data?.custom_id);
       const user = interaction.member?.user?.id || interaction.user?.id;
       // Component custom IDs are versioned, allowlisted, and bound to the original invoker.
