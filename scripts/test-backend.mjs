@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { execFileSync } from "node:child_process"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -60,6 +61,10 @@ try {
     passed += 1
     console.log("PASS", name)
   }
+
+  await test("administrator password hash generator passes Node syntax validation without running", () => {
+    execFileSync(process.execPath, ["--check", join(root, "scripts/generate-admin-password-hash.mjs")], { stdio: "pipe" })
+  })
 
   await test("official stock lock-in timestamp accepts only fresh source data from the scheduled reporting day", () => {
     const scheduledAt = Date.parse("2026-10-21T18:10:00.000Z");
