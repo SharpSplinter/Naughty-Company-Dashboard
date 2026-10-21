@@ -51,7 +51,7 @@ function promptHidden(prompt) {
 try {
   const password = await promptHidden("Administrator password (input hidden): ");
   if (Array.from(password).length < MIN_LENGTH) {
-    throw new Error(\`Use a passphrase of at least \${MIN_LENGTH} characters.\`);
+    throw new Error(`Use a passphrase of at least ${MIN_LENGTH} characters.`);
   }
   const salt = randomBytes(16);
   const digest = pbkdf2Sync(password, salt, ITERATIONS, 32, "sha256");
