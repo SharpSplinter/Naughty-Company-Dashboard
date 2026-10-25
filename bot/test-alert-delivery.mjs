@@ -32,6 +32,7 @@ function makeFixture({
   historiesByCompany = {},
   rankings,
   dashboardThrowsFor = [],
+  dashboardTimeoutFor = [],
   messageFailureCount = 0,
   channelFailureCount = 0,
   seedPreviousSummary = true
@@ -188,6 +189,11 @@ function makeFixture({
       dashboardRequests.push({ url, method: request.method, headers: request.headers });
       const token = String(request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
       const userId = token === sessionToken ? accountId : "unknown-account";
+      if (dashboardTimeoutFor.includes(url.pathname)) {
+        const error = new Error("simulated dashboard request timeout");
+        error.name = "TimeoutError";
+        throw error;
+      }
       if (dashboardThrowsFor.includes(userId)) return jsonResponse({ error: "simulated dashboard API failure" }, 503);
       if (url.pathname === "/api/me/discord-alert-poll-health" && request.method === "POST") {
         pollHealthReports.push({ userId, report: await request.clone().json() });
@@ -331,6 +337,20 @@ test("a dashboard API failure persists poll diagnostics and triggers one private
   await runScheduled(fixture);
   assert.equal(fixture.successfulMessages, 1, "the same failure streak must not send duplicate escalations");
   assert.equal(fixture.pollStates.get(accountId).lastStatus, "error");
+});
+
+test("dashboard poll timeout diagnostics identify the request stage", async () => {
+  const cases = [
+    ["/api/me/discord-link", "dashboard_discord_link_timeout"],
+    ["/api/me/automation-preferences", "dashboard_preferences_timeout"],
+    ["/api/me/companies/123/history", "dashboard_company_history_timeout"]
+  ];
+  for (const [path, expectedCode] of cases) {
+    const fixture = makeFixture({ dashboardTimeoutFor: [path] });
+    await runScheduled(fixture);
+    assert.equal(fixture.pollStates.get(accountId).lastErrorCode, expectedCode);
+    assert.equal(fixture.pollHealthReports.at(-1).report.errorCode, expectedCode);
+  }
 });
 
 console.log("PASS private alert delivery: single daily company summaries, day-level deduplication, retries, missing-data safety, and operational failure escalation.");
