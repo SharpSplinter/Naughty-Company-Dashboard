@@ -1255,142 +1255,162 @@ type AlertRuleType = "income_drop" | "stale_data" | "refresh_failure" | "income_
 type AlertRuleRow = { rule_id: string; owner_player_id: string; company_id: string | null; rule_type: AlertRuleType; enabled: number; threshold_percent: number; cooldown_hours: number; stale_after_hours: number; last_triggered_at: string | null; last_evaluated_at: string | null; created_at: string; updated_at: string }
 type AlertEventInput = { severity: "info" | "warning" | "critical"; title: string; message: string; companyId?: string | null; previousValue?: number | null; currentValue?: number | null; changePercent?: number | null; sourceSnapshotAt?: string | null; dedupeSuffix: string }
 
+const automationSchemaInitializations = new WeakMap<D1Database, Promise<void>>()
+
 async function ensureAutomationSchema(env: WorkerEnv): Promise<void> {
   const db = requireDb(env)
-  await db.prepare(`CREATE TABLE IF NOT EXISTS alert_rules (
-    rule_id TEXT PRIMARY KEY,
-    owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
-    company_id TEXT,
-    rule_type TEXT NOT NULL CHECK (rule_type IN ('income_drop', 'stale_data', 'refresh_failure', 'income_increase', 'rating_drop', 'roster_change')),
-    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
-    threshold_percent REAL NOT NULL DEFAULT 15,
-    cooldown_hours INTEGER NOT NULL DEFAULT 24,
-    stale_after_hours INTEGER NOT NULL DEFAULT 30,
-    last_triggered_at TEXT,
-    last_evaluated_at TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  )`).run()
-  await db.prepare(`CREATE TABLE IF NOT EXISTS alert_events (
-    event_id TEXT PRIMARY KEY,
-    owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
-    rule_id TEXT NOT NULL REFERENCES alert_rules(rule_id) ON DELETE CASCADE,
-    company_id TEXT,
-    rule_type TEXT NOT NULL,
-    severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'critical')),
-    title TEXT NOT NULL,
-    message TEXT NOT NULL,
-    previous_value REAL,
-    current_value REAL,
-    change_percent REAL,
-    source_snapshot_at TEXT,
-    status TEXT NOT NULL DEFAULT 'unread' CHECK (status IN ('unread', 'acknowledged')),
-    dedupe_key TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL,
-    acknowledged_at TEXT
-  )`).run()
-  await db.prepare(`CREATE TABLE IF NOT EXISTS automation_runs (
-    run_id TEXT PRIMARY KEY,
-    trigger_name TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'partial', 'failed')),
-    started_at TEXT NOT NULL,
-    finished_at TEXT,
-    companies_checked INTEGER NOT NULL DEFAULT 0,
-    companies_failed INTEGER NOT NULL DEFAULT 0,
-    alerts_created INTEGER NOT NULL DEFAULT 0,
-    error_summary TEXT
-  )`).run()
-  await db.prepare(`CREATE TABLE IF NOT EXISTS automation_preferences (
-    owner_player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
-    browser_notifications_enabled INTEGER NOT NULL DEFAULT 0 CHECK (browser_notifications_enabled IN (0, 1)),
-    quiet_hours_enabled INTEGER NOT NULL DEFAULT 0 CHECK (quiet_hours_enabled IN (0, 1)),
-    quiet_hours_start TEXT NOT NULL DEFAULT '22:00',
-    quiet_hours_end TEXT NOT NULL DEFAULT '08:00',
-    timezone TEXT NOT NULL DEFAULT 'UTC',
-    minimum_severity TEXT NOT NULL DEFAULT 'info' CHECK (minimum_severity IN ('info', 'warning', 'critical')),
-    digest_mode TEXT NOT NULL DEFAULT 'instant' CHECK (digest_mode IN ('instant', 'daily', 'both', 'off')),
-    updated_at TEXT NOT NULL
-  )`).run()
-  await db.prepare(`CREATE TABLE IF NOT EXISTS automation_webhooks (
-    owner_player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
-    ciphertext TEXT NOT NULL,
-    iv TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    last_delivered_at TEXT,
-    last_error TEXT
-  )`).run()
-  await db.prepare(`CREATE TABLE IF NOT EXISTS discord_account_links (
-    owner_player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
-    discord_user_id TEXT NOT NULL UNIQUE,
-    alerts_enabled INTEGER NOT NULL DEFAULT 0 CHECK (alerts_enabled IN (0, 1)),
-    linked_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  )`).run()
-  await db.prepare(`CREATE TABLE IF NOT EXISTS discord_link_codes (
-    code TEXT PRIMARY KEY,
-    owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
-    ciphertext TEXT NOT NULL,
-    iv TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    used_at TEXT
-  )`).run()
-  await db.prepare(`CREATE TABLE IF NOT EXISTS discord_alert_poll_health (
-    owner_player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
-    discord_user_id TEXT NOT NULL,
-    poll_started_at TEXT,
-    poll_completed_at TEXT,
-    last_success_at TEXT,
-    status TEXT NOT NULL DEFAULT 'unknown',
-    error_code TEXT,
-    error_at TEXT,
-    consecutive_failures INTEGER NOT NULL DEFAULT 0,
-    page_count INTEGER NOT NULL DEFAULT 0,
-    events_seen INTEGER NOT NULL DEFAULT 0,
-    delivered INTEGER NOT NULL DEFAULT 0,
-    filtered INTEGER NOT NULL DEFAULT 0,
-    failed INTEGER NOT NULL DEFAULT 0,
-    exhausted INTEGER NOT NULL DEFAULT 0,
-    stale_recovered INTEGER NOT NULL DEFAULT 0,
-    exhausted_deliveries INTEGER NOT NULL DEFAULT 0,
-    stale_claims INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL
-  )`).run()
-  await db.prepare(`CREATE TABLE IF NOT EXISTS discord_alert_poll_history (
-    report_id TEXT PRIMARY KEY,
-    owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
-    discord_user_id TEXT NOT NULL,
-    poll_started_at TEXT,
-    poll_completed_at TEXT NOT NULL,
-    status TEXT NOT NULL,
-    error_code TEXT,
-    consecutive_failures INTEGER NOT NULL DEFAULT 0,
-    page_count INTEGER NOT NULL DEFAULT 0,
-    events_seen INTEGER NOT NULL DEFAULT 0,
-    delivered INTEGER NOT NULL DEFAULT 0,
-    filtered INTEGER NOT NULL DEFAULT 0,
-    failed INTEGER NOT NULL DEFAULT 0,
-    exhausted INTEGER NOT NULL DEFAULT 0,
-    stale_recovered INTEGER NOT NULL DEFAULT 0,
-    exhausted_deliveries INTEGER NOT NULL DEFAULT 0,
-    stale_claims INTEGER NOT NULL DEFAULT 0
-  )`).run()
-  await db.prepare("CREATE INDEX IF NOT EXISTS idx_discord_alert_poll_history_owner_completed ON discord_alert_poll_history(owner_player_id, discord_user_id, poll_completed_at DESC)").run()
-  await db.prepare(`CREATE TABLE IF NOT EXISTS automation_delivery_log (
-    delivery_id TEXT PRIMARY KEY,
-    owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
-    event_id TEXT NOT NULL REFERENCES alert_events(event_id) ON DELETE CASCADE,
-    status TEXT NOT NULL CHECK (status IN ('delivered', 'failed')),
-    status_code INTEGER,
-    detail TEXT,
-    created_at TEXT NOT NULL,
-    delivered_at TEXT
-  )`).run()
-  await db.prepare("CREATE INDEX IF NOT EXISTS idx_automation_delivery_owner_created ON automation_delivery_log(owner_player_id, created_at DESC)").run()
-  await db.prepare("CREATE INDEX IF NOT EXISTS idx_alert_rules_owner_enabled ON alert_rules(owner_player_id, enabled, rule_type)").run()
-  await db.prepare("CREATE INDEX IF NOT EXISTS idx_alert_events_owner_status_created ON alert_events(owner_player_id, status, created_at)").run()
-  await db.prepare("CREATE INDEX IF NOT EXISTS idx_automation_runs_started ON automation_runs(started_at DESC)").run()
+  const existing = automationSchemaInitializations.get(db)
+  if (existing) return existing
+
+  // Share one bootstrap promise across concurrent requests in this Worker isolate.
+  // If initialization fails, discard the rejected promise so a later request can retry.
+  const initialization = createAutomationSchema(db)
+  automationSchemaInitializations.set(db, initialization)
+  try {
+    await initialization
+  } catch (error) {
+    if (automationSchemaInitializations.get(db) === initialization) {
+      automationSchemaInitializations.delete(db)
+    }
+    throw error
+  }
+}
+
+async function createAutomationSchema(db: D1Database): Promise<void> {
+    await db.prepare(`CREATE TABLE IF NOT EXISTS alert_rules (
+      rule_id TEXT PRIMARY KEY,
+      owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+      company_id TEXT,
+      rule_type TEXT NOT NULL CHECK (rule_type IN ('income_drop', 'stale_data', 'refresh_failure', 'income_increase', 'rating_drop', 'roster_change')),
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      threshold_percent REAL NOT NULL DEFAULT 15,
+      cooldown_hours INTEGER NOT NULL DEFAULT 24,
+      stale_after_hours INTEGER NOT NULL DEFAULT 30,
+      last_triggered_at TEXT,
+      last_evaluated_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`).run()
+    await db.prepare(`CREATE TABLE IF NOT EXISTS alert_events (
+      event_id TEXT PRIMARY KEY,
+      owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+      rule_id TEXT NOT NULL REFERENCES alert_rules(rule_id) ON DELETE CASCADE,
+      company_id TEXT,
+      rule_type TEXT NOT NULL,
+      severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'critical')),
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      previous_value REAL,
+      current_value REAL,
+      change_percent REAL,
+      source_snapshot_at TEXT,
+      status TEXT NOT NULL DEFAULT 'unread' CHECK (status IN ('unread', 'acknowledged')),
+      dedupe_key TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      acknowledged_at TEXT
+    )`).run()
+    await db.prepare(`CREATE TABLE IF NOT EXISTS automation_runs (
+      run_id TEXT PRIMARY KEY,
+      trigger_name TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'partial', 'failed')),
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      companies_checked INTEGER NOT NULL DEFAULT 0,
+      companies_failed INTEGER NOT NULL DEFAULT 0,
+      alerts_created INTEGER NOT NULL DEFAULT 0,
+      error_summary TEXT
+    )`).run()
+    await db.prepare(`CREATE TABLE IF NOT EXISTS automation_preferences (
+      owner_player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
+      browser_notifications_enabled INTEGER NOT NULL DEFAULT 0 CHECK (browser_notifications_enabled IN (0, 1)),
+      quiet_hours_enabled INTEGER NOT NULL DEFAULT 0 CHECK (quiet_hours_enabled IN (0, 1)),
+      quiet_hours_start TEXT NOT NULL DEFAULT '22:00',
+      quiet_hours_end TEXT NOT NULL DEFAULT '08:00',
+      timezone TEXT NOT NULL DEFAULT 'UTC',
+      minimum_severity TEXT NOT NULL DEFAULT 'info' CHECK (minimum_severity IN ('info', 'warning', 'critical')),
+      digest_mode TEXT NOT NULL DEFAULT 'instant' CHECK (digest_mode IN ('instant', 'daily', 'both', 'off')),
+      updated_at TEXT NOT NULL
+    )`).run()
+    await db.prepare(`CREATE TABLE IF NOT EXISTS automation_webhooks (
+      owner_player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
+      ciphertext TEXT NOT NULL,
+      iv TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_delivered_at TEXT,
+      last_error TEXT
+    )`).run()
+    await db.prepare(`CREATE TABLE IF NOT EXISTS discord_account_links (
+      owner_player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
+      discord_user_id TEXT NOT NULL UNIQUE,
+      alerts_enabled INTEGER NOT NULL DEFAULT 0 CHECK (alerts_enabled IN (0, 1)),
+      linked_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`).run()
+    await db.prepare(`CREATE TABLE IF NOT EXISTS discord_link_codes (
+      code TEXT PRIMARY KEY,
+      owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+      ciphertext TEXT NOT NULL,
+      iv TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT
+    )`).run()
+    await db.prepare(`CREATE TABLE IF NOT EXISTS discord_alert_poll_health (
+      owner_player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
+      discord_user_id TEXT NOT NULL,
+      poll_started_at TEXT,
+      poll_completed_at TEXT,
+      last_success_at TEXT,
+      status TEXT NOT NULL DEFAULT 'unknown',
+      error_code TEXT,
+      error_at TEXT,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      page_count INTEGER NOT NULL DEFAULT 0,
+      events_seen INTEGER NOT NULL DEFAULT 0,
+      delivered INTEGER NOT NULL DEFAULT 0,
+      filtered INTEGER NOT NULL DEFAULT 0,
+      failed INTEGER NOT NULL DEFAULT 0,
+      exhausted INTEGER NOT NULL DEFAULT 0,
+      stale_recovered INTEGER NOT NULL DEFAULT 0,
+      exhausted_deliveries INTEGER NOT NULL DEFAULT 0,
+      stale_claims INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    )`).run()
+    await db.prepare(`CREATE TABLE IF NOT EXISTS discord_alert_poll_history (
+      report_id TEXT PRIMARY KEY,
+      owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+      discord_user_id TEXT NOT NULL,
+      poll_started_at TEXT,
+      poll_completed_at TEXT NOT NULL,
+      status TEXT NOT NULL,
+      error_code TEXT,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      page_count INTEGER NOT NULL DEFAULT 0,
+      events_seen INTEGER NOT NULL DEFAULT 0,
+      delivered INTEGER NOT NULL DEFAULT 0,
+      filtered INTEGER NOT NULL DEFAULT 0,
+      failed INTEGER NOT NULL DEFAULT 0,
+      exhausted INTEGER NOT NULL DEFAULT 0,
+      stale_recovered INTEGER NOT NULL DEFAULT 0,
+      exhausted_deliveries INTEGER NOT NULL DEFAULT 0,
+      stale_claims INTEGER NOT NULL DEFAULT 0
+    )`).run()
+    await db.prepare("CREATE INDEX IF NOT EXISTS idx_discord_alert_poll_history_owner_completed ON discord_alert_poll_history(owner_player_id, discord_user_id, poll_completed_at DESC)").run()
+    await db.prepare(`CREATE TABLE IF NOT EXISTS automation_delivery_log (
+      delivery_id TEXT PRIMARY KEY,
+      owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+      event_id TEXT NOT NULL REFERENCES alert_events(event_id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('delivered', 'failed')),
+      status_code INTEGER,
+      detail TEXT,
+      created_at TEXT NOT NULL,
+      delivered_at TEXT
+    )`).run()
+    await db.prepare("CREATE INDEX IF NOT EXISTS idx_automation_delivery_owner_created ON automation_delivery_log(owner_player_id, created_at DESC)").run()
+    await db.prepare("CREATE INDEX IF NOT EXISTS idx_alert_rules_owner_enabled ON alert_rules(owner_player_id, enabled, rule_type)").run()
+    await db.prepare("CREATE INDEX IF NOT EXISTS idx_alert_events_owner_status_created ON alert_events(owner_player_id, status, created_at)").run()
+    await db.prepare("CREATE INDEX IF NOT EXISTS idx_automation_runs_started ON automation_runs(started_at DESC)").run()
 }
 
 function dailyIncomeFromProfile(payload: unknown): number | null {
