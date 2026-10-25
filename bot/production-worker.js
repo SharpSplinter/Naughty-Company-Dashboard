@@ -9,9 +9,27 @@ const enc = new TextEncoder();
 const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 const privateReply = content => ({ type: 4, data: { content, flags: 64, allowed_mentions: { parse: [] } } });
 const dashboardPanelEnabled = env => String(env?.DASHBOARD_PANEL_ENABLED || "").toLowerCase() === "true";
-async function dashboardFetch(env, path, init = {}) {
+function isTimeoutError(error) {
+  return error?.name === "TimeoutError" || error?.name === "AbortError";
+}
+function timeoutWithCode(error, timeoutCode) {
+  if (!timeoutCode || !isTimeoutError(error)) return error;
+  return Object.assign(new Error(timeoutCode), { code: timeoutCode });
+}
+async function dashboardFetch(env, path, init = {}, timeoutCode = null) {
   if (!env.DASHBOARD_API) throw new Error("dashboard_binding_missing");
-  return env.DASHBOARD_API.fetch(new Request("https://naughty-company-api" + path, init));
+  try {
+    return await env.DASHBOARD_API.fetch(new Request("https://naughty-company-api" + path, init));
+  } catch (error) {
+    throw timeoutWithCode(error, timeoutCode);
+  }
+}
+async function dashboardJson(response, timeoutCode) {
+  try {
+    return await response.json();
+  } catch (error) {
+    throw timeoutWithCode(error, timeoutCode);
+  }
 }
 const hexBytes = s => Uint8Array.from((s.match(/.{2}/g) || []), x => parseInt(x, 16));
 async function signed(req, env) {
@@ -166,16 +184,16 @@ async function reconcileExhaustedStaleClaims(env, userId) {
 
 async function loadDailyCompanySummary(env, headers, discordUserId, reportingDay) {
   const previousDay = previousReportingDay(reportingDay);
-  const companiesResponse = await dashboardFetch(env, "/api/me/companies", { headers, signal: AbortSignal.timeout(8000) });
+  const companiesResponse = await dashboardFetch(env, "/api/me/companies", { headers, signal: AbortSignal.timeout(8000) }, "dashboard_companies_timeout");
   if (!companiesResponse.ok) throw pollHttpError("dashboard_companies", companiesResponse);
-  const companiesPayload = await companiesResponse.json();
+  const companiesPayload = await dashboardJson(companiesResponse, "dashboard_companies_timeout");
   const companies = Array.isArray(companiesPayload.companies) ? companiesPayload.companies : [];
 
   let rankingRows = [];
   try {
-    const rankingResponse = await dashboardFetch(env, "/api/rankings?scope=global", { headers, signal: AbortSignal.timeout(8000) });
+    const rankingResponse = await dashboardFetch(env, "/api/rankings?scope=global", { headers, signal: AbortSignal.timeout(8000) }, "dashboard_rankings_timeout");
     if (rankingResponse.ok) {
-      const rankingPayload = await rankingResponse.json();
+      const rankingPayload = await dashboardJson(rankingResponse, "dashboard_rankings_timeout");
       rankingRows = Array.isArray(rankingPayload.companies) ? rankingPayload.companies : [];
     }
   } catch {
@@ -190,10 +208,11 @@ async function loadDailyCompanySummary(env, headers, discordUserId, reportingDay
     const historyResponse = await dashboardFetch(
       env,
       "/api/me/companies/" + encodeURIComponent(companyId) + "/history?days=7",
-      { headers, signal: AbortSignal.timeout(8000) }
+      { headers, signal: AbortSignal.timeout(8000) },
+      "dashboard_company_history_timeout"
     );
     if (!historyResponse.ok) throw pollHttpError("dashboard_company_history", historyResponse);
-    const historyPayload = await historyResponse.json();
+    const historyPayload = await dashboardJson(historyResponse, "dashboard_company_history_timeout");
     const history = Array.isArray(historyPayload.history) ? historyPayload.history : [];
     const currentPoint = history.find(point => point && point.day === reportingDay) || null;
     const previousPoint = history.find(point => point && point.day === previousDay) || null;
@@ -315,16 +334,16 @@ async function pollPrivateAlerts(env) {
       await beginAlertPoll(env, link.discordUserId);
       token = await unseal(link.cipher, link.iv, env);
       const headers = { authorization: "Bearer " + token, accept: "application/json" };
-      const linkResponse = await dashboardFetch(env, "/api/me/discord-link", { headers, signal: AbortSignal.timeout(8000) });
+      const linkResponse = await dashboardFetch(env, "/api/me/discord-link", { headers, signal: AbortSignal.timeout(8000) }, "dashboard_discord_link_timeout");
       if (!linkResponse.ok) throw pollHttpError("dashboard_discord_link", linkResponse);
-      const linkStatus = await linkResponse.json();
+      const linkStatus = await dashboardJson(linkResponse, "dashboard_discord_link_timeout");
       if (!linkStatus.linked || !linkStatus.alertsEnabled) {
         await finishAlertPoll(env, link.discordUserId, token, metrics, "disabled");
         continue;
       }
-      const prefsResponse = await dashboardFetch(env, "/api/me/automation-preferences", { headers, signal: AbortSignal.timeout(8000) });
+      const prefsResponse = await dashboardFetch(env, "/api/me/automation-preferences", { headers, signal: AbortSignal.timeout(8000) }, "dashboard_preferences_timeout");
       if (!prefsResponse.ok) throw pollHttpError("dashboard_preferences", prefsResponse);
-      const prefsPayload = await prefsResponse.json();
+      const prefsPayload = await dashboardJson(prefsResponse, "dashboard_preferences_timeout");
       const preferences = prefsPayload && typeof prefsPayload.preferences === "object" ? prefsPayload.preferences : {};
       if (isDuringQuietHours(preferences)) {
         await finishAlertPoll(env, link.discordUserId, token, metrics, "quiet_hours");
