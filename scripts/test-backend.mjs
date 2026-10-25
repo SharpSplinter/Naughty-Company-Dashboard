@@ -2282,6 +2282,14 @@ try {
     }
   })
 
+  await test("automation schema bootstrap is cached per D1 binding and failed initialization can retry", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    assert.match(workerSource, /const automationSchemaInitializations = new WeakMap<D1Database, Promise<void>>\(\)/)
+    assert.match(workerSource, /const existing = automationSchemaInitializations\.get\(db\)/)
+    assert.match(workerSource, /if \(existing\) return existing/)
+    assert.match(workerSource, /automationSchemaInitializations\.delete\(db\)/)
+  })
+
   console.log(`\n${passed} backend checks passed.`)
 } finally {
   rmSync(temp, { recursive: true, force: true })
