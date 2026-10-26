@@ -2290,6 +2290,16 @@ try {
     assert.match(workerSource, /automationSchemaInitializations\.delete\(db\)/)
   })
 
+
+  await test("Discord poll hot paths skip runtime DDL and use migration-managed link tables", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const migration = readFileSync(join(root, "migrations/auth/0011_discord_account_linking.sql"), "utf8")
+    assert.match(workerSource, /const skipAutomationSchemaBootstrap =[\s\S]*\(discordLinkPath && request\.method === "GET"\)[\s\S]*\(preferencesPath && request\.method === "GET"\)[\s\S]*discordPollHealthPath/)
+    assert.match(workerSource, /if \(!skipAutomationSchemaBootstrap\) await ensureAutomationSchema\(env\)/)
+    assert.match(migration, /CREATE TABLE IF NOT EXISTS discord_account_links/)
+    assert.match(migration, /CREATE TABLE IF NOT EXISTS discord_link_codes/)
+  })
+
   console.log(`\n${passed} backend checks passed.`)
 } finally {
   rmSync(temp, { recursive: true, force: true })
