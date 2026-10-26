@@ -325,7 +325,6 @@ async function deliverDailyCompanySummary(env, discordUserId, token, reportingDa
 
 async function pollPrivateAlerts(env) {
   if (!env.BOT_DB || !env.BOT_ENCRYPTION_KEY || !env.DISCORD_TOKEN || !env.DASHBOARD_API) return;
-  await ensureBotSchema(env);
   const rows = await env.BOT_DB.prepare("SELECT discord_user_id AS discordUserId, encrypted_session_token AS cipher, token_iv AS iv FROM discord_links").all();
   for (const link of rows.results || []) {
     const metrics = { startedAt: new Date().toISOString(), pages: 0, eventsSeen: 0, delivered: 0, filtered: 0, failed: 0, exhausted: 0, staleRecovered: 0 };
