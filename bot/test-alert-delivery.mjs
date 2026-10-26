@@ -399,7 +399,7 @@ test("scheduled polling uses the deployment-managed bot schema without runtime D
     "discord_daily_company_summary_state"
   ];
   for (const table of requiredTables) {
-    assert.match(schema, new RegExp("CREATE TABLE IF NOT EXISTS\\\\s+" + table + "\\\\b"), table + " must be provisioned before the Worker deploys");
+    assert.ok(schema.includes("CREATE TABLE IF NOT EXISTS " + table + " ("), table + " must be provisioned before the Worker deploys");
   }
 });
 
