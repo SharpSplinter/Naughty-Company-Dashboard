@@ -1255,8 +1255,28 @@ type AlertRuleType = "income_drop" | "stale_data" | "refresh_failure" | "income_
 type AlertRuleRow = { rule_id: string; owner_player_id: string; company_id: string | null; rule_type: AlertRuleType; enabled: number; threshold_percent: number; cooldown_hours: number; stale_after_hours: number; last_triggered_at: string | null; last_evaluated_at: string | null; created_at: string; updated_at: string }
 type AlertEventInput = { severity: "info" | "warning" | "critical"; title: string; message: string; companyId?: string | null; previousValue?: number | null; currentValue?: number | null; changePercent?: number | null; sourceSnapshotAt?: string | null; dedupeSuffix: string }
 
+const automationSchemaInitializations = new WeakMap<D1Database, Promise<void>>()
+
 async function ensureAutomationSchema(env: WorkerEnv): Promise<void> {
   const db = requireDb(env)
+  const existing = automationSchemaInitializations.get(db)
+  if (existing) return existing
+
+  // Share one bootstrap promise across concurrent requests in this Worker isolate.
+  // If initialization fails, discard the rejected promise so a later request can retry.
+  const initialization = createAutomationSchema(db)
+  automationSchemaInitializations.set(db, initialization)
+  try {
+    await initialization
+  } catch (error) {
+    if (automationSchemaInitializations.get(db) === initialization) {
+      automationSchemaInitializations.delete(db)
+    }
+    throw error
+  }
+}
+
+async function createAutomationSchema(db: D1Database): Promise<void> {
   await db.prepare(`CREATE TABLE IF NOT EXISTS alert_rules (
     rule_id TEXT PRIMARY KEY,
     owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
