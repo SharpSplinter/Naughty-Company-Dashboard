@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { webcrypto } from "node:crypto";
 import worker from "./production-worker.js";
@@ -375,5 +376,32 @@ test("health-report timeouts have a dedicated diagnostic without marking a succe
     "a health-report timeout should emit its own diagnostic"
   );
 });
+
+
+test("scheduled polling uses the deployment-managed bot schema without runtime DDL", () => {
+  const workerSource = readFileSync(new URL("./production-worker.js", import.meta.url), "utf8");
+  const schema = readFileSync(new URL("./migrations/0001_bot_schema.sql", import.meta.url), "utf8");
+  const pollStart = workerSource.indexOf("async function pollPrivateAlerts(env) {");
+  const pollEnd = workerSource.indexOf("\nfunction snapshotAgeLabel", pollStart);
+  assert.ok(pollStart >= 0 && pollEnd > pollStart, "poll function boundaries should remain discoverable");
+  const pollSource = workerSource.slice(pollStart, pollEnd);
+  assert.doesNotMatch(pollSource, /ensureBotSchema|CREATE TABLE IF NOT EXISTS/);
+
+  const requiredTables = [
+    "discord_links",
+    "alert_preferences",
+    "alert_deliveries",
+    "discord_alert_state",
+    "discord_alert_deliveries",
+    "discord_alert_poll_state",
+    "discord_alert_poll_escalations",
+    "discord_daily_summary_deliveries",
+    "discord_daily_company_summary_state"
+  ];
+  for (const table of requiredTables) {
+    assert.match(schema, new RegExp("CREATE TABLE IF NOT EXISTS\\\\s+" + table + "\\\\b"), table + " must be provisioned before the Worker deploys");
+  }
+});
+
 
 console.log("PASS private alert delivery: single daily company summaries, day-level deduplication, retries, missing-data safety, and operational failure escalation.");
