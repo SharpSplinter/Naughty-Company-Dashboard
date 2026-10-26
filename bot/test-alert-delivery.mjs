@@ -353,4 +353,27 @@ test("dashboard poll timeout diagnostics identify the request stage", async () =
   }
 });
 
+
+test("health-report timeouts have a dedicated diagnostic without marking a successful poll as failed", async () => {
+  const fixture = makeFixture({ dashboardTimeoutFor: ["/api/me/discord-alert-poll-health"] });
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    await runScheduled(fixture);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(fixture.pollStates.get(accountId).lastStatus, "healthy");
+  assert.equal(fixture.successfulMessages, 1);
+  assert.ok(
+    warnings.some(line =>
+      line.includes("[alert-poll] dashboard health report unavailable") &&
+      line.includes("dashboard_health_report_timeout")
+    ),
+    "a health-report timeout should emit its own diagnostic"
+  );
+});
+
 console.log("PASS private alert delivery: single daily company summaries, day-level deduplication, retries, missing-data safety, and operational failure escalation.");
