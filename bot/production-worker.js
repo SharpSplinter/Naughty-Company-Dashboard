@@ -103,6 +103,13 @@ async function reportDashboardAlertPoll(env, token, userId, metrics, status, err
       }),
       signal: AbortSignal.timeout(5000)
     }, "dashboard_health_report_timeout");
+    try {
+      // Drain the small JSON response so successful service-binding calls are not
+      // recorded as canceled merely because the caller ignored the response body.
+      await response.arrayBuffer();
+    } catch (error) {
+      throw timeoutWithCode(error, "dashboard_health_report_timeout");
+    }
     if (!response.ok) {
       console.warn("[alert-poll] dashboard health report rejected", JSON.stringify({ discordUserId: userId, status: response.status }));
     }
