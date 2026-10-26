@@ -102,7 +102,7 @@ async function reportDashboardAlertPoll(env, token, userId, metrics, status, err
         staleClaims: Number(stale?.count || 0)
       }),
       signal: AbortSignal.timeout(5000)
-    });
+    }, "dashboard_health_report_timeout");
     if (!response.ok) {
       console.warn("[alert-poll] dashboard health report rejected", JSON.stringify({ discordUserId: userId, status: response.status }));
     }
