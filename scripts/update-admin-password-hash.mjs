@@ -121,17 +121,14 @@ const deploy = await readJson(`${apiBase}/deployments`, {
 // Cloudflare's Create Deployment endpoint returns the deployment object at the top level
 // (unlike list endpoints which use the standard { success, result } envelope). Accept either
 // shape, but still require the exact newly generated version at 100% traffic.
-const deploymentResult = deploy.body?.result ?? deploy.body;
-const deployContainsVersion = deploymentResult?.versions?.some((item) =>
-  item?.version_id === newVersion.id && item?.percentage === 100
-);
-const deploySucceeded = deploy.response.ok &&
-  (deploy.body?.success === true || typeof deploymentResult?.id === "string");
-if (!deploySucceeded || !deployContainsVersion) {
+// Require a successful deployment HTTP status here. The authoritative check below
+// reads the active deployment and verifies the exact version at 100% traffic. Do not
+// reject a successful create response just because its JSON envelope differs.
+if (!deploy.response.ok) {
   const codes = Array.isArray(deploy.body?.errors)
     ? deploy.body.errors.map((item) => item?.code).filter(Number.isFinite).join(",")
     : "";
-  console.error(`Cloudflare did not confirm full deployment of the new Worker version: HTTP ${deploy.response.status}; errorCodes=${codes || "unavailable"}.`);
+  console.error(`Cloudflare deployment request failed: HTTP ${deploy.response.status}; errorCodes=${codes || "unavailable"}.`);
   process.exit(1);
 }
 
