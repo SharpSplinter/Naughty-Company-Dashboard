@@ -1159,6 +1159,56 @@ try {
     assert.equal(adminRequest.status, 403)
   })
 
+  await test("administrator password hash round-trips Unicode and embedded spaces through the Worker verifier", async () => {
+    const { pbkdf2Sync, webcrypto } = require("node:crypto")
+    const password = "Café!2026 Horse?9"
+    assert.equal(validateAdminPassword(password).valid, true, "the synthetic Unicode password should pass policy")
+    const salt = Buffer.alloc(16, 11)
+    const digest = pbkdf2Sync(password, salt, 210000, 32, "sha256")
+    const key = await webcrypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"])
+    const webDigest = Buffer.from(await webcrypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: new Uint8Array(salt), iterations: 210000 }, key, 256))
+    assert.deepEqual(webDigest, digest, "Node and Web Crypto must encode the same candidate password identically")
+    const passwordHash = ["pbkdf2-sha256", "210000", salt.toString("base64"), digest.toString("base64")].join("$")
+
+    let elevatedUntil = 0
+    const db = { prepare(sql) {
+      const normalized = sql.toLowerCase()
+      let values = []
+      return {
+        bind(...args) { values = args; return this },
+        async first() {
+          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "Synthetic Owner", admin_elevated_until: elevatedUntil }
+          return null
+        },
+        async all() { return { results: [] } },
+        async run() {
+          if (normalized.startsWith("update sessions set admin_elevated_until = ?")) elevatedUntil = Number(values[0])
+          else if (normalized.startsWith("update sessions set admin_elevated_until = 0")) elevatedUntil = 0
+          return { success: true, meta: { changes: 1 } }
+        },
+      }
+    } }
+    const env = { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: passwordHash }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer synthetic-unicode-owner-session", "Content-Type": "application/json" }
+    const elevated = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
+      method: "POST", headers, body: JSON.stringify({ username: "owner", password }),
+    }), env)
+    assert.equal(elevated.status, 200, "Worker verifier should accept the exact candidate used to generate the hash")
+    assert.equal((await elevated.json()).isAdmin, true)
+    assert.ok(elevatedUntil > Math.floor(Date.now() / 1000))
+
+    const revoked = await worker.fetch(new Request("https://worker.test/api/auth/admin/de-elevate", { method: "POST", headers }), env)
+    assert.equal(revoked.status, 200)
+    assert.equal(elevatedUntil, 0, "synthetic elevated session should be revoked before the negative check")
+
+    const altered = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
+      method: "POST", headers, body: JSON.stringify({ username: "owner", password: "Cafe!2026 Horse?9" }),
+    }), env)
+    assert.equal(altered.status, 401)
+    assert.equal((await altered.json()).diagnostic, "password_mismatch", "a one-character candidate change must fail closed")
+    assert.equal(elevatedUntil, 0, "a rejected candidate must not grant elevation")
+  })
+
   await test("maintenance mode permits owner recovery authentication but blocks ordinary APIs until elevation", async () => {
     let companyAutoConnectLookup = false
     const db = { prepare(sql) { return {
