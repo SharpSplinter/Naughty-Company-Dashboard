@@ -65,6 +65,7 @@ function makeFixture({
   const dashboardRequests = [];
   const discordRequests = [];
   const pollHealthReports = [];
+  const pollHealthResponses = [];
   let messageAttempts = 0;
   let successfulMessages = 0;
   let channelAttempts = 0;
@@ -198,7 +199,9 @@ function makeFixture({
       if (dashboardThrowsFor.includes(userId)) return jsonResponse({ error: "simulated dashboard API failure" }, 503);
       if (url.pathname === "/api/me/discord-alert-poll-health" && request.method === "POST") {
         pollHealthReports.push({ userId, report: await request.clone().json() });
-        return jsonResponse({ recorded: true });
+        const response = jsonResponse({ recorded: true });
+        pollHealthResponses.push(response);
+        return response;
       }
       if (url.pathname === "/api/me/discord-link") return jsonResponse({ linked: true, alertsEnabled: true });
       if (url.pathname === "/api/me/automation-preferences") return jsonResponse({ preferences: { quietHoursEnabled: false, ...preferences, ...(preferencesByAccount[userId] || {}) } });
@@ -238,7 +241,7 @@ function makeFixture({
   };
 
   return {
-    env, pollStates, escalations, dailyDeliveries, summaryStates, dashboardRequests, discordRequests, pollHealthReports, discordFetch,
+    env, pollStates, escalations, dailyDeliveries, summaryStates, dashboardRequests, discordRequests, pollHealthReports, pollHealthResponses, discordFetch,
     setNow(value) { env.__testNow = value; },
     setMessageFailureCount(value) { messageFailureCount = value; },
     get messageAttempts() { return messageAttempts; },
@@ -377,6 +380,13 @@ test("health-report timeouts have a dedicated diagnostic without marking a succe
   );
 });
 
+
+test("successful poll-health responses are consumed so API telemetry can distinguish success from timeout", async () => {
+  const fixture = makeFixture();
+  await runScheduled(fixture);
+  assert.equal(fixture.pollHealthResponses.length, 1);
+  assert.equal(fixture.pollHealthResponses[0].bodyUsed, true);
+});
 
 test("scheduled polling uses the deployment-managed bot schema without runtime DDL", () => {
   const workerSource = readFileSync(new URL("./production-worker.js", import.meta.url), "utf8");
