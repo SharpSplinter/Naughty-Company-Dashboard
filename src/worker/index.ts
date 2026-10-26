@@ -2154,7 +2154,13 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
   }
   const session = await authenticate(request, env)
   if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
-  await ensureAutomationSchema(env)
+  // These high-frequency Discord poll endpoints use schemas provisioned by auth migrations.
+  // Avoid serial CREATE TABLE/INDEX work on cold Worker isolates for every minute-level poll.
+  const skipAutomationSchemaBootstrap =
+    (discordLinkPath && request.method === "GET") ||
+    (preferencesPath && request.method === "GET") ||
+    discordPollHealthPath
+  if (!skipAutomationSchemaBootstrap) await ensureAutomationSchema(env)
   const db = requireDb(env)
   if (discordLinkPath && request.method === "GET") {
     const row = await db.prepare("SELECT discord_user_id AS discordUserId, alerts_enabled AS alertsEnabled, linked_at AS linkedAt FROM discord_account_links WHERE owner_player_id = ?").bind(session.player_id).first<{ discordUserId: string; alertsEnabled: number; linkedAt: string }>()
