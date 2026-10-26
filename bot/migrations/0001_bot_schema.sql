@@ -62,3 +62,21 @@ CREATE TABLE IF NOT EXISTS discord_alert_poll_escalations (
   notification_delivered INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(discord_user_id,escalation_key)
 );
+
+CREATE TABLE IF NOT EXISTS discord_daily_summary_deliveries (
+  discord_user_id TEXT NOT NULL,
+  reporting_day TEXT NOT NULL,
+  status TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(discord_user_id,reporting_day)
+);
+
+CREATE TABLE IF NOT EXISTS discord_daily_company_summary_state (
+  discord_user_id TEXT NOT NULL,
+  company_id TEXT NOT NULL,
+  snapshot_day TEXT NOT NULL,
+  metrics_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(discord_user_id,company_id)
+);
