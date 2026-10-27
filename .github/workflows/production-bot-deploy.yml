@@ -34,6 +34,7 @@ on:
       - "bot/test-production-health.mjs"
       - "bot/configure-production-endpoint.mjs"
       - "bot/migrations/0001_bot_schema.sql"
+      - "bot/migrations/0002_daily_company_summary_history.sql"
       - ".github/workflows/production-bot-deploy.yml"
   pull_request:
     branches:
@@ -67,6 +68,7 @@ on:
       - "bot/test-production-health.mjs"
       - "bot/configure-production-endpoint.mjs"
       - "bot/migrations/0001_bot_schema.sql"
+      - "bot/migrations/0002_daily_company_summary_history.sql"
       - ".github/workflows/production-bot-deploy.yml"
 
 permissions:
@@ -197,6 +199,10 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: npx wrangler@3.90.0 d1 execute naughty-company-bot-production --remote --file bot/migrations/0001_bot_schema.sql --config bot/wrangler.production.toml
+      - name: Initialize daily company summary comparison history
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler@3.90.0 d1 execute naughty-company-bot-production --remote --file bot/migrations/0002_daily_company_summary_history.sql --config bot/wrangler.production.toml
       - name: Deploy only the production Worker
         uses: cloudflare/wrangler-action@v3
         with:
