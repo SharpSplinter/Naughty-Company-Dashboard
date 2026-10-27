@@ -296,6 +296,18 @@ try {
     assert.doesNotMatch(migrationSource, /DROP TABLE|DELETE FROM company_financials/i)
   })
 
+  await test("company history falls back to complete financial snapshots for stock quantity", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const historyStart = workerSource.indexOf('  if (historyMatch && request.method === "GET") {')
+    const historyEnd = workerSource.indexOf('  if (rosterPath && request.method === "GET") {', historyStart)
+    const historyBody = workerSource.slice(historyStart, historyEnd)
+    assert.ok(historyStart >= 0 && historyEnd > historyStart, "company history route must remain identifiable")
+    assert.match(historyBody, /const financialStockQuantityByDay = new Map<string, number>\(\)/)
+    assert.match(historyBody, /financialStockQuantityByDay\.set\(row\.day/)
+    assert.match(historyBody, /stockByDay\.get\(String\(point\.day\)\) \?\? financialStockQuantityByDay\.get\(String\(point\.day\)\) \?\? null/)
+    assert.match(historyBody, /if \(!quantities\.some\(\(quantity\) => quantity === null\)\)/)
+  })
+
   await test("manual company refresh updates live caches without appending immutable history", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const refreshStart = workerSource.indexOf('if (url.pathname === "/api/company/refresh" && request.method === "POST")')
