@@ -54,18 +54,37 @@ jobs:
             return null;
           };
 
+          let tornRequestTail = Promise.resolve();
+          let lastTornRequestAt = 0;
+          async function pacedTornRequest(path) {
+            let release;
+            const previous = tornRequestTail;
+            tornRequestTail = new Promise(resolve => { release = resolve; });
+            await previous;
+            try {
+              const waitMs = Math.max(0, 1100 - (Date.now() - lastTornRequestAt));
+              if (waitMs > 0) await sleep(waitMs);
+              lastTornRequestAt = Date.now();
+              const response = await fetch("https://api.torn.com/v2" + path, {
+                headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+                signal: AbortSignal.timeout(20000),
+              });
+              const body = await response.text();
+              let payload;
+              try { payload = JSON.parse(body); } catch { payload = null; }
+              return { response, payload };
+            } finally {
+              release();
+            }
+          }
+
           async function tornJson(path) {
-            let lastStatus = 0;
-            for (let attempt = 0; attempt < 4; attempt++) {
+            let lastHttpStatus = 0;
+            let lastErrorCode = null;
+            for (let attempt = 0; attempt < 5; attempt++) {
               try {
-                const response = await fetch("https://api.torn.com/v2" + path, {
-                  headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
-                  signal: AbortSignal.timeout(20000),
-                });
-                lastStatus = response.status;
-                const body = await response.text();
-                let payload;
-                try { payload = JSON.parse(body); } catch { payload = null; }
+                const { response, payload } = await pacedTornRequest(path);
+                lastHttpStatus = response.status;
                 const apiError = isRecord(payload?.error) ? payload.error : null;
                 if (response.ok && payload && !apiError) return payload;
                 const apiCode = Number(apiError?.code);
@@ -73,14 +92,14 @@ jobs:
                 if (!retryable) {
                   throw new Error("Torn rejected a request (HTTP " + response.status + "; API error code " + (Number.isFinite(apiCode) ? apiCode : "unknown") + ").");
                 }
-                lastStatus = Number.isFinite(apiCode) ? apiCode : response.status;
-                console.log("Torn temporarily rejected one request (HTTP " + response.status + "; code " + (Number.isFinite(apiCode) ? apiCode : "unknown") + "); retrying with backoff.");
+                lastErrorCode = Number.isFinite(apiCode) ? apiCode : null;
+                console.log("Torn temporarily rejected one request (HTTP " + response.status + "; code " + (Number.isFinite(apiCode) ? apiCode : "unknown") + "); cooling down before retry.");
               } catch (error) {
                 if (error instanceof Error && error.message.startsWith("Torn rejected")) throw error;
               }
-              if (attempt < 3) await sleep(2500 * (attempt + 1));
+              if (attempt < 4) await sleep(Math.min(30000, 5000 * Math.pow(2, attempt)));
             }
-            throw new Error("Torn snapshot request failed after retries (HTTP " + (lastStatus || "network error") + ").");
+            throw new Error("Torn snapshot request failed after retries (HTTP " + (lastHttpStatus || "network error") + "; API error code " + (lastErrorCode ?? "unknown") + ").");
           }
 
           async function cloudflareQuery(sql, params = []) {
@@ -105,8 +124,8 @@ jobs:
             return first.results;
           }
 
-          const capturedAt = new Date().toISOString();
-          console.log("Starting manual recovery at " + capturedAt + ". The published timestamp will reflect this recovery, not the missed 18:10 capture time.");
+          const recoveryStartedAt = new Date().toISOString();
+          console.log("Starting manual recovery at " + recoveryStartedAt + ". The published timestamp will reflect this recovery, not the missed 18:10 capture time.");
 
           const catalog = await tornJson("/torn/companies");
           const root = isRecord(catalog)
@@ -165,6 +184,7 @@ jobs:
           }
 
           if (collected.length === 0) throw new Error("Torn returned no companies. The existing cache was preserved.");
+          const capturedAt = new Date().toISOString();
           const companies = collected.flatMap(({ row, typeId, typeName }) => {
             const companyId = positiveId(row.id ?? row.company_id ?? row.companyId ?? row.ID);
             if (!companyId) return [];
