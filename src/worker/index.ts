@@ -1296,6 +1296,47 @@ async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, sn
   return { companiesChecked, companiesFailed, snapshotsAdded, snapshotsSkipped, snapshotsRejected }
 }
 
+async function runManualSnapshotRecovery(env: WorkerEnv, runId: string, reportingDay: string): Promise<void> {
+  if (!env.DB || !env.KEY_ENCRYPTION_SECRET) throw new Error("Persistent storage or company-key decryption is not configured.")
+  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(reportingDay)) throw new Error("A valid reporting day is required.")
+  const startedAtMs = Date.now()
+  const currentReportingDay = new Date(startedAtMs - 18 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  if (reportingDay !== currentReportingDay) throw new Error("Manual snapshot recovery is restricted to the current 18:00 UTC reporting day.")
+  const db = requireDb(env)
+  await ensureAutomationSchema(env)
+  const previous = await db.prepare("SELECT status FROM automation_runs WHERE run_id = ?").bind(runId).first<{ status: string }>()
+  if (previous?.status === "succeeded") return
+  const startedAt = new Date(startedAtMs).toISOString()
+  if (previous) {
+    await db.prepare("UPDATE automation_runs SET trigger_name = ?, status = 'running', started_at = ?, finished_at = NULL, companies_checked = 0, companies_failed = 0, alerts_created = 0, error_summary = NULL WHERE run_id = ?")
+      .bind("manual-snapshot-recovery", startedAt, runId).run()
+  } else {
+    await db.prepare("INSERT INTO automation_runs (run_id, trigger_name, status, started_at) VALUES (?, 'manual-snapshot-recovery', 'running', ?)")
+      .bind(runId, startedAt).run()
+  }
+
+  const result = await refreshRankingProfiles(env, true, { cron: "manual-snapshot-recovery", scheduledTime: startedAtMs })
+  const finishedAt = new Date().toISOString()
+  const totalSavedOrAlreadyPresent = result.snapshotsAdded + result.snapshotsSkipped
+  const status = totalSavedOrAlreadyPresent === 0 ? "failed"
+    : result.companiesFailed > 0 || result.snapshotsRejected > 0 ? "partial" : "succeeded"
+  const summary = ("Manual catch-up used actual Torn source timestamps. Snapshots added: " + result.snapshotsAdded
+    + "; already present: " + result.snapshotsSkipped
+    + "; source timestamps rejected: " + result.snapshotsRejected
+    + "; company refreshes checked: " + result.companiesChecked
+    + "; company refreshes failed: " + result.companiesFailed + ".").slice(0, 500)
+  await db.prepare("UPDATE automation_runs SET status = ?, finished_at = ?, companies_checked = ?, companies_failed = ?, alerts_created = 0, error_summary = ? WHERE run_id = ?")
+    .bind(status, finishedAt, result.companiesChecked, result.companiesFailed, summary, runId).run()
+  if (status === "failed") throw new Error(summary)
+}
+
+async function markManualSnapshotRecoveryFailed(env: WorkerEnv, runId: string, error: string): Promise<void> {
+  if (!env.DB) return
+  try { await ensureAutomationSchema(env) } catch { return }
+  await requireDb(env).prepare("UPDATE automation_runs SET status = 'failed', finished_at = ?, error_summary = ? WHERE run_id = ? AND status = 'running'")
+    .bind(new Date().toISOString(), error.slice(0, 500), runId).run().catch(() => undefined)
+}
+
 type AdminAuditOutcome = "succeeded" | "failed" | "denied" | "pending"
 type AdminJobStatus = "queued" | "running" | "completed" | "failed"
 
