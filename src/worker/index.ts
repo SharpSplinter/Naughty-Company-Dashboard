@@ -1209,7 +1209,7 @@ async function refreshFactionDirectoryFromAnyKey(env: WorkerEnv, limit = 35, for
   } catch { /* Keep scheduled sync resilient to a revoked key or temporary Torn failure. */ }
 }
 
-async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, snapshotSchedule?: { cron: string; scheduledTime: number }): Promise<{ companiesChecked: number; companiesFailed: number; snapshotsAdded: number; snapshotsSkipped: number }> {
+async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, snapshotSchedule?: { cron: string; scheduledTime: number }): Promise<{ companiesChecked: number; companiesFailed: number; snapshotsAdded: number; snapshotsSkipped: number; snapshotsRejected: number }> {
   if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return { companiesChecked: 0, companiesFailed: 0, snapshotsAdded: 0, snapshotsSkipped: 0, snapshotsRejected: 0 }
   const db = requireDb(env)
   const perCompany = await db.prepare("SELECT player_id, company_id, ciphertext, iv FROM company_api_keys ORDER BY updated_at ASC").all<{ player_id: string; company_id: string; ciphertext: string; iv: string }>()
