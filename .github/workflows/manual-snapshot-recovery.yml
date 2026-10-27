@@ -39,7 +39,7 @@ jobs:
           const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
           const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
           const positiveId = value => {
-            const n = typeof value === "number" ? value : typeof value === "string" && /^\\d+$/.test(value) ? Number(value) : NaN;
+            const n = typeof value === "number" ? value : typeof value === "string" && /^\d+$/.test(value) ? Number(value) : NaN;
             return Number.isSafeInteger(n) && n > 0 ? n : null;
           };
           const numericField = (row, ...names) => {
@@ -66,14 +66,19 @@ jobs:
                 const body = await response.text();
                 let payload;
                 try { payload = JSON.parse(body); } catch { payload = null; }
-                if (response.ok && payload && !isRecord(payload.error)) return payload;
-                if (response.status < 500 && response.status !== 429) {
-                  throw new Error("Torn rejected a request with HTTP " + response.status + ".");
+                const apiError = isRecord(payload?.error) ? payload.error : null;
+                if (response.ok && payload && !apiError) return payload;
+                const apiCode = Number(apiError?.code);
+                const retryable = response.status === 429 || response.status >= 500 || [5, 8, 9, 14, 15, 17, 24].includes(apiCode);
+                if (!retryable) {
+                  throw new Error("Torn rejected a request (HTTP " + response.status + "; API error code " + (Number.isFinite(apiCode) ? apiCode : "unknown") + ").");
                 }
+                lastStatus = Number.isFinite(apiCode) ? apiCode : response.status;
+                console.log("Torn temporarily rejected one request (HTTP " + response.status + "; code " + (Number.isFinite(apiCode) ? apiCode : "unknown") + "); retrying with backoff.");
               } catch (error) {
                 if (error instanceof Error && error.message.startsWith("Torn rejected")) throw error;
               }
-              if (attempt < 3) await sleep(1000 * (attempt + 1));
+              if (attempt < 3) await sleep(2500 * (attempt + 1));
             }
             throw new Error("Torn snapshot request failed after retries (HTTP " + (lastStatus || "network error") + ").");
           }
@@ -151,12 +156,12 @@ jobs:
           }
 
           const collected = [];
-          for (let i = 0; i < types.length; i += 4) {
-            const batch = await Promise.all(types.slice(i, i + 4).map(fetchType));
+          for (let i = 0; i < types.length; i += 2) {
+            const batch = await Promise.all(types.slice(i, i + 2).map(fetchType));
             for (const group of batch) {
               for (const row of group.rows) collected.push({ row, typeId: group.type.id, typeName: group.type.name });
             }
-            console.log("Validated " + Math.min(i + 4, types.length) + " of " + types.length + " company types.");
+            console.log("Validated " + Math.min(i + 2, types.length) + " of " + types.length + " company types.");
           }
 
           if (collected.length === 0) throw new Error("Torn returned no companies. The existing cache was preserved.");
