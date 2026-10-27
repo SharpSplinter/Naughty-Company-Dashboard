@@ -1,5 +1,5 @@
 import { TornApiClient, TornApiClientError } from "../lib/torn/client"
-import { officialSnapshotSourceTime } from "./snapshot-provenance"
+import { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } from "./snapshot-provenance"
 import { validateAdminPassword } from "../lib/admin-password-policy.js"
 import { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isSnapshotStale, normalizeWebhookUrl, normalizeAlertThreshold, normalizeCooldownHours } from "../lib/automation/rules"
 
@@ -1189,7 +1189,7 @@ async function refreshFactionDirectoryFromAnyKey(env: WorkerEnv, limit = 35, for
   } catch { /* Keep scheduled sync resilient to a revoked key or temporary Torn failure. */ }
 }
 
-async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, snapshotSchedule?: { cron: string; scheduledTime: number }): Promise<{ companiesChecked: number; companiesFailed: number }> {
+async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, snapshotSchedule?: { cron: string; scheduledTime: number }): Promise<{ companiesChecked: number; companiesFailed: number; snapshotsAdded: number; snapshotsSkipped: number }> {
   if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return { companiesChecked: 0, companiesFailed: 0 }
   const db = requireDb(env)
   const perCompany = await db.prepare("SELECT player_id, company_id, ciphertext, iv FROM company_api_keys ORDER BY updated_at ASC").all<{ player_id: string; company_id: string; ciphertext: string; iv: string }>()
@@ -1199,6 +1199,9 @@ async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, sn
   const work = [...keys, ...(legacy.results ?? []).filter((row) => !keyedPlayers.has(row.player_id)).map((row) => ({ ...row, company_id: "" }))]
   let companiesChecked = 0
   let companiesFailed = 0
+  let snapshotsAdded = 0
+  let snapshotsSkipped = 0
+  const isManualSnapshotRecovery = captureHistory && snapshotSchedule?.cron === "manual-snapshot-recovery"
   for (const keyRow of work) {
     try {
       const apiKey = await decryptKey(env, keyRow.ciphertext, keyRow.iv)
@@ -1212,15 +1215,47 @@ async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, sn
       const employees = employeePayload === null ? existing?.employees_json ?? "{}" : asJson(employeePayload)
       const now = new Date().toISOString()
       const sourceSnapshotAt = captureHistory ? officialSnapshotSourceTime(sourceTimestamp, snapshotSchedule) : null
+      const manualRecoverySnapshotAt = isManualSnapshotRecovery
+        ? manualRecoverySnapshotSourceTime(sourceTimestamp, snapshotSchedule!.scheduledTime, Date.now())
+        : null
       await db.prepare("INSERT INTO companies (player_id, company_id, company_name, company_type, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET company_name = excluded.company_name, company_type = excluded.company_type, profile_json = excluded.profile_json, employees_json = excluded.employees_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), String(root.name ?? `Company #${companyId}`), typeof type.name === "string" ? type.name : null, asJson(profile), employees, now).run()
       if (sourceSnapshotAt) {
         const fetchedAt = sourceSnapshotAt.toISOString()
         await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(profile), employees, fetchedAt).run()
+      } else if (manualRecoverySnapshotAt) {
+        // Manual recovery records the real Torn source time within today's reporting day.
+        // One row per company/day makes queue retries idempotent.
+        const fetchedAt = manualRecoverySnapshotAt.toISOString()
+        const snapshotDay = new Date(manualRecoverySnapshotAt.getTime() - 18 * 60 * 60 * 1000).toISOString().slice(0, 10)
+        const existingSnapshot = await db.prepare("SELECT snapshot_id FROM company_snapshots WHERE player_id = ? AND company_id = ? AND date(fetched_at, '-18 hours') = ? LIMIT 1")
+          .bind(keyRow.player_id, String(companyId), snapshotDay).first<{ snapshot_id: number }>()
+        if (!existingSnapshot) {
+          await db.prepare("INSERT INTO company_snapshots (player_id, company_id, profile_json, employees_json, fetched_at) VALUES (?, ?, ?, ?, ?)")
+            .bind(keyRow.player_id, String(companyId), asJson(profile), employees, fetchedAt).run()
+          snapshotsAdded += 1
+        } else {
+          snapshotsSkipped += 1
+        }
       }
       await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), asJson(stock), now).run()
       if (sourceSnapshotAt) {
         const fetchedAt = sourceSnapshotAt.toISOString()
         await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)").bind(keyRow.player_id, String(companyId), asJson(stock), fetchedAt).run()
+        await persistFactionDirectorSnapshot(env, profile, stock, {
+          kind: "lock-in",
+          sourceTimestamp,
+          schedule: snapshotSchedule,
+        })
+      } else if (manualRecoverySnapshotAt) {
+        const fetchedAt = manualRecoverySnapshotAt.toISOString()
+        const snapshotDay = new Date(manualRecoverySnapshotAt.getTime() - 18 * 60 * 60 * 1000).toISOString().slice(0, 10)
+        const existingFinancialSnapshot = await db.prepare("SELECT snapshot_id FROM company_financial_snapshots WHERE player_id = ? AND company_id = ? AND date(fetched_at, '-18 hours') = ? LIMIT 1")
+          .bind(keyRow.player_id, String(companyId), snapshotDay).first<{ snapshot_id: number }>()
+        if (!existingFinancialSnapshot) {
+          await db.prepare("INSERT INTO company_financial_snapshots (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?)")
+            .bind(keyRow.player_id, String(companyId), asJson(stock), fetchedAt).run()
+        }
+        // Refresh live director fields, but do not classify this catch-up as an official lock-in.
         await persistFactionDirectorSnapshot(env, profile, stock, {
           kind: "lock-in",
           sourceTimestamp,
@@ -1235,7 +1270,7 @@ async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, sn
       /* One stale key or Torn API error must not stop the remaining companies. */
     }
   }
-  return { companiesChecked, companiesFailed }
+  return { companiesChecked, companiesFailed, snapshotsAdded, snapshotsSkipped }
 }
 
 type AdminAuditOutcome = "succeeded" | "failed" | "denied" | "pending"
