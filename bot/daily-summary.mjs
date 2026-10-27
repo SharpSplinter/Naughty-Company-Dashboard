@@ -113,12 +113,21 @@ export function buildDailySummaryMessage({ reportingDay, companies }) {
     const name = String(company.name || "Company").replace(/@/g, "@\u200b").replace(/[\r\n]+/g, " ").slice(0, 90);
     const current = company.metrics || {};
     const previous = company.previousMetrics || {};
+    const starGapLine = isFiniteNumber(current.starLevel) && current.starLevel >= 10
+      ? `• Income gap to next star: N/A (maximum star level) | ${
+          isFiniteNumber(previous.starLevel)
+            ? previous.starLevel >= 10
+              ? (previous.starLevel === current.starLevel ? "no change vs prior day" : "maximum star level maintained")
+              : "reached maximum star level vs prior day"
+            : "not applicable at maximum star level"
+        }`
+      : metricLine("Income gap to next star", "starIncomeGap", current.starIncomeGap, previous.starIncomeGap);
     const lines = [
       `**${name}**`,
       metricLine("Daily income", "dailyIncome", current.dailyIncome, previous.dailyIncome),
       metricLine("Daily profit", "dailyProfit", current.dailyProfit, previous.dailyProfit),
       metricLine("Star level", "starLevel", current.starLevel, previous.starLevel),
-      metricLine("Income gap to next star", "starIncomeGap", current.starIncomeGap, previous.starIncomeGap),
+      starGapLine,
       metricLine("Company rank", "companyRank", current.companyRank, previous.companyRank),
       metricLine("Stock quantity", "stockQuantity", current.stockQuantity, previous.stockQuantity),
     ];
