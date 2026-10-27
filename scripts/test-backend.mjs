@@ -162,7 +162,7 @@ try {
       "a catch-up cannot write a different reporting day",
     );
     assert.equal(manualRecoverySnapshotSourceTime(null, startedAt, observedAt), null);
-    assert.equal(manualRecoverySnapshotSourceTime(sourceTime("2026-10-27T18:40:00.000Z"), startedAt, observedAt), null,
+    assert.equal(manualRecoverySnapshotSourceTime(sourceTime("2026-10-27T18:04:00.000Z"), startedAt, observedAt), null,
       "source data older than the recovery freshness window must be skipped");
   });
 
