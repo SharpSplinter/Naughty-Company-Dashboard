@@ -308,6 +308,13 @@ const worker = readFileSync(new URL("./production-worker.js", import.meta.url), 
 const registration = readFileSync(new URL("./register-commands.mjs", import.meta.url), "utf8");
 const productionConfig = readFileSync(new URL("./wrangler.production.toml", import.meta.url), "utf8");
 const financials = readFileSync(new URL("./financials.mjs", import.meta.url), "utf8");
+assert.match(worker, /CREATE TABLE IF NOT EXISTS discord_daily_company_summary_history/,
+  "daily company summary must preserve per-day metrics so retrying today's delivery cannot erase yesterday's comparison");
+assert.match(worker, /FROM discord_daily_company_summary_history WHERE discord_user_id=\\? AND company_id=\\? AND snapshot_day=\\?/,
+  "daily summary should prefer the exact previous reporting day's stored metrics");
+assert.match(worker, /INSERT INTO discord_daily_company_summary_history\\(discord_user_id,company_id,snapshot_day,metrics_json,updated_at\\)/,
+  "daily summary should persist each reporting day's metrics before replacing the latest state");
+
 assert.match(worker, /method: "DELETE", headers, signal: AbortSignal.timeout\(8000\)/, "webhook delete must use the authenticated delete endpoint");
 assert.match(worker, /JSON.stringify\(\{ digestMode: "off" \}\)/, "webhook delete must turn off external webhook digests");
 assert.match(worker, /Edit alert rules and notification preferences in the dashboard/, "Discord must direct rule and notification preference edits to the dashboard");
