@@ -230,7 +230,10 @@ jobs:
           const conflictingDuplicates = [];
           for (const [companyId, rows] of groups) {
             if (rows.length === 1) {
-              uniqueCompanies.push(rows[0]);
+              const publicRow = { ...rows[0] };
+              delete publicRow._endpointTypeId;
+              delete publicRow._rowTypeId;
+              uniqueCompanies.push(publicRow);
               continue;
             }
             duplicateRows += rows.length - 1;
