@@ -52,7 +52,7 @@ try {
   const { runEngine } = require(join(temp, "lib/company/engine.js"))
   const { TornApiClient, TornApiClientError } = require(join(temp, "lib/torn/client.js"))
   const worker = require(join(temp, "worker/index.js")).default
-  const { officialSnapshotSourceTime } = require(join(temp, "worker/snapshot-provenance.js"))
+  const { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } = require(join(temp, "worker/snapshot-provenance.js"))
   const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
   const { estimateWeeklyProfit, financialCosts, reportedCompanyProfit, stockCostTotal } = require(join(temp, "components/floor/financial-utils.js"))
   const { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isWithinQuietHours, normalizeWebhookUrl, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } = require(join(temp, "lib/automation/rules.js"))
@@ -136,6 +136,34 @@ try {
       "source timestamps more than five minutes ahead are rejected");
     assert.equal(officialSnapshotSourceTime(sourceTime("2026-10-21T17:39:59.000Z"), schedule), null,
       "stale source timestamps are rejected");
+  });
+
+  await test("manual snapshot recovery accepts only fresh data from the current 18:00 UTC reporting day", () => {
+    const startedAt = Date.parse("2026-10-27T18:50:00.000Z");
+    const observedAt = Date.parse("2026-10-27T18:55:00.000Z");
+    const sourceTime = (value) => Date.parse(value) / 1000;
+
+    assert.equal(
+      manualRecoverySnapshotSourceTime(sourceTime("2026-10-27T18:52:00.000Z"), startedAt, observedAt)?.toISOString(),
+      "2026-10-27T18:52:00.000Z",
+    );
+    assert.equal(
+      manualRecoverySnapshotSourceTime(sourceTime("2026-10-27T17:59:59.000Z"), startedAt, observedAt),
+      null,
+      "previous reporting-day data must not be backfilled as today's snapshot",
+    );
+    assert.equal(
+      manualRecoverySnapshotSourceTime(sourceTime("2026-10-27T17:59:59.000Z"), startedAt, observedAt),
+      null,
+    );
+    assert.equal(
+      manualRecoverySnapshotSourceTime(sourceTime("2026-10-27T18:52:00.000Z"), startedAt, Date.parse("2026-10-28T18:55:00.000Z")),
+      null,
+      "a catch-up cannot write a different reporting day",
+    );
+    assert.equal(manualRecoverySnapshotSourceTime(null, startedAt, observedAt), null);
+    assert.equal(manualRecoverySnapshotSourceTime(sourceTime("2026-10-27T18:40:00.000Z"), startedAt, observedAt), null,
+      "source data older than the recovery freshness window must be skipped");
   });
 
   await test("evaluates income increase thresholds without dividing by zero", () => {
