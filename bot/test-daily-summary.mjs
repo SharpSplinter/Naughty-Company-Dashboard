@@ -87,4 +87,17 @@ test("no prior value is reported as unavailable, not zero", () => {
   assert.ok(message.includes("Prior-day comparison unavailable"));
 });
 
+test("maximum star level marks next-star gap as not applicable", () => {
+  const message = buildDailySummaryMessage({
+    reportingDay: "2026-10-20",
+    companies: [{
+      name: "Maximum Stars",
+      previousDayAvailable: true,
+      metrics: { dailyIncome: 100, dailyProfit: 50, starLevel: 10, starIncomeGap: null, companyRank: 1, stockQuantity: 200 },
+      previousMetrics: { dailyIncome: 100, dailyProfit: 50, starLevel: 10, starIncomeGap: null, companyRank: 1, stockQuantity: 200 },
+    }],
+  });
+  assert.ok(message.includes("Income gap to next star: N/A (maximum star level) | no change vs prior day"));
+});
+
 console.log("PASS daily company summary: reporting-day boundary, delay, rank math, metric deltas, and missing-data handling.");
