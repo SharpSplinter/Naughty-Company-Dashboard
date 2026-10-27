@@ -307,13 +307,16 @@ for (const name of ["link", "link-code", "status", "unlink", "help", "ping", "bo
 const worker = readFileSync(new URL("./production-worker.js", import.meta.url), "utf8");
 const registration = readFileSync(new URL("./register-commands.mjs", import.meta.url), "utf8");
 const productionConfig = readFileSync(new URL("./wrangler.production.toml", import.meta.url), "utf8");
+const dailySummaryHistoryMigration = readFileSync(new URL("./migrations/0002_daily_company_summary_history.sql", import.meta.url), "utf8");
 const financials = readFileSync(new URL("./financials.mjs", import.meta.url), "utf8");
 assert.match(worker, /CREATE TABLE IF NOT EXISTS discord_daily_company_summary_history/,
   "daily company summary must preserve per-day metrics so retrying today's delivery cannot erase yesterday's comparison");
-assert.match(worker, /FROM discord_daily_company_summary_history WHERE discord_user_id=\\? AND company_id=\\? AND snapshot_day=\\?/,
+assert.match(worker, /FROM discord_daily_company_summary_history WHERE discord_user_id=\? AND company_id=\? AND snapshot_day=\?/,
   "daily summary should prefer the exact previous reporting day's stored metrics");
-assert.match(worker, /INSERT INTO discord_daily_company_summary_history\\(discord_user_id,company_id,snapshot_day,metrics_json,updated_at\\)/,
+assert.match(worker, /INSERT INTO discord_daily_company_summary_history\(discord_user_id,company_id,snapshot_day,metrics_json,updated_at\)/,
   "daily summary should persist each reporting day's metrics before replacing the latest state");
+assert.match(dailySummaryHistoryMigration, /CREATE TABLE IF NOT EXISTS discord_daily_company_summary_history/,
+  "the daily comparison history table must be included in the production schema migration");
 
 assert.match(worker, /method: "DELETE", headers, signal: AbortSignal.timeout\(8000\)/, "webhook delete must use the authenticated delete endpoint");
 assert.match(worker, /JSON.stringify\(\{ digestMode: "off" \}\)/, "webhook delete must turn off external webhook digests");
