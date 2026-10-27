@@ -1298,7 +1298,7 @@ async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, sn
 
 async function runManualSnapshotRecovery(env: WorkerEnv, runId: string, reportingDay: string): Promise<void> {
   if (!env.DB || !env.KEY_ENCRYPTION_SECRET) throw new Error("Persistent storage or company-key decryption is not configured.")
-  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(reportingDay)) throw new Error("A valid reporting day is required.")
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(reportingDay)) throw new Error("A valid reporting day is required.")
   const startedAtMs = Date.now()
   const currentReportingDay = new Date(startedAtMs - 18 * 60 * 60 * 1000).toISOString().slice(0, 10)
   if (reportingDay !== currentReportingDay) throw new Error("Manual snapshot recovery is restricted to the current 18:00 UTC reporting day.")
