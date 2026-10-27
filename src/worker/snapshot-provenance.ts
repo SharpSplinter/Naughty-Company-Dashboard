@@ -25,3 +25,32 @@ export function officialSnapshotSourceTime(
   if (sourceDay !== scheduledDay) return null;
   return sourceAt;
 }
+
+/**
+ * Validates a manual catch-up timestamp without mislabeling it as the scheduled
+ * 18:10 lock-in. Only current reporting-day source data is eligible.
+ */
+export function manualRecoverySnapshotSourceTime(
+  sourceTimestamp: number | null | undefined,
+  recoveryStartedAt: number,
+  observedAt = Date.now(),
+): Date | null {
+  if (typeof sourceTimestamp !== "number" || !Number.isFinite(sourceTimestamp) || sourceTimestamp <= 0) return null;
+  if (!Number.isFinite(recoveryStartedAt) || !Number.isFinite(observedAt)) return null;
+
+  const sourceAt = new Date(sourceTimestamp * 1000);
+  const startedAt = new Date(recoveryStartedAt);
+  const observed = new Date(observedAt);
+  if (Number.isNaN(sourceAt.getTime()) || Number.isNaN(startedAt.getTime()) || Number.isNaN(observed.getTime())) return null;
+
+  const sourceMs = sourceAt.getTime();
+  const startedMs = startedAt.getTime();
+  const observedMs = observed.getTime();
+  if (sourceMs < startedMs - 45 * 60 * 1000 || sourceMs > observedMs + 5 * 60 * 1000) return null;
+
+  const sourceDay = new Date(sourceMs - 18 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const recoveryDay = new Date(startedMs - 18 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const observedDay = new Date(observedMs - 18 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  if (sourceDay !== recoveryDay || sourceDay !== observedDay) return null;
+  return sourceAt;
+}
