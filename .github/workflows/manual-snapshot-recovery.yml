@@ -207,25 +207,90 @@ jobs:
               directorName: typeof director.name === "string" ? director.name : "",
               playerId: "torn-global",
               fetchedAt: capturedAt,
+              _endpointTypeId: typeId,
+              _rowTypeId: rowTypeId,
             }];
-          }).sort((a, b) => Number(b.weeklyIncome ?? -1) - Number(a.weeklyIncome ?? -1));
+          });
 
           if (companies.length !== collected.length) throw new Error("Some Torn company rows had invalid IDs. The existing cache was preserved.");
-          const uniqueIds = new Set(companies.map(company => String(company.companyId)));
-          if (uniqueIds.size !== companies.length) throw new Error("Torn returned duplicate company IDs. The existing cache was preserved.");
-          if (companies.length < 1000) throw new Error("The company dataset is unexpectedly small. The existing cache was preserved.");
 
-          console.log("Complete dataset validated: " + types.length + " company types, " + companies.length + " unique companies.");
+          // A company can appear twice while its type changes during a multi-minute scan.
+          // Deduplicate only if an explicit company type identifies the canonical row, or
+          // if duplicate rows are byte-for-byte equivalent on ranking metrics and type.
+          // Any unresolved conflict aborts before the production cache is changed.
+          const groups = new Map();
+          for (const company of companies) {
+            const list = groups.get(String(company.companyId)) ?? [];
+            list.push(company);
+            groups.set(String(company.companyId), list);
+          }
+          const typeNames = new Map(types.map(type => [type.id, type.name]));
+          const uniqueCompanies = [];
+          let duplicateRows = 0;
+          const conflictingDuplicates = [];
+          for (const [companyId, rows] of groups) {
+            if (rows.length === 1) {
+              uniqueCompanies.push(rows[0]);
+              continue;
+            }
+            duplicateRows += rows.length - 1;
+            const canonicalMatches = rows.filter(row => row._rowTypeId !== null && row._rowTypeId === row._endpointTypeId);
+            let chosen = null;
+            if (canonicalMatches.length === 1) {
+              chosen = canonicalMatches[0];
+            } else {
+              const signatures = new Set(rows.map(row => JSON.stringify({
+                companyName: row.companyName,
+                companyTypeId: row.companyTypeId,
+                starRating: row.starRating,
+                weeklyIncome: row.weeklyIncome,
+                dailyIncome: row.dailyIncome,
+              })));
+              if (signatures.size === 1) chosen = rows[0];
+            }
+            if (!chosen) {
+              conflictingDuplicates.push({
+                companyId,
+                rows: rows.slice(0, 4).map(row => ({
+                  endpointTypeId: row._endpointTypeId,
+                  reportedTypeId: row._rowTypeId,
+                  companyTypeId: row.companyTypeId,
+                  companyName: row.companyName,
+                  starRating: row.starRating,
+                  weeklyIncome: row.weeklyIncome,
+                  dailyIncome: row.dailyIncome,
+                })),
+              });
+              continue;
+            }
+            const canonicalTypeId = chosen._rowTypeId ?? chosen.companyTypeId;
+            const publicRow = { ...chosen };
+            delete publicRow._endpointTypeId;
+            delete publicRow._rowTypeId;
+            publicRow.companyTypeId = canonicalTypeId;
+            if (chosen._rowTypeId !== null) publicRow.companyType = typeNames.get(canonicalTypeId) ?? publicRow.companyType;
+            uniqueCompanies.push(publicRow);
+          }
+          if (conflictingDuplicates.length) {
+            console.error("Unresolved duplicate company IDs (" + conflictingDuplicates.length + " groups); existing cache preserved. Samples: " + JSON.stringify(conflictingDuplicates.slice(0, 10)));
+            throw new Error("Torn returned conflicting duplicate company rows. No production snapshot was published.");
+          }
+          const uniqueIds = new Set(uniqueCompanies.map(company => String(company.companyId)));
+          if (uniqueIds.size !== uniqueCompanies.length) throw new Error("Duplicate validation failed. The existing cache was preserved.");
+          if (uniqueCompanies.length < 1000) throw new Error("The company dataset is unexpectedly small. The existing cache was preserved.");
+
+          const publishedCompanies = uniqueCompanies.sort((a, b) => Number(b.weeklyIncome ?? -1) - Number(a.weeklyIncome ?? -1));
+          console.log("Complete dataset validated: " + types.length + " company types, " + publishedCompanies.length + " unique companies. Resolved " + duplicateRows + " redundant row(s) with canonical type or identical metrics.");
 
           await cloudflareQuery(
             "INSERT INTO global_rankings_cache (cache_id, companies_json, fetched_at) VALUES (1, ?, ?) ON CONFLICT(cache_id) DO UPDATE SET companies_json = excluded.companies_json, fetched_at = excluded.fetched_at",
-            [JSON.stringify(companies), capturedAt],
+            [JSON.stringify(publishedCompanies), capturedAt],
           );
 
           const verified = await cloudflareQuery(
             "SELECT fetched_at, json_array_length(companies_json) AS company_count FROM global_rankings_cache WHERE cache_id = 1",
           );
-          if (verified.length !== 1 || verified[0].fetched_at !== capturedAt || Number(verified[0].company_count) !== companies.length) {
+          if (verified.length !== 1 || verified[0].fetched_at !== capturedAt || Number(verified[0].company_count) !== publishedCompanies.length) {
             throw new Error("Post-write verification did not match the fetched dataset.");
           }
           console.log("RECOVERY_VERIFIED fetched_at=" + verified[0].fetched_at + " company_count=" + verified[0].company_count + ".");
