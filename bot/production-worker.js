@@ -52,6 +52,7 @@ async function ensureBotSchema(env) {
   await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_alert_poll_escalations (discord_user_id TEXT NOT NULL, escalation_key TEXT NOT NULL, triggered_at TEXT NOT NULL, notification_delivered INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(discord_user_id,escalation_key))").run();
   await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_daily_summary_deliveries (discord_user_id TEXT NOT NULL, reporting_day TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY(discord_user_id,reporting_day))").run();
   await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_daily_company_summary_state (discord_user_id TEXT NOT NULL, company_id TEXT NOT NULL, snapshot_day TEXT NOT NULL, metrics_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(discord_user_id,company_id))").run();
+  await env.BOT_DB.prepare("CREATE TABLE IF NOT EXISTS discord_daily_company_summary_history (discord_user_id TEXT NOT NULL, company_id TEXT NOT NULL, snapshot_day TEXT NOT NULL, metrics_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(discord_user_id,company_id,snapshot_day))").run();
 }
 async function storeBotLink(user, playerId, token, env) {
   const sealed = await seal(token, env), now = new Date().toISOString();
@@ -224,12 +225,22 @@ async function loadDailyCompanySummary(env, headers, discordUserId, reportingDay
     const currentPoint = history.find(point => point && point.day === reportingDay) || null;
     const previousPoint = history.find(point => point && point.day === previousDay) || null;
     const latestPoint = history.length ? history[history.length - 1] : null;
-    const savedState = await env.BOT_DB.prepare(
-      "SELECT snapshot_day AS snapshotDay,metrics_json AS metricsJson FROM discord_daily_company_summary_state WHERE discord_user_id=? AND company_id=?"
-    ).bind(discordUserId, companyId).first();
+    const [savedHistory, savedState] = await Promise.all([
+      env.BOT_DB.prepare(
+        "SELECT snapshot_day AS snapshotDay,metrics_json AS metricsJson FROM discord_daily_company_summary_history WHERE discord_user_id=? AND company_id=? AND snapshot_day=?"
+      ).bind(discordUserId, companyId, previousDay).first(),
+      env.BOT_DB.prepare(
+        "SELECT snapshot_day AS snapshotDay,metrics_json AS metricsJson FROM discord_daily_company_summary_state WHERE discord_user_id=? AND company_id=?"
+      ).bind(discordUserId, companyId).first()
+    ]);
     let storedPrevious = null;
-    if (savedState && savedState.snapshotDay === previousDay && typeof savedState.metricsJson === "string") {
-      try { storedPrevious = JSON.parse(savedState.metricsJson); } catch {}
+    const previousState = savedHistory && savedHistory.snapshotDay === previousDay
+      ? savedHistory
+      : savedState && savedState.snapshotDay === previousDay
+        ? savedState
+        : null;
+    if (previousState && typeof previousState.metricsJson === "string") {
+      try { storedPrevious = JSON.parse(previousState.metricsJson); } catch {}
     }
 
     const cachedSelf = rankingRows.find(row => String(row.companyId ?? row.company_id ?? "") === companyId);
@@ -317,9 +328,15 @@ async function deliverDailyCompanySummary(env, discordUserId, token, reportingDa
     await db.prepare("UPDATE discord_daily_summary_deliveries SET status='delivered',updated_at=? WHERE discord_user_id=? AND reporting_day=? AND status='processing' AND attempts=?")
       .bind(new Date().toISOString(), discordUserId, reportingDay, attempts).run();
     for (const item of report.statesToSave) {
+      const metricsJson = JSON.stringify(item.metrics);
+      // Keep an immutable-per-day comparison record as well as the latest-value pointer.
+      // A summary retry must not erase yesterday's rank/gap values before they are compared.
+      await db.prepare(
+        "INSERT INTO discord_daily_company_summary_history(discord_user_id,company_id,snapshot_day,metrics_json,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(discord_user_id,company_id,snapshot_day) DO UPDATE SET metrics_json=excluded.metrics_json,updated_at=excluded.updated_at"
+      ).bind(discordUserId, item.companyId, reportingDay, metricsJson, item.updatedAt).run();
       await db.prepare(
         "INSERT INTO discord_daily_company_summary_state(discord_user_id,company_id,snapshot_day,metrics_json,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(discord_user_id,company_id) DO UPDATE SET snapshot_day=excluded.snapshot_day,metrics_json=excluded.metrics_json,updated_at=excluded.updated_at"
-      ).bind(discordUserId, item.companyId, reportingDay, JSON.stringify(item.metrics), item.updatedAt).run();
+      ).bind(discordUserId, item.companyId, reportingDay, metricsJson, item.updatedAt).run();
     }
     metrics.delivered += 1;
     return "delivered";
