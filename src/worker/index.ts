@@ -2572,10 +2572,26 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
     const financialStockQuery = db.prepare(`SELECT day, stockJson FROM (SELECT date(fetched_at, '-18 hours') AS day, stock_json AS stockJson, fetched_at AS fetchedAt, snapshot_id AS snapshotId, ROW_NUMBER() OVER (PARTITION BY date(fetched_at, '-18 hours') ORDER BY fetched_at DESC, snapshot_id DESC) AS dayRank FROM company_financial_snapshots WHERE player_id = ? AND company_id = ?${cutoffSql}) WHERE dayRank = 1 ORDER BY fetchedAt ASC LIMIT 2000`)
     const financialStockRaw = await (cutoff ? financialStockQuery.bind(session.player_id, companyId, cutoff) : financialStockQuery.bind(session.player_id, companyId)).all<{ day: string; stockJson: string | null }>()
     const stockExpensesByDay = new Map<string, number | null>()
-    for (const row of financialStockRaw.results ?? []) stockExpensesByDay.set(row.day, historicalStockOrderExpense(parseStoredJson(row.stockJson)))
+    const financialStockQuantityByDay = new Map<string, number>()
+    for (const row of financialStockRaw.results ?? []) {
+      const stock = parseStoredJson(row.stockJson)
+      const stockRows = Array.isArray(stock) ? stock : isRecord(stock) && Array.isArray(stock.stock) ? stock.stock : []
+      if (stockRows.length) {
+        const quantities = stockRows.map((item) => {
+          if (!isRecord(item)) return null
+          return [item.in_stock, item.quantity, item.amount]
+            .find((candidate): candidate is number => typeof candidate === "number" && Number.isFinite(candidate)) ?? null
+        })
+        // Use financial history as a fallback only when every stock item has a known quantity.
+        if (!quantities.some((quantity) => quantity === null)) {
+          financialStockQuantityByDay.set(row.day, (quantities as number[]).reduce((sum, quantity) => sum + quantity, 0))
+        }
+      }
+      stockExpensesByDay.set(row.day, historicalStockOrderExpense(stock))
+    }
     for (const point of byDay.values()) {
       const stockSource = stockSourceByDay.get(String(point.day))
-      point.stockQuantity = stockByDay.get(String(point.day)) ?? null
+      point.stockQuantity = stockByDay.get(String(point.day)) ?? financialStockQuantityByDay.get(String(point.day)) ?? null
       point.stockSnapshotKind = stockSource?.snapshotKind ?? null
       point.stockSnapshotFetchedAt = stockSource?.fetchedAt ?? null
       point.stockOrderExpense = stockExpensesByDay.get(String(point.day)) ?? null
