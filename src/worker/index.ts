@@ -797,7 +797,11 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
     for (const message of batch.messages) {
       const body = isRecord(message.body) ? message.body : {}
       const runId = typeof body.runId === "string" ? body.runId : ""
-      if (runId) await markGlobalRankingRunFailed(env, runId, new Error("Global-ranking refresh exhausted its queue retries. The last good cache was preserved."))
+      if (body.kind === "manual-snapshot-recovery" && runId) {
+        await markManualSnapshotRecoveryFailed(env, runId, "Manual snapshot recovery exhausted its queue retries.")
+      } else if (runId) {
+        await markGlobalRankingRunFailed(env, runId, new Error("Global-ranking refresh exhausted its queue retries. The last good cache was preserved."))
+      }
       message.ack()
     }
     return
@@ -806,6 +810,22 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
     const body = isRecord(message.body) ? message.body : {}
     const runId = typeof body.runId === "string" ? body.runId : ""
     if (!runId) { message.ack(); continue }
+    if (body.kind === "manual-snapshot-recovery") {
+      const reportingDay = typeof body.reportingDay === "string" ? body.reportingDay : ""
+      try {
+        await runManualSnapshotRecovery(env, runId, reportingDay)
+        message.ack()
+      } catch (error) {
+        const attempts = Number(message.attempts ?? 1)
+        if (attempts < 4) {
+          message.retry({ delaySeconds: Math.min(60, attempts * 15) })
+        } else {
+          await markManualSnapshotRecoveryFailed(env, runId, error instanceof Error ? error.message : "Manual snapshot recovery failed.")
+          message.ack()
+        }
+      }
+      continue
+    }
     try {
       const result = await processGlobalRankingQueueMessage(env, runId)
       if (result === "busy") message.retry({ delaySeconds: 5 })
@@ -1190,7 +1210,7 @@ async function refreshFactionDirectoryFromAnyKey(env: WorkerEnv, limit = 35, for
 }
 
 async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, snapshotSchedule?: { cron: string; scheduledTime: number }): Promise<{ companiesChecked: number; companiesFailed: number; snapshotsAdded: number; snapshotsSkipped: number }> {
-  if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return { companiesChecked: 0, companiesFailed: 0 }
+  if (!env.DB || !env.KEY_ENCRYPTION_SECRET) return { companiesChecked: 0, companiesFailed: 0, snapshotsAdded: 0, snapshotsSkipped: 0, snapshotsRejected: 0 }
   const db = requireDb(env)
   const perCompany = await db.prepare("SELECT player_id, company_id, ciphertext, iv FROM company_api_keys ORDER BY updated_at ASC").all<{ player_id: string; company_id: string; ciphertext: string; iv: string }>()
   const keys = perCompany.results ?? []
@@ -1201,6 +1221,7 @@ async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, sn
   let companiesFailed = 0
   let snapshotsAdded = 0
   let snapshotsSkipped = 0
+  let snapshotsRejected = 0
   const isManualSnapshotRecovery = captureHistory && snapshotSchedule?.cron === "manual-snapshot-recovery"
   for (const keyRow of work) {
     try {
@@ -1236,6 +1257,8 @@ async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, sn
         } else {
           snapshotsSkipped += 1
         }
+      } else if (isManualSnapshotRecovery) {
+        snapshotsRejected += 1
       }
       await db.prepare("INSERT INTO company_financials (player_id, company_id, stock_json, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id, company_id) DO UPDATE SET stock_json = excluded.stock_json, fetched_at = excluded.fetched_at").bind(keyRow.player_id, String(companyId), asJson(stock), now).run()
       if (sourceSnapshotAt) {
@@ -1270,7 +1293,7 @@ async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, sn
       /* One stale key or Torn API error must not stop the remaining companies. */
     }
   }
-  return { companiesChecked, companiesFailed, snapshotsAdded, snapshotsSkipped }
+  return { companiesChecked, companiesFailed, snapshotsAdded, snapshotsSkipped, snapshotsRejected }
 }
 
 type AdminAuditOutcome = "succeeded" | "failed" | "denied" | "pending"
