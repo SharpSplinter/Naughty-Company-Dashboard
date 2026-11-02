@@ -67,7 +67,7 @@ async function verifyFactionMembershipWithKey(apiKey: string): Promise<string> {
   const timeout = setTimeout(() => controller.abort(), 10000)
   try {
     const response = await fetch("https://api.torn.com/v2/user/faction", {
-      headers: { Authorization: \`ApiKey \${apiKey}\`, Accept: "application/json" },
+      headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
       signal: controller.signal,
     })
     const payload: unknown = await response.json().catch(() => null)
