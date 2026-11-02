@@ -386,7 +386,7 @@ async function enqueueOneFactionPerformanceRun(
     const active = await db.prepare(
       "SELECT user_id AS userId FROM faction_membership_intervals WHERE faction_id = ? AND left_observed_at IS NULL ORDER BY user_id"
     ).bind(NAUGHTY_SOULS_FACTION_ID).all<{ userId: string }>()
-    targetUserIds = Array.from(new Set((active.results ?? []).map((row) => String(row.userId)).filter((id) => /^[1-9]\\d*$/.test(id))))
+    targetUserIds = Array.from(new Set((active.results ?? []).map((row) => String(row.userId)).filter((id) => /^[1-9]\d*$/.test(id))))
     if (!targetUserIds.length) return false
   }
 
@@ -419,8 +419,7 @@ async function enqueueOneFactionPerformanceRun(
 }
 
 async function enqueueFactionPerformanceCollections(env: WorkerEnv, scheduledTime: number): Promise<number> {
-  // The CI-only secret is not a Worker binding. Runtime collection stays idle
-  // until an operator configures TORN_FACTION_API_KEY as a Cloudflare secret.
+  // Dedicated Cloudflare Worker secret. Never substitute a member login key.
   if (!env.DB || !env.GLOBAL_RANKINGS_QUEUE || !env.TORN_FACTION_API_KEY?.trim()) return 0
   let enqueued = 0
   if (await enqueueOneFactionPerformanceRun(env, scheduledTime, "roster", 5 * 60 * 1000)) enqueued += 1
@@ -522,7 +521,7 @@ async function runFactionPersonalStatsCollectionPage(env: WorkerEnv, run: Factio
   let targetUserIds: string[]
   try {
     const parsed: unknown = run.targetUserIdsJson ? JSON.parse(run.targetUserIdsJson) : []
-    targetUserIds = Array.isArray(parsed) ? Array.from(new Set(parsed.filter((value): value is string => typeof value === "string" && /^[1-9]\\d*$/.test(value)))) : []
+    targetUserIds = Array.isArray(parsed) ? Array.from(new Set(parsed.filter((value): value is string => typeof value === "string" && /^[1-9]\d*$/.test(value)))) : []
   } catch {
     throw new Error("Faction personalstats run has an invalid target list.")
   }
@@ -540,12 +539,20 @@ async function runFactionPersonalStatsCollectionPage(env: WorkerEnv, run: Factio
       if (status === "partial") partialCount += 1
       await saveFactionMemberStatSample(env, run, userId, new Date().toISOString(), stats, status)
     } catch (error) {
+      // Rate limits, transient Torn failures and network errors retry the same
+      // member. Permanent per-member errors are recorded without blocking the
+      // remaining roster.
+      if (error instanceof TornApiClientError &&
+        (error.status === 429 || error.status >= 500 || error.code === 9)) {
+        throw error
+      }
       partialCount += 1
       const safe = factionCollectionSafeError(error)
       const empty = emptyFactionPublicStats()
       await saveFactionMemberStatSample(env, run, userId, attemptedAt, empty, "failed", safe.tornCode)
     }
     index += 1
+    if (index < endIndex) await new Promise((resolve) => setTimeout(resolve, 800))
     await requireDb(env).prepare(
       "UPDATE faction_performance_collection_runs SET next_index = ?, updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
     ).bind(index, new Date().toISOString(), run.runId).run()
