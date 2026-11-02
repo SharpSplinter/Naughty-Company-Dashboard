@@ -1,5 +1,5 @@
 {
-  "_fixtureNote": "Minimized projection of the sanitized live Torn API capture from 2026-11-02. The Actions workflow replaced all live numeric values with 0, redacted arbitrary strings, retained only public stat enum names, and replaced timestamps with a fixed placeholder. These values are not player stats.",
+  "_fixtureNote": "Minimized projection of sanitized live Torn API captures from 2026-11-02: owner and public-member personalstats, current faction roster and gym-energy contributors. All numeric values are placeholders (0), arbitrary strings and identifiers are redacted, and historic stat timestamps are fixed placeholders. These are schema fixtures, not player or contributor totals.",
   "capture": {
     "openApiVersion": "6.15.0",
     "keyAccessLevel": 4,
