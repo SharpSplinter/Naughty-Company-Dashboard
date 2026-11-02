@@ -1,0 +1,38 @@
+name = "naughty-company-api-faction-performance-integration"
+account_id = "6c03b978ed9a59adc3f61c715bdad45c"
+main = "src/worker/index.ts"
+compatibility_date = "2026-10-08"
+workers_dev = true
+
+[vars]
+# Synthetic key accepted only by the fixture Worker. This is not a Torn credential.
+TORN_FACTION_API_KEY = "synthetic-faction-performance-test-key"
+TORN_API_BASE_URL = "https://naughty-company-api-faction-performance-mock.kboone801.workers.dev/v2"
+
+[observability]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "naughty-company-api-staging"
+database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"
+migrations_dir = "migrations/auth"
+
+[[queues.producers]]
+binding = "GLOBAL_RANKINGS_QUEUE"
+queue = "ncd-faction-performance-integration"
+
+[[queues.consumers]]
+queue = "ncd-faction-performance-integration"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 4
+max_concurrency = 1
+dead_letter_queue = "ncd-faction-performance-integration-dlq"
+
+[[queues.consumers]]
+queue = "ncd-faction-performance-integration-dlq"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 1
+max_concurrency = 1
