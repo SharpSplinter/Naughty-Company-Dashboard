@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 
-type AdminTab = "overview" | "members" | "operations" | "history" | "settings" | "audit"
+type AdminTab = "overview" | "members" | "administrators" | "operations" | "history" | "settings" | "audit"
 type AdminSettings = { maintenanceMode: boolean; manualRefreshEnabled: boolean; historyImportEnabled: boolean }
+type Administrator = { playerId: string; playerName: string; grantedBy: string; grantedByName?: string | null; grantedAt: string; revokedBy?: string | null; revokedByName?: string | null; revokedAt?: string | null }
 type AdminMember = { playerId: string; playerName: string; createdAt?: string | null; updatedAt?: string | null; companyId: string | null; companyName: string | null; companyType: string | null; companyTypeId?: number | string | null; disabled: boolean; disabledAt?: string | null; disableReason?: string | null; loginKeySaved: boolean; companyKeyCount: number; snapshotCount: number }
 type AdminJob = { jobId: string; jobType: string; targetPlayerId?: string | null; targetCompanyId?: string | null; status: string; createdAt: string; startedAt?: string | null; finishedAt?: string | null; errorMessage?: string | null; result?: unknown; refreshConfig?: AdminRefreshConfig | null }
 type AutomationRun = { runId: string; triggerName: string; status: string; startedAt: string; finishedAt?: string | null; companiesChecked: number; companiesFailed: number; alertsCreated: number; errorSummary?: string | null }
@@ -79,6 +80,9 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   const [notice, setNotice] = useState("")
   const [overview, setOverview] = useState<Record<string, unknown> | null>(null)
   const [members, setMembers] = useState<AdminMember[]>([])
+  const [administrators, setAdministrators] = useState<Administrator[]>([])
+  const [administratorPlayerId, setAdministratorPlayerId] = useState("")
+  const [administratorBusy, setAdministratorBusy] = useState(false)
   const [memberTotal, setMemberTotal] = useState(0)
   const [memberQuery, setMemberQuery] = useState("")
   const [memberSearch, setMemberSearch] = useState("")
@@ -182,6 +186,7 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   }, [apiBase, sessionToken, selectedMemberId])
 
   useEffect(() => { void refreshAll() }, [refreshAll])
+  useEffect(() => { if (tab === "administrators") void loadAdministrators() }, [tab])
   useEffect(() => { if (tab === "operations") void loadAutomationRuns() }, [tab, loadAutomationRuns])
   useEffect(() => { if (tab === "operations") void loadRefreshCandidates(refreshMemberSearch, refreshMemberOffset) }, [tab, loadRefreshCandidates, refreshMemberSearch, refreshMemberOffset])
   useEffect(() => {
@@ -330,12 +335,37 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
     try { const payload = await adminFetch<{ events: AuditEvent[] }>(apiBase, sessionToken, "/api/admin/audit?limit=50"); setAudit(payload.events || []) }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load audit records.") }
   }
+  async function loadAdministrators() {
+    try {
+      const payload = await adminFetch<{ administrators: Administrator[] }>(apiBase, sessionToken, "/api/admin/administrators")
+      setAdministrators(payload.administrators || [])
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load administrator roles.") }
+  }
+
+  async function changeAdministratorRole(action: "grant" | "revoke", target?: Administrator) {
+    if (!actionsArmed || administratorBusy) return
+    const targetId = action === "grant" ? administratorPlayerId.trim() : target?.playerId || ""
+    if (!/^\\d{1,20}$/.test(targetId)) { setError("Enter a valid Torn player ID."); return }
+    const targetName = target?.playerName || `Torn ID #${targetId}`
+    const confirmed = window.confirm(action === "grant"
+      ? `Grant administrator privileges to ${targetName}? The player must already have a registered Naughty Souls member account.`
+      : `Revoke administrator privileges from ${targetName}? Their current sessions will remain signed in, but admin endpoints will reject access immediately.`)
+    if (!confirmed) return
+    try {
+      setAdministratorBusy(true); setError(""); setNotice("")
+      await adminFetch(apiBase, sessionToken, `/api/admin/administrators/${action}`, { method: "POST", body: JSON.stringify({ playerId: targetId }) })
+      setNotice(action === "grant" ? `Administrator privileges granted to ${targetName}.` : `Administrator privileges revoked from ${targetName}.`)
+      setAdministratorPlayerId("")
+      await Promise.all([loadAdministrators(), loadAudit()])
+    } catch (caught) { setError(caught instanceof Error ? caught.message : `Could not ${action} administrator privileges.`) }
+    finally { setAdministratorBusy(false) }
+  }
 
   const metrics = (overview?.metrics || {}) as Record<string, unknown>
   const historyStats = (historySummary?.stats || {}) as Record<string, unknown>
   const filteredAutomationRuns = useMemo(() => automationStatusFilter === "all" ? automationRuns : automationRuns.filter((run) => run.status === automationStatusFilter), [automationRuns, automationStatusFilter])
   const tabItems: Array<{ key: AdminTab; label: string; icon: string }> = [
-    { key: "overview", label: "Overview", icon: "◫" }, { key: "members", label: "Members", icon: "♙" },
+    { key: "overview", label: "Overview", icon: "◫" }, { key: "members", label: "Members", icon: "♙" }, { key: "administrators", label: "Administrators", icon: "♛" },
     { key: "operations", label: "Operations", icon: "↻" }, { key: "history", label: "History & Backups", icon: "▤" },
     { key: "settings", label: "Global Settings", icon: "⚙" }, { key: "audit", label: "Audit Log", icon: "≡" },
   ]
@@ -369,6 +399,21 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
       </div>
     </div>}
 
+    {tab === "administrators" && <div className="admin-section-stack">
+      <div className="admin-section-heading"><div><h2>Administrator management</h2><p>Privileges are attached to a verified Torn player ID and checked by the Worker on every administration request.</p></div><button type="button" className="secondary-button" onClick={() => void loadAdministrators()}>Refresh roles ↻</button></div>
+      <section className="panel admin-subpanel">
+        <div className="panel-heading"><div><h3>Grant administrator access</h3><p>Enter the Torn ID of a player who has already signed in and verified Naughty Souls membership. Administrators never handle another member's API keys.</p></div></div>
+        <form className="admin-search-row" onSubmit={(event) => { event.preventDefault(); void changeAdministratorRole("grant") }}>
+          <input inputMode="numeric" value={administratorPlayerId} onChange={(event) => setAdministratorPlayerId(event.target.value.replace(/[^0-9]/g, "").slice(0, 20))} placeholder="Torn player ID" aria-label="Torn player ID to grant administrator access" disabled={!actionsArmed || administratorBusy} />
+          <button className="primary-button" type="submit" disabled={!actionsArmed || administratorBusy || !administratorPlayerId.trim()}>{administratorBusy ? "Saving…" : "Grant administrator"}</button>
+        </form>
+        <p className="field-hint">Only a registered, non-suspended member account can receive the role. The grant is recorded in the audit log.</p>
+      </section>
+      <section className="panel admin-subpanel">
+        <div className="panel-heading"><div><h3>Role registry</h3><p>Active roles and retained revocation history.</p></div><span className="count-chip">{administrators.filter((admin) => !admin.revokedAt).length} active</span></div>
+        {administrators.length ? <div className="table-scroll"><table className="admin-table"><thead><tr><th>ADMINISTRATOR</th><th>GRANTED BY</th><th>GRANTED</th><th>STATUS / REVOKED</th><th>ACTIONS</th></tr></thead><tbody>{administrators.map((admin) => <tr key={admin.playerId}><td><strong>{admin.playerName}</strong><small>#{admin.playerId}</small></td><td>{admin.grantedByName || `#${admin.grantedBy}`}</td><td>{prettyDate(admin.grantedAt)}</td><td>{admin.revokedAt ? <><span className="admin-status danger">Revoked</span><small>{admin.revokedByName || (admin.revokedBy ? `#${admin.revokedBy}` : "Unknown")} · {prettyDate(admin.revokedAt)}</small></> : <span className="admin-status good">Active</span>}</td><td>{admin.revokedAt ? <span className="field-hint">Retained in history</span> : admin.playerId === playerId ? <span className="field-hint">Current account</span> : <button type="button" className="text-button" disabled={!actionsArmed || administratorBusy} onClick={() => void changeAdministratorRole("revoke", admin)}>Revoke access</button>}</td></tr>)}</tbody></table></div> : <div className="empty-state">No administrator roles were returned.</div>}
+      </section>
+    </div>}
     {tab === "operations" && <div className="admin-section-stack">
       <div className="admin-section-heading"><div><h2>Refresh and maintenance jobs</h2><p>Jobs are tracked in D1, prevent equivalent concurrent requests, and report final outcomes.</p></div><button type="button" className="secondary-button" onClick={() => void loadJobs()}>Refresh job list ↻</button></div>
       <section className="panel admin-subpanel">
