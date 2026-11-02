@@ -869,6 +869,8 @@ async function purgeHalloweenMemberData(env: WorkerEnv, playerId: string): Promi
   await db.prepare("DELETE FROM halloween_event_logs WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM halloween_live_snapshots WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM halloween_collection_jobs WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_live_snapshot_jobs WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_member_event_slots WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM halloween_api_throttles WHERE player_id = ?").bind(playerId).run()
   await db.prepare("UPDATE administrators SET revoked_by = 'system', revoked_at = ? WHERE player_id = ? AND revoked_at IS NULL")
     .bind(new Date().toISOString(), playerId).run()
@@ -3661,15 +3663,16 @@ export default {
       const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
       if (!personal) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
       const db = requireDb(env)
-      const [job, snapshot, log] = await Promise.all([
+      const [job, snapshot, liveJob, log] = await Promise.all([
         db.prepare("SELECT job_id FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ job_id: string }>(),
         db.prepare("SELECT captured_at FROM halloween_live_snapshots WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ captured_at: string }>(),
+        db.prepare("SELECT job_id FROM halloween_live_snapshot_jobs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ job_id: string }>(),
         db.prepare("SELECT log_id FROM halloween_event_logs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ log_id: string }>(),
       ])
       return jsonResponse({
         event: { eventYear: personal.event.eventYear, calendarStartAt: personal.event.startAt, calendarEndAt: personal.event.endAt },
         myWindow: personal.window,
-        locked: Boolean(job || snapshot || log),
+        locked: Boolean(job || snapshot || liveJob || log),
         timeZone: "TCT (UTC)",
       }, 200, origin)
     }
@@ -3699,7 +3702,7 @@ export default {
         db.prepare("SELECT captured_at FROM halloween_live_snapshots WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ captured_at: string }>(),
         db.prepare("SELECT log_id FROM halloween_event_logs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ log_id: string }>(),
       ])
-      if (job || snapshot || log) {
+      if (job || snapshot || liveJob || log) {
         if (Number(existingSlot?.startMinuteOfDay) === startMinuteOfDay) return jsonResponse({ saved: true, locked: true, myWindow: personalWindow }, 200, origin)
         return jsonResponse({ error: "Your event time is locked because collection or snapshot capture has already started. Contact an administrator to correct it safely." }, 409, origin)
       }
