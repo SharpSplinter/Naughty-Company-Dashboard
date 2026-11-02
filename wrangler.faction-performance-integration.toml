@@ -18,6 +18,11 @@ database_name = "naughty-company-api-staging"
 database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"
 migrations_dir = "migrations/auth"
 
+# Test requests use a private Worker Service Binding, not public workers.dev DNS.
+[[services]]
+binding = "TORN_API_FIXTURE"
+service = "naughty-company-api-faction-performance-mock"
+
 [[queues.producers]]
 binding = "GLOBAL_RANKINGS_QUEUE"
 queue = "ncd-faction-performance-integration"
