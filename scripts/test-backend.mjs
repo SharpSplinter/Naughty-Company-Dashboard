@@ -2390,7 +2390,7 @@ try {
       const role = fixture.administrators.get("222")
       assert.ok(role?.revoked_at, "the durable administrator role must be revoked")
       assert.equal(role.revoked_by, "system", "departure-driven revocation must be attributed to the system")
-      assert.equal(fixture.players.get("222").faction_id, null, "the member row must leave the faction only after cleanup")
+      assert.equal(fixture.players.get("222").faction_id, "9999", "the new faction ID is stored only after cleanup completes")
       const repeated = await worker.fetch(new Request("https://worker.test/api/auth/session", {
         headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + token },
       }), fixture.env, { waitUntil() {} })
@@ -2444,7 +2444,7 @@ try {
       mode = "departed"
       const retry = await request()
       assert.equal(retry.status, 401, "a successful cleanup retry must leave the old session invalid")
-      assert.equal(fixture.players.get("223").faction_id, null)
+      assert.equal(fixture.players.get("223").faction_id, "9999")
       assert.equal(fixture.players.get("223").membership_check_status, null)
       assert.equal(fixture.sessions.size, 0)
       assert.equal(fixture.apiKeys.has("223"), false)
