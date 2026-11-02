@@ -2149,6 +2149,372 @@ try {
     assert.match(migration, /CREATE TABLE IF NOT EXISTS discord_link_codes/)
   })
 
+  async function makeEncryptedTestKey(secret, apiKey) {
+    const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret))
+    const key = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt"])
+    const iv = crypto.getRandomValues(new Uint8Array(12))
+    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(apiKey))
+    return { ciphertext: Buffer.from(ciphertext).toString("base64"), iv: Buffer.from(iv).toString("base64") }
+  }
+
+  async function makeMembershipFixture({ members, failDeleteOnce = null } = {}) {
+    const secret = "membership-e2e-secret-0123456789-abcdefghijklmnopqrstuvwxyz"
+    const players = new Map()
+    const sessions = new Map()
+    const apiKeys = new Map()
+    const administrators = new Map()
+    const disabled = new Map()
+    const halloweenTables = {
+      halloween_historical_keys: new Map(),
+      halloween_event_logs: new Map(),
+      halloween_live_snapshots: new Map(),
+      halloween_collection_jobs: new Map(),
+      halloween_live_snapshot_jobs: new Map(),
+      halloween_member_event_slots: new Map(),
+      halloween_api_throttles: new Map(),
+    }
+    const factionCache = new Map()
+    const sharing = new Map()
+    const audit = []
+    let failDelete = failDeleteOnce
+    const tokenByPlayer = new Map()
+    for (const member of members) {
+      const playerId = String(member.playerId)
+      players.set(playerId, {
+        player_id: playerId,
+        player_name: member.playerName || "Test Member " + playerId,
+        faction_id: member.factionId ?? "8317",
+        faction_verified_at: member.verifiedAt ?? new Date(Date.now() - 8 * 60 * 1000).toISOString(),
+        membership_check_attempted_at: member.attemptedAt ?? null,
+        membership_check_status: member.checkStatus ?? null,
+        created_at: new Date(Date.now() - 86400000).toISOString(),
+      })
+      if (member.apiKey) apiKeys.set(playerId, await makeEncryptedTestKey(secret, member.apiKey))
+      if (member.isAdmin) administrators.set(playerId, {
+        player_id: playerId,
+        granted_by: "900",
+        granted_at: new Date().toISOString(),
+        revoked_by: null,
+        revoked_at: null,
+      })
+      const token = member.token || "e2e-session-" + playerId
+      tokenByPlayer.set(playerId, token)
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
+      const tokenHash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("")
+      sessions.set(tokenHash, { token_hash: tokenHash, player_id: playerId, expires_at: Math.floor(Date.now() / 1000) + 3600 })
+      for (const table of Object.values(halloweenTables)) table.set(playerId, { player_id: playerId, marker: "retained-until-cleanup" })
+      factionCache.set(playerId, { player_id: playerId, is_director: 1 })
+      sharing.set(playerId + ":777", { owner_player_id: playerId, recipient_player_id: "777" })
+      sharing.set("777:" + playerId, { owner_player_id: "777", recipient_player_id: playerId })
+    }
+
+    const db = {
+      prepare(sql) {
+        const normalized = sql.toLowerCase().replace(/\s+/g, " ").trim()
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            if (normalized.includes("from sessions s join players p")) {
+              const savedSession = sessions.get(String(values[0]))
+              if (!savedSession || savedSession.expires_at <= Number(values[1])) return null
+              const player = players.get(savedSession.player_id)
+              if (!player) return null
+              const role = administrators.get(savedSession.player_id)
+              return {
+                ...player,
+                is_admin: role && role.revoked_at == null ? 1 : 0,
+              }
+            }
+            if (normalized.startsWith("select disabled_at from dashboard_member_status")) {
+              return { disabled_at: disabled.get(String(values[0])) ?? null }
+            }
+            if (normalized.startsWith("select ciphertext, iv from api_keys")) return apiKeys.get(String(values[0])) ?? null
+            if (normalized.startsWith("select value_json from admin_settings")) return null
+            if (normalized.includes("from administrators a join players p")) {
+              const role = administrators.get(String(values[0]))
+              const player = players.get(String(values[0]))
+              return role && player ? { player_name: player.player_name, revoked_at: role.revoked_at } : null
+            }
+            return null
+          },
+          async all() {
+            if (normalized.startsWith("pragma table_info(admin_jobs)")) return { results: [{ name: "job_payload_json" }] }
+            return { results: [] }
+          },
+          async run() {
+            if (failDelete && normalized.startsWith("delete from " + failDelete)) {
+              failDelete = null
+              throw new Error("Injected D1 cleanup failure for test coverage.")
+            }
+            if (normalized.startsWith("update players set membership_check_attempted_at = ?, membership_check_status = 'checking'")) {
+              const [attemptedAt, playerId, claimBefore] = values
+              const player = players.get(String(playerId))
+              if (!player) return { success: true, meta: { changes: 0 } }
+              const canClaim = player.membership_check_status === "cleanup_pending" ||
+                player.membership_check_attempted_at == null ||
+                player.membership_check_attempted_at < String(claimBefore)
+              if (!canClaim) return { success: true, meta: { changes: 0 } }
+              player.membership_check_attempted_at = String(attemptedAt)
+              player.membership_check_status = "checking"
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("update players set membership_check_status = 'unavailable'")) {
+              const [playerId, attemptedAt] = values
+              const player = players.get(String(playerId))
+              if (!player || (values.length > 1 && player.membership_check_attempted_at !== attemptedAt)) return { success: true, meta: { changes: 0 } }
+              player.membership_check_status = "unavailable"
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("update players set membership_check_status = 'cleanup_pending'")) {
+              const player = players.get(String(values[0]))
+              if (!player) return { success: true, meta: { changes: 0 } }
+              player.membership_check_status = "cleanup_pending"
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("update players set faction_id = ?, faction_verified_at = ?, membership_check_attempted_at = ?, membership_check_status = null")) {
+              const [factionId, verifiedAt, attemptedAt, updatedAt, playerId] = values
+              const player = players.get(String(playerId))
+              if (!player) return { success: true, meta: { changes: 0 } }
+              Object.assign(player, {
+                faction_id: factionId,
+                faction_verified_at: verifiedAt,
+                membership_check_attempted_at: attemptedAt,
+                membership_check_status: null,
+                updated_at: updatedAt,
+              })
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("update administrators set revoked_by = 'system'")) {
+              const [revokedAt, playerId] = values
+              const role = administrators.get(String(playerId))
+              if (!role || role.revoked_at != null) return { success: true, meta: { changes: 0 } }
+              role.revoked_by = "system"
+              role.revoked_at = revokedAt
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("update administrators set revoked_by = ?")) {
+              const [revokedBy, revokedAt, playerId] = values
+              const activeCount = [...administrators.values()].filter(role => role.revoked_at == null).length
+              const role = administrators.get(String(playerId))
+              if (!role || role.revoked_at != null || activeCount <= 1) return { success: true, meta: { changes: 0 } }
+              role.revoked_by = String(revokedBy)
+              role.revoked_at = String(revokedAt)
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("delete from sessions where player_id = ?")) {
+              const playerId = String(values[0])
+              let changes = 0
+              for (const [hash, session] of sessions) if (session.player_id === playerId) { sessions.delete(hash); changes++ }
+              return { success: true, meta: { changes } }
+            }
+            if (normalized.startsWith("delete from sessions where token_hash = ?")) {
+              return { success: true, meta: { changes: sessions.delete(String(values[0])) ? 1 : 0 } }
+            }
+            if (normalized.startsWith("delete from api_keys where player_id = ?")) {
+              return { success: true, meta: { changes: apiKeys.delete(String(values[0])) ? 1 : 0 } }
+            }
+            if (normalized.startsWith("delete from faction_member_cache where player_id = ?")) {
+              return { success: true, meta: { changes: factionCache.delete(String(values[0])) ? 1 : 0 } }
+            }
+            if (normalized.startsWith("delete from company_sharing_recipients")) {
+              const [ownerId, recipientId] = values.map(String)
+              let changes = 0
+              for (const [key, row] of sharing) if (row.owner_player_id === ownerId || row.recipient_player_id === recipientId) { sharing.delete(key); changes++ }
+              return { success: true, meta: { changes } }
+            }
+            if (normalized.startsWith("delete from halloween_")) {
+              const tableName = normalized.match(/^delete from (halloween_[a-z_]+)/)?.[1]
+              const table = tableName ? halloweenTables[tableName] : null
+              const playerId = String(values[0])
+              return { success: true, meta: { changes: table?.delete(playerId) ? 1 : 0 } }
+            }
+            if (normalized.startsWith("insert into admin_audit_log")) {
+              audit.push({
+                actor_player_id: values[0],
+                actor_player_name: values[1],
+                action: values[2],
+                target_type: values[3],
+                target_id: values[4],
+                outcome: values[5],
+                summary: values[6],
+              })
+              return { success: true, meta: { changes: 1 } }
+            }
+            return { success: true, meta: { changes: 1 } }
+          },
+        }
+      },
+    }
+    return {
+      env: { DB: db, KEY_ENCRYPTION_SECRET: secret, ALLOWED_ORIGIN: "https://naughty-company-dashboard.pages.dev" },
+      players, sessions, apiKeys, administrators, disabled, halloweenTables, factionCache, sharing, audit, tokenByPlayer,
+    }
+  }
+
+  await test("confirmed faction departure invalidates sessions, credentials, Halloween data, director cache, sharing, and administrator role end-to-end", async () => {
+    const originalFetch = globalThis.fetch
+    const fixture = await makeMembershipFixture({
+      members: [{ playerId: "222", playerName: "Departed Member", apiKey: "departed-login-key", isAdmin: true }],
+    })
+    let factionChecks = 0
+    globalThis.fetch = async input => {
+      const path = new URL(String(input)).pathname
+      if (path === "/v2/user/faction") {
+        factionChecks++
+        return new Response(JSON.stringify({ faction: { id: 9999, name: "Different Faction" } }))
+      }
+      if (path === "/v2/user/profile") return new Response(JSON.stringify({ profile: { id: 222, name: "Departed Member" } }))
+      throw new Error("Unexpected Torn request in departure E2E test: " + path)
+    }
+    try {
+      const token = fixture.tokenByPlayer.get("222")
+      const response = await worker.fetch(new Request("https://worker.test/api/auth/session", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + token },
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(response.status, 401, "a confirmed departure must invalidate the authenticated request")
+      assert.equal(factionChecks, 1, "the stale member's faction must be checked against Torn")
+      assert.equal(fixture.sessions.size, 0, "all active sessions for the departed member must be deleted")
+      assert.equal(fixture.apiKeys.has("222"), false, "the saved faction login credential must be deleted")
+      assert.equal(fixture.factionCache.has("222"), false, "cached director/member data must be deleted")
+      assert.equal([...fixture.sharing.values()].some(row => row.owner_player_id === "222" || row.recipient_player_id === "222"), false, "sharing relationships must be deleted in both directions")
+      for (const [name, table] of Object.entries(fixture.halloweenTables)) assert.equal(table.has("222"), false, name + " must be purged on departure")
+      const role = fixture.administrators.get("222")
+      assert.ok(role?.revoked_at, "the durable administrator role must be revoked")
+      assert.equal(role.revoked_by, "system", "departure-driven revocation must be attributed to the system")
+      assert.equal(fixture.players.get("222").faction_id, null, "the member row must leave the faction only after cleanup")
+      const repeated = await worker.fetch(new Request("https://worker.test/api/auth/session", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + token },
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(repeated.status, 401, "a deleted session must remain invalid")
+      assert.equal(factionChecks, 1, "a deleted session must not trigger another Torn request")
+      const signIn = await worker.fetch(new Request("https://worker.test/api/auth/sign-in", {
+        method: "POST",
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: "departed-login-key" }),
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(signIn.status, 403, "a departed member must not be able to sign in again")
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test("cleanup-pending departure stays fail-closed through a Torn outage and retries cleanup", async () => {
+    const originalFetch = globalThis.fetch
+    const fixture = await makeMembershipFixture({
+      members: [{ playerId: "223", playerName: "Cleanup Pending Member", apiKey: "cleanup-login-key", isAdmin: true }],
+      failDeleteOnce: "halloween_event_logs",
+    })
+    let mode = "departed"
+    let factionChecks = 0
+    globalThis.fetch = async input => {
+      const path = new URL(String(input)).pathname
+      if (path !== "/v2/user/faction") throw new Error("Unexpected Torn request in cleanup retry E2E test: " + path)
+      factionChecks++
+      if (mode === "outage") return new Response(JSON.stringify({ error: { code: 9 } }), { status: 429 })
+      return new Response(JSON.stringify({ faction: { id: 9999, name: "Different Faction" } }))
+    }
+    try {
+      const token = fixture.tokenByPlayer.get("223")
+      const request = () => worker.fetch(new Request("https://worker.test/api/auth/session", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + token },
+      }), fixture.env, { waitUntil() {} })
+      const first = await request()
+      assert.equal(first.status, 401, "the first departure attempt must fail closed when cleanup throws")
+      assert.equal(fixture.players.get("223").membership_check_status, "cleanup_pending")
+      assert.ok(fixture.sessions.size === 1, "injected failure happens before session deletion")
+      assert.equal(fixture.apiKeys.has("223"), true, "the login key is retained until retry can finish cleanup")
+      assert.equal(fixture.administrators.get("223").revoked_by, "system", "admin revocation happens before fallible archive cleanup")
+
+      mode = "outage"
+      const duringOutage = await request()
+      assert.equal(duringOutage.status, 401, "a later Torn outage must not turn a confirmed departure into an outage-grace session")
+      assert.equal(fixture.players.get("223").membership_check_status, "cleanup_pending", "cleanup-pending state must survive retry outages")
+      assert.equal(fixture.sessions.size, 1, "failed cleanup keeps the session record inaccessible until cleanup can finish")
+      assert.equal(factionChecks, 2)
+
+      mode = "departed"
+      const retry = await request()
+      assert.equal(retry.status, 401, "a successful cleanup retry must leave the old session invalid")
+      assert.equal(fixture.players.get("223").faction_id, null)
+      assert.equal(fixture.players.get("223").membership_check_status, null)
+      assert.equal(fixture.sessions.size, 0)
+      assert.equal(fixture.apiKeys.has("223"), false)
+      for (const table of Object.values(fixture.halloweenTables)) assert.equal(table.has("223"), false)
+      assert.equal(factionChecks, 3)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test("genuine Torn outage uses only bounded last-success grace and does not purge member access", async () => {
+    const originalFetch = globalThis.fetch
+    const fixture = await makeMembershipFixture({
+      members: [{ playerId: "224", playerName: "Torn Outage Member", apiKey: "outage-login-key", isAdmin: true }],
+    })
+    let factionChecks = 0
+    globalThis.fetch = async input => {
+      factionChecks++
+      return new Response(JSON.stringify({ error: { code: 9 } }), { status: 429 })
+    }
+    try {
+      const token = fixture.tokenByPlayer.get("224")
+      const request = () => worker.fetch(new Request("https://worker.test/api/auth/session", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + token },
+      }), fixture.env, { waitUntil() {} })
+      const first = await request()
+      assert.equal(first.status, 200, "a recent successful membership verification may use the 15-minute outage grace")
+      assert.equal(fixture.players.get("224").membership_check_status, "unavailable")
+      const second = await request()
+      assert.equal(second.status, 200, "a recent unavailable check may use the same bounded grace without another Torn request")
+      assert.equal(factionChecks, 1, "the five-minute backoff must suppress duplicate outage requests")
+      assert.equal(fixture.sessions.size, 1)
+      assert.equal(fixture.apiKeys.has("224"), true)
+      assert.equal(fixture.administrators.get("224").revoked_at, null)
+      assert.ok(fixture.halloweenTables.halloween_historical_keys.has("224"))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test("administrator revocation removes privileges from an existing session and records the actor", async () => {
+    const originalFetch = globalThis.fetch
+    const fixture = await makeMembershipFixture({
+      members: [
+        { playerId: "900", playerName: "Acting Admin", token: "acting-admin-token", isAdmin: true, verifiedAt: new Date().toISOString() },
+        { playerId: "901", playerName: "Revoked Admin", token: "revoked-admin-token", isAdmin: true, verifiedAt: new Date().toISOString() },
+      ],
+    })
+    globalThis.fetch = async () => { throw new Error("Fresh administrator sessions must not call Torn.") }
+    try {
+      const actorToken = fixture.tokenByPlayer.get("900")
+      const targetToken = fixture.tokenByPlayer.get("901")
+      const revoke = await worker.fetch(new Request("https://worker.test/api/admin/administrators/revoke", {
+        method: "POST",
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + actorToken, "Content-Type": "application/json" },
+        body: JSON.stringify({ playerId: "901" }),
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(revoke.status, 200)
+      assert.equal(fixture.administrators.get("901").revoked_by, "900")
+      assert.ok(fixture.administrators.get("901").revoked_at)
+      assert.ok(fixture.audit.some(item => item.action === "administrator.revoked" && item.target_id === "901" && item.actor_player_id === "900"))
+
+      const targetSession = await worker.fetch(new Request("https://worker.test/api/auth/session", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + targetToken },
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(targetSession.status, 200, "revocation removes administrator privileges but does not sign the user out")
+      assert.equal((await targetSession.json()).isAdmin, false, "an existing session must immediately reflect the revoked role")
+
+      const denied = await worker.fetch(new Request("https://worker.test/api/admin/administrators", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + targetToken },
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(denied.status, 403, "the existing session must immediately lose access to administrator routes")
+      assert.ok(fixture.audit.some(item => item.action === "authorization.denied" && item.actor_player_id === "901"))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   console.log(`\n${passed} backend checks passed.`)
 } finally {
   rmSync(temp, { recursive: true, force: true })
