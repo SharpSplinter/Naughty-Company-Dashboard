@@ -1,1 +1,2 @@
 Run 2: retry staging integration using private TORN_API_FIXTURE Service Binding; 2026-11-02T22:34:41.978Z
+Run 3: validate pinned Wrangler 4.156.2; staging-only rerun; 2026-11-02T22:46Z
