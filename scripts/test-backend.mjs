@@ -291,7 +291,7 @@ try {
     ]) assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
     assert.match(migration, /WHERE left_observed_at IS NULL/)
     assert.match(migration, /estimated_joined_at/)
-    assert.match(migration, /ON faction_membership_intervals\\(user_id, faction_id, estimated_joined_at DESC\\)/)
+    assert.ok(migration.includes("ON faction_membership_intervals(user_id, faction_id, estimated_joined_at DESC)"))
     assert.doesNotMatch(migration, /joined_at DESC/)
     assert.doesNotMatch(migration, /REFERENCES players|ON DELETE CASCADE|DROP TABLE|DELETE FROM/i)
     assert.match(migration, /xantaken REAL/)
