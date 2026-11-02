@@ -106,8 +106,13 @@ async function revalidateFactionMembershipBatch(env: WorkerEnv, scheduledTime: n
     if (Number(claim.meta?.changes ?? 0) < 1) continue
     const apiKey = await savedKey(env, playerId).catch(() => null)
     if (!apiKey) {
-      if (!retryCleanup) await db.prepare("UPDATE players SET membership_check_status = 'unavailable' WHERE player_id = ? AND membership_check_attempted_at = ?")
-        .bind(playerId, attemptedAt).run().catch(() => undefined)
+      if (retryCleanup) {
+        await db.prepare("UPDATE players SET membership_check_status = 'cleanup_pending' WHERE player_id = ?")
+          .bind(playerId).run().catch(() => undefined)
+      } else {
+        await db.prepare("UPDATE players SET membership_check_status = 'unavailable' WHERE player_id = ? AND membership_check_attempted_at = ?")
+          .bind(playerId, attemptedAt).run().catch(() => undefined)
+      }
       continue
     }
     try {
@@ -131,8 +136,13 @@ async function revalidateFactionMembershipBatch(env: WorkerEnv, scheduledTime: n
     } catch {
       // Torn network/rate-limit failures are not proof of faction departure.
       // But they must never erase a previously confirmed, pending departure.
-      if (!retryCleanup) await db.prepare("UPDATE players SET membership_check_status = 'unavailable' WHERE player_id = ? AND membership_check_attempted_at = ?")
-        .bind(playerId, attemptedAt).run().catch(() => undefined)
+      if (retryCleanup) {
+        await db.prepare("UPDATE players SET membership_check_status = 'cleanup_pending' WHERE player_id = ?")
+          .bind(playerId).run().catch(() => undefined)
+      } else {
+        await db.prepare("UPDATE players SET membership_check_status = 'unavailable' WHERE player_id = ? AND membership_check_attempted_at = ?")
+          .bind(playerId, attemptedAt).run().catch(() => undefined)
+      }
       continue
     }
   }
