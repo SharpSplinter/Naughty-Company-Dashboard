@@ -8,6 +8,23 @@ type SavedCompanySummary = {
   key_updated_at?: string | null
 }
 
+type HalloweenLiveMember = {
+  playerId: string
+  playerName: string
+  currentTreats: number | null
+  totalTreats: number | null
+  upgradesUnlocked: number | null
+  upgrades: unknown[] | null
+  capturedAt: string | null
+  coverage: string
+}
+
+type HalloweenLivePayload = {
+  event: { eventYear: number; startAt: string; endAt: string; liveCollectionEnabled: number }
+  leaderboard: HalloweenLiveMember[]
+  mySnapshot: HalloweenLiveMember | null
+}
+
 type WorkspaceProps = {
   playerName: string
   playerId: string
@@ -125,6 +142,10 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [historicalKeyBusy, setHistoricalKeyBusy] = useState(false)
   const [historicalKeyMessage, setHistoricalKeyMessage] = useState("")
   const [historicalKeyError, setHistoricalKeyError] = useState("")
+  const [live, setLive] = useState<HalloweenLivePayload | null>(null)
+  const [liveBusy, setLiveBusy] = useState(false)
+  const [liveCaptureBusy, setLiveCaptureBusy] = useState(false)
+  const [liveError, setLiveError] = useState("")
   const [archive, setArchive] = useState<{ event: { eventYear: number; startAt: string; endAt: string }; leaderboard: Array<{ playerId: string; playerName: string; keyConnected: boolean; collectionStatus: string; pagesCollected: number; logsCollected: number; totalHits: number | null; lastCollectedAt: string | null; coverage: string }>; myCollection: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null } | null>(null)
   const [archiveBusy, setArchiveBusy] = useState(false)
   const [archiveError, setArchiveError] = useState("")
@@ -155,6 +176,22 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     finally { setArchiveBusy(false) }
   }
 
+  const loadLive = async () => {
+    setLiveBusy(true); setLiveError("")
+    try {
+      const response = await fetch(apiBase + "/api/me/halloween/live?year=" + eventYear, { headers: { Authorization: "Bearer " + sessionToken } })
+      const payload = await response.json() as { error?: string } & Partial<HalloweenLivePayload>
+      if (!response.ok) throw new Error(payload.error || "Could not load the live Halloween leaderboard.")
+      if (!payload.event) throw new Error("This Halloween event year is not configured yet.")
+      setLive({
+        event: payload.event,
+        leaderboard: Array.isArray(payload.leaderboard) ? payload.leaderboard : [],
+        mySnapshot: payload.mySnapshot ?? null,
+      })
+    } catch (caught) { setLiveError(caught instanceof Error ? caught.message : "Could not load the live Halloween leaderboard.") }
+    finally { setLiveBusy(false) }
+  }
+
   const loadMemberDetail = async (member: { playerId: string; playerName: string }) => {
     setSelectedMember(member); setMemberDetail(null); setMemberDetailBusy(true); setArchiveError("")
     try {
@@ -166,6 +203,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     finally { setMemberDetailBusy(false) }
   }
 
+  useEffect(() => { if (tab === "live") void loadLive() }, [tab, eventYear, apiBase, sessionToken])
   useEffect(() => { void loadHistoricalKeyStatus() }, [apiBase, sessionToken])
   useEffect(() => { if (tab === "historical") void loadArchive() }, [tab, eventYear, apiBase, sessionToken])
 
@@ -218,6 +256,22 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     finally { setCollectBusy(false) }
   }
 
+  const captureLiveSnapshot = async () => {
+    if (liveCaptureBusy) return
+    setLiveCaptureBusy(true); setLiveError("")
+    try {
+      const response = await fetch(apiBase + "/api/me/halloween/live-snapshot", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + sessionToken, "Content-Type": "application/json" },
+        body: JSON.stringify({ year: eventYear }),
+      })
+      const payload = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not capture your live Halloween summary.")
+      await loadLive()
+    } catch (caught) { setLiveError(caught instanceof Error ? caught.message : "Could not capture your live Halloween summary.") }
+    finally { setLiveCaptureBusy(false) }
+  }
+
   const coverageLabel = (coverage: string) => coverage === "complete" ? "Complete" : coverage === "collecting" ? "Collecting" : coverage === "partial" ? "Partial" : "Not collected"
   const maxDailyHits = Math.max(1, ...(memberDetail?.dailyActivity || []).map(day => Number(day.totalHits || 0)))
   const formatWhen = (timestamp: number) => new Date(timestamp * 1000).toLocaleString()
@@ -232,10 +286,37 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
       </nav>
       {tab === "live" ? (
         <section className="halloween-panel">
-          <div className="halloween-status"><i /> CURRENT YEAR</div>
+          <div className="halloween-status"><i /> CURRENT YEAR · {eventYear}</div>
           <h2>Live event intelligence</h2>
-          <p>The current-year summary uses each member's own saved limited-access login key. Detailed logs and hit history are collected separately through each member's Full Access historical key.</p>
-          <div className="coverage-grid"><div><small>FACTION LEADERBOARD</small><strong>Shared view</strong><span>One leaderboard for every authenticated Naughty Souls member</span></div><div><small>DATA COLLECTION</small><strong>Scheduled & cached</strong><span>Opening, periodic, and closing event snapshots</span></div><div><small>DATA COVERAGE</small><strong>Separate from logs</strong><span>Missing snapshots are shown as unavailable, not zero</span></div></div>
+          <p>The current-year leaderboard uses each member's own saved limited-access login key. Detailed logs and hit history are collected separately through each member's Full Access historical key.</p>
+          <div className="historical-collection-toolbar">
+            <div><small>FACTION LIVE LEADERBOARD</small><strong>{live?.leaderboard.length ?? 0} member accounts</strong></div>
+            <div className="live-toolbar-actions">
+              {live && Date.now() >= Date.parse(live.event.startAt) && Date.now() <= Date.parse(live.event.endAt) && <button type="button" onClick={() => void captureLiveSnapshot()} disabled={liveCaptureBusy}>{liveCaptureBusy ? "Capturing…" : "Capture my snapshot"}</button>}
+              <button type="button" onClick={() => void loadLive()} disabled={liveBusy}>{liveBusy ? "Refreshing…" : "Refresh live board ↻"}</button>
+            </div>
+          </div>
+          {liveError && <p className="historical-key-error" role="alert">{liveError}</p>}
+          {liveBusy && !live ? <p className="historical-key-muted">Loading live faction snapshots…</p> : live ? <>
+            {live.mySnapshot ? <div className="coverage-grid">
+              <div><small>MY CURRENT TREATS</small><strong>{live.mySnapshot.currentTreats?.toLocaleString() ?? "—"}</strong><span>Latest saved current count</span></div>
+              <div><small>MY TOTAL TREATS</small><strong>{live.mySnapshot.totalTreats?.toLocaleString() ?? "—"}</strong><span>Latest saved event total</span></div>
+              <div><small>UPGRADES UNLOCKED</small><strong>{live.mySnapshot.upgradesUnlocked ?? "—"}</strong><span>{live.mySnapshot.capturedAt ? "Captured " + new Date(live.mySnapshot.capturedAt).toLocaleString() : "No snapshot timestamp"}</span></div>
+            </div> : <div className="historical-empty"><strong>Your live snapshot has not been collected.</strong><span>Live snapshots use your own saved faction login key. Missing data remains unavailable, not zero.</span></div>}
+            <div className="historical-leaderboard">
+              {live.leaderboard.length ? <table><thead><tr><th>RANK</th><th>MEMBER</th><th>CURRENT TREATS</th><th>TOTAL TREATS</th><th>UPGRADES</th><th>COVERAGE</th></tr></thead><tbody>
+                {live.leaderboard.map((member, index) => <tr key={member.playerId}>
+                  <td>{member.totalTreats === null ? "—" : index + 1}</td>
+                  <td>{member.playerName}<small>#{member.playerId}</small></td>
+                  <td>{member.currentTreats === null ? "—" : member.currentTreats.toLocaleString()}</td>
+                  <td>{member.totalTreats === null ? "—" : member.totalTreats.toLocaleString()}</td>
+                  <td>{member.upgradesUnlocked === null ? "—" : member.upgradesUnlocked}</td>
+                  <td><span className={"coverage-pill " + (member.coverage === "captured" ? "complete" : "not_collected")}>{member.coverage === "captured" ? "Captured" : "Not collected"}</span></td>
+                </tr>)}
+              </tbody></table> : <div className="historical-empty"><strong>No live snapshots have been collected yet.</strong><span>Opening, periodic and closing collection is controlled by the event's live-collection setting.</span></div>}
+            </div>
+            <p className="historical-key-muted">{live.event.liveCollectionEnabled ? "Scheduled live collection is enabled for this event." : "Scheduled live collection is currently disabled for this event."} Event window: {new Date(live.event.startAt).toLocaleString()} to {new Date(live.event.endAt).toLocaleString()}.</p>
+          </> : !liveBusy ? <div className="historical-empty"><strong>Live snapshots are unavailable.</strong><span>Refresh to check the current faction leaderboard.</span></div> : null}
         </section>
       ) : (
         <section className="halloween-panel">
