@@ -385,6 +385,95 @@ type AccountSettingsProps = WorkspaceProps & {
 }
 
 export function AccountSettingsWorkspace(props: AccountSettingsProps) {
+  const [loginKey, setLoginKey] = useState("")
+  const [companyKey, setCompanyKey] = useState("")
+  const [loginBusy, setLoginBusy] = useState(false)
+  const [companyBusy, setCompanyBusy] = useState(false)
+  const [sessionBusy, setSessionBusy] = useState(false)
+  const [accountError, setAccountError] = useState("")
+  const [accountNotice, setAccountNotice] = useState("")
+
+  const refreshCompanies = async () => {
+    const response = await fetch(props.apiBase + "/api/me/companies", { headers: { Authorization: "Bearer " + props.sessionToken } })
+    const payload = await response.json() as { error?: string; companies?: SavedCompanySummary[] }
+    if (!response.ok) throw new Error(payload.error || "Could not refresh your company connections.")
+    const companies = payload.companies || []
+    props.onCompaniesChanged(companies)
+    return companies
+  }
+
+  const replaceLoginKey = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!loginKey.trim() || loginBusy) return
+    setLoginBusy(true); setAccountError(""); setAccountNotice("")
+    try {
+      const response = await fetch(props.apiBase + "/api/auth/key", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + props.sessionToken, "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: loginKey.trim() }),
+      })
+      const payload = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not update your faction login key.")
+      setLoginKey("")
+      props.onLoginKeyChanged(true)
+      setAccountNotice("Your faction login key was validated and replaced.")
+    } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not update your faction login key.") }
+    finally { setLoginBusy(false) }
+  }
+
+  const addCompanyKey = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!companyKey.trim() || companyBusy) return
+    setCompanyBusy(true); setAccountError(""); setAccountNotice("")
+    try {
+      const response = await fetch(props.apiBase + "/api/auth/company-key", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + props.sessionToken, "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: companyKey.trim() }),
+      })
+      const payload = await response.json() as { error?: string; companyId?: string | number; companyName?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not validate this company API key.")
+      setCompanyKey("")
+      await refreshCompanies()
+      setAccountNotice((payload.companyName || "Company connection") + " was validated and saved to your account.")
+    } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not add this company API key.") }
+    finally { setCompanyBusy(false) }
+  }
+
+  const removeCompanyKey = async (company: SavedCompanySummary) => {
+    if (!company.has_api_key || companyBusy) return
+    const name = company.company_name || "Company #" + company.company_id
+    if (!window.confirm("Remove the saved API key for " + name + "? Its company data and historical records will be retained.")) return
+    setCompanyBusy(true); setAccountError(""); setAccountNotice("")
+    try {
+      const response = await fetch(props.apiBase + "/api/auth/company-key?companyId=" + encodeURIComponent(company.company_id), {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + props.sessionToken },
+      })
+      const payload = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not remove this company API key.")
+      await refreshCompanies()
+      setAccountNotice("The saved key for " + name + " was removed. Company history was retained.")
+    } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not remove this company API key.") }
+    finally { setCompanyBusy(false) }
+  }
+
+  const signOutEverywhere = async () => {
+    if (sessionBusy) return
+    if (!window.confirm("Sign out this account on every device? This will end your current session too.")) return
+    setSessionBusy(true); setAccountError(""); setAccountNotice("")
+    try {
+      const response = await fetch(props.apiBase + "/api/auth/sign-out-all", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + props.sessionToken },
+      })
+      const payload = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not revoke account sessions.")
+      props.onSignOut()
+    } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not revoke account sessions.") }
+    finally { setSessionBusy(false) }
+  }
+
   const connectedCompanies = props.companies.filter(company => company.has_api_key === true)
   return (
     <main className="module-page">
