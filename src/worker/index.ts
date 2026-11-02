@@ -107,9 +107,7 @@ async function revalidateFactionMembershipBatch(env: WorkerEnv, scheduledTime: n
         .bind(factionId || null, verifiedAt, verifiedAt, verifiedAt, playerId).run()
       checked++
       if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
-        await purgeHalloweenMemberData(env, playerId)
-        await db.prepare("DELETE FROM sessions WHERE player_id = ?").bind(playerId).run()
-        await db.prepare("DELETE FROM api_keys WHERE player_id = ?").bind(playerId).run()
+        await removeDepartedFactionAccess(env, playerId)
       }
     } catch {
       // Network, Torn rate-limit, and decryption failures are not evidence of
@@ -146,7 +144,7 @@ async function authenticate(request: Request, env: WorkerEnv): Promise<Session |
           const verifiedAt = new Date().toISOString()
           await requireDb(env).prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, updated_at = ? WHERE player_id = ?")
             .bind(currentFactionId || null, verifiedAt, verifiedAt, session.player_id).run()
-          await purgeHalloweenMemberData(env, session.player_id)
+          await removeDepartedFactionAccess(env, session.player_id)
           return null
         }
         const verifiedAt = new Date().toISOString()
@@ -836,6 +834,18 @@ async function purgeHalloweenMemberData(env: WorkerEnv, playerId: string): Promi
   await db.prepare("DELETE FROM halloween_api_throttles WHERE player_id = ?").bind(playerId).run()
   await db.prepare("UPDATE administrators SET revoked_by = 'system', revoked_at = ? WHERE player_id = ? AND revoked_at IS NULL")
     .bind(new Date().toISOString(), playerId).run()
+}
+
+async function removeDepartedFactionAccess(env: WorkerEnv, playerId: string): Promise<void> {
+  const db = requireDb(env)
+  await purgeHalloweenMemberData(env, playerId)
+  await db.prepare("DELETE FROM sessions WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM api_keys WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM faction_member_cache WHERE player_id = ?").bind(playerId).run()
+  // Sharing preferences are optional on older installations. Their absence
+  // must not block session/key invalidation or Halloween-data deletion.
+  await db.prepare("DELETE FROM company_sharing_recipients WHERE owner_player_id = ? OR recipient_player_id = ?")
+    .bind(playerId, playerId).run().catch(() => undefined)
 }
 
 function classifyHalloweenLog(row: Record<string, unknown>): { labels: string[]; isHit: boolean; relevant: boolean } {
