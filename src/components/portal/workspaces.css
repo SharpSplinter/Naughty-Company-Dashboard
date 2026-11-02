@@ -123,6 +123,13 @@
 .faction-directory-panel td strong,.faction-directory-panel td small{display:block}
 .faction-directory-panel td strong{font-size:9px;color:#dcebe3}
 .faction-directory-panel td small{font-size:8px;color:#7f969d;margin-top:4px}
+
+.faction-history-button{border:1px solid #4b756b;border-radius:6px;background:#18362f;color:#bfe8d7;padding:7px 9px;font-size:8px;white-space:nowrap}
+.faction-history-button:disabled{opacity:.45;cursor:not-allowed}
+.faction-history-panel{margin-top:14px}
+.faction-history-panel .faction-directory-heading{align-items:flex-start}
+.faction-history-panel .coverage-grid{margin:16px 0}
+.faction-history-panel .historical-leaderboard table{min-width:620px}
 .faction-star-panel{max-width:1140px;margin:14px auto 0;padding:17px 19px;border:1px solid #30464b;border-radius:10px;background:#111e26;display:grid;grid-template-columns:220px minmax(0,1fr);gap:18px}
 .faction-star-panel>div:first-child small,.faction-star-panel>div:first-child strong,.faction-star-panel>div:first-child span{display:block}
 .faction-star-panel>div:first-child small{font-size:8px;color:#83b5a6;font-weight:700;letter-spacing:.14em}
