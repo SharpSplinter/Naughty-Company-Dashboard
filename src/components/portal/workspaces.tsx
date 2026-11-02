@@ -10,9 +10,21 @@ type SavedCompanySummary = {
   has_api_key?: boolean
 }
 
+type HalloweenMemberEventWindow = {
+  configured: boolean
+  startMinuteOfDay: number | null
+  startTime: string | null
+  startAt: string | null
+  endAt: string | null
+}
+
 type HalloweenLiveMember = {
   playerId: string
   playerName: string
+  eventWindowConfigured: boolean
+  startTime: string | null
+  eventStartAt: string | null
+  eventEndAt: string | null
   currentTreats: number | null
   totalTreats: number | null
   upgradesUnlocked: number | null
@@ -25,9 +37,19 @@ type HalloweenLiveMember = {
 
 type HalloweenLivePayload = {
   event: { eventYear: number; startAt: string; endAt: string; liveCollectionEnabled: number }
+  myWindow: HalloweenMemberEventWindow | null
   leaderboard: HalloweenLiveMember[]
   mySnapshot: HalloweenLiveMember | null
 }
+
+const halloweenStartTimeOptions = Array.from({ length: 25 }, (_, index) => {
+  const totalMinutes = 10 * 60 + index * 15
+  return String(Math.floor(totalMinutes / 60)).padStart(2, "0") + ":" + String(totalMinutes % 60).padStart(2, "0")
+})
+
+const formatTctDateTime = (value: string) => new Intl.DateTimeFormat(undefined, {
+  timeZone: "UTC", dateStyle: "medium", timeStyle: "short", hour12: false,
+}).format(new Date(value))
 
 type WorkspaceProps = {
   playerName: string
@@ -315,6 +337,12 @@ export function FactionWorkspacePlaceholder({ playerName, onNavigate, apiBase, s
 export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionToken }: Pick<WorkspaceProps, "playerName" | "onNavigate"> & { apiBase: string; sessionToken: string }) {
   const eventYear = new Date().getUTCFullYear()
   const [tab, setTab] = useState<"live" | "historical">("live")
+  const [personalWindow, setPersonalWindow] = useState<HalloweenMemberEventWindow | null>(null)
+  const [personalStartTime, setPersonalStartTime] = useState("")
+  const [eventWindowLocked, setEventWindowLocked] = useState(false)
+  const [eventWindowBusy, setEventWindowBusy] = useState(false)
+  const [eventWindowError, setEventWindowError] = useState("")
+  const [eventWindowNotice, setEventWindowNotice] = useState("")
   const [historicalKey, setHistoricalKey] = useState("")
   const [historicalConsent, setHistoricalConsent] = useState(false)
   const [historicalKeyStatus, setHistoricalKeyStatus] = useState<{ connected: boolean; key: { lastFour: string; accessLevel: string; consentedAt: string; lastValidatedAt: string } | null } | null>(null)
@@ -325,7 +353,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [liveBusy, setLiveBusy] = useState(true)
   const [liveCaptureBusy, setLiveCaptureBusy] = useState(false)
   const [liveError, setLiveError] = useState("")
-  const [archive, setArchive] = useState<{ event: { eventYear: number; startAt: string; endAt: string }; leaderboard: Array<{ playerId: string; playerName: string; keyConnected: boolean; collectionStatus: string; pagesCollected: number; logsCollected: number; totalHits: number | null; lastCollectedAt: string | null; coverage: string }>; myCollection: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null } | null>(null)
+  const [archive, setArchive] = useState<{ event: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard: Array<{ playerId: string; playerName: string; eventWindowConfigured?: boolean; startTime?: string | null; keyConnected: boolean; collectionStatus: string; pagesCollected: number; logsCollected: number; totalHits: number | null; lastCollectedAt: string | null; coverage: string }>; myCollection: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null } | null>(null)
   const [archiveBusy, setArchiveBusy] = useState(false)
   const [archiveError, setArchiveError] = useState("")
   const [collectBusy, setCollectBusy] = useState(false)
@@ -347,10 +375,11 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     setArchiveBusy(true); setArchiveError("")
     try {
       const response = await fetch(apiBase + "/api/me/halloween/archive?year=" + eventYear, { headers: { Authorization: "Bearer " + sessionToken } })
-      const payload = await response.json() as { error?: string; event?: { eventYear: number; startAt: string; endAt: string }; leaderboard?: typeof archive extends infer T ? T extends { leaderboard: infer L } ? L : never : never; myCollection?: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null }
+      const payload = await response.json() as { error?: string; event?: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard?: typeof archive extends infer T ? T extends { leaderboard: infer L } ? L : never : never; myCollection?: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null }
       if (!response.ok) throw new Error(payload.error || "Could not load the faction Halloween archive.")
       if (!payload.event) throw new Error("This Halloween event year is not configured yet.")
-      setArchive({ event: payload.event, leaderboard: (payload.leaderboard || []) as NonNullable<typeof archive>["leaderboard"], myCollection: payload.myCollection ?? null })
+      setArchive({ event: payload.event, myWindow: payload.myWindow ?? null, leaderboard: (payload.leaderboard || []) as NonNullable<typeof archive>["leaderboard"], myCollection: payload.myCollection ?? null })
+      if (payload.myWindow) { setPersonalWindow(payload.myWindow); if (payload.myWindow.startTime) setPersonalStartTime(payload.myWindow.startTime) }
     } catch (caught) { setArchiveError(caught instanceof Error ? caught.message : "Could not load the faction Halloween archive.") }
     finally { setArchiveBusy(false) }
   }
@@ -364,9 +393,11 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
       if (!payload.event) throw new Error("This Halloween event year is not configured yet.")
       setLive({
         event: payload.event,
+        myWindow: payload.myWindow ?? null,
         leaderboard: Array.isArray(payload.leaderboard) ? payload.leaderboard : [],
         mySnapshot: payload.mySnapshot ?? null,
       })
+      if (payload.myWindow) { setPersonalWindow(payload.myWindow); if (payload.myWindow.startTime) setPersonalStartTime(payload.myWindow.startTime) }
     } catch (caught) { setLiveError(caught instanceof Error ? caught.message : "Could not load the live Halloween leaderboard.") }
     finally { setLiveBusy(false) }
   }
@@ -382,6 +413,37 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     finally { setMemberDetailBusy(false) }
   }
 
+  const loadPersonalEventWindow = async () => {
+    try {
+      const response = await fetch(apiBase + "/api/me/halloween/event-window?year=" + eventYear, { headers: { Authorization: "Bearer " + sessionToken } })
+      const payload = await response.json() as { error?: string; myWindow?: HalloweenMemberEventWindow | null; locked?: boolean }
+      if (!response.ok) throw new Error(payload.error || "Could not load your personal event time.")
+      setPersonalWindow(payload.myWindow ?? null)
+      setPersonalStartTime(payload.myWindow?.startTime ?? "")
+      setEventWindowLocked(payload.locked === true)
+    } catch (caught) { setEventWindowError(caught instanceof Error ? caught.message : "Could not load your personal event time.") }
+  }
+
+  const savePersonalEventWindow = async () => {
+    if (!personalStartTime || eventWindowBusy || eventWindowLocked) return
+    setEventWindowBusy(true); setEventWindowError(""); setEventWindowNotice("")
+    try {
+      const response = await fetch(apiBase + "/api/me/halloween/event-window", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + sessionToken, "Content-Type": "application/json" },
+        body: JSON.stringify({ year: eventYear, startTime: personalStartTime }),
+      })
+      const payload = await response.json() as { error?: string; saved?: boolean; locked?: boolean; myWindow?: HalloweenMemberEventWindow }
+      if (!response.ok) throw new Error(payload.error || "Could not save your personal event time.")
+      setPersonalWindow(payload.myWindow ?? null)
+      setEventWindowLocked(payload.locked === true)
+      setEventWindowNotice("Your personal event window is saved. The end time uses the same TCT clock time on November 1.")
+      await Promise.all([loadLive(), loadArchive()])
+    } catch (caught) { setEventWindowError(caught instanceof Error ? caught.message : "Could not save your personal event time.") }
+    finally { setEventWindowBusy(false) }
+  }
+
+  useEffect(() => { void loadPersonalEventWindow() }, [eventYear, apiBase, sessionToken])
   useEffect(() => { if (tab === "live") void loadLive() }, [tab, eventYear, apiBase, sessionToken])
   useEffect(() => { void loadHistoricalKeyStatus() }, [apiBase, sessionToken])
   useEffect(() => { if (tab === "historical") void loadArchive() }, [tab, eventYear, apiBase, sessionToken])
