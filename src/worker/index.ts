@@ -541,25 +541,27 @@ async function runFactionPersonalStatsCollectionPage(env: WorkerEnv, run: Factio
   while (index < endIndex) {
     const userId = targetUserIds[index]
     const attemptedAt = new Date().toISOString()
+    let stats = emptyFactionPublicStats()
+    let sampleStatus: "complete" | "partial" | "failed" = "failed"
+    let tornErrorCode: number | null = null
     try {
       const payload = await client.getUserPersonalStatsFor(userId, { kind: "popular" })
-      const stats = parseFactionPublicStatsResponse(payload)
-      const status = stats.missingMetrics.length ? "partial" : "complete"
-      if (status === "partial") partialCount += 1
-      await saveFactionMemberStatSample(env, run, userId, new Date().toISOString(), stats, status)
+      stats = parseFactionPublicStatsResponse(payload)
+      sampleStatus = stats.missingMetrics.length ? "partial" : "complete"
+      if (sampleStatus === "partial") partialCount += 1
     } catch (error) {
       // Rate limits, transient Torn failures and network errors retry the same
       // member. Permanent per-member errors are recorded without blocking the
-      // remaining roster.
+      // remaining roster. D1 writes stay outside this catch so storage failures
+      // retry the queue message instead of becoming false member/API failures.
       if (error instanceof TornApiClientError &&
         (error.status === 429 || error.status >= 500 || error.code === 9)) {
         throw error
       }
       partialCount += 1
-      const safe = factionCollectionSafeError(error)
-      const empty = emptyFactionPublicStats()
-      await saveFactionMemberStatSample(env, run, userId, attemptedAt, empty, "failed", safe.tornCode)
+      tornErrorCode = factionCollectionSafeError(error).tornCode
     }
+    await saveFactionMemberStatSample(env, run, userId, attemptedAt, stats, sampleStatus, tornErrorCode)
     index += 1
     if (index < endIndex) await new Promise((resolve) => setTimeout(resolve, 800))
     await requireDb(env).prepare(
