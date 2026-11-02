@@ -1030,16 +1030,13 @@ async function enqueueHalloweenLiveSnapshot(env: WorkerEnv, eventYear: number, p
   const db = requireDb(env)
   const existing = await db.prepare("SELECT job_id AS jobId, status FROM halloween_live_snapshot_jobs WHERE event_year = ? AND player_id = ? AND snapshot_kind = ? AND bucket_start = ?")
     .bind(eventYear, playerId, kind, bucketStart).first<{ jobId: string; status: string }>()
-  if (existing && existing.status !== "failed") return
+  // Each event bucket receives one bounded queue attempt sequence. A terminal
+  // failure is not re-enqueued on every five-minute scheduler tick.
+  if (existing) return
   const now = new Date().toISOString()
-  const jobId = existing?.jobId || crypto.randomUUID()
-  if (existing) {
-    await db.prepare("UPDATE halloween_live_snapshot_jobs SET status = 'queued', last_error = NULL, completed_at = NULL, updated_at = ? WHERE job_id = ?")
-      .bind(now, jobId).run()
-  } else {
-    await db.prepare("INSERT INTO halloween_live_snapshot_jobs (job_id, event_year, player_id, snapshot_kind, bucket_start, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)")
-      .bind(jobId, eventYear, playerId, kind, bucketStart, now, now).run()
-  }
+  const jobId = crypto.randomUUID()
+  await db.prepare("INSERT INTO halloween_live_snapshot_jobs (job_id, event_year, player_id, snapshot_kind, bucket_start, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)")
+    .bind(jobId, eventYear, playerId, kind, bucketStart, now, now).run()
   await env.GLOBAL_RANKINGS_QUEUE.send({ kind: "halloween-live-snapshot", jobId })
 }
 
