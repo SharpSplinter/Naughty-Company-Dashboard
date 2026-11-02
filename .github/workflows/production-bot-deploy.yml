@@ -84,9 +84,9 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Validate production Worker syntax
@@ -186,9 +186,9 @@ jobs:
           test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::Missing CLOUDFLARE_API_TOKEN repository secret."; exit 1; }
           test -n "$DISCORD_TOKEN" || { echo "::error::Missing DISCORD_TOKEN repository Actions secret. Cloudflare Worker secrets are not shared with Actions."; exit 1; }
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Validate Discord token before production deployment
