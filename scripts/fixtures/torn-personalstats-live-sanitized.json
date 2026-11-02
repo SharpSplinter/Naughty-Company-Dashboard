@@ -1,0 +1,216 @@
+{
+  "_fixtureNote": "Minimized projection of the sanitized live Torn API capture from 2026-11-02. The Actions workflow replaced all live numeric values with 0, redacted arbitrary strings, retained only public stat enum names, and replaced timestamps with a fixed placeholder. These values are not player stats.",
+  "capture": {
+    "openApiVersion": "6.15.0",
+    "keyAccessLevel": 4,
+    "keyAccessType": "Full Access",
+    "popularMetricCount": 18,
+    "popularMissingMetricCount": 0,
+    "ownerAllTopLevelKeys": [
+      "attacking",
+      "battle_stats",
+      "jobs",
+      "trading",
+      "jail",
+      "hospital",
+      "finishing_hits",
+      "communication",
+      "crimes",
+      "bounties",
+      "investments",
+      "items",
+      "travel",
+      "drugs",
+      "missions",
+      "racing",
+      "networth",
+      "other"
+    ],
+    "ownerNetworthBreakdownKeys": [
+      "total",
+      "wallet",
+      "vaults",
+      "bank",
+      "overseas_bank",
+      "points",
+      "inventory",
+      "display_case",
+      "bazaar",
+      "item_market",
+      "property",
+      "stock_market",
+      "auction_house",
+      "bookie",
+      "company",
+      "enlisted_cars",
+      "piggy_bank",
+      "pending",
+      "loans",
+      "unpaid_fees"
+    ]
+  },
+  "popular": {
+    "personalstats": {
+      "attacking": {},
+      "jobs": {},
+      "hospital": {},
+      "crimes": {},
+      "items": {
+        "found": {
+          "dump": 0
+        },
+        "used": {
+          "books": 0,
+          "boosters": 0,
+          "consumables": 0,
+          "candy": 0,
+          "alcohol": 0,
+          "energy": 0,
+          "energy_drinks": 0,
+          "stat_enhancers": 0,
+          "easter_eggs": 0
+        }
+      },
+      "travel": {},
+      "drugs": {
+        "cannabis": 0,
+        "ecstasy": 0,
+        "ketamine": 0,
+        "lsd": 0,
+        "opium": 0,
+        "pcp": 0,
+        "shrooms": 0,
+        "speed": 0,
+        "vicodin": 0,
+        "xanax": 0,
+        "total": 0,
+        "overdoses": 0,
+        "rehabilitations": {
+          "amount": 0,
+          "fees": 0
+        }
+      },
+      "networth": {
+        "total": 0
+      },
+      "other": {
+        "activity": {
+          "time": 0,
+          "streak": {
+            "current": 0,
+            "best": 0
+          }
+        },
+        "awards": 0,
+        "merits_bought": 0,
+        "refills": {
+          "energy": 0,
+          "nerve": 0
+        },
+        "donator_days": 0,
+        "ranked_war_wins": 0
+      }
+    }
+  },
+  "categoryDrugs": {
+    "personalstats": {
+      "drugs": {
+        "cannabis": 0,
+        "ecstasy": 0,
+        "ketamine": 0,
+        "lsd": 0,
+        "opium": 0,
+        "pcp": 0,
+        "shrooms": 0,
+        "speed": 0,
+        "vicodin": 0,
+        "xanax": 0,
+        "total": 0,
+        "overdoses": 0,
+        "rehabilitations": {
+          "amount": 0,
+          "fees": 0
+        }
+      }
+    }
+  },
+  "categoryItems": {
+    "personalstats": {
+      "items": {
+        "found": {
+          "dump": 0
+        },
+        "used": {
+          "books": 0,
+          "boosters": 0,
+          "consumables": 0,
+          "candy": 0,
+          "alcohol": 0,
+          "energy": 0,
+          "energy_drinks": 0,
+          "stat_enhancers": 0,
+          "easter_eggs": 0
+        }
+      }
+    }
+  },
+  "categoryOther": {
+    "personalstats": {
+      "other": {
+        "activity": {
+          "time": 0,
+          "streak": {
+            "current": 0,
+            "best": 0
+          }
+        },
+        "awards": 0,
+        "merits_bought": 0,
+        "refills": {
+          "energy": 0,
+          "nerve": 0
+        },
+        "donator_days": 0,
+        "ranked_war_wins": 0
+      }
+    }
+  },
+  "categoryNetworth": {
+    "personalstats": {
+      "networth": {
+        "total": 0,
+        "wallet": 0,
+        "vaults": 0,
+        "bank": 0,
+        "overseas_bank": 0,
+        "points": 0,
+        "inventory": 0,
+        "display_case": 0,
+        "bazaar": 0,
+        "item_market": 0,
+        "property": 0,
+        "stock_market": 0,
+        "auction_house": 0,
+        "bookie": 0,
+        "company": 0,
+        "enlisted_cars": 0,
+        "piggy_bank": 0,
+        "pending": 0,
+        "loans": 0,
+        "unpaid_fees": 0
+      }
+    }
+  },
+  "historicBatch1": {
+    "personalstats": [
+      { "name": "xantaken", "value": 0, "timestamp": 1794000000 },
+      { "name": "lsdtaken", "value": 0, "timestamp": 1794000000 }
+    ]
+  },
+  "historicBatch2": {
+    "personalstats": [
+      { "name": "cantaken", "value": 0, "timestamp": 1794000000 },
+      { "name": "exttaken", "value": 0, "timestamp": 1794000000 }
+    ]
+  }
+}
