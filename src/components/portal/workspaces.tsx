@@ -128,11 +128,118 @@ export function PortalHome(props: WorkspaceProps) {
   )
 }
 
-export function FactionWorkspacePlaceholder({ playerName, onNavigate }: Pick<WorkspaceProps, "playerName" | "onNavigate">) {
+type FactionDirectorSummary = {
+  playerId: string
+  directorName: string
+  companyId: string
+  companyName: string
+  companyType: string | null
+  companyTypeId: number | string | null
+  starRating: number | null
+  dailyIncome: number | null
+  weeklyIncome: number | null
+  fetchedAt: string
+}
+
+type FactionDirectoryPayload = {
+  directors: FactionDirectorSummary[]
+  weeklyStarCounts: Array<{ starRating: number; companyCount: number }>
+  weeklyStarCountsCapturedAt: string
+  generatedAt: string
+  source: string
+}
+
+export function FactionWorkspacePlaceholder({ playerName, onNavigate, apiBase, sessionToken }: Pick<WorkspaceProps, "playerName" | "onNavigate"> & { apiBase: string; sessionToken: string }) {
+  const [directory, setDirectory] = useState<FactionDirectoryPayload | null>(null)
+  const [search, setSearch] = useState("")
+  const [busy, setBusy] = useState(true)
+  const [refreshBusy, setRefreshBusy] = useState(false)
+  const [error, setError] = useState("")
+
+  const loadDirectory = async () => {
+    setBusy(true); setError("")
+    try {
+      const response = await fetch(apiBase + "/api/faction/directors", { headers: { Authorization: "Bearer " + sessionToken } })
+      const payload = await response.json() as { error?: string } & Partial<FactionDirectoryPayload>
+      if (!response.ok) throw new Error(payload.error || "Could not load the faction company directory.")
+      setDirectory({
+        directors: Array.isArray(payload.directors) ? payload.directors : [],
+        weeklyStarCounts: Array.isArray(payload.weeklyStarCounts) ? payload.weeklyStarCounts : [],
+        weeklyStarCountsCapturedAt: payload.weeklyStarCountsCapturedAt || "",
+        generatedAt: payload.generatedAt || "",
+        source: payload.source || "Faction directory cache",
+      })
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load the faction company directory.") }
+    finally { setBusy(false) }
+  }
+
+  const refreshDirectory = async () => {
+    if (refreshBusy) return
+    setRefreshBusy(true); setError("")
+    try {
+      const response = await fetch(apiBase + "/api/faction/directors", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + sessionToken },
+      })
+      const payload = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not refresh the faction directory.")
+      await loadDirectory()
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not refresh the faction directory.") }
+    finally { setRefreshBusy(false) }
+  }
+
+  useEffect(() => { void loadDirectory() }, [apiBase, sessionToken])
+
+  const directors = (directory?.directors || []).filter(director => {
+    const term = search.trim().toLowerCase()
+    return !term || [director.directorName, director.companyName, director.companyType, director.playerId, director.companyId].some(value => String(value ?? "").toLowerCase().includes(term))
+  })
+  const totalWeeklyIncome = (directory?.directors || []).reduce((sum, director) => sum + (typeof director.weeklyIncome === "number" ? director.weeklyIncome : 0), 0)
+  const totalDailyIncome = (directory?.directors || []).reduce((sum, director) => sum + (typeof director.dailyIncome === "number" ? director.dailyIncome : 0), 0)
+  const knownWeekly = (directory?.directors || []).filter(director => typeof director.weeklyIncome === "number").length
+  const knownDaily = (directory?.directors || []).filter(director => typeof director.dailyIncome === "number").length
+  const money = (value: number | null) => value === null || !Number.isFinite(value) ? "—" : "$" + Math.round(value).toLocaleString()
+
   return (
-    <main className="module-page">
-      <header className="module-topbar"><a className="portal-brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("/") }}><span className="portal-brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>FACTION PORTAL</small></span></a><button type="button" onClick={() => onNavigate("/")}>← Return to portal</button></header>
-      <section className="module-placeholder"><span className="module-placeholder-icon">♜</span><div className="portal-eyebrow"><span /> FACTION WORKSPACE</div><h1>Under construction</h1><p>The Faction Dashboard is reserved for the next stage of the portal. Your member session is active, and the other workspaces remain available.</p><button type="button" className="portal-primary-button" onClick={() => onNavigate("/")}>Back to portal <b>→</b></button><small>Signed in as {playerName}</small></section>
+    <main className="module-page faction-module">
+      <header className="module-topbar"><a className="portal-brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("/") }}><span className="portal-brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>FACTION WORKSPACE</small></span></a><button type="button" onClick={() => onNavigate("/")}>← Return to portal</button></header>
+      <section className="module-heading"><div className="portal-eyebrow"><span /> NAUGHTY SOULS · SHARED INTELLIGENCE</div><h1>Faction <em>Dashboard</em></h1><p>Company leadership, operating income, and faction-wide business visibility. Private company details remain governed by each director's sharing permissions.</p></section>
+      {error && <p className="settings-feedback error" role="alert">{error}</p>}
+      <section className="faction-toolbar">
+        <div><small>FACTION COMPANY DIRECTORY</small><strong>{directory?.directors.length ?? 0} confirmed director accounts</strong><span>{directory?.source || "Loading directory source…"}</span></div>
+        <div className="live-toolbar-actions"><button type="button" onClick={() => void loadDirectory()} disabled={busy}>{busy ? "Refreshing cache…" : "Reload directory ↻"}</button><button type="button" onClick={() => void refreshDirectory()} disabled={refreshBusy}>{refreshBusy ? "Syncing Torn…" : "Sync from Torn"}</button></div>
+      </section>
+      <section className="faction-metric-grid">
+        <article><small>CONFIRMED COMPANIES</small><strong>{directory?.directors.length ?? "—"}</strong><span>Cached faction directors</span></article>
+        <article><small>KNOWN DAILY INCOME</small><strong>{directory ? money(totalDailyIncome) : "—"}</strong><span>{knownDaily} of {directory?.directors.length ?? 0} with income data</span></article>
+        <article><small>KNOWN WEEKLY INCOME</small><strong>{directory ? money(totalWeeklyIncome) : "—"}</strong><span>{knownWeekly} of {directory?.directors.length ?? 0} with income data</span></article>
+      </section>
+      <section className="halloween-panel faction-directory-panel">
+        <div className="faction-directory-heading"><div><div className="halloween-status"><i /> DIRECTOR DIRECTORY</div><h2>Company leadership</h2><p>Ranked by cached weekly income. Missing financial fields remain unavailable rather than being treated as zero.</p></div><input aria-label="Search faction directors" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search director, company, or ID…" /></div>
+        {busy && !directory ? <p className="historical-key-muted">Loading the faction directory…</p> : directors.length ? (
+          <div className="historical-leaderboard">
+            <table><thead><tr><th>DIRECTOR</th><th>COMPANY</th><th>TYPE</th><th>STARS</th><th>DAILY INCOME</th><th>WEEKLY INCOME</th><th>UPDATED</th></tr></thead><tbody>
+              {directors.map(director => <tr key={director.playerId + ":" + director.companyId}>
+                <td><strong>{director.directorName}</strong><small>#{director.playerId}</small></td>
+                <td><strong>{director.companyName || "Company #" + director.companyId}</strong><small>ID {director.companyId}</small></td>
+                <td>{director.companyType || "—"}</td>
+                <td>{director.starRating === null ? "—" : director.starRating.toFixed(1)}</td>
+                <td>{money(director.dailyIncome)}</td>
+                <td>{money(director.weeklyIncome)}</td>
+                <td>{director.fetchedAt ? new Date(director.fetchedAt).toLocaleString() : "—"}</td>
+              </tr>)}
+            </tbody></table>
+          </div>
+        ) : <div className="historical-empty"><strong>{directory?.directors.length ? "No directors match that search." : "No faction director records are available yet."}</strong><span>{directory?.directors.length ? "Try a director name, company name, or Torn ID." : "Use Sync from Torn to refresh the directory with your saved faction login key."}</span></div>}
+      </section>
+      <section className="faction-star-panel">
+        <div><small>WEEKLY STAR DISTRIBUTION</small><strong>Faction company ratings</strong><span>{directory?.weeklyStarCountsCapturedAt ? "Captured " + new Date(directory.weeklyStarCountsCapturedAt).toLocaleString() : "No weekly snapshot timestamp available"}</span></div>
+        <div className="faction-star-list">
+          {(directory?.weeklyStarCounts || []).slice().sort((a, b) => b.starRating - a.starRating).map(item => <div key={item.starRating}><span>{item.starRating.toFixed(1)} stars</span><div><i style={{ width: Math.min(100, item.companyCount / Math.max(1, ...(directory?.weeklyStarCounts || []).map(value => value.companyCount)) * 100) + "%" }} /></div><strong>{item.companyCount}</strong></div>)}
+          {!directory?.weeklyStarCounts.length && <span className="settings-form-hint">Weekly star-rating data will appear after the Sunday snapshot.</span>}
+        </div>
+      </section>
+      <footer className="module-footer"><span>FACTION WORKSPACE</span><span>Signed in as {playerName} · {directory?.generatedAt ? "Updated " + new Date(directory.generatedAt).toLocaleString() : "Waiting for directory data"}</span></footer>
     </main>
   )
 }
