@@ -784,12 +784,172 @@ async function processGlobalRankingQueueMessage(env: WorkerEnv, runId: string): 
   }
 }
 
+async function purgeHalloweenMemberData(env: WorkerEnv, playerId: string): Promise<void> {
+  const db = requireDb(env)
+  await db.prepare("DELETE FROM halloween_historical_keys WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_event_logs WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_live_snapshots WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_collection_jobs WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_api_throttles WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("UPDATE administrators SET revoked_by = 'system', revoked_at = ? WHERE player_id = ? AND revoked_at IS NULL")
+    .bind(new Date().toISOString(), playerId).run()
+}
+
+function classifyHalloweenLog(row: Record<string, unknown>): { labels: string[]; isHit: boolean; relevant: boolean } {
+  const details = isRecord(row.details) ? row.details : {}
+  const title = typeof details.title === "string" ? details.title.toLowerCase() : ""
+  const category = typeof details.category === "string" ? details.category.toLowerCase() : ""
+  const searchable = (title + " " + category + " " + JSON.stringify(row.data ?? {}) + " " + JSON.stringify(row.params ?? {})).toLowerCase()
+  const labels = new Set<string>()
+  if (searchable.includes("trick or treat")) labels.add("trick_or_treat")
+  if (searchable.includes("treat") && /(receive|received|gain|gained|collect|collected|earned)/.test(searchable)) labels.add("treat_received")
+  if (searchable.includes("basket")) labels.add("basket")
+  if (title.includes("attack") && title.includes("leave")) labels.add("attack_leave")
+  if (title.includes("attack") && title.includes("mug")) labels.add("attack_mug")
+  if (title.includes("attack") && /(hospital|hospitalize|hospitalise)/.test(title)) labels.add("attack_hospitalize")
+  if (searchable.includes("revitalize") || searchable.includes("revitalise")) labels.add("revitalize")
+  if (searchable.includes("boost")) labels.add("boost")
+  if (searchable.includes("book") && /(activate|activation|used|use)/.test(searchable)) labels.add("book_activation")
+  if (searchable.includes("company") && /(change|changed|joined|left|director)/.test(searchable)) labels.add("company_change")
+  if (title.includes("item use") || title.includes("items use")) labels.add("item_use")
+  const isHit = labels.has("attack_leave") || labels.has("attack_mug") || labels.has("attack_hospitalize")
+  return { labels: Array.from(labels), isHit, relevant: labels.size > 0 }
+}
+
+async function throttleHalloweenRequest(env: WorkerEnv, playerId: string): Promise<void> {
+  const db = requireDb(env)
+  const row = await db.prepare("SELECT last_request_at FROM halloween_api_throttles WHERE player_id = ?")
+    .bind(playerId).first<{ last_request_at: number }>()
+  const now = Date.now()
+  const waitMs = Math.max(0, 800 - (now - Number(row?.last_request_at ?? 0)))
+  if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs))
+  const startedAt = Date.now()
+  await db.prepare("INSERT INTO halloween_api_throttles (player_id, last_request_at) VALUES (?, ?) ON CONFLICT(player_id) DO UPDATE SET last_request_at = excluded.last_request_at")
+    .bind(playerId, startedAt).run()
+}
+
+async function sendHalloweenCollectionJob(env: WorkerEnv, jobId: string): Promise<void> {
+  if (!env.GLOBAL_RANKINGS_QUEUE) throw new Error("The background collection queue is not configured.")
+  await env.GLOBAL_RANKINGS_QUEUE.send({ kind: "halloween-log-collection", jobId })
+}
+
+async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Promise<void> {
+  const db = requireDb(env)
+  const job = await db.prepare("SELECT job_id, player_id, event_year, status, cursor_ts, cursor_url, cursor_direction, pages_collected, logs_collected FROM halloween_collection_jobs WHERE job_id = ?")
+    .bind(jobId).first<{ job_id: string; player_id: string; event_year: number; status: string; cursor_ts: number; cursor_url: string | null; cursor_direction: string | null; pages_collected: number; logs_collected: number }>()
+  if (!job || ["complete", "failed", "cancelled"].includes(job.status)) return
+  const event = await db.prepare("SELECT start_at, end_at, historical_collection_enabled FROM halloween_event_windows WHERE event_year = ?")
+    .bind(job.event_year).first<{ start_at: string; end_at: string; historical_collection_enabled: number }>()
+  if (!event || event.historical_collection_enabled !== 1) {
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("Historical collection is disabled for this event year.", new Date().toISOString(), jobId).run()
+    return
+  }
+  const keyRow = await db.prepare("SELECT ciphertext, iv FROM halloween_historical_keys WHERE player_id = ?")
+    .bind(job.player_id).first<{ ciphertext: string; iv: string }>()
+  if (!keyRow) {
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("The member's Full Access key is no longer connected.", new Date().toISOString(), jobId).run()
+    return
+  }
+  const apiKey = await decryptKey(env, keyRow.ciphertext, keyRow.iv)
+  await throttleHalloweenRequest(env, job.player_id)
+  const factionId = await verifyFactionMembershipWithKey(apiKey)
+  if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
+    await purgeHalloweenMemberData(env, job.player_id)
+    return
+  }
+
+  const eventEnd = Math.floor(Date.parse(event.end_at) / 1000)
+  const dayStart = Number(job.cursor_ts)
+  if (!Number.isFinite(dayStart) || dayStart >= eventEnd) {
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'complete', completed_at = ?, updated_at = ?, last_error = NULL WHERE job_id = ?")
+      .bind(new Date().toISOString(), new Date().toISOString(), jobId).run()
+    return
+  }
+  const dayEnd = Math.min(dayStart + 86400, eventEnd)
+  let requestUrl = job.cursor_url || (() => {
+    const url = new URL("https://api.torn.com/v2/user/log")
+    url.searchParams.set("from", String(dayStart))
+    url.searchParams.set("to", String(dayEnd - 1))
+    url.searchParams.set("limit", "100")
+    url.searchParams.set("sort", "desc")
+    return url.toString()
+  })()
+  const parsedUrl = new URL(requestUrl)
+  if (parsedUrl.protocol !== "https:" || parsedUrl.hostname !== "api.torn.com" || parsedUrl.pathname !== "/v2/user/log" || parsedUrl.searchParams.has("key")) {
+    throw new Error("Torn returned an unsafe pagination URL. The API key was not sent.")
+  }
+  await throttleHalloweenRequest(env, job.player_id)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 15000)
+  let response: Response
+  let payload: unknown
+  try {
+    response = await fetch(parsedUrl.toString(), {
+      headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+      signal: controller.signal,
+    })
+    payload = await response.json().catch(() => null)
+  } finally { clearTimeout(timeout) }
+  const apiError = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+  if (!response.ok || apiError) {
+    const code = typeof apiError?.code === "number" ? apiError.code : undefined
+    if (code === 2 || code === 16 || code === 18) {
+      await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+        .bind("Torn rejected the saved Full Access key. Reconnect a valid Full Access key with user log access.", new Date().toISOString(), jobId).run()
+      return
+    }
+    throw new Error(code === 5 ? "Torn rate limit reached during historical collection." : "Torn historical log request failed.")
+  }
+  if (!isRecord(payload) || !Array.isArray(payload.log)) throw new Error("Torn returned an unexpected user log response.")
+  const collectedAt = new Date().toISOString()
+  let inserted = 0
+  for (const raw of payload.log) {
+    if (!isRecord(raw) || raw.id == null || !Number.isFinite(Number(raw.timestamp))) continue
+    const classification = classifyHalloweenLog(raw)
+    if (!classification.relevant) continue
+    const details = isRecord(raw.details) ? raw.details : {}
+    const logTypeId = details.id == null ? null : Number(details.id)
+    const result = await db.prepare("INSERT OR IGNORE INTO halloween_event_logs (event_year, player_id, log_id, event_timestamp, log_type_id, category, title, labels_json, is_hit, log_json, collected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(job.event_year, job.player_id, String(raw.id), Number(raw.timestamp), Number.isFinite(logTypeId) ? logTypeId : null, typeof details.category === "string" ? details.category : null, typeof details.title === "string" ? details.title : null, asJson(classification.labels), classification.isHit ? 1 : 0, asJson(raw), collectedAt).run()
+    inserted += Number(result.meta?.changes ?? 0)
+  }
+  const metadata = isRecord(payload._metadata) ? payload._metadata : {}
+  const links = isRecord(metadata.links) ? metadata.links : {}
+  const direction = job.cursor_direction || (typeof links.prev === "string" ? "prev" : "next")
+  const candidate = links[direction]
+  const nextUrl = typeof candidate === "string" ? candidate : null
+  const pages = Number(job.pages_collected ?? 0) + 1
+  const logs = Number(job.logs_collected ?? 0) + inserted
+  const now = new Date().toISOString()
+  if (nextUrl) {
+    const next = new URL(nextUrl, parsedUrl)
+    if (next.protocol !== "https:" || next.hostname !== "api.torn.com" || next.pathname !== "/v2/user/log" || next.searchParams.has("key")) throw new Error("Torn returned an unsafe historical pagination link.")
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'running', cursor_url = ?, cursor_direction = ?, pages_collected = ?, logs_collected = ?, last_error = NULL, updated_at = ? WHERE job_id = ?")
+      .bind(next.toString(), direction, pages, logs, now, jobId).run()
+    await sendHalloweenCollectionJob(env, jobId)
+    return
+  }
+  if (dayEnd < eventEnd) {
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'queued', cursor_ts = ?, cursor_url = NULL, cursor_direction = NULL, pages_collected = ?, logs_collected = ?, last_error = NULL, updated_at = ? WHERE job_id = ?")
+      .bind(dayEnd, pages, logs, now, jobId).run()
+    await sendHalloweenCollectionJob(env, jobId)
+    return
+  }
+  await db.prepare("UPDATE halloween_collection_jobs SET status = 'complete', pages_collected = ?, logs_collected = ?, last_error = NULL, completed_at = ?, updated_at = ? WHERE job_id = ?")
+    .bind(pages, logs, now, now, jobId).run()
+}
 async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; queue?: string }, env: WorkerEnv): Promise<void> {
   if (batch.queue === "ncd-global-rankings-refresh-dlq") {
     for (const message of batch.messages) {
       const body = isRecord(message.body) ? message.body : {}
       const runId = typeof body.runId === "string" ? body.runId : ""
-      if (body.kind === "manual-snapshot-recovery" && runId) {
+      const halloweenJobId = typeof body.jobId === "string" ? body.jobId : ""
+      if (body.kind === "halloween-log-collection" && halloweenJobId) {
+        await requireDb(env).prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ? AND status NOT IN ('complete', 'cancelled')")
+          .bind("Historical collection exhausted its queue retries. Check the saved Full Access key and retry.", new Date().toISOString(), halloweenJobId).run()
+      } else if (body.kind === "manual-snapshot-recovery" && runId) {
         await markManualSnapshotRecoveryFailed(env, runId, "Manual snapshot recovery exhausted its queue retries.")
       } else if (runId) {
         await markGlobalRankingRunFailed(env, runId, new Error("Global-ranking refresh exhausted its queue retries. The last good cache was preserved."))
@@ -801,6 +961,22 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
   for (const message of batch.messages) {
     const body = isRecord(message.body) ? message.body : {}
     const runId = typeof body.runId === "string" ? body.runId : ""
+    const halloweenJobId = typeof body.jobId === "string" ? body.jobId : ""
+    if (body.kind === "halloween-log-collection" && halloweenJobId) {
+      try {
+        await runHalloweenLogCollectionPage(env, halloweenJobId)
+        message.ack()
+      } catch {
+        const attempts = Number(message.attempts ?? 1)
+        if (attempts < 4) message.retry({ delaySeconds: Math.min(30, attempts * 5) })
+        else {
+          await requireDb(env).prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+            .bind("Historical collection failed after repeated Torn API errors. Retry the collection from the Historical tab.", new Date().toISOString(), halloweenJobId).run()
+          message.ack()
+        }
+      }
+      continue
+    }
     if (!runId) { message.ack(); continue }
     if (body.kind === "manual-snapshot-recovery") {
       const reportingDay = typeof body.reportingDay === "string" ? body.reportingDay : ""
