@@ -83,6 +83,43 @@ async function verifyFactionMembershipWithKey(apiKey: string): Promise<string> {
   } finally { clearTimeout(timeout) }
 }
 
+async function revalidateFactionMembershipBatch(env: WorkerEnv, scheduledTime: number, batchSize = 5): Promise<number> {
+  if (!env.DB) return 0
+  const db = requireDb(env)
+  const checkedBefore = new Date(scheduledTime - 30 * 60 * 1000).toISOString()
+  const retryBefore = checkedBefore
+  const candidates = await db.prepare(
+    "SELECT p.player_id AS playerId FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL AND (p.faction_verified_at IS NULL OR p.faction_verified_at < ?) AND (p.membership_check_attempted_at IS NULL OR p.membership_check_attempted_at < ?) ORDER BY COALESCE(p.membership_check_attempted_at, p.faction_verified_at, p.created_at) ASC LIMIT ?"
+  ).bind(NAUGHTY_SOULS_FACTION_ID, checkedBefore, retryBefore, Math.max(1, Math.min(10, batchSize))).all<{ playerId: string }>()
+  let checked = 0
+  for (const candidate of candidates.results ?? []) {
+    const playerId = String(candidate.playerId)
+    const attemptedAt = new Date(scheduledTime).toISOString()
+    await db.prepare("UPDATE players SET membership_check_attempted_at = ? WHERE player_id = ?")
+      .bind(attemptedAt, playerId).run()
+    try {
+      const apiKey = await savedKey(env, playerId)
+      if (!apiKey) continue
+      if (checked > 0) await new Promise((resolve) => setTimeout(resolve, 800))
+      const factionId = await verifyFactionMembershipWithKey(apiKey)
+      const verifiedAt = new Date().toISOString()
+      await db.prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, membership_check_attempted_at = ?, updated_at = ? WHERE player_id = ?")
+        .bind(factionId || null, verifiedAt, verifiedAt, verifiedAt, playerId).run()
+      checked++
+      if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
+        await purgeHalloweenMemberData(env, playerId)
+        await db.prepare("DELETE FROM sessions WHERE player_id = ?").bind(playerId).run()
+        await db.prepare("DELETE FROM api_keys WHERE player_id = ?").bind(playerId).run()
+      }
+    } catch {
+      // Network, Torn rate-limit, and decryption failures are not evidence of
+      // faction departure. The attempted-at timestamp prevents hot-looping.
+      continue
+    }
+  }
+  return checked
+}
+
 async function authenticate(request: Request, env: WorkerEnv): Promise<Session | null> {
   const token = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
   if (!token || !env.DB) return null
