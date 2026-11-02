@@ -53,12 +53,16 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function sanitize(value) {
+function sanitize(value, key = "") {
   if (value === null) return null
-  if (Array.isArray(value)) return value.slice(0, 2).map(sanitize)
+  if (Array.isArray(value)) return value.slice(0, 2).map((child) => sanitize(child))
   if (isRecord(value)) {
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, sanitize(child)]))
+    return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, sanitize(child, childKey)]))
   }
+  // Historical stat names are public API enum identifiers, not player data.
+  if (key === "name" && typeof value === "string" && requestedStats.includes(value)) return value
+  // Preserve timestamp field validity while replacing the actual timestamp with a fixed test value.
+  if (key === "timestamp" && typeof value === "number") return 1794000000
   if (typeof value === "number") return 0
   if (typeof value === "boolean") return false
   if (typeof value === "string") return "[REDACTED]"
@@ -105,6 +109,39 @@ const report = {
   openApiVersion: "6.15.0",
   results: [],
   fixtures: {},
+}
+
+async function captureKeyInfo() {
+  try {
+    const response = await fetch(`${baseUrl}/key/info`, {
+      method: "GET",
+      headers: { Authorization: `ApiKey ${apiKey}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(15000),
+    })
+    const payload = await response.json().catch(() => null)
+    const apiError = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+    if (!response.ok || apiError || !isRecord(payload) || !isRecord(payload.info)) {
+      const code = typeof apiError?.code === "number" ? apiError.code : null
+      report.keyInfo = { outcome: "unavailable", httpStatus: response.status, tornErrorCode: code }
+      console.log(`Torn key info: HTTP ${response.status}; Torn error code ${code ?? "not supplied"}`)
+      return
+    }
+    const access = isRecord(payload.info.access) ? payload.info.access : {}
+    const selections = isRecord(payload.info.selections) ? payload.info.selections : {}
+    report.keyInfo = {
+      outcome: "captured",
+      httpStatus: response.status,
+      accessLevel: typeof access.level === "number" ? access.level : null,
+      accessType: typeof access.type === "string" ? access.type : null,
+      userIdPresent: isRecord(payload.info.user) && payload.info.user.id != null,
+      factionPermissionPresent: access.faction != null,
+      personalstatsSelectionPresent: Object.keys(selections).some((name) => /personal.?stats/i.test(name)),
+    }
+    console.log(`Torn key info: HTTP ${response.status}; access level recorded without owner identifiers`)
+  } catch {
+    report.keyInfo = { outcome: "network-error" }
+    console.log("Torn key info: network error (details suppressed)")
+  }
 }
 
 async function capture(label, selection, path, category = null) {
@@ -173,9 +210,8 @@ async function capture(label, selection, path, category = null) {
 
 const timestamp = Math.floor(Date.now() / 1000)
 const currentSelections = [
-  { label: "full", selection: "owner full (no cat)", path: "/user/personalstats" },
   { label: "popular", selection: "cat=popular", path: "/user/personalstats?cat=popular" },
-  { label: "fullPublic", selection: "cat=all", path: "/user/personalstats?cat=all" },
+  { label: "allOwner", selection: "cat=all (owner key)", path: "/user/personalstats?cat=all" },
   { label: "categoryDrugs", selection: "category", category: "drugs", path: "/user/personalstats?cat=drugs" },
   { label: "categoryItems", selection: "category", category: "items", path: "/user/personalstats?cat=items" },
   { label: "categoryOther", selection: "category", category: "other", path: "/user/personalstats?cat=other" },
@@ -194,12 +230,17 @@ for (let offset = 0; offset < requestedStats.length; offset += 10) {
   await capture(`historicBatch${Math.floor(offset / 10) + 1}`, `historic stat batch (${stats.length} names)`, `/user/personalstats?${query.toString()}`)
 }
 
-const full = report.results.find((result) => result.label === "full")
+await captureKeyInfo()
+
 const popular = report.results.find((result) => result.label === "popular")
+const allOwner = report.results.find((result) => result.label === "allOwner")
 const historic = report.results.filter((result) => result.label.startsWith("historicBatch"))
+const availablePopularMetrics = report.fixtures.popular?.availableDashboardMetrics ?? []
 report.acceptance = {
-  fullOwnerSelectionCaptured: full?.outcome === "captured",
   popularCaptured: popular?.outcome === "captured",
+  popularCoversAllRequiredMetrics: requestedStats.every((name) => availablePopularMetrics.includes(name)),
+  allOwnerSelectionCaptured: allOwner?.outcome === "captured",
+  keyInfoCaptured: report.keyInfo?.outcome === "captured",
   historicalBatchesCaptured: historic.filter((result) => result.outcome === "captured").length,
   historicalBatchesRequested: 2,
 }
@@ -207,9 +248,9 @@ report.acceptance = {
 mkdirSync("artifacts", { recursive: true })
 writeFileSync(outputPath, JSON.stringify(report, null, 2) + "\n", { mode: 0o600 })
 console.log(`Sanitized personalstats response-shape report written to ${outputPath}`)
-console.log(`Captured ${report.results.filter((result) => result.outcome === "captured").length}/9 selections; no live stat values or credentials were written.`)
+console.log(`Captured ${report.results.filter((result) => result.outcome === "captured").length}/8 personalstats selections; no live stat values or credentials were written.`)
 
-if (popular?.outcome !== "captured") {
+if (popular?.outcome !== "captured" || !report.acceptance.popularCoversAllRequiredMetrics) {
   console.error("The required Popular selection could not be captured. Inspect the sanitized artifact status only; raw API responses are suppressed.")
   process.exitCode = 1
 }
