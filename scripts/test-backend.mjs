@@ -1,17 +1,14 @@
 import assert from "node:assert/strict"
-import { execFileSync } from "node:child_process"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { join, resolve } from "node:path"
 import { createRequire } from "node:module"
 import ts from "typescript"
-import { validateAdminPassword } from "../src/lib/admin-password-policy.js"
 
 const root = process.cwd()
 const temp = mkdtempSync(join(tmpdir(), "naughty-company-tests-"))
 writeFileSync(join(temp, "package.json"), JSON.stringify({ type: "commonjs" }))
 const sourceFiles = [
-  "src/lib/admin-password-policy.js",
   "src/lib/automation/rules.ts",
   "src/lib/automation/discord-poll-monitoring.ts",
   "src/lib/company/engine.ts",
@@ -64,30 +61,6 @@ try {
     passed += 1
     console.log("PASS", name)
   }
-
-  await test("administrator password hash generator passes Node syntax validation without running", () => {
-    execFileSync(process.execPath, ["--check", join(root, "scripts/generate-admin-password-hash.mjs")], { stdio: "pipe" })
-  })
-
-  await test("administrator password policy requires 8 characters, all character classes, and rejects alphabetic/numeric sequences", () => {
-    for (const password of ["Tr7!xP9@", "Ax12!Qz9", "Mix8#Tree2"]) {
-      assert.deepEqual(validateAdminPassword(password), { valid: true }, `${password} should meet the policy`)
-    }
-    for (const [password, reason] of [
-      ["Ab1!", /at least 8 characters/i],
-      ["123456!@", /at least one letter/i],
-      ["Abcdef12", /special character/i],
-      ["Abc!7xQ9", /consecutive letters or digits/i],
-      ["Cba!7xQ9", /consecutive letters or digits/i],
-      ["Ax123!Qz", /consecutive letters or digits/i],
-      ["Ax321!Qz", /consecutive letters or digits/i],
-    ]) {
-      const result = validateAdminPassword(password)
-      assert.equal(result.valid, false, `${password} should be rejected`)
-      if (!result.valid) assert.match(result.reason, reason)
-    }
-  })
-
 
   await test("official stock lock-in timestamp accepts only fresh source data from the scheduled reporting day", () => {
     const scheduledAt = Date.parse("2026-10-21T18:10:00.000Z");
@@ -1193,7 +1166,7 @@ try {
   await test("admin panel cannot disable its primary administrator account", async () => {
     const db = { prepare(sql) { return {
       bind() { return this },
-      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: Math.floor(Date.now() / 1000) + 1800 }; return null },
+      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", is_admin: 1 }; return null },
       async all() { return { results: [] } },
       async run() { return { success: true, meta: { changes: 1 } } },
     } } }
