@@ -3682,7 +3682,7 @@ export default {
       const body: unknown = await request.json().catch(() => null)
       const yearValue = isRecord(body) ? Number(body.year) : Number.NaN
       const startTime = isRecord(body) && typeof body.startTime === "string" ? body.startTime : ""
-      const timeMatch = startTime.match(/^(\\d{2}):(\\d{2})$/)
+      const timeMatch = startTime.match(/^(\d{2}):(\d{2})$/)
       if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100 || !timeMatch) return jsonResponse({ error: "Choose a valid event year and start time." }, 400, origin)
       const startMinuteOfDay = Number(timeMatch[1]) * 60 + Number(timeMatch[2])
       if (startMinuteOfDay < 600 || startMinuteOfDay > 960 || startMinuteOfDay % 15 !== 0) {
@@ -3697,9 +3697,10 @@ export default {
       catch (error) { return jsonResponse({ error: error instanceof Error ? error.message : "The event window is invalid." }, 409, origin) }
       const existingSlot = await db.prepare("SELECT start_minute_of_day AS startMinuteOfDay FROM halloween_member_event_slots WHERE player_id = ? AND event_year = ?")
         .bind(session.player_id, yearValue).first<{ startMinuteOfDay: number }>()
-      const [job, snapshot, log] = await Promise.all([
+      const [job, snapshot, liveJob, log] = await Promise.all([
         db.prepare("SELECT job_id FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ job_id: string }>(),
         db.prepare("SELECT captured_at FROM halloween_live_snapshots WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ captured_at: string }>(),
+        db.prepare("SELECT job_id FROM halloween_live_snapshot_jobs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ job_id: string }>(),
         db.prepare("SELECT log_id FROM halloween_event_logs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ log_id: string }>(),
       ])
       if (job || snapshot || liveJob || log) {
