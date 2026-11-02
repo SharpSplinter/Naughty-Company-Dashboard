@@ -297,7 +297,13 @@ try {
   await test("global rankings use type-specific company lists at 18:10 UTC and official snapshot only verifies at 00:10 UTC", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const wranglerSource = readFileSync(join(root, "wrangler.toml"), "utf8")
-    assert.match(wranglerSource, /crons = \["10 18 \* \* \*", "10 0 \* \* \*"\]/)
+    const configuredCrons = wranglerSource.match(/crons\s*=\s*\[([^\]]*)\]/)?.[1]
+      .match(/"([^"]+)"/g)?.map((value) => value.slice(1, -1)) ?? []
+    assert.ok(configuredCrons.includes("10 18 * * *"), "the daily ranking capture schedule must remain configured")
+    assert.ok(configuredCrons.includes("10 0 * * *"), "the official snapshot verification schedule must remain configured")
+    assert.ok(configuredCrons.includes("*/5 * * * *"), "the Halloween live snapshot scheduler must remain configured")
+    assert.match(workerSource, /controller\.cron\.trim\(\) === "\*\/5 \* \* \* \*"/, "the five-minute scheduler must have a dedicated handler")
+    assert.match(workerSource, /enqueueScheduledHalloweenSnapshots\(env, controller\.scheduledTime\)/, "the five-minute scheduler must enqueue Halloween snapshots")
     assert.ok(workerSource.includes("https://api.torn.com/v2/company/\u0024{type.id}/companies?offset=\u0024{offset}&limit=\u0024{pageSize}"))
     assert.ok(workerSource.includes("https://api.torn.com/v2/company/snapshot"))
     assert.ok(workerSource.includes('source: "Daily cached Torn API v2 /company/{typeId}/companies lists"'))
