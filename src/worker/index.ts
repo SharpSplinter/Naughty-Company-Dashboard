@@ -3496,11 +3496,13 @@ export default {
         .bind(yearValue).first<{ eventYear: number; startAt: string; endAt: string; liveCollectionEnabled: number }>()
       if (!event) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
       const rows = await db.prepare(
-        "SELECT p.player_id AS playerId, p.player_name AS playerName, (SELECT s.treats_current FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsCurrent, (SELECT s.treats_total FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsTotal, (SELECT s.upgrades_json FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS upgradesJson, (SELECT s.captured_at FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS capturedAt FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL"
-      ).bind(yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
+        "SELECT p.player_id AS playerId, p.player_name AS playerName, (SELECT s.treats_current FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsCurrent, (SELECT s.treats_total FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsTotal, (SELECT s.upgrades_json FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS upgradesJson, (SELECT s.captured_at FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS capturedAt, (SELECT s.snapshot_kind FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS snapshotKind, (SELECT s.source_timestamp FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS sourceTimestamp FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL"
+      ).bind(yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
       const leaderboard = (rows.results ?? []).map((row) => {
         let upgrades: unknown[] | null = null
-        try { const parsed = JSON.parse(String(row.upgradesJson ?? "[]")); upgrades = Array.isArray(parsed) ? parsed : null } catch { upgrades = null }
+        if (row.capturedAt != null && row.upgradesJson != null) {
+          try { const parsed = JSON.parse(String(row.upgradesJson)); upgrades = Array.isArray(parsed) ? parsed : null } catch { upgrades = null }
+        }
         return {
           playerId: String(row.playerId),
           playerName: String(row.playerName),
@@ -3509,6 +3511,8 @@ export default {
           upgradesUnlocked: upgrades === null ? null : upgrades.length,
           upgrades,
           capturedAt: row.capturedAt ?? null,
+          snapshotKind: row.snapshotKind ?? null,
+          sourceTimestamp: row.sourceTimestamp == null ? null : Number(row.sourceTimestamp),
           coverage: row.capturedAt ? "captured" : "not_collected",
         }
       }).sort((a, b) => (b.totalTreats ?? -1) - (a.totalTreats ?? -1) || a.playerName.localeCompare(b.playerName))
