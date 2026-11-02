@@ -1,8 +1,12 @@
 # Torn `/user/personalstats` response schema snapshot
 
-> Reference snapshot supplied from the endpoint's generated response schema. This is a schema-derived contract, not a live API response. Re-check the official Torn OpenAPI document and capture real sanitized fixtures during implementation; in particular, the broad `Full`, `FullPublic` and `Popular` variants currently expose `personalstats: unknown` in the generated schema.
+> Generated response-schema reference, supplemented with sanitized live owner-key captures from 2026-11-02. All numeric values in the live fixture are replaced with zero; arbitrary strings are redacted. No API key, player ID, faction ID or live player-stat value is retained.
 
-Endpoint: `GET /v2/user/{id}/personalstats`
+Endpoints:
+- Owner: `GET /v2/user/personalstats`
+- Public target: `GET /v2/user/{id}/personalstats`
+
+For current requests, specify `cat=popular`, `cat=all` or a category. For historical requests, specify `stat` plus `timestamp`. A no-category/no-stat request to the owner endpoint returned Torn error 21 (Incorrect category) in the live probe.
 
 ## Response selection
 
@@ -534,22 +538,43 @@ This table is the intended mapping for the supplied generated category schema. C
 
 ## Selection and historical-query behavior
 
-- `UserPersonalStatsFull` is returned only when the full selection is requested with a Limited, Full or Custom key.
-- `cat=all` returns `UserPersonalStatsFullPublic`.
+- `UserPersonalStatsFull` is returned for the key owner's full selection when the key has Limited, Full or Custom access.
+- For a public target player, `cat=all` returns `UserPersonalStatsFullPublic`.
+- For the key owner, the live `cat=all` call with the configured level-4 Full Access key returned the broader Full shape. The sanitized live capture recorded only key access level/type, never the owner's identifiers.
 - `cat=popular` returns `UserPersonalStatsPopular`. Torn recommends using Popular over FullPublic wherever the requested metrics are covered, to reduce server load.
 - Other category selections return `UserPersonalStatsCategory` for the matched category.
+- The live owner-key Popular response contained all 18 required faction dashboard counters, with no missing metric paths. Routine faction-member collection should use `cat=popular`; current requested counters do not require fallback category requests.
+- Live category captures verified `drugs`, `items`, `other` and `networth` object shapes. In Items, `used.energy` and `used.energy_drinks` are distinct fields; the dashboard energy-drink counter maps only to `items.used.energy_drinks`.
+- The owner-only Full response for `cat=all` contained additional top-level sections including `battle_stats`, `trading`, `investments`, `missions` and `racing`, plus a detailed `networth` breakdown. Do not store or expose that owner-only breakdown for other members; public faction networth uses only `networth.total`.
 - Historical stats are requested with the `stat` query parameter and a `timestamp`. Up to 10 historical stat names can be requested in one call; additional names are trimmed.
-- Historical calls return `UserPersonalStatsHistoric`, whose `personalstats` is an array of `{ name, value, timestamp }` records.
+- Historical calls return `UserPersonalStatsHistoric`, whose `personalstats` is an array of `{ name, value, timestamp }` records. Live probes successfully returned arrays for both a 10-name batch and an 8-name batch.
 - Each historic record's `timestamp` is when that stat was last updated. It is not proof that the value was sampled exactly at the requested timestamp.
 - Stats that did not exist at the requested timestamp may be omitted. An omitted item is unknown/unavailable, never zero.
 - Torn may resolve a requested historical timestamp to the nearest date. Historical calls must not replace the application's own exact Sunday-boundary snapshots.
 
+The committed live fixture at `scripts/fixtures/torn-personalstats-live-sanitized.json` is a minimized projection of the Actions capture. All numbers are placeholders; it demonstrates presence and nesting only, not anyone's actual stats.
+
 ## Decoder and fixture requirements
 
-1. Model the response as the union above, with distinct decoders for current full, current public-all, popular, category and historical response variants.
-2. Treat `personalstats: unknown` as unknown until runtime fixture validation establishes a safe shape. Do not solve this with an unchecked cast.
+1. Model the response as a union with separate runtime validation for owner Full, target-player FullPublic, Popular, category-specific and Historic response variants.
+2. Full, FullPublic and Popular remain generated as `unknown` in the OpenAPI schema. The live owner-key fixtures establish the captured response paths, but runtime guards remain required.
 3. For category responses, decode the wrapper and the selected category object, then map using the nested category paths above.
 4. For historical responses, decode an array and map by each item's `name`; retain each item's returned `timestamp` independently.
 5. Validate values as finite numbers. Preserve missing fields as null/unknown.
 6. Keep the current lifetime counter representation separate from historical-stat samples and from the application's own captured-at snapshots.
-7. Add sanitized fixtures for each response variant, missing historical stats, more than 10 requested stat names, unknown category values and partial category objects.
+7. The synthetic and sanitized live fixtures cover Popular, owner Full/All, each needed category, Historic arrays, omitted historical stats, more than 10 requested stat names and partial category objects.
+8. The live fixture's numeric values are intentionally zeroed and its historical timestamps are fixed placeholders. Never use them as sample member totals or real-time data.
+
+## Live verification record (2026-11-02)
+
+A manually dispatched GitHub Actions workflow used the existing repository secret `TORN_API_KEY` only inside the runner environment. It called owner read endpoints and uploaded a sanitized artifact retained for seven days. The action log never printed the key or raw response bodies.
+
+- `GET /key/info` returned access level 4, type `Full Access`, and a populated faction-permission field. Only access level/type and a boolean permission-presence marker were retained.
+- `GET /user/personalstats?cat=popular` returned HTTP 200 and all 18 required dashboard counters.
+- `cat=all`, `cat=drugs`, `cat=items`, `cat=other`, and `cat=networth` returned HTTP 200 with object payloads.
+- Two historical requests (10 stat names and 8 stat names) returned HTTP 200 with array payloads.
+- The invalid owner route without `cat` or `stat` returned Torn error 21, Incorrect category.
+
+Workflow: https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/41524558224
+
+Committed sanitized fixture: `scripts/fixtures/torn-personalstats-live-sanitized.json`.
