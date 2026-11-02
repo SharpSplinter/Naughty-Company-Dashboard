@@ -3320,6 +3320,69 @@ export default {
         .bind("The member disconnected their historical Full Access key.", new Date().toISOString(), session.player_id).run()
       return jsonResponse({ deleted: true, historicalRecordsRetained: true }, 200, origin)
     }
+    if (url.pathname === "/api/me/halloween/archive" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const db = requireDb(env)
+      const yearValue = Number(url.searchParams.get("year") || new Date().getUTCFullYear())
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      const event = await db.prepare("SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt FROM halloween_event_windows WHERE event_year = ?")
+        .bind(yearValue).first<{ eventYear: number; startAt: string; endAt: string }>()
+      if (!event) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
+      const members = await db.prepare(
+        "SELECT p.player_id AS playerId, p.player_name AS playerName, EXISTS(SELECT 1 FROM halloween_historical_keys k WHERE k.player_id = p.player_id) AS keyConnected, (SELECT j.status FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS collectionStatus, (SELECT j.pages_collected FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS pagesCollected, (SELECT COUNT(*) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedLogCount, (SELECT COALESCE(SUM(l.is_hit), 0) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedHitCount, (SELECT MAX(l.collected_at) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS lastCollectedAt FROM players p WHERE p.faction_id = ? AND (EXISTS(SELECT 1 FROM halloween_historical_keys k WHERE k.player_id = p.player_id) OR EXISTS(SELECT 1 FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ?) OR EXISTS(SELECT 1 FROM halloween_event_logs l WHERE l.player_id = p.player_id AND l.event_year = ?))"
+      ).bind(yearValue, yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID, yearValue, yearValue).all<Record<string, unknown>>()
+      const leaderboard = (members.results ?? []).map((row) => {
+        const status = typeof row.collectionStatus === "string" ? row.collectionStatus : null
+        const statusText = status ?? (row.keyConnected ? "ready" : "not_collected")
+        const complete = statusText === "complete"
+        return {
+          playerId: String(row.playerId),
+          playerName: String(row.playerName),
+          keyConnected: row.keyConnected === 1,
+          collectionStatus: statusText,
+          pagesCollected: Number(row.pagesCollected ?? 0),
+          logsCollected: Number(row.storedLogCount ?? 0),
+          totalHits: complete ? Number(row.storedHitCount ?? 0) : null,
+          lastCollectedAt: row.lastCollectedAt ?? null,
+          coverage: complete ? "complete" : statusText === "running" || statusText === "queued" ? "collecting" : statusText === "failed" ? "partial" : "not_collected",
+        }
+      }).sort((a, b) => (b.totalHits ?? -1) - (a.totalHits ?? -1) || a.playerName.localeCompare(b.playerName))
+      return jsonResponse({ event, leaderboard, myCollection: leaderboard.find((row) => row.playerId === session.player_id) ?? null }, 200, origin)
+    }
+    if (url.pathname === "/api/me/halloween/collect" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const body: unknown = await request.json().catch(() => null)
+      const yearValue = isRecord(body) ? Number(body.year) : new Date().getUTCFullYear()
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      const db = requireDb(env)
+      const key = await db.prepare("SELECT player_id FROM halloween_historical_keys WHERE player_id = ?").bind(session.player_id).first<{ player_id: string }>()
+      if (!key) return jsonResponse({ error: "Connect your own Full Access key before collecting historical Halloween logs." }, 409, origin)
+      const event = await db.prepare("SELECT start_at AS startAt, end_at AS endAt, historical_collection_enabled AS enabled FROM halloween_event_windows WHERE event_year = ?")
+        .bind(yearValue).first<{ startAt: string; endAt: string; enabled: number }>()
+      if (!event || event.enabled !== 1) return jsonResponse({ error: "Historical collection is not enabled for that event year." }, 409, origin)
+      const active = await db.prepare("SELECT job_id AS jobId, status, logs_collected AS logsCollected FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? AND status IN ('queued', 'running') ORDER BY updated_at DESC LIMIT 1")
+        .bind(session.player_id, yearValue).first<{ jobId: string; status: string; logsCollected: number }>()
+      if (active) return jsonResponse({ queued: true, jobId: active.jobId, status: active.status, logsCollected: Number(active.logsCollected ?? 0), resumed: true }, 200, origin)
+      const finished = await db.prepare("SELECT job_id AS jobId, status, logs_collected AS logsCollected FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? AND status = 'complete' ORDER BY updated_at DESC LIMIT 1")
+        .bind(session.player_id, yearValue).first<{ jobId: string; status: string; logsCollected: number }>()
+      if (finished) return jsonResponse({ queued: false, jobId: finished.jobId, status: "complete", logsCollected: Number(finished.logsCollected ?? 0), alreadyComplete: true }, 200, origin)
+      const jobId = crypto.randomUUID()
+      const cursorTs = Math.floor(Date.parse(event.startAt) / 1000)
+      if (!Number.isFinite(cursorTs) || Date.parse(event.endAt) <= Date.parse(event.startAt)) return jsonResponse({ error: "The configured event window is invalid." }, 409, origin)
+      const now = new Date().toISOString()
+      await db.prepare("INSERT INTO halloween_collection_jobs (job_id, player_id, event_year, status, cursor_ts, created_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)")
+        .bind(jobId, session.player_id, yearValue, cursorTs, now, now).run()
+      try {
+        await sendHalloweenCollectionJob(env, jobId)
+      } catch {
+        await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+          .bind("The background collection queue is unavailable. Try again later.", new Date().toISOString(), jobId).run()
+        return jsonResponse({ error: "The background collection queue is unavailable. Try again later." }, 503, origin)
+      }
+      return jsonResponse({ queued: true, jobId, status: "queued", logsCollected: 0 }, 202, origin)
+    }
     if (url.pathname === "/api/auth/company-key" && request.method === "POST") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
