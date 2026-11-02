@@ -1649,7 +1649,7 @@ async function enqueueScheduledHalloweenSnapshots(env: WorkerEnv, scheduledTime:
 }
 
 async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; queue?: string }, env: WorkerEnv): Promise<void> {
-  if (batch.queue === "ncd-global-rankings-refresh-dlq") {
+  if (batch.queue?.endsWith("-dlq")) {
     for (const message of batch.messages) {
       const body = isRecord(message.body) ? message.body : {}
       const runId = typeof body.runId === "string" ? body.runId : ""
