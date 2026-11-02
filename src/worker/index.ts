@@ -3350,6 +3350,38 @@ export default {
       }).sort((a, b) => (b.totalHits ?? -1) - (a.totalHits ?? -1) || a.playerName.localeCompare(b.playerName))
       return jsonResponse({ event, leaderboard, myCollection: leaderboard.find((row) => row.playerId === session.player_id) ?? null }, 200, origin)
     }
+    const halloweenMemberMatch = url.pathname.match(/^\/api\/me\/halloween\/members\/(\d+)$/)
+    if (halloweenMemberMatch && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const targetId = halloweenMemberMatch[1]
+      const yearValue = Number(url.searchParams.get("year") || new Date().getUTCFullYear())
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      const db = requireDb(env)
+      const member = await db.prepare("SELECT player_id AS playerId, player_name AS playerName FROM players WHERE player_id = ? AND faction_id = ?")
+        .bind(targetId, NAUGHTY_SOULS_FACTION_ID).first<{ playerId: string; playerName: string }>()
+      if (!member) return jsonResponse({ error: "That member is not currently verified as a Naughty Souls member." }, 404, origin)
+      const [job, logs, daily] = await Promise.all([
+        db.prepare("SELECT status, logs_collected AS logsCollected, pages_collected AS pagesCollected, last_error AS lastError, updated_at AS updatedAt, completed_at AS completedAt FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? ORDER BY updated_at DESC LIMIT 1")
+          .bind(targetId, yearValue).first<Record<string, unknown>>(),
+        db.prepare("SELECT log_id AS logId, event_timestamp AS timestamp, log_type_id AS logTypeId, category, title, labels_json AS labelsJson, is_hit AS isHit, log_json AS logJson, collected_at AS collectedAt FROM halloween_event_logs WHERE player_id = ? AND event_year = ? ORDER BY event_timestamp DESC, log_id DESC LIMIT 250")
+          .bind(targetId, yearValue).all<Record<string, unknown>>(),
+        db.prepare("SELECT date(event_timestamp, 'unixepoch') AS eventDay, SUM(is_hit) AS totalHits, COUNT(*) AS relevantLogs FROM halloween_event_logs WHERE player_id = ? AND event_year = ? GROUP BY date(event_timestamp, 'unixepoch') ORDER BY eventDay")
+          .bind(targetId, yearValue).all<Record<string, unknown>>(),
+      ])
+      return jsonResponse({
+        member,
+        collection: job ? { ...job, coverage: job.status === "complete" ? "complete" : job.status === "failed" ? "partial" : "collecting" } : { status: "not_collected", coverage: "not_collected" },
+        dailyActivity: daily.results ?? [],
+        logs: (logs.results ?? []).map((row) => {
+          let parsed: unknown = null
+          try { parsed = JSON.parse(String(row.logJson ?? "null")) } catch { parsed = null }
+          let labels: unknown = []
+          try { labels = JSON.parse(String(row.labelsJson ?? "[]")) } catch { labels = [] }
+          return { logId: row.logId, timestamp: row.timestamp, title: row.title, category: row.category, labels, isHit: row.isHit === 1, details: parsed }
+        }),
+      }, 200, origin)
+    }
     if (url.pathname === "/api/me/halloween/collect" && request.method === "POST") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
