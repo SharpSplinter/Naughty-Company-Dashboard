@@ -792,10 +792,9 @@ try {
     )
   })
 
-  await test("faction roster parser validates IDs, keeps revive fields separate, and preserves unknowns", () => {
+  await test("faction roster parser rejects redacted placeholder identifiers in sanitized fixtures", () => {
     const parsed = parseFactionRosterResponse(livePersonalStatsFixtures.factionRoster)
-    assert.equal(parsed.length, 1)
-    assert.equal(parsed[0].userId, "0", "sanitized fixture has a scrubbed placeholder ID and should be rejected")
+    assert.equal(parsed.length, 0, "sanitized fixture IDs are intentionally invalid and must never be mistaken for real members")
   })
 
   await test("faction roster parser normalizes nested last-action/status fields and only official revive enums", () => {
