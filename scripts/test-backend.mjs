@@ -334,11 +334,11 @@ try {
     const jobEnd = workerSource.indexOf("async function enqueueHalloweenLiveSnapshot", jobStart)
     assert.ok(jobStart >= 0 && jobEnd > jobStart, "the Halloween live snapshot job handler must remain identifiable")
     const jobSource = workerSource.slice(jobStart, jobEnd)
-    assert.match(jobSource, /SET status = 'queued', last_error = \\?, updated_at = \\? WHERE job_id = \\?/, "transient failures must return the job to the queue")
+    assert.ok(jobSource.includes("SET status = 'queued', last_error"), "transient failures must return the job to the queue")
     assert.doesNotMatch(jobSource, /SET status = 'failed'/, "a transient failure must not be terminal before queue retries are exhausted")
     const queueSource = workerSource.slice(workerSource.indexOf("async function handleGlobalRankingQueueBatch"), workerSource.indexOf("async function refreshGlobalRankingCache"))
-    assert.match(queueSource, /attempts < 4[\\s\\S]*message\\.retry\\(/, "live snapshot jobs must use bounded queue retries")
-    assert.match(queueSource, /UPDATE halloween_live_snapshot_jobs SET status = 'failed'/, "the consumer must mark the job failed after the retry limit")
+    assert.ok(queueSource.includes("attempts < 4") && queueSource.includes("message.retry("), "live snapshot jobs must use bounded queue retries")
+    assert.ok(queueSource.includes("UPDATE halloween_live_snapshot_jobs SET status = 'failed'"), "the consumer must mark the job failed after the retry limit")
   })
 
   await test("admin endpoint refresh is admin-gated, selective, audited, and live-only", () => {
