@@ -742,7 +742,7 @@ try {
 
   await test("decodes all current personalstats response variants using guarded runtime paths", () => {
     const cases = [
-      ["full", { kind: "full" }, 20, 14],
+      ["full", { kind: "all" }, 20, 14],
       ["fullPublic", { kind: "all" }, 10, 4],
       ["popular", { kind: "popular" }, 7, 10],
     ]
@@ -807,7 +807,8 @@ try {
     assert.equal(buildPersonalStatsPath(12345, { kind: "popular" }), "/user/12345/personalstats?cat=popular")
     assert.equal(buildPersonalStatsPath("12345", { kind: "all" }), "/user/12345/personalstats?cat=all")
     assert.equal(buildPersonalStatsPath(12345, { kind: "category", category: "drugs" }), "/user/12345/personalstats?cat=drugs")
-    assert.equal(buildPersonalStatsPath(12345, { kind: "full" }), "/user/12345/personalstats")
+    assert.equal(buildPersonalStatsPath(null, { kind: "popular" }), "/user/personalstats?cat=popular")
+    assert.equal(buildPersonalStatsPath(null, { kind: "all" }), "/user/personalstats?cat=all")
     const historicPath = buildPersonalStatsPath(12345, {
       kind: "historic",
       stats: ["xantaken", "lsdtaken"],
@@ -855,6 +856,23 @@ try {
     const response = await client.getUserPersonalStatsFor(12345, { kind: "popular" })
     assert.equal(requestedUrl, "https://api.torn.com/v2/user/12345/personalstats?cat=popular")
     assert.equal(authorization, "ApiKey personalstats-test-key")
+    assert.equal(decodePersonalStatsResponse(response, { kind: "popular" }).metrics.xantaken, 7)
+  })
+
+  await test("requests owner personalstats without a player ID while preserving Authorization", async () => {
+    let requestedUrl = ""
+    let authorization = ""
+    const client = new TornApiClient({
+      apiKey: "owner-personalstats-test-key",
+      fetcher: async (input, init) => {
+        requestedUrl = String(input)
+        authorization = new Headers(init?.headers).get("Authorization") ?? ""
+        return new Response(JSON.stringify(personalStatsFixtures.popular))
+      },
+    })
+    const response = await client.getMyPersonalStats({ kind: "popular" })
+    assert.equal(requestedUrl, "https://api.torn.com/v2/user/personalstats?cat=popular")
+    assert.equal(authorization, "ApiKey owner-personalstats-test-key")
     assert.equal(decodePersonalStatsResponse(response, { kind: "popular" }).metrics.xantaken, 7)
   })
 
