@@ -932,6 +932,12 @@ try {
     assert.equal(payload.service, "naughty-company-api")
     assert.equal(payload.database, "ok")
     assert.ok(payload.checkedAt)
+
+    const portalResponse = await worker.fetch(new Request("https://worker.test/health", {
+      headers: { Origin: "https://naughtyfamily.pages.dev" },
+    }), { DB: { prepare() { return { bind() { return this }, async first() { return { ok: 1 } }, async all() { return { results: [] } }, async run() { return { success: true } } } } } })
+    assert.equal(portalResponse.status, 200)
+    assert.equal(portalResponse.headers.get("access-control-allow-origin"), "https://naughtyfamily.pages.dev")
   })
 
   await test("company intelligence routes are registered and require authentication", async () => {
