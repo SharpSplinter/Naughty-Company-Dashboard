@@ -140,6 +140,10 @@
 .historical-collection-toolbar small,.historical-collection-toolbar strong{display:block}
 .historical-collection-toolbar small{font-size:8px;font-weight:700;letter-spacing:.15em;color:#9eab9f}
 .historical-collection-toolbar strong{font:600 14px 'Space Grotesk',sans-serif;margin-top:5px;color:#e5eee8}
+.live-toolbar-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.live-toolbar-actions button{white-space:nowrap}
+.coverage-pill.not_collected{border-color:#53616a;color:#9baeb4;background:#25323a55}
+@media(max-width:680px){.live-toolbar-actions{width:100%;justify-content:flex-start}.historical-collection-toolbar{align-items:flex-start;flex-direction:column}}
 .historical-collection-toolbar button,.historical-detail-heading>button{border:1px solid #43564f;border-radius:7px;background:#182822;color:#bde5d4;padding:8px 11px;font-size:9px}
 .historical-collect-banner{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:12px 0;padding:14px 16px;border:1px solid #5a6d4d;border-radius:9px;background:#26332655}
 .historical-collect-banner strong,.historical-collect-banner span{display:block}
