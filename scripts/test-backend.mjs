@@ -339,6 +339,11 @@ try {
     const queueSource = workerSource.slice(workerSource.indexOf("async function handleGlobalRankingQueueBatch"), workerSource.indexOf("async function refreshGlobalRankingCache"))
     assert.ok(queueSource.includes("attempts < 4") && queueSource.includes("message.retry("), "live snapshot jobs must use bounded queue retries")
     assert.ok(queueSource.includes("UPDATE halloween_live_snapshot_jobs SET status = 'failed'"), "the consumer must mark the job failed after the retry limit")
+    const enqueueStart = workerSource.indexOf("async function enqueueHalloweenLiveSnapshot")
+    const enqueueEnd = workerSource.indexOf("async function enqueueScheduledHalloweenSnapshots", enqueueStart)
+    const enqueueSource = workerSource.slice(enqueueStart, enqueueEnd)
+    assert.ok(enqueueSource.includes("if (existing) return"), "terminal jobs must not be re-enqueued on every scheduler tick")
+    assert.doesNotMatch(enqueueSource, /UPDATE halloween_live_snapshot_jobs SET status = 'queued'/, "a failed event bucket must not create an unbounded retry loop")
   })
 
   await test("admin endpoint refresh is admin-gated, selective, audited, and live-only", () => {
