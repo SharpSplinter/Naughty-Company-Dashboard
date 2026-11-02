@@ -354,7 +354,7 @@ try {
       "an empty roster must be rejected before membership history is modified")
     assert.ok(workerSource.includes("setTimeout(resolve, 800)"))
     assert.ok(workerSource.includes("error.status === 429 || error.status >= 500 || error.code === 9"))
-    const factionQueueStart = workerSource.indexOf("if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId)")
+    const factionQueueStart = workerSource.lastIndexOf("if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId)")
     const factionQueueEnd = workerSource.indexOf('if (body.kind === "halloween-live-snapshot"', factionQueueStart)
     const factionQueue = workerSource.slice(factionQueueStart, factionQueueEnd)
     const factionQueueCatch = factionQueue.slice(factionQueue.indexOf("} catch (error) {"))
@@ -362,8 +362,9 @@ try {
     assert.doesNotMatch(factionQueueCatch, /markFactionPerformanceRunFailed|message\.ack\(\)/,
       "retry exhaustion must flow through the configured Cloudflare DLQ, not be acknowledged by the source consumer")
     const dlqStart = workerSource.indexOf('if (batch.queue === "ncd-global-rankings-refresh-dlq")')
-    const dlqEnd = workerSource.indexOf("for (const message of batch.messages)", dlqStart)
-    assert.match(workerSource.slice(dlqStart, dlqEnd + 300), /markFactionPerformanceRunFailed/,
+    const mainLoopStart = workerSource.indexOf("\\n  for (const message of batch.messages) {", dlqStart + 1)
+    const dlqSource = workerSource.slice(dlqStart, mainLoopStart)
+    assert.match(dlqSource, /markFactionPerformanceRunFailed/,
       "the dead-letter consumer must persist terminal collection failure")
     const statsPageStart = workerSource.indexOf("async function runFactionPersonalStatsCollectionPage")
     const statsPage = workerSource.slice(statsPageStart, workerSource.indexOf("async function runFactionGymEnergyCollection", statsPageStart))
