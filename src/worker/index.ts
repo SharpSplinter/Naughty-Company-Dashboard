@@ -934,6 +934,18 @@ async function removeDepartedFactionAccess(env: WorkerEnv, playerId: string): Pr
     .bind(playerId, playerId).run().catch(() => undefined)
 }
 
+async function applyConfirmedFactionDeparture(env: WorkerEnv, playerId: string, factionId: string): Promise<void> {
+  const db = requireDb(env)
+  // A collector may discover departure before the normal session revalidator.
+  // Mark it pending before cleanup so every active session fails closed.
+  await db.prepare("UPDATE players SET membership_check_status = 'cleanup_pending' WHERE player_id = ?")
+    .bind(playerId).run()
+  await removeDepartedFactionAccess(env, playerId)
+  const verifiedAt = new Date().toISOString()
+  await db.prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, membership_check_attempted_at = ?, membership_check_status = NULL, updated_at = ? WHERE player_id = ?")
+    .bind(factionId || null, verifiedAt, verifiedAt, verifiedAt, playerId).run()
+}
+
 function classifyHalloweenLog(row: Record<string, unknown>): { labels: string[]; isHit: boolean; relevant: boolean } {
   const details = isRecord(row.details) ? row.details : {}
   const title = typeof details.title === "string" ? details.title.toLowerCase() : ""
@@ -1047,7 +1059,7 @@ async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Pro
   await throttleHalloweenRequest(env, job.player_id)
   const factionId = await verifyFactionMembershipWithKey(apiKey)
   if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
-    await purgeHalloweenMemberData(env, job.player_id)
+    await applyConfirmedFactionDeparture(env, job.player_id, factionId)
     return
   }
 
@@ -1156,11 +1168,8 @@ async function runHalloweenLiveSnapshot(env: WorkerEnv, playerId: string, eventY
   await throttleHalloweenRequest(env, playerId)
   const factionId = await verifyFactionMembershipWithKey(apiKey)
   if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
-    const verifiedAt = new Date().toISOString()
-    await db.prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, updated_at = ? WHERE player_id = ?")
-      .bind(factionId || null, verifiedAt, verifiedAt, playerId).run()
-    await purgeHalloweenMemberData(env, playerId)
-    throw new Error("This member is no longer in Naughty Souls. Their Halloween key and contributed archive records were purged.")
+    await applyConfirmedFactionDeparture(env, playerId, factionId)
+    throw new Error("This member is no longer in Naughty Souls. Their sessions, faction login key, administrator role, and Halloween contributions were removed.")
   }
 
   await throttleHalloweenRequest(env, playerId)
