@@ -865,7 +865,7 @@ export function FloorApp() {
     setPlayerName("")
     setPlayerId("")
     setIsAdmin(false)
-remove sign-out step-up cleanup    setSelectedCompanyId("")
+    setSelectedCompanyId("")
     setShowCompanySelector(false)
     setKeySaved(false)
     setCompanyKeySaved(false)
