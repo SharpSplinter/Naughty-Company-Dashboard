@@ -7,7 +7,7 @@ A React + Vite multi-workspace portal for Naughty Souls faction members in Torn.
 - `/` — member portal
 - `/company` — existing company operations dashboard
 - `/halloween` — current-year and historical Halloween intelligence
-- `/faction` — cached director directory, company income overview, and weekly star distribution
+- `/faction` — active member roster, cached director directory, company income history, and weekly star distribution
 - `/settings` — personal API connections and account settings
 - `/admin` — administrator workspace
 
