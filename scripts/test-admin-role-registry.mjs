@@ -1,11 +1,12 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 
-const [worker, migration, adminPanel, app] = await Promise.all([
+const [worker, migration, adminPanel, app, accountSettings] = await Promise.all([
   readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8"),
   readFile(new URL("../migrations/auth/0012_administrator_registry.sql", import.meta.url), "utf8"),
   readFile(new URL("../src/components/floor/admin-panel.tsx", import.meta.url), "utf8"),
   readFile(new URL("../src/components/floor/floor-app.tsx", import.meta.url), "utf8"),
+  readFile(new URL("../src/components/portal/workspaces.tsx", import.meta.url), "utf8"),
 ])
 
 assert.match(migration, /CREATE TABLE IF NOT EXISTS administrators/)
@@ -26,4 +27,10 @@ assert.doesNotMatch(worker, /ADMIN_USERNAME|ADMIN_PASSWORD_HASH|isAdminElevated|
 assert.match(adminPanel, /Administrator management/)
 assert.match(adminPanel, /changeAdministratorRole/)
 assert.doesNotMatch(app, /Unlock administration|adminPassword|adminUsername|\/api\/auth\/admin\/elevate/)
+assert.match(accountSettings, /\/api\/auth\/key/)
+assert.match(accountSettings, /\/api\/auth\/company-key/)
+assert.match(accountSettings, /\/api\/me\/companies/)
+assert.match(accountSettings, /\/api\/auth\/sign-out-all/)
+assert.match(accountSettings, /validateTornKey|Validate & replace key/)
+assert.match(accountSettings, /Remove key/)
 console.log("PASS administrator role registry, grant/revoke audit, and no-password UI contract")
