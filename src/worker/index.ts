@@ -947,13 +947,155 @@ async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Pro
     .bind(pages, logs, now, now, jobId).run()
 }
 
+async function runHalloweenLiveSnapshot(env: WorkerEnv, playerId: string, eventYear: number, snapshotKind: "opening" | "periodic" | "closing" | "manual"): Promise<Record<string, unknown>> {
+  const db = requireDb(env)
+  const event = await db.prepare("SELECT start_at AS startAt, end_at AS endAt FROM halloween_event_windows WHERE event_year = ?")
+    .bind(eventYear).first<{ startAt: string; endAt: string }>()
+  if (!event) throw new Error("No Halloween event window is configured for that year.")
+  const startMs = Date.parse(event.startAt)
+  const endMs = Date.parse(event.endAt)
+  const nowMs = Date.now()
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) throw new Error("The Halloween event window is invalid.")
+  if (snapshotKind === "manual" && (nowMs < startMs || nowMs > endMs)) throw new Error("Manual live snapshots are only available while the Halloween event is active.")
+
+  const apiKey = await savedKey(env, playerId)
+  if (!apiKey) throw new Error("This member has no saved faction login key.")
+  await throttleHalloweenRequest(env, playerId)
+  const factionId = await verifyFactionMembershipWithKey(apiKey)
+  if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
+    const verifiedAt = new Date().toISOString()
+    await db.prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, updated_at = ? WHERE player_id = ?")
+      .bind(factionId || null, verifiedAt, verifiedAt, playerId).run()
+    await purgeHalloweenMemberData(env, playerId)
+    throw new Error("This member is no longer in Naughty Souls. Their Halloween key and contributed archive records were purged.")
+  }
+
+  await throttleHalloweenRequest(env, playerId)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 12000)
+  let response: Response
+  let payload: unknown
+  try {
+    response = await fetch("https://api.torn.com/v2/user/halloween", {
+      headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+      signal: controller.signal,
+    })
+    payload = await response.json().catch(() => null)
+  } finally { clearTimeout(timeout) }
+  const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+  if (!response.ok || error) {
+    const code = typeof error?.code === "number" ? error.code : undefined
+    throw new Error(code === 9 ? "Torn rate limit reached while collecting Halloween summary." : code === 3 ? "The saved login key does not have the Minimal Access Halloween selection." : "Torn's Halloween summary endpoint is temporarily unavailable.")
+  }
+  const halloween = isRecord(payload) && isRecord(payload.halloween) ? payload.halloween : null
+  const treats = isRecord(halloween?.treats) ? halloween.treats : null
+  const upgrades = Array.isArray(halloween?.basket_upgrades) ? halloween.basket_upgrades : null
+  if (!treats || !upgrades) throw new Error("Torn returned an incomplete Halloween treats summary.")
+  const current = Number(treats.current)
+  const total = Number(treats.total)
+  if (!Number.isInteger(current) || current < 0 || !Number.isInteger(total) || total < 0) throw new Error("Torn returned invalid Halloween treat counts.")
+  const metadata = isRecord(payload) && isRecord(payload._metadata) ? payload._metadata : {}
+  const sourceTimestamp = typeof metadata.timestamp === "number" && Number.isFinite(metadata.timestamp) ? metadata.timestamp : null
+  const capturedAt = new Date().toISOString()
+  await db.prepare("INSERT INTO halloween_live_snapshots (event_year, player_id, captured_at, snapshot_kind, treats_current, treats_total, upgrades_json, payload_json, source_timestamp, collection_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete')")
+    .bind(eventYear, playerId, capturedAt, snapshotKind, current, total, asJson(upgrades), asJson(payload), sourceTimestamp).run()
+  return { eventYear, playerId, capturedAt, snapshotKind, treatsCurrent: current, treatsTotal: total, upgradesUnlocked: upgrades.length, sourceTimestamp }
+}
+
+async function runHalloweenLiveSnapshotJob(env: WorkerEnv, jobId: string): Promise<void> {
+  const db = requireDb(env)
+  const job = await db.prepare("SELECT job_id AS jobId, player_id AS playerId, event_year AS eventYear, snapshot_kind AS snapshotKind, status FROM halloween_live_snapshot_jobs WHERE job_id = ?")
+    .bind(jobId).first<{ jobId: string; playerId: string; eventYear: number; snapshotKind: "opening" | "periodic" | "closing"; status: string }>()
+  if (!job || job.status === "complete" || job.status === "failed") return
+  await db.prepare("UPDATE halloween_live_snapshot_jobs SET status = 'running', updated_at = ? WHERE job_id = ?")
+    .bind(new Date().toISOString(), jobId).run()
+  try {
+    await runHalloweenLiveSnapshot(env, job.playerId, job.eventYear, job.snapshotKind)
+    const now = new Date().toISOString()
+    await db.prepare("UPDATE halloween_live_snapshot_jobs SET status = 'complete', completed_at = ?, updated_at = ?, last_error = NULL WHERE job_id = ?")
+      .bind(now, now, jobId).run()
+  } catch (error) {
+    const now = new Date().toISOString()
+    const message = error instanceof Error ? error.message.slice(0, 240) : "Halloween snapshot failed."
+    await db.prepare("UPDATE halloween_live_snapshot_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind(message, now, jobId).run()
+    throw error
+  }
+}
+
+async function enqueueHalloweenLiveSnapshot(env: WorkerEnv, eventYear: number, playerId: string, kind: "opening" | "periodic" | "closing", bucketStart: number): Promise<void> {
+  if (!env.GLOBAL_RANKINGS_QUEUE) return
+  const db = requireDb(env)
+  const existing = await db.prepare("SELECT job_id AS jobId, status FROM halloween_live_snapshot_jobs WHERE event_year = ? AND player_id = ? AND snapshot_kind = ? AND bucket_start = ?")
+    .bind(eventYear, playerId, kind, bucketStart).first<{ jobId: string; status: string }>()
+  if (existing && existing.status !== "failed") return
+  const now = new Date().toISOString()
+  const jobId = existing?.jobId || crypto.randomUUID()
+  if (existing) {
+    await db.prepare("UPDATE halloween_live_snapshot_jobs SET status = 'queued', last_error = NULL, completed_at = NULL, updated_at = ? WHERE job_id = ?")
+      .bind(now, jobId).run()
+  } else {
+    await db.prepare("INSERT INTO halloween_live_snapshot_jobs (job_id, event_year, player_id, snapshot_kind, bucket_start, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)")
+      .bind(jobId, eventYear, playerId, kind, bucketStart, now, now).run()
+  }
+  await env.GLOBAL_RANKINGS_QUEUE.send({ kind: "halloween-live-snapshot", jobId })
+}
+
+async function enqueueScheduledHalloweenSnapshots(env: WorkerEnv, scheduledTime: number): Promise<number> {
+  if (!env.DB || !env.GLOBAL_RANKINGS_QUEUE) return 0
+  const db = requireDb(env)
+  const nowMs = scheduledTime
+  const nowIso = new Date(nowMs).toISOString()
+  const events = await db.prepare("SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt FROM halloween_event_windows WHERE live_collection_enabled = 1")
+    .all<{ eventYear: number; startAt: string; endAt: string }>()
+  let queued = 0
+  for (const event of events.results ?? []) {
+    const startMs = Date.parse(event.startAt)
+    const endMs = Date.parse(event.endAt)
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) continue
+    const members = await db.prepare("SELECT p.player_id AS playerId FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL")
+      .bind(NAUGHTY_SOULS_FACTION_ID).all<{ playerId: string }>()
+    for (const member of members.results ?? []) {
+      const openingExists = await db.prepare("SELECT job_id FROM halloween_live_snapshot_jobs WHERE event_year = ? AND player_id = ? AND snapshot_kind = 'opening' AND status = 'complete' LIMIT 1")
+        .bind(event.eventYear, member.playerId).first<{ job_id: string }>()
+      if (!openingExists && nowMs >= startMs - 5 * 60 * 1000 && nowMs <= startMs + 60 * 1000) {
+        await enqueueHalloweenLiveSnapshot(env, event.eventYear, member.playerId, "opening", Math.floor(startMs / 1000))
+        queued++
+        continue
+      }
+      if (nowMs >= startMs && nowMs < endMs) {
+        const last = await db.prepare("SELECT MAX(captured_at) AS capturedAt FROM halloween_live_snapshots WHERE event_year = ? AND player_id = ?")
+          .bind(event.eventYear, member.playerId).first<{ capturedAt: string | null }>()
+        const lastMs = last?.capturedAt ? Date.parse(last.capturedAt) : Number.NEGATIVE_INFINITY
+        if (!Number.isFinite(lastMs) || nowMs - lastMs >= 6 * 60 * 60 * 1000) {
+          const bucket = startMs + Math.floor((nowMs - startMs) / (6 * 60 * 60 * 1000)) * (6 * 60 * 60 * 1000)
+          await enqueueHalloweenLiveSnapshot(env, event.eventYear, member.playerId, "periodic", Math.floor(bucket / 1000))
+          queued++
+          continue
+        }
+      }
+      const closingExists = await db.prepare("SELECT job_id FROM halloween_live_snapshot_jobs WHERE event_year = ? AND player_id = ? AND snapshot_kind = 'closing' AND status = 'complete' LIMIT 1")
+        .bind(event.eventYear, member.playerId).first<{ job_id: string }>()
+      if (!closingExists && nowMs >= endMs && nowMs <= endMs + 5 * 60 * 1000) {
+        await enqueueHalloweenLiveSnapshot(env, event.eventYear, member.playerId, "closing", Math.floor(endMs / 1000))
+        queued++
+      }
+    }
+  }
+  return queued
+}
+
 async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; queue?: string }, env: WorkerEnv): Promise<void> {
   if (batch.queue === "ncd-global-rankings-refresh-dlq") {
     for (const message of batch.messages) {
       const body = isRecord(message.body) ? message.body : {}
       const runId = typeof body.runId === "string" ? body.runId : ""
       const halloweenJobId = typeof body.jobId === "string" ? body.jobId : ""
-      if (body.kind === "halloween-log-collection" && halloweenJobId) {
+      const liveSnapshotJobId = typeof body.jobId === "string" ? body.jobId : ""
+      if (body.kind === "halloween-live-snapshot" && liveSnapshotJobId) {
+        await requireDb(env).prepare("UPDATE halloween_live_snapshot_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+          .bind("Live Halloween snapshot exhausted its queue retries.", new Date().toISOString(), liveSnapshotJobId).run()
+      } else if (body.kind === "halloween-log-collection" && halloweenJobId) {
         await requireDb(env).prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ? AND status NOT IN ('complete', 'cancelled')")
           .bind("Historical collection exhausted its queue retries. Check the saved Full Access key and retry.", new Date().toISOString(), halloweenJobId).run()
       } else if (body.kind === "manual-snapshot-recovery" && runId) {
@@ -969,6 +1111,22 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
     const body = isRecord(message.body) ? message.body : {}
     const runId = typeof body.runId === "string" ? body.runId : ""
     const halloweenJobId = typeof body.jobId === "string" ? body.jobId : ""
+    const liveSnapshotJobId = typeof body.jobId === "string" ? body.jobId : ""
+    if (body.kind === "halloween-live-snapshot" && liveSnapshotJobId) {
+      try {
+        await runHalloweenLiveSnapshotJob(env, liveSnapshotJobId)
+        message.ack()
+      } catch {
+        const attempts = Number(message.attempts ?? 1)
+        if (attempts < 4) message.retry({ delaySeconds: Math.min(60, attempts * 10) })
+        else {
+          await requireDb(env).prepare("UPDATE halloween_live_snapshot_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+            .bind("Live Halloween snapshot failed after repeated Torn API errors.", new Date().toISOString(), liveSnapshotJobId).run()
+          message.ack()
+        }
+      }
+      continue
+    }
     if (body.kind === "halloween-log-collection" && halloweenJobId) {
       try {
         await runHalloweenLogCollectionPage(env, halloweenJobId)
@@ -3182,6 +3340,10 @@ export default {
     await handleGlobalRankingQueueBatch(batch, env)
   },
   async scheduled(controller: { scheduledTime: number; cron: string }, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
+    if (controller.cron.trim() === "*/5 * * * *") {
+      ctx.waitUntil(enqueueScheduledHalloweenSnapshots(env, controller.scheduledTime))
+      return
+    }
     ctx.waitUntil(runScheduledAutomation(controller, env))
   },
   async fetch(request: Request, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<Response> {
@@ -3321,6 +3483,45 @@ export default {
       await requireDb(env).prepare("UPDATE halloween_collection_jobs SET status = 'cancelled', last_error = ?, updated_at = ? WHERE player_id = ? AND status IN ('queued', 'running')")
         .bind("The member disconnected their historical Full Access key.", new Date().toISOString(), session.player_id).run()
       return jsonResponse({ deleted: true, historicalRecordsRetained: true }, 200, origin)
+    }
+    if (url.pathname === "/api/me/halloween/live" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const yearValue = Number(url.searchParams.get("year") || new Date().getUTCFullYear())
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      const db = requireDb(env)
+      const event = await db.prepare("SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt, live_collection_enabled AS liveCollectionEnabled FROM halloween_event_windows WHERE event_year = ?")
+        .bind(yearValue).first<{ eventYear: number; startAt: string; endAt: string; liveCollectionEnabled: number }>()
+      if (!event) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
+      const rows = await db.prepare(
+        "SELECT p.player_id AS playerId, p.player_name AS playerName, (SELECT s.treats_current FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsCurrent, (SELECT s.treats_total FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsTotal, (SELECT s.upgrades_json FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS upgradesJson, (SELECT s.captured_at FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS capturedAt FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL"
+      ).bind(yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
+      const leaderboard = (rows.results ?? []).map((row) => {
+        let upgrades: unknown[] | null = null
+        try { const parsed = JSON.parse(String(row.upgradesJson ?? "[]")); upgrades = Array.isArray(parsed) ? parsed : null } catch { upgrades = null }
+        return {
+          playerId: String(row.playerId),
+          playerName: String(row.playerName),
+          currentTreats: row.treatsCurrent == null ? null : Number(row.treatsCurrent),
+          totalTreats: row.treatsTotal == null ? null : Number(row.treatsTotal),
+          upgradesUnlocked: upgrades === null ? null : upgrades.length,
+          upgrades,
+          capturedAt: row.capturedAt ?? null,
+          coverage: row.capturedAt ? "captured" : "not_collected",
+        }
+      }).sort((a, b) => (b.totalTreats ?? -1) - (a.totalTreats ?? -1) || a.playerName.localeCompare(b.playerName))
+      return jsonResponse({ event, leaderboard, mySnapshot: leaderboard.find((row) => row.playerId === session.player_id) ?? null }, 200, origin)
+    }
+    if (url.pathname === "/api/me/halloween/live-snapshot" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const body: unknown = await request.json().catch(() => null)
+      const yearValue = isRecord(body) ? Number(body.year) : new Date().getUTCFullYear()
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      try {
+        const snapshot = await runHalloweenLiveSnapshot(env, session.player_id, yearValue, "manual")
+        return jsonResponse({ captured: true, snapshot }, 200, origin)
+      } catch (error) { return jsonResponse({ error: error instanceof Error ? error.message : "Could not capture the Halloween summary." }, 409, origin) }
     }
     if (url.pathname === "/api/me/halloween/archive" && request.method === "GET") {
       const session = await authenticate(request, env)

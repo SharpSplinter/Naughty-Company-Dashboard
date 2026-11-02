@@ -59,10 +59,12 @@ CREATE TABLE IF NOT EXISTS halloween_live_snapshots (
   event_year INTEGER NOT NULL REFERENCES halloween_event_windows(event_year) ON DELETE CASCADE,
   player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
   captured_at TEXT NOT NULL,
+  snapshot_kind TEXT NOT NULL DEFAULT 'manual' CHECK (snapshot_kind IN ('opening', 'periodic', 'closing', 'manual', 'book_activation', 'company_change')),
   treats_current INTEGER,
   treats_total INTEGER,
   upgrades_json TEXT NOT NULL,
   payload_json TEXT NOT NULL,
+  source_timestamp INTEGER,
   collection_status TEXT NOT NULL DEFAULT 'complete',
   PRIMARY KEY (event_year, player_id, captured_at)
 );
@@ -75,3 +77,20 @@ CREATE TABLE IF NOT EXISTS halloween_api_throttles (
   player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
   last_request_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS halloween_live_snapshot_jobs (
+  job_id TEXT PRIMARY KEY,
+  event_year INTEGER NOT NULL REFERENCES halloween_event_windows(event_year) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+  snapshot_kind TEXT NOT NULL CHECK (snapshot_kind IN ('opening', 'periodic', 'closing')),
+  bucket_start INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'complete', 'failed')),
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  UNIQUE (event_year, player_id, snapshot_kind, bucket_start)
+);
+
+CREATE INDEX IF NOT EXISTS halloween_live_snapshot_jobs_status_idx
+  ON halloween_live_snapshot_jobs(status, updated_at);
