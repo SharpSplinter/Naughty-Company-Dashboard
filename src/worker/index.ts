@@ -3098,8 +3098,14 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
       .bind(targetId).first<{ player_name: string; revoked_at: string | null }>()
     if (!target || target.revoked_at) return jsonResponse({ error: "That player does not have an active administrator role." }, 404, origin)
     const now = new Date().toISOString()
-    await db.prepare("UPDATE administrators SET revoked_by = ?, revoked_at = ? WHERE player_id = ? AND revoked_at IS NULL")
+    // Keep at least one active administrator. The count predicate lives in
+    // the UPDATE itself so concurrent revocations cannot strand the portal.
+    const revocation = await db.prepare("UPDATE administrators SET revoked_by = ?, revoked_at = ? WHERE player_id = ? AND revoked_at IS NULL AND (SELECT COUNT(*) FROM administrators WHERE revoked_at IS NULL) > 1")
       .bind(session.player_id, now, targetId).run()
+    if (Number(revocation.meta?.changes ?? 0) !== 1) {
+      await writeAdminAudit(env, session, "administrator.revocation_blocked", "administrator", targetId, "denied", "Blocked administrator revocation because it would remove the last active administrator or the role changed concurrently.", { playerId: targetId })
+      return jsonResponse({ error: "The last active administrator cannot be removed. Grant another administrator role first." }, 409, origin)
+    }
     await writeAdminAudit(env, session, "administrator.revoked", "administrator", targetId, "succeeded", `Revoked administrator privileges from ${target.player_name}.`, { playerId: targetId })
     return jsonResponse({ revoked: true, playerId: targetId, playerName: target.player_name, revokedAt: now }, 200, origin)
   }
