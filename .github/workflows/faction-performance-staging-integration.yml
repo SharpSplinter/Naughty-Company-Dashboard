@@ -70,15 +70,17 @@ jobs:
           echo "Both integration configs point at staging D1; no cron trigger or production D1 binding is present."
 
       - name: Apply pending branch migrations to staging D1 only
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@v4
         with:
+          wranglerVersion: "4.156.2"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 6c03b978ed9a59adc3f61c715bdad45c
           command: d1 migrations apply naughty-company-api-staging --remote --config wrangler.staging.toml
 
       - name: Verify staging migration ledger
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@v4
         with:
+          wranglerVersion: "4.156.2"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 6c03b978ed9a59adc3f61c715bdad45c
           command: d1 migrations list naughty-company-api-staging --remote --config wrangler.staging.toml
@@ -90,15 +92,17 @@ jobs:
         run: node scripts/ensure-faction-performance-integration-queues.mjs
 
       - name: Deploy sanitized Torn fixture Worker
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@v4
         with:
+          wranglerVersion: "4.156.2"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 6c03b978ed9a59adc3f61c715bdad45c
           command: deploy --config wrangler.faction-performance-mock.toml
 
       - name: Deploy isolated faction integration Worker
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@v4
         with:
+          wranglerVersion: "4.156.2"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 6c03b978ed9a59adc3f61c715bdad45c
           command: deploy --config wrangler.faction-performance-integration.toml
