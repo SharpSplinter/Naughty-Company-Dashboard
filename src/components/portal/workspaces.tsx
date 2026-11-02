@@ -4,6 +4,7 @@ type SavedCompanySummary = {
   company_id: string
   company_name: string | null
   company_type: string | null
+  fetched_at: string
   key_last_four?: string | null
   key_updated_at?: string | null
   has_api_key?: boolean
