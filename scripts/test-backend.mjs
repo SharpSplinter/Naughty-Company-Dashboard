@@ -328,6 +328,19 @@ try {
     assert.equal([...workerSource.matchAll(/refreshGlobalRankingCache\(/g)].length, 4, "ranking cache refresh calls must be limited to the routine, scheduled capture, stale-cache path, and explicit admin endpoint")
   })
 
+  await test("Halloween live snapshot jobs remain retryable until the bounded queue retry limit", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const jobStart = workerSource.indexOf("async function runHalloweenLiveSnapshotJob")
+    const jobEnd = workerSource.indexOf("async function enqueueHalloweenLiveSnapshot", jobStart)
+    assert.ok(jobStart >= 0 && jobEnd > jobStart, "the Halloween live snapshot job handler must remain identifiable")
+    const jobSource = workerSource.slice(jobStart, jobEnd)
+    assert.match(jobSource, /SET status = 'queued', last_error = \\?, updated_at = \\? WHERE job_id = \\?/, "transient failures must return the job to the queue")
+    assert.doesNotMatch(jobSource, /SET status = 'failed'/, "a transient failure must not be terminal before queue retries are exhausted")
+    const queueSource = workerSource.slice(workerSource.indexOf("async function handleGlobalRankingQueueBatch"), workerSource.indexOf("async function refreshGlobalRankingCache"))
+    assert.match(queueSource, /attempts < 4[\\s\\S]*message\\.retry\\(/, "live snapshot jobs must use bounded queue retries")
+    assert.match(queueSource, /UPDATE halloween_live_snapshot_jobs SET status = 'failed'/, "the consumer must mark the job failed after the retry limit")
+  })
+
   await test("admin endpoint refresh is admin-gated, selective, audited, and live-only", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const uiSource = readFileSync(join(root, "src/components/floor/admin-panel.tsx"), "utf8")
