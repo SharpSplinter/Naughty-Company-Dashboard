@@ -353,7 +353,16 @@ async function finishFactionPerformanceRun(
   await requireDb(env).prepare(
     "UPDATE faction_performance_collection_runs SET status = ?, completed_at = ?, last_error = ?, updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'partial', 'failed')"
   ).bind(status, now, error, now, run.runId).run()
-  await updateFactionCollectionState(env, run.factionId, run.collectionKind, run.runId, capturedAt, error)
+  // A partial capture is not a last fully successful collection. Preserve
+  // the previous last_success_at while still recording this run and its error.
+  await updateFactionCollectionState(
+    env,
+    run.factionId,
+    run.collectionKind,
+    run.runId,
+    status === "completed" ? capturedAt : null,
+    error,
+  )
 }
 
 async function markFactionPerformanceRunFailed(env: WorkerEnv, runId: string, error: unknown): Promise<void> {
