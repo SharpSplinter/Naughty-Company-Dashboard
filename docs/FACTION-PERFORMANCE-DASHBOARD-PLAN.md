@@ -98,32 +98,42 @@ FactionMember.status is a UserStatus with description, details, state, until and
 
 Use GET /v2/user/{id}/personalstats with a public access key.
 
-The current schema supports cat=popular and cat=all. Torn explicitly recommends popular over all wherever it contains the fields needed, to reduce server load. The all response is UserPersonalStatsFullPublic; popular returns UserPersonalStatsPopular. Verify the exact nested response shape in the current schema before mapping it.
+The endpoint response is a union selected by access level and query parameters. The generated response contract supplied for this project defines:
 
-Use the public current category response for other faction members. Do not request another player's private stats. The API's stat parameter is associated with specific-stat/historical requests; historical requests require timestamp, accept up to 10 statistics, and the timestamp is converted to the nearest date. It is not the source of truth for exact weekly Sunday boundaries.
+- `UserPersonalStatsFull` when the full selection is requested with a Limited, Full or Custom key; its generated `personalstats` member is `unknown`.
+- `UserPersonalStatsFullPublic` for `cat=all`; its generated `personalstats` member is `unknown`.
+- `UserPersonalStatsPopular` for `cat=popular`; its generated `personalstats` member is `unknown`.
+- `UserPersonalStatsCategory` for another matched category selection. Its generated schema describes nested category objects such as `drugs`, `items`, `other` and `networth`.
+- `UserPersonalStatsHistoric` for historical requests using `stat` with `timestamp`; its `personalstats` member is an array of `{ name, value, timestamp }` records.
 
-Use these requested current lifetime counter names, validating each against the live enum and response shape:
+Torn recommends `cat=popular` over `cat=all` wherever Popular contains the required fields, to reduce server load. Keep a distinct decoder for each union variant. Do not cast the three generated `unknown` payloads to a known shape until sanitized live fixtures prove that shape. For category responses, use the nested property paths in the metric map below.
 
-| Display metric | Torn personal-stat name |
-|---|---|
-| Xanax taken | xantaken |
-| LSD taken | lsdtaken |
-| Total drugs used | drugsused |
-| Drug overdoses | overdosed |
-| Alcohol consumed | alcoholused |
-| Boosters used | boostersused |
-| Energy drinks consumed | energydrinkused |
-| Energy refills | refills |
-| Stat enhancers used | statenhancersused |
-| Current public total networth | networth |
-| Cannabis | cantaken |
-| Ecstasy | exttaken |
-| Ketamine | kettaken |
-| Opium | opitaken |
-| Shrooms | shrtaken |
-| Speed | spetaken |
-| PCP | pcptaken |
-| Vicodin | victaken |
+Use the public current personal-stat response for other faction members. Do not request another player's private stats. Historical `stat` requests require `timestamp`, accept up to 10 statistic names per call (additional names are trimmed), and return a list of records. A returned record's `timestamp` identifies when that particular stat was last updated. Statistics that did not exist at the requested timestamp may be omitted. An omitted item is unknown, not zero. Torn resolves a requested historical timestamp to the nearest date, so historical requests are useful for spot-checking/backfill only and are not the source of truth for exact weekly Sunday boundaries.
+
+The complete generated response contract and decoder notes are maintained in [TORN-PERSONALSTATS-RESPONSE-SCHEMA.md](TORN-PERSONALSTATS-RESPONSE-SCHEMA.md).
+
+Use these requested current lifetime counters, validating each current-response path and historical stat name against the live contract and sanitized fixtures:
+
+| Display metric | Current category-response path | Historical `stat` name |
+|---|---|---|
+| Xanax taken | `drugs.xanax` | `xantaken` |
+| LSD taken | `drugs.lsd` | `lsdtaken` |
+| Total drugs used | `drugs.total` | `drugsused` |
+| Drug overdoses | `drugs.overdoses` | `overdosed` |
+| Alcohol consumed | `items.used.alcohol` | `alcoholused` |
+| Boosters used | `items.used.boosters` | `boostersused` |
+| Energy drinks consumed | `items.used.energy_drinks` | `energydrinkused` |
+| Energy refills | `other.refills.energy` | `refills` |
+| Stat enhancers used | `items.used.stat_enhancers` | `statenhancersused` |
+| Current public total networth | `networth.total` | `networth` |
+| Cannabis | `drugs.cannabis` | `cantaken` |
+| Ecstasy | `drugs.ecstasy` | `exttaken` |
+| Ketamine | `drugs.ketamine` | `kettaken` |
+| Opium | `drugs.opium` | `opitaken` |
+| Shrooms | `drugs.shrooms` | `shrtaken` |
+| Speed | `drugs.speed` | `spetaken` |
+| PCP | `drugs.pcp` | `pcptaken` |
+| Vicodin | `drugs.vicodin` | `victaken` |
 
 Xanax and LSD remain independent statistics, displayed side by side with separate weekly totals and separate ranks. Do not create a conversion ratio, composite, or penalty.
 
@@ -260,12 +270,16 @@ Show warnings in both Live Member Status and Faction Activity. The 72-hour warni
 
 For every faction member, collect the public current personal stats through /v2/user/{id}/personalstats.
 
-- Prefer cat=popular when all required counters are present in that response.
-- Use cat=all only when a required public counter is missing from popular and is present in the all response.
-- Do not rely on current stat-specific queries without verifying their present API behavior.
+- Prefer `cat=popular` when all required counters are present; Torn specifically recommends Popular over FullPublic wherever possible.
+- If Popular does not provide a required metric, request only the matching category where that is sufficient; use `cat=all` / FullPublic only when the needed public fields are not otherwise covered.
+- Treat the endpoint as a response union. Decode Full (Limited/Full/Custom full selection), FullPublic (`cat=all`), Popular (`cat=popular`), category-specific and Historic responses separately.
+- The generated schema marks the Full, FullPublic and Popular `personalstats` payloads as `unknown`. Add sanitized fixtures for each and validate their actual shape before mapping; do not use unchecked casts.
+- For category-specific current responses, map using nested category paths such as `drugs.xanax`, `items.used.energy_drinks`, `other.refills.energy` and `networth.total`. Historical stat names such as `xantaken` are not current category object property paths.
+- Historical `stat` requests require `timestamp`, accept no more than 10 names per call, and return an array of `{ name, value, timestamp }`. The returned per-stat timestamp is the stat's last-updated time; the item may be absent if the stat did not exist at the requested time.
+- Do not rely on historical stat requests for exact weekly Sunday boundaries. They use nearest-date behavior; the application's own timestamped snapshots remain authoritative.
 - Private stats remain owner-only.
-- Record a captured_at timestamp and request freshness for each sample.
-- Missing fields remain null/unknown.
+- Record a captured_at timestamp and request freshness for each current sample.
+- Missing fields or omitted historical items remain null/unknown, never zero.
 - Keep all lifetime counters in storage.
 
 Drug statistics must retain independent drug fields, especially Xanax and LSD. Alcohol, boosters, energy drinks, refills, drug overdoses and stat enhancers are also separate metrics.
@@ -615,8 +629,9 @@ Do not use color as the only status signal; include readable text and accessible
 
 ### Phase 0 — Contract and architecture verification
 - Preserve current app architecture.
-- Generate typed Torn response fixtures from the current v2 OpenAPI schema.
-- Verify every required nested stat field and permission.
+- Generate typed Torn response fixtures from the current v2 OpenAPI schema, including the /user/personalstats response union.
+- Add sanitized fixtures for Full, FullPublic, Popular, category-specific and Historic response variants; test unknown payloads before mapping.
+- Verify nested current-response metric paths separately from historical stat names, and validate each required field and permission.
 - Build data-source/permission matrix and request-budget estimate.
 - Decide and document historical retention separation before coding.
 - Define weekly boundary scheduler and late/missed capture policy.
@@ -707,6 +722,11 @@ Do not use color as the only status signal; include readable text and accessible
 - Contributors call uses stat=gymenergy.
 - Contributor values map by Torn ID and in_faction.
 - Public personalstats does not attempt to access other members' private stats.
+- Full, FullPublic, Popular, category-specific and Historic response variants are decoded independently.
+- Popular is preferred over FullPublic when it covers the required metrics.
+- Category current-response nested paths are not confused with historical stat names.
+- Historical requests require timestamp, are capped at 10 stat names per request, and handle omitted stats as unknown.
+- Historical per-stat timestamps are retained as last-updated timestamps, not falsely treated as exact requested-time samples.
 - bars and cooldowns are called only using the member's own opted-in key.
 - Detailed networth is called only using the member's own authorized key.
 - Missing/invalid keys do not stop public-stat collection.
@@ -747,8 +767,10 @@ The project is not complete until all of the following are implemented and teste
 | Topic | Decision |
 |---|---|
 | Weekly timezone | UTC/TCT only; Sunday 00:00 inclusive to next Sunday 00:00 exclusive |
-| Personal stats | Prefer cat=popular if it includes all required public fields; otherwise cat=all |
-| Historical personalstats | Not the exact weekly boundary source; Torn timestamp is converted to nearest date |
+| Personal stats | Decode the response union; prefer cat=popular when it covers the required public fields, then request a specific category where practical, and use cat=all only when needed |
+| Personalstats response | Full (Limited/Full/Custom full selection), FullPublic (cat=all), Popular (cat=popular), category-specific or Historic; generated Full/FullPublic/Popular payloads are unknown pending sanitized fixtures |
+| Current category mapping | Use nested category paths, e.g. drugs.xanax, items.used.energy_drinks, other.refills.energy, networth.total |
+| Historical personalstats | stat + timestamp, max 10 stat names; returns name/value/last-updated timestamp records; not the exact weekly boundary source because Torn resolves timestamp to nearest date |
 | Gym energy | stat=gymenergy, not gymenergy=true |
 | Gym contributor schema | id, username, value, in_faction |
 | Revive flags | is_revivable is owner-specific; revive_setting is member preference |
@@ -768,6 +790,7 @@ The project is not complete until all of the following are implemented and teste
 - Torn OpenAPI 6.15.0: https://www.torn.com/swagger/openapi.json
 - Faction member endpoint contract: https://api-playground.torn.com/faction/:id/members
 - Personal stats endpoint contract: https://api-playground.torn.com/user/:id/personalstats
+- Generated personalstats response schema and metric-path reference: [TORN-PERSONALSTATS-RESPONSE-SCHEMA.md](TORN-PERSONALSTATS-RESPONSE-SCHEMA.md)
 - Official Torn clarification on is_revivable being owner-specific: https://www.torn.com/forums.php?a=0&b=0&f=19&p=threads&t=16496684
 
 ---
