@@ -362,6 +362,13 @@ try {
       "an empty roster must be rejected before membership history is modified")
     assert.ok(workerSource.includes("setTimeout(resolve, 800)"))
     assert.ok(workerSource.includes("error.status === 429 || error.status >= 500 || error.code === 9"))
+    assert.match(workerSource, /fetcher: env\.TORN_API_FIXTURE\?\.fetch\.bind\(env\.TORN_API_FIXTURE\)/,
+      "the staging integration Worker must route Torn requests through a private fixture Service Binding")
+    assert.match(workerSource, /Faction performance collection attempt failed/,
+      "queue retries must log a sanitized, actionable failure classification")
+    const integrationWrangler = readFileSync(join(root, "wrangler.faction-performance-integration.toml"), "utf8")
+    assert.match(integrationWrangler, /binding = "TORN_API_FIXTURE"/)
+    assert.match(integrationWrangler, /service = "naughty-company-api-faction-performance-mock"/)
     const factionQueueStart = workerSource.lastIndexOf("if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId)")
     const factionQueueEnd = workerSource.indexOf('if (body.kind === "halloween-live-snapshot"', factionQueueStart)
     const factionQueue = workerSource.slice(factionQueueStart, factionQueueEnd)
