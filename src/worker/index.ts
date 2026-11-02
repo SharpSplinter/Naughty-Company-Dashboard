@@ -4365,6 +4365,70 @@ export default {
       await db.prepare("INSERT INTO company_sharing_recipients (owner_player_id, recipient_player_id, share_financial_data, share_employee_data, share_trend_data, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(owner_player_id, recipient_player_id) DO UPDATE SET share_financial_data = excluded.share_financial_data, share_employee_data = excluded.share_employee_data, share_trend_data = excluded.share_trend_data, updated_at = excluded.updated_at").bind(session.player_id, recipientId, Number(permissions.shareFinancialData), Number(permissions.shareEmployeeData), Number(permissions.shareTrendData), now).run()
       return jsonResponse({ recipient: { playerId: recipientId, ...permissions }, updatedAt: now }, 200, origin)
     }
+    if (url.pathname === "/api/faction/performance" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) {
+        return jsonResponse({ error: "Faction performance is available only to current Naughty Souls members." }, 403, origin)
+      }
+      const db = requireDb(env)
+      try {
+        const [collectionRows, rosterHeader, rosterRows, statRows, gymRows] = await Promise.all([
+          db.prepare(
+            "SELECT collection_kind AS collectionKind, last_success_at AS lastSuccessAt, last_run_id AS lastRunId, last_error AS lastError, updated_at AS updatedAt FROM faction_performance_collection_state WHERE faction_id = ? ORDER BY collection_kind",
+          ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT run_id AS runId, captured_at AS capturedAt, scheduled_at AS scheduledAt, member_count AS memberCount FROM faction_roster_snapshots WHERE faction_id = ? ORDER BY captured_at DESC LIMIT 1",
+          ).bind(NAUGHTY_SOULS_FACTION_ID).first<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT m.user_id AS userId, m.name, m.position, m.level, m.days_in_faction AS daysInFaction, m.captured_at AS rosterCapturedAt, m.last_action_status AS lastActionStatus, m.last_action_timestamp AS lastActionTimestamp, m.last_action_relative AS lastActionRelative, m.status_description AS statusDescription, m.status_details AS statusDetails, m.status_state AS statusState, m.status_until AS statusUntil, m.status_color AS statusColor, m.is_revivable AS isRevivable, m.revive_setting AS reviveSetting, m.is_on_wall AS isOnWall, m.is_in_oc AS isInOc, m.has_early_discharge AS hasEarlyDischarge FROM faction_member_roster_snapshots m JOIN faction_roster_snapshots r ON r.run_id = m.run_id WHERE r.faction_id = ? AND r.run_id = (SELECT run_id FROM faction_roster_snapshots WHERE faction_id = ? ORDER BY captured_at DESC LIMIT 1) ORDER BY m.name COLLATE NOCASE, m.user_id",
+          ).bind(NAUGHTY_SOULS_FACTION_ID, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT s.user_id AS userId, s.captured_at AS statsCapturedAt, s.collection_status AS statsCollectionStatus, s.xantaken, s.lsdtaken, s.drugsused, s.overdosed, s.alcoholused, s.boostersused, s.energydrinkused, s.refills, s.statenhancersused, s.networth, s.cantaken, s.exttaken, s.kettaken, s.opitaken, s.shrtaken, s.spetaken, s.pcptaken, s.victaken, s.missing_metrics_json AS missingMetricsJson FROM faction_member_stat_snapshots s WHERE s.faction_id = ? AND NOT EXISTS (SELECT 1 FROM faction_member_stat_snapshots newer WHERE newer.faction_id = s.faction_id AND newer.user_id = s.user_id AND (newer.captured_at > s.captured_at OR (newer.captured_at = s.captured_at AND newer.snapshot_id > s.snapshot_id)))",
+          ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT g.user_id AS userId, g.captured_at AS gymEnergyCapturedAt, g.gym_energy_total AS gymEnergyTotal, g.in_faction AS gymEnergyInFaction, g.collection_status AS gymEnergyCollectionStatus FROM faction_gym_energy_snapshots g WHERE g.faction_id = ? AND NOT EXISTS (SELECT 1 FROM faction_gym_energy_snapshots newer WHERE newer.faction_id = g.faction_id AND newer.user_id = g.user_id AND (newer.captured_at > g.captured_at OR (newer.captured_at = g.captured_at AND newer.snapshot_id > g.snapshot_id)))",
+          ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
+        ])
+        const statsByUser = new Map((statRows.results ?? []).map((row) => [String(row.userId), row]))
+        const gymByUser = new Map((gymRows.results ?? []).map((row) => [String(row.userId), row]))
+        const members = (rosterRows.results ?? []).map((roster) => {
+          const userId = String(roster.userId)
+          let missingMetrics: unknown = []
+          const stats = statsByUser.get(userId) ?? null
+          if (stats?.missingMetricsJson) {
+            try { missingMetrics = JSON.parse(String(stats.missingMetricsJson)) as unknown } catch { missingMetrics = [] }
+          }
+          return {
+            ...roster,
+            isRevivable: roster.isRevivable == null ? null : roster.isRevivable === 1,
+            isOnWall: roster.isOnWall == null ? null : roster.isOnWall === 1,
+            isInOc: roster.isInOc == null ? null : roster.isInOc === 1,
+            hasEarlyDischarge: roster.hasEarlyDischarge == null ? null : roster.hasEarlyDischarge === 1,
+            stats: stats ? { ...stats, missingMetrics } : null,
+            gymEnergy: gymByUser.get(userId) ?? null,
+          }
+        })
+        const collection = (collectionRows.results ?? []).map((row) => ({
+          collectionKind: String(row.collectionKind),
+          lastSuccessAt: row.lastSuccessAt == null ? null : String(row.lastSuccessAt),
+          lastRunId: row.lastRunId == null ? null : String(row.lastRunId),
+          lastError: row.lastError == null ? null : String(row.lastError),
+          updatedAt: String(row.updatedAt ?? ""),
+        }))
+        return jsonResponse({
+          factionId: NAUGHTY_SOULS_FACTION_ID,
+          generatedAt: new Date().toISOString(),
+          roster: rosterHeader ?? null,
+          collection,
+          members,
+        }, 200, origin, { "cache-control": "private, max-age=30" })
+      } catch {
+        return jsonResponse({
+          error: "Faction performance storage is not initialized or is temporarily unavailable. Apply migration 0019 and verify the collection worker.",
+        }, 503, origin)
+      }
+    }
     if (url.pathname === "/api/faction/shared-company-data" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
