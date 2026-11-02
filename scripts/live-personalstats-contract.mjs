@@ -96,6 +96,8 @@ function valueAtPath(root, path) {
   return typeof current === "number" && Number.isFinite(current) ? current : null
 }
 
+let ownerPlayerId = null
+
 const report = {
   generatedAt: new Date().toISOString(),
   source: "Torn API v2 owner-only GET /user/personalstats",
@@ -127,15 +129,17 @@ async function captureKeyInfo() {
       return
     }
     const access = isRecord(payload.info.access) ? payload.info.access : {}
-    const selections = isRecord(payload.info.selections) ? payload.info.selections : {}
+    const user = isRecord(payload.info.user) ? payload.info.user : {}
+    ownerPlayerId = typeof user.id === "number" && Number.isSafeInteger(user.id) && user.id > 0
+      ? String(user.id)
+      : typeof user.id === "string" && /^[1-9]\d*$/.test(user.id) ? user.id : null
     report.keyInfo = {
       outcome: "captured",
       httpStatus: response.status,
       accessLevel: typeof access.level === "number" ? access.level : null,
       accessType: typeof access.type === "string" ? access.type : null,
-      userIdPresent: isRecord(payload.info.user) && payload.info.user.id != null,
+      userIdPresent: ownerPlayerId !== null,
       factionPermissionPresent: access.faction != null,
-      personalstatsSelectionPresent: Object.keys(selections).some((name) => /personal.?stats/i.test(name)),
     }
     console.log(`Torn key info: HTTP ${response.status}; access level recorded without owner identifiers`)
   } catch {
@@ -208,6 +212,88 @@ async function capture(label, selection, path, category = null) {
   return payload
 }
 
+async function requestTorn(path) {
+  return fetch(`${baseUrl}${path}`, {
+    method: "GET",
+    headers: { Authorization: `ApiKey ${apiKey}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(15000),
+  })
+}
+
+async function captureFactionRosterAndMemberSamples() {
+  try {
+    const response = await requestTorn("/faction/members?striptags=true")
+    const payload = await response.json().catch(() => null)
+    const apiError = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+    if (!response.ok || apiError || !isRecord(payload) || !Array.isArray(payload.members)) {
+      const code = typeof apiError?.code === "number" ? apiError.code : null
+      report.factionRoster = { outcome: "unavailable", httpStatus: response.status, tornErrorCode: code }
+      console.log(`Torn faction roster: HTTP ${response.status}; Torn error code ${code ?? "not supplied"}`)
+      return
+    }
+
+    const allIds = [...new Set(payload.members
+      .map((member) => isRecord(member) ? member.id : null)
+      .map((id) => typeof id === "number" ? String(id) : typeof id === "string" ? id : "")
+      .filter((id) => /^[1-9]\d*$/.test(id) && Number.isSafeInteger(Number(id))))]
+
+    const nonOwnerIds = allIds.filter((id) => id !== ownerPlayerId)
+    const sampleIds = (nonOwnerIds.length ? nonOwnerIds : ownerPlayerId ? [ownerPlayerId] : []).slice(0, 2)
+    report.factionRoster = {
+      outcome: "captured",
+      httpStatus: response.status,
+      memberCount: payload.members.length,
+      memberArrayPresent: true,
+      memberShape: payload.members.length && isRecord(payload.members[0]) ? Object.keys(payload.members[0]).sort() : [],
+      distinctTargetSampleCount: sampleIds.length,
+      sampleTargetsWereOtherMembers: nonOwnerIds.length > 0,
+    }
+    report.fixtures.factionRoster = {
+      httpStatus: response.status,
+      responseShape: shapeOf(payload),
+      sanitizedPayload: sanitize(payload),
+    }
+    console.log(`Torn faction roster: HTTP ${response.status}; members=${payload.members.length}; sampleTargets=${sampleIds.length}`)
+
+    for (let index = 0; index < sampleIds.length; index += 1) {
+      await capture(`factionMemberPopular${index + 1}`, "target member cat=popular", `/user/${sampleIds[index]}/personalstats?cat=popular`)
+    }
+  } catch {
+    report.factionRoster = { outcome: "network-error" }
+    console.log("Torn faction roster: network error (details suppressed)")
+  }
+}
+
+async function captureGymEnergyContributors() {
+  try {
+    const response = await requestTorn("/faction/contributors?stat=gymenergy")
+    const payload = await response.json().catch(() => null)
+    const apiError = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+    const contributors = isRecord(payload) && Array.isArray(payload.contributors) ? payload.contributors : null
+    if (!response.ok || apiError || !contributors) {
+      const code = typeof apiError?.code === "number" ? apiError.code : null
+      report.gymEnergyContributors = { outcome: "unavailable", httpStatus: response.status, tornErrorCode: code }
+      console.log(`Torn gym energy contributors: HTTP ${response.status}; Torn error code ${code ?? "not supplied"}`)
+      return
+    }
+    report.gymEnergyContributors = {
+      outcome: "captured",
+      httpStatus: response.status,
+      contributorCount: contributors.length,
+      contributorFields: contributors.length && isRecord(contributors[0]) ? Object.keys(contributors[0]).sort() : [],
+    }
+    report.fixtures.gymEnergyContributors = {
+      httpStatus: response.status,
+      responseShape: shapeOf(payload),
+      sanitizedPayload: sanitize(payload),
+    }
+    console.log(`Torn gym energy contributors: HTTP ${response.status}; contributors=${contributors.length}`)
+  } catch {
+    report.gymEnergyContributors = { outcome: "network-error" }
+    console.log("Torn gym energy contributors: network error (details suppressed)")
+  }
+}
+
 const timestamp = Math.floor(Date.now() / 1000)
 const currentSelections = [
   { label: "popular", selection: "cat=popular", path: "/user/personalstats?cat=popular" },
@@ -221,6 +307,9 @@ const currentSelections = [
 for (const item of currentSelections) {
   await capture(item.label, item.selection, item.path, item.category ?? null)
 }
+
+await captureFactionRosterAndMemberSamples()
+await captureGymEnergyContributors()
 
 for (let offset = 0; offset < requestedStats.length; offset += 10) {
   const stats = requestedStats.slice(offset, offset + 10)
@@ -248,7 +337,7 @@ report.acceptance = {
 mkdirSync("artifacts", { recursive: true })
 writeFileSync(outputPath, JSON.stringify(report, null, 2) + "\n", { mode: 0o600 })
 console.log(`Sanitized personalstats response-shape report written to ${outputPath}`)
-console.log(`Captured ${report.results.filter((result) => result.outcome === "captured").length}/8 personalstats selections; no live stat values or credentials were written.`)
+console.log(`Captured ${report.results.filter((result) => result.outcome === "captured").length} personalstats responses; faction roster=${report.factionRoster?.outcome ?? "not checked"}; gym-energy contributors=${report.gymEnergyContributors?.outcome ?? "not checked"}; no live stat values or credentials were written.`)
 
 if (popular?.outcome !== "captured" || !report.acceptance.popularCoversAllRequiredMetrics) {
   console.error("The required Popular selection could not be captured. Inspect the sanitized artifact status only; raw API responses are suppressed.")
