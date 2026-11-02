@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out the reviewed PR branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: portal-rebuild
 
@@ -40,7 +40,7 @@ jobs:
           echo "Staging target verified. This workflow does not deploy a Worker or modify production D1."
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
