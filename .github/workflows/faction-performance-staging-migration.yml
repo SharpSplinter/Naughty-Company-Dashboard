@@ -1,0 +1,68 @@
+name: Apply faction performance migrations to staging D1
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_target:
+        description: Confirm the exact non-production D1 database
+        required: true
+        type: choice
+        options:
+          - naughty-company-api-staging
+
+permissions:
+  contents: read
+
+concurrency:
+  group: naughty-company-api-staging-migrations
+  cancel-in-progress: false
+
+jobs:
+  migrate-staging:
+    if: github.ref == 'refs/heads/portal-rebuild' && inputs.confirm_target == 'naughty-company-api-staging'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the reviewed PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: portal-rebuild
+
+      - name: Verify the migration target is pinned to staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'name = "naughty-company-api-staging"' wrangler.staging.toml
+          grep -F 'database_name = "naughty-company-api-staging"' wrangler.staging.toml
+          grep -F 'database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"' wrangler.staging.toml
+          ! grep -F 'bbbe128a-c5cc-46ec-b8ef-93860183e795' wrangler.staging.toml
+          ! grep -Eq '^\[\[queues\.(producers|consumers)\]\]|^\[triggers\]' wrangler.staging.toml
+          echo "Staging target verified. This workflow does not deploy a Worker or modify production D1."
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run repository quality gates
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Apply all pending branch migrations to staging D1 only
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: d1 migrations apply naughty-company-api-staging --remote --config wrangler.staging.toml
+
+      - name: Verify migration ledger includes faction performance migration
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: d1 migrations list naughty-company-api-staging --remote --config wrangler.staging.toml
