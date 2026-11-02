@@ -46,7 +46,6 @@ export const PERSONAL_STATS_METRIC_PATHS = {
 } as const satisfies Record<PersonalStatsHistoricalName, readonly string[]>
 
 export type PersonalStatsRequest =
-  | { kind: "full" }
   | { kind: "all" }
   | { kind: "popular" }
   | { kind: "category"; category: PersonalStatsCategory }
@@ -63,7 +62,7 @@ export type PersonalStatsHistoricValue = {
 export type DecodedPersonalStats =
   | {
       kind: "current"
-      selection: "full" | "all" | "popular" | "category"
+      selection: "all" | "popular" | "category"
       category?: PersonalStatsCategory
       rawPersonalStats: Record<string, unknown>
       metrics: PersonalStatsMetricValues
@@ -97,20 +96,23 @@ function emptyMetricValues(): PersonalStatsMetricValues {
 }
 
 /**
- * Builds an endpoint-relative path for GET /v2/user/{id}/personalstats.
- * Historical stat batches are deliberately capped at Torn's documented limit.
+ * Builds an endpoint-relative path for either the key owner's personal stats
+ * (/user/personalstats) or a public target's stats (/user/{id}/personalstats).
+ * Torn requires a category for current data or stat+timestamp for history.
+ * Historical stat batches are deliberately capped at the documented limit.
  */
 export function buildPersonalStatsPath(
-  playerId: string | number,
+  playerId: string | number | null,
   request: PersonalStatsRequest,
 ): string {
-  const id = String(playerId)
-  if (!/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) {
-    throw new Error("Player ID must be a positive safe integer.")
+  let base = "/user/personalstats"
+  if (playerId !== null) {
+    const id = String(playerId)
+    if (!/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) {
+      throw new Error("Player ID must be a positive safe integer.")
+    }
+    base = `/user/${id}/personalstats`
   }
-
-  const base = `/user/${id}/personalstats`
-  if (request.kind === "full") return base
   if (request.kind === "all") return `${base}?cat=all`
   if (request.kind === "popular") return `${base}?cat=popular`
   if (request.kind === "category") return `${base}?cat=${encodeURIComponent(request.category)}`
