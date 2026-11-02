@@ -158,6 +158,7 @@ type FactionDirectorHistory = {
 type FactionMemberSummary = {
   playerId: string
   playerName: string
+  membershipVerifiedAt: string | null
   companyName: string | null
   companyType: string | null
   companyTypeId: number | string | null
@@ -286,14 +287,15 @@ export function FactionWorkspacePlaceholder({ playerName, onNavigate, apiBase, s
         </div>
       </section>}
       <section className="halloween-panel faction-roster-panel">
-        <div className="faction-directory-heading"><div><div className="halloween-status"><i /> ACTIVE FACTION ROSTER</div><h2>Naughty Souls members</h2><p>Only currently verified and enabled faction accounts are included. Company assignments are shown when available.</p></div></div>
+        <div className="faction-directory-heading"><div><div className="halloween-status"><i /> ACTIVE FACTION ROSTER</div><h2>Naughty Souls members</h2><p>Verified Naughty Souls accounts with enabled portal access. Membership is periodically rechecked; the last successful verification time is shown for transparency.</p></div></div>
         <div className="historical-leaderboard">
-          {busy && !members.length ? <p className="historical-key-muted">Loading the active member roster…</p> : filteredMembers.length ? <table><thead><tr><th>MEMBER</th><th>TORN ID</th><th>COMPANY</th><th>COMPANY TYPE</th></tr></thead><tbody>
+          {busy && !members.length ? <p className="historical-key-muted">Loading the active member roster…</p> : filteredMembers.length ? <table><thead><tr><th>MEMBER</th><th>TORN ID</th><th>COMPANY</th><th>COMPANY TYPE</th><th>MEMBERSHIP VERIFIED</th></tr></thead><tbody>
             {filteredMembers.map(member => <tr key={member.playerId}>
               <td><strong>{member.playerName}</strong></td>
               <td>#{member.playerId}</td>
               <td>{member.companyName || "—"}</td>
               <td>{member.companyType || "—"}</td>
+              <td>{member.membershipVerifiedAt ? new Date(member.membershipVerifiedAt).toLocaleString() : "Not verified"}</td>
             </tr>)}
           </tbody></table> : <div className="historical-empty"><strong>No matching faction members.</strong><span>{members.length ? "Try another name, Torn ID, or company search." : "No active verified member accounts are available in the roster yet."}</span></div>}
         </div>
