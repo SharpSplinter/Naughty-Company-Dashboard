@@ -103,12 +103,14 @@ async function revalidateFactionMembershipBatch(env: WorkerEnv, scheduledTime: n
       if (checked > 0) await new Promise((resolve) => setTimeout(resolve, 800))
       const factionId = await verifyFactionMembershipWithKey(apiKey)
       const verifiedAt = new Date().toISOString()
-      await db.prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, membership_check_attempted_at = ?, updated_at = ? WHERE player_id = ?")
-        .bind(factionId || null, verifiedAt, verifiedAt, verifiedAt, playerId).run()
       checked++
       if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
+        // Clean up first. If cleanup fails, the row remains faction-scoped and
+        // can be retried after the per-member backoff rather than being hidden.
         await removeDepartedFactionAccess(env, playerId)
       }
+      await db.prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, membership_check_attempted_at = ?, updated_at = ? WHERE player_id = ?")
+        .bind(factionId || null, verifiedAt, verifiedAt, verifiedAt, playerId).run()
     } catch {
       // Network, Torn rate-limit, and decryption failures are not evidence of
       // faction departure. The attempted-at timestamp prevents hot-looping.
@@ -138,24 +140,32 @@ async function authenticate(request: Request, env: WorkerEnv): Promise<Session |
     if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID || !fresh) {
       const apiKey = await savedKey(env, session.player_id)
       if (!apiKey) return null
+      let currentFactionId: string
+      let verified = true
       try {
-        const currentFactionId = await verifyFactionMembershipWithKey(apiKey)
-        if (currentFactionId !== NAUGHTY_SOULS_FACTION_ID) {
-          const verifiedAt = new Date().toISOString()
-          await requireDb(env).prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, updated_at = ? WHERE player_id = ?")
-            .bind(currentFactionId || null, verifiedAt, verifiedAt, session.player_id).run()
-          await removeDepartedFactionAccess(env, session.player_id)
-          return null
-        }
+        currentFactionId = await verifyFactionMembershipWithKey(apiKey)
+      } catch {
+        // A short outage grace avoids locking out current members on a Torn
+        // outage, but old or missing membership verification fails closed.
+        if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > 15 * 60 * 1000) return null
+        currentFactionId = NAUGHTY_SOULS_FACTION_ID
+        verified = false
+      }
+      if (currentFactionId !== NAUGHTY_SOULS_FACTION_ID) {
+        // Do not record the departure until cleanup succeeds. If cleanup fails,
+        // the stale row remains eligible for another verification attempt.
+        try { await removeDepartedFactionAccess(env, session.player_id) } catch { return null }
+        const verifiedAt = new Date().toISOString()
+        await requireDb(env).prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, updated_at = ? WHERE player_id = ?")
+          .bind(currentFactionId || null, verifiedAt, verifiedAt, session.player_id).run()
+        return null
+      }
+      if (verified) {
         const verifiedAt = new Date().toISOString()
         await requireDb(env).prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, updated_at = ? WHERE player_id = ?")
           .bind(currentFactionId, verifiedAt, verifiedAt, session.player_id).run()
         normalizedSession.faction_id = currentFactionId
         normalizedSession.faction_verified_at = verifiedAt
-      } catch {
-        // A short outage grace avoids locking out current members on a Torn
-        // outage, but old or missing membership verification fails closed.
-        if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > 15 * 60 * 1000) return null
       }
     }
   }
