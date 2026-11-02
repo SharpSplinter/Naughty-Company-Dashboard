@@ -13,7 +13,7 @@ This is the stateful acceptance test for the Phase 1 faction performance collect
 | Fixture Worker | `naughty-company-api-faction-performance-mock` |
 | Integration Worker | `naughty-company-api-faction-performance-integration` |
 
-The production D1 database ID `bbbe128a-c5cc-46ec-b8ef-93860183e795` is deliberately absent from both staging Wrangler configs. The staging configs have no cron triggers. The integration Worker has no production routes and never borrows a member's Torn key.
+The production D1 database ID `bbbe128a-c5cc-46ec-b8ef-93860183e795` is deliberately absent from both staging Wrangler configs. The staging configs have no cron triggers. The integration Worker has no production routes and never borrows a member's Torn key. The integration Worker talks to the fixture Worker through the private `TORN_API_FIXTURE` Service Binding, so its Torn-shaped API requests do not depend on public `workers.dev` DNS or outbound routing.
 
 ## Run procedure
 
