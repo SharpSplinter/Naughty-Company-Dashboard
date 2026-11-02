@@ -11,7 +11,10 @@ import { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, eva
 
 type D1Result<T = Record<string, unknown>> = { results?: T[]; success?: boolean; meta?: { changes?: number } }
 type D1Statement = { bind(...values: (string | number | null)[]): D1Statement; first<T = Record<string, unknown>>(): Promise<T | null>; all<T = Record<string, unknown>>(): Promise<D1Result<T>>; run(): Promise<D1Result> }
-type D1Database = { prepare(sql: string): D1Statement }
+type D1Database = {
+  prepare(sql: string): D1Statement
+  batch?(statements: D1Statement[]): Promise<D1Result[]>
+}
 type QueueProducer = { send(message: unknown): Promise<unknown> }
 type QueueMessage = { body: unknown; attempts?: number; ack(): void; retry(options?: { delaySeconds?: number }): void }
 type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; TORN_FACTION_API_KEY?: string; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
@@ -350,19 +353,25 @@ async function finishFactionPerformanceRun(
   error: string | null = null,
 ): Promise<void> {
   const now = new Date().toISOString()
-  await requireDb(env).prepare(
+  const db = requireDb(env)
+  const finishRun = db.prepare(
     "UPDATE faction_performance_collection_runs SET status = ?, completed_at = ?, last_error = ?, updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'partial', 'failed')"
-  ).bind(status, now, error, now, run.runId).run()
+  ).bind(status, now, error, now, run.runId)
   // A partial capture is not a last fully successful collection. Preserve
   // the previous last_success_at while still recording this run and its error.
-  await updateFactionCollectionState(
-    env,
-    run.factionId,
-    run.collectionKind,
-    run.runId,
-    status === "completed" ? capturedAt : null,
-    error,
-  )
+  const updateState = db.prepare(
+    "INSERT INTO faction_performance_collection_state (faction_id, collection_kind, last_success_at, last_run_id, last_error, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(faction_id, collection_kind) DO UPDATE SET last_success_at = COALESCE(excluded.last_success_at, faction_performance_collection_state.last_success_at), last_run_id = excluded.last_run_id, last_error = excluded.last_error, updated_at = excluded.updated_at"
+  ).bind(run.factionId, run.collectionKind, status === "completed" ? capturedAt : null, run.runId, error, now)
+  if (db.batch) {
+    // D1 batch is transactional: a state-write failure must roll back the
+    // terminal run status so the retried queue message can finish both writes.
+    await db.batch([finishRun, updateState])
+  } else {
+    // Lightweight test doubles may expose only prepare(). Production D1 always
+    // supports batch(), which keeps the success marker and run state atomic.
+    await finishRun.run()
+    await updateState.run()
+  }
 }
 
 async function markFactionPerformanceRunFailed(env: WorkerEnv, runId: string, error: unknown): Promise<void> {
