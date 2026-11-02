@@ -101,6 +101,40 @@
 .settings-connection.good{color:#85d9bf}
 .settings-connection.good i{background:#54d7ae;box-shadow:0 0 10px #54d7ae60}
 
+
+.faction-toolbar{max-width:1140px;margin:20px auto 12px;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 16px;border:1px solid #30464b;border-radius:10px;background:#112027}
+.faction-toolbar>div:first-child small,.faction-toolbar>div:first-child strong,.faction-toolbar>div:first-child span{display:block}
+.faction-toolbar>div:first-child small{font-size:8px;color:#85b7a8;font-weight:700;letter-spacing:.15em}
+.faction-toolbar>div:first-child strong{font:600 14px 'Space Grotesk',sans-serif;color:#e3f0e9;margin-top:5px}
+.faction-toolbar>div:first-child span{font-size:9px;color:#879da5;margin-top:4px}
+.faction-metric-grid{max-width:1140px;margin:0 auto;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px}
+.faction-metric-grid article{padding:15px;border:1px solid #2d444c;border-radius:9px;background:linear-gradient(145deg,#172a30,#111d26)}
+.faction-metric-grid small,.faction-metric-grid strong,.faction-metric-grid span{display:block}
+.faction-metric-grid small{font-size:8px;letter-spacing:.13em;color:#83a39f;font-weight:700}
+.faction-metric-grid strong{font:600 19px 'Space Grotesk',sans-serif;color:#e4f2e9;margin:8px 0 5px}
+.faction-metric-grid span{font-size:8px;color:#8ea4a8}
+.faction-directory-panel{margin-top:14px}
+.faction-directory-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:16px}
+.faction-directory-heading h2{margin-bottom:6px}
+.faction-directory-heading>div>p{margin:0;color:#9badb7;font-size:10px;line-height:1.6}
+.faction-directory-heading input{width:min(290px,100%);border:1px solid #43545a;border-radius:7px;background:#0e171f;color:#edf4f0;padding:10px 11px;font-size:9px;outline:none}
+.faction-directory-heading input:focus{border-color:#65bda5}
+.faction-directory-panel .historical-leaderboard table{min-width:850px}
+.faction-directory-panel td strong,.faction-directory-panel td small{display:block}
+.faction-directory-panel td strong{font-size:9px;color:#dcebe3}
+.faction-directory-panel td small{font-size:8px;color:#7f969d;margin-top:4px}
+.faction-star-panel{max-width:1140px;margin:14px auto 0;padding:17px 19px;border:1px solid #30464b;border-radius:10px;background:#111e26;display:grid;grid-template-columns:220px minmax(0,1fr);gap:18px}
+.faction-star-panel>div:first-child small,.faction-star-panel>div:first-child strong,.faction-star-panel>div:first-child span{display:block}
+.faction-star-panel>div:first-child small{font-size:8px;color:#83b5a6;font-weight:700;letter-spacing:.14em}
+.faction-star-panel>div:first-child strong{font:600 14px 'Space Grotesk',sans-serif;color:#e3eee8;margin-top:6px}
+.faction-star-panel>div:first-child span{font-size:8px;line-height:1.5;color:#83999f;margin-top:6px}
+.faction-star-list{display:flex;flex-direction:column;gap:9px}
+.faction-star-list>div{display:grid;grid-template-columns:70px minmax(50px,1fr) 28px;align-items:center;gap:10px}
+.faction-star-list span{font-size:9px;color:#afc1ba}
+.faction-star-list>div>div{height:7px;border-radius:99px;background:#263a40;overflow:hidden}
+.faction-star-list i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#4e9d89,#a6c99a)}
+.faction-star-list strong{font-size:9px;color:#dcebe3;text-align:right}
+
 .settings-card-wide{grid-column:1/-1}
 .settings-inline-form{display:flex;flex-direction:column;align-items:stretch;gap:8px;margin-top:16px}
 .settings-inline-form label{color:#d5e1dc;font-size:10px;font-weight:600}
@@ -123,7 +157,7 @@
 
 .settings-card>button{display:block;margin-top:13px;border:0;background:transparent;color:#b7e7d7;padding:0;font-size:10px}
 .module-footer{align-items:center}
-@media(max-width:760px){.portal-topbar,.module-topbar{height:66px}.portal-user>span:nth-child(2){display:none}.portal-hero{padding:49px 0 36px}.portal-hero h1{font-size:49px}.portal-card-grid,.settings-grid{grid-template-columns:1fr}.portal-card{min-height:205px}.portal-card-admin{grid-column:auto}.portal-account-strip{align-items:flex-start;flex-wrap:wrap}.portal-connection-status{margin-left:0}.portal-account-strip>button{margin-left:auto}.coverage-grid{grid-template-columns:1fr}.halloween-panel{padding:18px}.portal-footer,.module-footer{font-size:7px;letter-spacing:.08em}.portal-footer span:last-child{text-align:right}.settings-member-card{align-items:flex-start}.settings-badge{margin-top:4px}}
+@media(max-width:760px){.faction-toolbar,.faction-directory-heading{align-items:stretch;flex-direction:column}.faction-metric-grid{grid-template-columns:1fr}.faction-star-panel{grid-template-columns:1fr}.faction-directory-heading input{width:100%}.portal-topbar,.module-topbar{height:66px}.portal-user>span:nth-child(2){display:none}.portal-hero{padding:49px 0 36px}.portal-hero h1{font-size:49px}.portal-card-grid,.settings-grid{grid-template-columns:1fr}.portal-card{min-height:205px}.portal-card-admin{grid-column:auto}.portal-account-strip{align-items:flex-start;flex-wrap:wrap}.portal-connection-status{margin-left:0}.portal-account-strip>button{margin-left:auto}.coverage-grid{grid-template-columns:1fr}.halloween-panel{padding:18px}.portal-footer,.module-footer{font-size:7px;letter-spacing:.08em}.portal-footer span:last-child{text-align:right}.settings-member-card{align-items:flex-start}.settings-badge{margin-top:4px}}
 
 .admin-role-indicator{display:inline-flex;align-items:center;border:1px solid #53af9675;border-radius:6px;padding:6px 8px;color:#91e2c9;font-size:8px;font-weight:700;letter-spacing:.12em;background:#1d443a55}
 
