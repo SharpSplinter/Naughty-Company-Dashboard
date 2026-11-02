@@ -291,6 +291,9 @@ try {
     assert.match(route, /faction_gym_energy_snapshots/)
     assert.match(route, /faction_performance_collection_runs/)
     assert.match(route, /status = 'completed'/)
+    assert.match(workerSource, /if \(db\.batch\)/)
+    assert.match(workerSource, /await db\.batch\(\[finishRun, updateState\]\)/,
+      "the terminal run status and last-success timestamp must commit atomically in D1")
     assert.match(route, /statsCapturedAt/)
     assert.match(route, /gymEnergyCapturedAt/)
     assert.match(route, /private, max-age=30/)
