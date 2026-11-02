@@ -111,13 +111,12 @@ export class TornApiClient {
     return this.request<Record<string, unknown>>(`/user/${playerId}/job`)
   }
 
+  async getMyPersonalStats(selection: PersonalStatsRequest): Promise<unknown> {
+    return this.request<unknown>(buildPersonalStatsPath(null, selection))
+  }
+
   async getUserPersonalStatsFor(playerId: string | number, selection: PersonalStatsRequest): Promise<unknown> {
-    try {
-      return await this.request<unknown>(buildPersonalStatsPath(playerId, selection))
-    } catch (error) {
-      if (error instanceof TornApiClientError) throw error
-      throw new TornApiClientError("Could not load Torn personal stats.", { status: 502 })
-    }
+    return this.request<unknown>(buildPersonalStatsPath(playerId, selection))
   }
 
   async getCompanyProfileById(companyId: string | number): Promise<TornCompanyResponse<TornCompanyProfile>> {
