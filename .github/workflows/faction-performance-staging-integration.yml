@@ -1,6 +1,12 @@
 name: Faction performance staging integration
 
 on:
+  # Pre-merge opt-in: add or edit this marker file on portal-rebuild to run
+  # the staging-only workflow without merging PR #152.
+  push:
+    branches: [portal-rebuild]
+    paths:
+      - ".github/STAGING_INTEGRATION_RUN_NOW"
   workflow_dispatch:
     inputs:
       confirm_target:
@@ -19,7 +25,7 @@ concurrency:
 
 jobs:
   staging-integration:
-    if: github.ref == 'refs/heads/portal-rebuild' && inputs.confirm_target == 'naughty-company-api-staging'
+    if: github.ref == 'refs/heads/portal-rebuild' && (github.event_name == 'push' || inputs.confirm_target == 'naughty-company-api-staging')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
