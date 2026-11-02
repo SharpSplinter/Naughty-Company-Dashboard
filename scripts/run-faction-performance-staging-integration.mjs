@@ -165,6 +165,10 @@ async function assertMigrationReady() {
   const found = new Set(tables.map((row) => row.name))
   const missing = expected.filter((name) => !found.has(name))
   if (missing.length) throw new Error(`Staging D1 is missing tables: ${missing.join(", ")}`)
+  const foreignKeys = await d1Query("PRAGMA foreign_key_list(faction_membership_intervals)")
+  if (foreignKeys.some((row) => row.table === "players")) {
+    throw new Error("Membership history must not have a player foreign key or departure cascade.")
+  }
 }
 
 async function assertApiRoute(rosterRunId) {
