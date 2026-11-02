@@ -117,6 +117,7 @@ export function FactionWorkspacePlaceholder({ playerName, onNavigate }: Pick<Wor
 }
 
 export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionToken }: Pick<WorkspaceProps, "playerName" | "onNavigate"> & { apiBase: string; sessionToken: string }) {
+  const eventYear = new Date().getUTCFullYear()
   const [tab, setTab] = useState<"live" | "historical">("live")
   const [historicalKey, setHistoricalKey] = useState("")
   const [historicalConsent, setHistoricalConsent] = useState(false)
@@ -124,6 +125,14 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [historicalKeyBusy, setHistoricalKeyBusy] = useState(false)
   const [historicalKeyMessage, setHistoricalKeyMessage] = useState("")
   const [historicalKeyError, setHistoricalKeyError] = useState("")
+  const [archive, setArchive] = useState<{ event: { eventYear: number; startAt: string; endAt: string }; leaderboard: Array<{ playerId: string; playerName: string; keyConnected: boolean; collectionStatus: string; pagesCollected: number; logsCollected: number; totalHits: number | null; lastCollectedAt: string | null; coverage: string }>; myCollection: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null } | null>(null)
+  const [archiveBusy, setArchiveBusy] = useState(false)
+  const [archiveError, setArchiveError] = useState("")
+  const [collectBusy, setCollectBusy] = useState(false)
+  const [collectMessage, setCollectMessage] = useState("")
+  const [selectedMember, setSelectedMember] = useState<{ playerId: string; playerName: string } | null>(null)
+  const [memberDetail, setMemberDetail] = useState<{ collection: { status: string; coverage: string; logsCollected?: number }; dailyActivity: Array<{ eventDay: string; totalHits: number; relevantLogs: number }>; logs: Array<{ logId: string; timestamp: number; title: string; category: string; labels: string[]; isHit: boolean; details: Record<string, unknown> | null }> } | null>(null)
+  const [memberDetailBusy, setMemberDetailBusy] = useState(false)
 
   const loadHistoricalKeyStatus = async () => {
     try {
@@ -134,7 +143,31 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     } catch (caught) { setHistoricalKeyError(caught instanceof Error ? caught.message : "Could not load your Halloween key status.") }
   }
 
+  const loadArchive = async () => {
+    setArchiveBusy(true); setArchiveError("")
+    try {
+      const response = await fetch(apiBase + "/api/me/halloween/archive?year=" + eventYear, { headers: { Authorization: "Bearer " + sessionToken } })
+      const payload = await response.json() as { error?: string; event?: { eventYear: number; startAt: string; endAt: string }; leaderboard?: typeof archive extends infer T ? T extends { leaderboard: infer L } ? L : never : never; myCollection?: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null }
+      if (!response.ok) throw new Error(payload.error || "Could not load the faction Halloween archive.")
+      if (!payload.event) throw new Error("This Halloween event year is not configured yet.")
+      setArchive({ event: payload.event, leaderboard: (payload.leaderboard || []) as NonNullable<typeof archive>["leaderboard"], myCollection: payload.myCollection ?? null })
+    } catch (caught) { setArchiveError(caught instanceof Error ? caught.message : "Could not load the faction Halloween archive.") }
+    finally { setArchiveBusy(false) }
+  }
+
+  const loadMemberDetail = async (member: { playerId: string; playerName: string }) => {
+    setSelectedMember(member); setMemberDetail(null); setMemberDetailBusy(true); setArchiveError("")
+    try {
+      const response = await fetch(apiBase + "/api/me/halloween/members/" + encodeURIComponent(member.playerId) + "?year=" + eventYear, { headers: { Authorization: "Bearer " + sessionToken } })
+      const payload = await response.json() as { error?: string; collection?: { status: string; coverage: string; logsCollected?: number }; dailyActivity?: Array<{ eventDay: string; totalHits: number; relevantLogs: number }>; logs?: Array<{ logId: string; timestamp: number; title: string; category: string; labels: string[]; isHit: boolean; details: Record<string, unknown> | null }> }
+      if (!response.ok) throw new Error(payload.error || "Could not load this member's event history.")
+      setMemberDetail({ collection: payload.collection || { status: "not_collected", coverage: "not_collected" }, dailyActivity: payload.dailyActivity || [], logs: payload.logs || [] })
+    } catch (caught) { setArchiveError(caught instanceof Error ? caught.message : "Could not load this member's event history.") }
+    finally { setMemberDetailBusy(false) }
+  }
+
   useEffect(() => { void loadHistoricalKeyStatus() }, [apiBase, sessionToken])
+  useEffect(() => { if (tab === "historical") void loadArchive() }, [tab, eventYear, apiBase, sessionToken])
 
   const saveHistoricalKey = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -150,7 +183,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
       if (!response.ok) throw new Error(payload.error || "Could not save your Full Access key.")
       setHistoricalKey(""); setHistoricalConsent(false)
       setHistoricalKeyMessage("Your Full Access key is validated and stored encrypted on your account.")
-      await loadHistoricalKeyStatus()
+      await Promise.all([loadHistoricalKeyStatus(), loadArchive()])
     } catch (caught) { setHistoricalKeyError(caught instanceof Error ? caught.message : "Could not save your Full Access key.") }
     finally { setHistoricalKeyBusy(false) }
   }
@@ -163,10 +196,32 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
       const payload = await response.json() as { error?: string }
       if (!response.ok) throw new Error(payload.error || "Could not disconnect your Full Access key.")
       setHistoricalKeyMessage("Your key has been disconnected. Previously collected faction records were retained.")
-      await loadHistoricalKeyStatus()
+      await Promise.all([loadHistoricalKeyStatus(), loadArchive()])
     } catch (caught) { setHistoricalKeyError(caught instanceof Error ? caught.message : "Could not disconnect your Full Access key.") }
     finally { setHistoricalKeyBusy(false) }
   }
+
+  const startHistoricalCollection = async () => {
+    if (collectBusy) return
+    setCollectBusy(true); setArchiveError(""); setCollectMessage("")
+    try {
+      const response = await fetch(apiBase + "/api/me/halloween/collect", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + sessionToken, "Content-Type": "application/json" },
+        body: JSON.stringify({ year: eventYear }),
+      })
+      const payload = await response.json() as { error?: string; queued?: boolean; alreadyComplete?: boolean; status?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not start historical collection.")
+      setCollectMessage(payload.alreadyComplete ? "Your historical collection is already complete." : "Your historical log collection is queued. It will continue in the background.")
+      await loadArchive()
+    } catch (caught) { setArchiveError(caught instanceof Error ? caught.message : "Could not start historical collection.") }
+    finally { setCollectBusy(false) }
+  }
+
+  const coverageLabel = (coverage: string) => coverage === "complete" ? "Complete" : coverage === "collecting" ? "Collecting" : coverage === "partial" ? "Partial" : "Not collected"
+  const maxDailyHits = Math.max(1, ...(memberDetail?.dailyActivity || []).map(day => Number(day.totalHits || 0)))
+  const formatWhen = (timestamp: number) => new Date(timestamp * 1000).toLocaleString()
+
   return (
     <main className="module-page halloween-module">
       <header className="module-topbar"><a className="portal-brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("/") }}><span className="portal-brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>HALLOWEEN INTELLIGENCE</small></span></a><button type="button" onClick={() => onNavigate("/")}>← Return to portal</button></header>
@@ -179,15 +234,15 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
         <section className="halloween-panel">
           <div className="halloween-status"><i /> CURRENT YEAR</div>
           <h2>Live event intelligence</h2>
-          <p>The current-year view will use each member's saved limited-access login credential for the Torn Halloween summary. Detailed log coverage will be shown separately where the endpoint requires Full Access.</p>
-          <div className="coverage-grid"><div><small>FACTION LEADERBOARD</small><strong>Shared view</strong><span>Same rankings for every authenticated Naughty Souls member</span></div><div><small>DATA COLLECTION</small><strong>Scheduled & cached</strong><span>Opening, periodic, and closing event snapshots</span></div><div><small>DATA COVERAGE</small><strong>Being connected</strong><span>Uncollected details will not be treated as zero</span></div></div>
+          <p>The current-year summary uses each member's own saved limited-access login key. Detailed logs and hit history are collected separately through each member's Full Access historical key.</p>
+          <div className="coverage-grid"><div><small>FACTION LEADERBOARD</small><strong>Shared view</strong><span>One leaderboard for every authenticated Naughty Souls member</span></div><div><small>DATA COLLECTION</small><strong>Scheduled & cached</strong><span>Opening, periodic, and closing event snapshots</span></div><div><small>DATA COVERAGE</small><strong>Separate from logs</strong><span>Missing snapshots are shown as unavailable, not zero</span></div></div>
         </section>
       ) : (
         <section className="halloween-panel">
-          <div className="halloween-status historical"><i /> FACTION ARCHIVE</div>
+          <div className="halloween-status historical"><i /> FACTION ARCHIVE · {eventYear}</div>
           <h2>Historical event records</h2>
-          <p>Historical log collection uses each member's own Full Access API key. Custom Access keys are not supported for this log collector.</p>
-          <div className="historical-key-notice"><strong>Your own key. Your own records. Shared faction history.</strong><span>Connect your own Full Access key once. It is encrypted at rest, associated with your Torn player ID, and used only for your historical event-log collection. Members can browse the shared faction archive without connecting a key.</span></div>
+          <p>Historical log collection uses each member's own Full Access API key. Custom Access keys are not supported for this collector. Collected event history is shared with all authenticated Naughty Souls members.</p>
+          <div className="historical-key-notice"><strong>Your own key. Your own records. Shared faction history.</strong><span>Connect your own Full Access key once. It is encrypted at rest, associated with your Torn player ID, and used only for your historical event-log collection. Members can browse the shared faction archive without connecting a key. If you leave Naughty Souls, your saved historical key and contributed Halloween records are purged.</span></div>
           <section className="historical-key-card">
             <div className="historical-key-heading"><div><small>YOUR HISTORICAL COLLECTION KEY</small><strong>{historicalKeyStatus?.connected ? "Connected · •••• " + (historicalKeyStatus.key?.lastFour || "••••") : "Not connected"}</strong></div><span className={historicalKeyStatus?.connected ? "key-status connected" : "key-status"}><i /> {historicalKeyStatus?.connected ? "FULL ACCESS VERIFIED" : "KEY REQUIRED TO CONTRIBUTE"}</span></div>
             {historicalKeyStatus?.connected ? <div className="historical-key-connected"><p>Your Full Access key is saved securely and will be reused for your collection. Last validation: {historicalKeyStatus.key?.lastValidatedAt ? new Date(historicalKeyStatus.key.lastValidatedAt).toLocaleString() : "Not available"}.</p><button type="button" disabled={historicalKeyBusy} onClick={removeHistoricalKey}>Disconnect key</button></div> : <form className="historical-key-form" onSubmit={saveHistoricalKey}>
@@ -207,14 +262,36 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
             {historicalKeyMessage && <p className="historical-key-message" role="status">{historicalKeyMessage}</p>}
             {!historicalKeyStatus && <p className="historical-key-muted">Checking your saved key status…</p>}
           </section>
-          <div className="coverage-grid"><div><small>LEADERBOARD</small><strong>Faction-wide</strong><span>Shared historical totals and member profiles</span></div><div><small>LOG DETAIL</small><strong>By coverage</strong><span>Player, year, source, and collection timestamp retained</span></div><div><small>KEY REQUIREMENT</small><strong>Full Access only</strong><span>Personal key supplied and controlled by each member</span></div></div>
+          <div className="historical-collection-toolbar"><div><small>FACTION HISTORICAL LEADERBOARD</small><strong>{archive?.leaderboard.length ?? 0} member accounts in the archive</strong></div><button type="button" onClick={() => { void loadArchive(); void loadHistoricalKeyStatus() }} disabled={archiveBusy}>{archiveBusy ? "Refreshing…" : "Refresh archive ↻"}</button></div>
+          {archiveError && <p className="historical-key-error" role="alert">{archiveError}</p>}
+          {collectMessage && <p className="historical-key-message" role="status">{collectMessage}</p>}
+          {archive?.myCollection?.coverage !== "complete" && historicalKeyStatus?.connected && <div className="historical-collect-banner"><div><strong>Contribute your historical event logs</strong><span>Collection runs in the background, one date/page at a time, and can be resumed without re-entering your key.</span></div><button type="button" onClick={startHistoricalCollection} disabled={collectBusy || archive?.myCollection?.coverage === "collecting"}>{collectBusy ? "Queueing…" : archive?.myCollection?.coverage === "collecting" ? "Collection running…" : "Collect my history"}</button></div>}
+          <div className="historical-leaderboard">
+            {!archive && archiveBusy ? <p className="historical-key-muted">Loading faction archive…</p> : archive?.leaderboard.length ? <table><thead><tr><th>RANK</th><th>MEMBER</th><th>TOTAL HITS</th><th>LOGS</th><th>COVERAGE</th></tr></thead><tbody>
+              {archive.leaderboard.map((member, index) => <tr key={member.playerId} className={selectedMember?.playerId === member.playerId ? "selected" : ""}>
+                <td>{member.totalHits === null ? "—" : index + 1}</td>
+                <td><button type="button" className="historical-member-link" onClick={() => void loadMemberDetail({ playerId: member.playerId, playerName: member.playerName })}>{member.playerName}<small>#{member.playerId}</small></button></td>
+                <td>{member.totalHits === null ? "—" : member.totalHits.toLocaleString()}</td>
+                <td>{member.coverage === "complete" || member.coverage === "collecting" || member.coverage === "partial" ? member.logsCollected.toLocaleString() : "—"}</td>
+                <td><span className={"coverage-pill " + member.coverage}>{coverageLabel(member.coverage)}</span></td>
+              </tr>)}
+            </tbody></table> : <div className="historical-empty"><strong>No member event logs have been contributed yet.</strong><span>Members can connect their own Full Access key and start collecting. Until then, the leaderboard reports coverage as unavailable rather than assigning zero hits.</span></div>}
+          </div>
+          {selectedMember && <section className="historical-member-detail">
+            <div className="historical-detail-heading"><div><small>MEMBER EVENT PROFILE</small><strong>{selectedMember.playerName} <span>#{selectedMember.playerId}</span></strong></div><button type="button" onClick={() => { setSelectedMember(null); setMemberDetail(null) }}>Close</button></div>
+            {memberDetailBusy ? <p className="historical-key-muted">Loading member history…</p> : memberDetail ? <>
+              <div className="historical-detail-metrics"><div><small>COLLECTION STATUS</small><strong>{coverageLabel(memberDetail.collection.coverage)}</strong></div><div><small>DAILY HIT DAYS</small><strong>{memberDetail.dailyActivity.filter(day => Number(day.totalHits) > 0).length}</strong></div><div><small>EVENT LOGS</small><strong>{memberDetail.logs.length.toLocaleString()}</strong></div></div>
+              <div className="historical-daily-activity"><h3>Daily hit history</h3>{memberDetail.dailyActivity.length ? memberDetail.dailyActivity.map(day => <div className="historical-day-row" key={day.eventDay}><span>{day.eventDay}</span><div><i style={{ width: ((Number(day.totalHits || 0) / maxDailyHits) * 100) + "%" }} /></div><strong>{Number(day.totalHits || 0).toLocaleString()}</strong></div>) : <p className="historical-key-muted">Daily activity is not available for this member yet.</p>}</div>
+              <div className="historical-event-feed"><h3>Event log feed</h3>{memberDetail.logs.length ? memberDetail.logs.slice(0, 80).map(log => <article key={log.logId}><div><strong>{log.title || "Halloween-related activity"}</strong><small>{formatWhen(log.timestamp)} · Log #{log.logId}</small></div><div>{log.isHit && <span className="event-hit-pill">HIT</span>}{(log.labels || []).map(label => <span className="event-label-pill" key={label}>{label.replaceAll("_", " ")}</span>)}</div></article>) : <p className="historical-key-muted">No event logs are available for this member yet.</p>}</div>
+            </> : <p className="historical-key-muted">No member details loaded.</p>}
+          </section>}
+          <div className="coverage-grid"><div><small>LEADERBOARD</small><strong>Faction-wide</strong><span>Shared historical totals and member profiles</span></div><div><small>LOG DETAIL</small><strong>By coverage</strong><span>Player, year, source, and collection timestamp retained</span></div><div><small>KEY REQUIREMENT</small><strong>Full Access only</strong><span>Each member controls their own collection key</span></div></div>
         </section>
       )}
       <footer className="module-footer"><span>HALLOWEEN EVENT ARCHIVE</span><span>Signed in as {playerName}</span></footer>
     </main>
   )
 }
-
 export function AccountSettingsWorkspace(props: WorkspaceProps) {
   return (
     <main className="module-page">
