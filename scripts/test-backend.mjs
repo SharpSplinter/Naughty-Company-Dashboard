@@ -364,7 +364,7 @@ try {
     assert.match(factionQueueCatch, /message\.retry\(\{ delaySeconds: Math\.min\(60, attempts \* 10\) \}\)/)
     assert.doesNotMatch(factionQueueCatch, /markFactionPerformanceRunFailed|message\.ack\(\)/,
       "retry exhaustion must flow through the configured Cloudflare DLQ, not be acknowledged by the source consumer")
-    const dlqStart = workerSource.indexOf('if (batch.queue === "ncd-global-rankings-refresh-dlq")')
+    const dlqStart = workerSource.indexOf('if (batch.queue?.endsWith("-dlq"))')
     const mainLoopStart = workerSource.indexOf("\n  for (const message of batch.messages) {", dlqStart + 1)
     const dlqSource = workerSource.slice(dlqStart, mainLoopStart)
     assert.match(dlqSource, /markFactionPerformanceRunFailed/,
