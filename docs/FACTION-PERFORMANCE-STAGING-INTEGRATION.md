@@ -17,7 +17,12 @@ The production D1 database ID `bbbe128a-c5cc-46ec-b8ef-93860183e795` is delibera
 
 ## Run procedure
 
-The workflow is `.github/workflows/faction-performance-staging-integration.yml`. It is a manual workflow with a required `naughty-company-api-staging` target confirmation. GitHub only accepts `workflow_dispatch` after that workflow file is present on the repository's default branch; because PR #152 is still open and draft, this branch contains the prepared workflow but it is not manually dispatchable yet. Once registered on the default branch, choose the `portal-rebuild` branch and confirm that exact target.
+The workflow is `.github/workflows/faction-performance-staging-integration.yml`. It has two explicit opt-ins:
+
+- **Pre-merge run:** add or edit `.github/STAGING_INTEGRATION_RUN_NOW` on the `portal-rebuild` branch and push that commit. The workflow's push path filter watches only that marker file; ordinary PR updates do not deploy the staging Workers or run the D1 integration.
+- **Manual run:** after the workflow is registered on the repository's default branch, use **Actions → Faction performance staging integration → Run workflow**, choose `portal-rebuild`, and confirm `naughty-company-api-staging`. GitHub requires `workflow_dispatch` workflow files to exist on the default branch.
+
+Do not merge PR #152 just to register the manual workflow. The existing production `worker-deploy.yml` listens for changes to `src/worker/**`, `migrations/auth/**`, and `wrangler.toml` on `main`, then applies production D1 migrations and deploys the Worker.
 
 The workflow performs these steps in order:
 
