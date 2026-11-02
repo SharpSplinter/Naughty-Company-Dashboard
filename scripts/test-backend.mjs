@@ -2378,6 +2378,15 @@ try {
     const fixture = await makeMembershipFixture({
       members: [{ playerId: "222", playerName: "Departed Member", apiKey: "departed-login-key", isAdmin: true }],
     })
+    const secondDeviceToken = "e2e-second-device-222"
+    const secondDeviceDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secondDeviceToken))
+    const secondDeviceHash = Array.from(new Uint8Array(secondDeviceDigest), byte => byte.toString(16).padStart(2, "0")).join("")
+    fixture.sessions.set(secondDeviceHash, {
+      token_hash: secondDeviceHash,
+      player_id: "222",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    })
+    assert.equal(fixture.sessions.size, 2, "the departure test begins with two active device sessions")
     let factionChecks = 0
     globalThis.fetch = async input => {
       const path = new URL(String(input)).pathname
