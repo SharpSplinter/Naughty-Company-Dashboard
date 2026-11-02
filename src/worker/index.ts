@@ -29,7 +29,7 @@ function allowedOrigin(request: Request, env: WorkerEnv): string | null {
   if (configured && configured !== "*" && incoming === configured) return incoming
   try {
     const url = new URL(incoming)
-    const isDashboard = url.protocol === "https:" && /^(?:[a-z0-9-]+\.)?naughty-company-dashboard\.pages\.dev$/.test(url.hostname)
+    const isDashboard = url.protocol === "https:" && (/^(?:[a-z0-9-]+\.)?naughty-company-dashboard\.pages\.dev$/.test(url.hostname) || url.hostname === "naughtyfamily.pages.dev")
     const isLocalDev = url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1") && url.port === "3000"
     return isDashboard || isLocalDev ? incoming : null
   } catch { return null }
