@@ -294,6 +294,11 @@ try {
     assert.match(workerSource, /if \(db\.batch\)/)
     assert.match(workerSource, /await db\.batch\(\[finishRun, updateState\]\)/,
       "the terminal run status and last-success timestamp must commit atomically in D1")
+    const deadLetterFailureStart = workerSource.indexOf("async function markFactionPerformanceRunFailed")
+    const deadLetterFailureEnd = workerSource.indexOf("async function enqueueOneFactionPerformanceRun", deadLetterFailureStart)
+    const deadLetterFailure = workerSource.slice(deadLetterFailureStart, deadLetterFailureEnd)
+    assert.match(deadLetterFailure, /await db\.batch\(\[failRun, failState\]\)/,
+      "DLQ terminal run status and collection state must commit atomically")
     assert.match(route, /statsCapturedAt/)
     assert.match(route, /gymEnergyCapturedAt/)
     assert.match(route, /private, max-age=30/)
