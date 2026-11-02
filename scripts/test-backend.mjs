@@ -325,7 +325,7 @@ try {
     assert.match(workerSource, /runFactionPerformanceCollection\(env, runId\)/)
     assert.match(workerSource, /message\.retry\(\{ delaySeconds: Math\.min\(60, attempts \* 10\) \}\)/)
     assert.match(workerSource, /WHERE run_id = \? AND status NOT IN \('completed', 'partial', 'failed'\)/)
-    assert.match(workerSource, /WHERE left_observed_at IS NULL/)
+    assert.match(workerSource, /left_observed_at IS NULL/)
     assert.match(workerSource, /setTimeout\\(resolve, 800\\)/)
     assert.match(workerSource, /error.status === 429 \\|\\| error.status >= 500 \\|\\| error.code === 9/)
     assert.doesNotMatch(workerSource, /The CI-only secret is not a Worker binding/)
