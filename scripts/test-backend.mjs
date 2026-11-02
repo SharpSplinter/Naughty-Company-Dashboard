@@ -278,6 +278,40 @@ try {
     assert.doesNotMatch(floorSource, /currentStockQuantity - previousStockSnapshot\.stockQuantity/)
   })
 
+  await test("faction performance migration preserves historical data independently of player rows", () => {
+    const migration = readFileSync(join(root, "migrations/auth/0019_faction_performance_collection.sql"), "utf8")
+    for (const table of [
+      "faction_performance_collection_runs",
+      "faction_performance_collection_state",
+      "faction_membership_intervals",
+      "faction_roster_snapshots",
+      "faction_member_roster_snapshots",
+      "faction_member_stat_snapshots",
+      "faction_gym_energy_snapshots",
+    ]) assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
+    assert.match(migration, /WHERE left_observed_at IS NULL/)
+    assert.match(migration, /estimated_joined_at/)
+    assert.doesNotMatch(migration, /REFERENCES players|ON DELETE CASCADE|DROP TABLE|DELETE FROM/i)
+    assert.match(migration, /xantaken REAL/)
+    assert.match(migration, /lsdtaken REAL/)
+    assert.match(migration, /energydrinkused REAL/)
+    assert.match(migration, /networth REAL/)
+  })
+
+  await test("faction performance scheduler and queue use a dedicated Worker secret and bounded idempotent runs", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    assert.match(workerSource, /TORN_FACTION_API_KEY/)
+    assert.match(workerSource, /FACTION_PERFORMANCE_PAGE_SIZE = 5/)
+    assert.match(workerSource, /collection_key/)
+    assert.match(workerSource, /fiveMinuteBucket % 3 === 0/)
+    assert.match(workerSource, /FACTION_PERFORMANCE_QUEUE_KIND/)
+    assert.match(workerSource, /enqueueFactionPerformanceCollections\(env, scheduledTime\)/)
+    assert.match(workerSource, /runFactionPerformanceCollection\(env, runId\)/)
+    assert.match(workerSource, /message\.retry\(\{ delaySeconds: Math\.min\(60, attempts \* 10\) \}\)/)
+    assert.match(workerSource, /WHERE run_id = \? AND status NOT IN \('completed', 'partial', 'failed'\)/)
+    assert.match(workerSource, /WHERE left_observed_at IS NULL/)
+  })
+
   await test("company stock refreshes preserve current values and append historical stock snapshots", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const migrationSource = readFileSync(join(root, "migrations/auth/0002_company_financial_history.sql"), "utf8")
