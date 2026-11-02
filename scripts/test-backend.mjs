@@ -732,10 +732,14 @@ try {
       return new Response(JSON.stringify({ members: [], job: { position: "Director" }, profile: { id: 99 } }))
     } })
     await client.getFactionMembers()
+    await client.getFactionMembersForRoster()
+    await client.getFactionGymEnergyContributors()
     await client.getUserJobFor(12345)
     await client.getCompanyProfileById(96639)
     assert.deepEqual(requested, [
       "https://api.torn.com/v2/faction/members",
+      "https://api.torn.com/v2/faction/members?striptags=true",
+      "https://api.torn.com/v2/faction/contributors?stat=gymenergy",
       "https://api.torn.com/v2/user/12345/job",
       "https://api.torn.com/v2/company/96639/profile",
     ])
@@ -779,6 +783,35 @@ try {
       123,
       "the separate items.used.energy_drinks field is the energy-drink metric, not items.used.energy",
     )
+  })
+
+  await test("live sanitized target-member responses confirm the public personalstats route shape", () => {
+    const decoded = decodePersonalStatsResponse(livePersonalStatsFixtures.targetMemberPopular, { kind: "popular" })
+    assert.equal(decoded.kind, "current")
+    assert.equal(decoded.missingMetrics.length, 0)
+    assert.equal(Object.values(decoded.metrics).filter((value) => value !== null).length, 18)
+    assert.equal(livePersonalStatsFixtures.capture.targetMemberSampleCount, 2)
+    assert.equal(livePersonalStatsFixtures.capture.targetMemberPopularMetricCount, 18)
+  })
+
+  await test("live sanitized faction roster and gym-energy fixtures confirm collection field names", () => {
+    const members = livePersonalStatsFixtures.factionRoster.members
+    assert.equal(livePersonalStatsFixtures.capture.factionRosterMemberCount, 100)
+    assert.deepEqual(
+      Object.keys(members[0]).sort(),
+      ["days_in_faction", "has_early_discharge", "id", "is_in_oc", "is_on_wall", "is_revivable", "last_action", "level", "name", "position", "revive_setting", "status"].sort(),
+    )
+    assert.deepEqual(
+      Object.keys(members[0].last_action).sort(),
+      ["relative", "status", "timestamp"],
+    )
+    assert.deepEqual(
+      Object.keys(members[0].status).sort(),
+      ["color", "description", "details", "state", "until"],
+    )
+    const contributors = livePersonalStatsFixtures.gymEnergyContributors.contributors
+    assert.equal(livePersonalStatsFixtures.capture.gymEnergyContributorCount, 100)
+    assert.deepEqual(Object.keys(contributors[0]).sort(), ["id", "in_faction", "username", "value"])
   })
 
   await test("live sanitized category fixtures confirm required nested category paths", () => {
