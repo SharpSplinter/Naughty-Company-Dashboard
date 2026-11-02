@@ -135,3 +135,57 @@
 .historical-key-error,.historical-key-message{font-size:9px;line-height:1.6;margin:10px 0 0}
 .historical-key-error{color:#ff9c9c}.historical-key-message{color:#8ce0c3}
 @media(max-width:680px){.historical-key-heading,.historical-key-connected{align-items:flex-start;flex-direction:column}.historical-tos th{width:34%}.historical-connect-button{width:100%}}
+
+.historical-collection-toolbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:22px 0 11px}
+.historical-collection-toolbar small,.historical-collection-toolbar strong{display:block}
+.historical-collection-toolbar small{font-size:8px;font-weight:700;letter-spacing:.15em;color:#9eab9f}
+.historical-collection-toolbar strong{font:600 14px 'Space Grotesk',sans-serif;margin-top:5px;color:#e5eee8}
+.historical-collection-toolbar button,.historical-detail-heading>button{border:1px solid #43564f;border-radius:7px;background:#182822;color:#bde5d4;padding:8px 11px;font-size:9px}
+.historical-collect-banner{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:12px 0;padding:14px 16px;border:1px solid #5a6d4d;border-radius:9px;background:#26332655}
+.historical-collect-banner strong,.historical-collect-banner span{display:block}
+.historical-collect-banner strong{font-size:10px;color:#d9edcf}
+.historical-collect-banner span{font-size:9px;color:#a8b8a6;line-height:1.6;margin-top:5px}
+.historical-collect-banner button{border:1px solid #6cae8c;border-radius:7px;background:linear-gradient(135deg,#286b52,#1d4e42);color:#e4fff1;padding:10px 12px;font-size:9px;font-weight:700;white-space:nowrap}
+.historical-collect-banner button:disabled,.historical-collection-toolbar button:disabled{opacity:.45;cursor:not-allowed}
+.historical-leaderboard{overflow-x:auto;border:1px solid #33434a;border-radius:10px;background:#0f1921}
+.historical-leaderboard table{width:100%;border-collapse:collapse;min-width:650px}
+.historical-leaderboard th,.historical-leaderboard td{padding:11px 12px;border-bottom:1px solid #ffffff10;text-align:left;vertical-align:middle;font-size:9px}
+.historical-leaderboard th{color:#7f98a1;font-size:8px;letter-spacing:.13em;background:#17232c}
+.historical-leaderboard td{color:#d7e4df}
+.historical-leaderboard tbody tr:last-child td{border-bottom:0}
+.historical-leaderboard tbody tr.selected,.historical-leaderboard tbody tr:hover{background:#1b3030}
+.historical-member-link{border:0;background:transparent;padding:0;text-align:left;color:#d4f5e6;font-size:10px;font-weight:700}
+.historical-member-link small{display:block;color:#829a9d;font-size:8px;font-weight:400;margin-top:4px}
+.coverage-pill{display:inline-flex;align-items:center;border-radius:99px;border:1px solid #3d5360;padding:4px 7px;color:#a4bac1;font-size:8px;white-space:nowrap}
+.coverage-pill.complete{border-color:#3d826b;color:#89dfbd;background:#1f51413a}
+.coverage-pill.collecting{border-color:#907648;color:#e8c88c;background:#59452a44}
+.coverage-pill.partial{border-color:#8c5555;color:#e7a5a5;background:#572d2d44}
+.historical-empty{display:flex;flex-direction:column;gap:7px;padding:24px}
+.historical-empty strong{font-size:11px;color:#d2e3da}
+.historical-empty span{font-size:9px;line-height:1.7;color:#91a7ac;max-width:700px}
+.historical-member-detail{margin-top:15px;padding:18px;border:1px solid #3d5354;border-radius:10px;background:linear-gradient(145deg,#18272a,#121e26)}
+.historical-detail-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;padding-bottom:13px;border-bottom:1px solid #ffffff17}
+.historical-detail-heading small,.historical-detail-heading strong{display:block}
+.historical-detail-heading small{color:#83b5a6;font-size:8px;font-weight:700;letter-spacing:.14em}
+.historical-detail-heading strong{font:600 16px 'Space Grotesk',sans-serif;color:#e7f4ee;margin-top:5px}
+.historical-detail-heading strong span{font:400 9px sans-serif;color:#8ca6a5}
+.historical-detail-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:13px 0}
+.historical-detail-metrics>div{padding:11px;border:1px solid #ffffff15;border-radius:8px;background:#0d171e}
+.historical-detail-metrics small,.historical-detail-metrics strong{display:block}
+.historical-detail-metrics small{font-size:7px;letter-spacing:.12em;color:#82999e}
+.historical-detail-metrics strong{font:600 14px 'Space Grotesk',sans-serif;color:#d9eee4;margin-top:6px}
+.historical-daily-activity,.historical-event-feed{margin-top:18px}
+.historical-daily-activity h3,.historical-event-feed h3{margin:0 0 12px;font:600 13px 'Space Grotesk',sans-serif;color:#d9e8e0}
+.historical-day-row{display:grid;grid-template-columns:90px minmax(50px,1fr) 44px;align-items:center;gap:12px;margin:9px 0}
+.historical-day-row>span{font-size:9px;color:#91a7aa}
+.historical-day-row>div{height:7px;border-radius:99px;background:#26383b;overflow:hidden}
+.historical-day-row>div>i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#307866,#a3c58c)}
+.historical-day-row>strong{font-size:9px;text-align:right;color:#d1e6d8}
+.historical-event-feed article{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:10px 0;border-top:1px solid #ffffff12}
+.historical-event-feed article strong,.historical-event-feed article small{display:block}
+.historical-event-feed article strong{font-size:9px;color:#d7e5df}
+.historical-event-feed article small{font-size:8px;color:#82989e;margin-top:5px}
+.event-hit-pill,.event-label-pill{display:inline-block;border-radius:5px;padding:3px 5px;margin:0 0 4px 4px;font-size:7px;letter-spacing:.05em;text-transform:uppercase}
+.event-hit-pill{background:#573434;color:#ffb4a9;border:1px solid #8e5952}
+.event-label-pill{background:#1e3835;color:#a9d7c5;border:1px solid #3a6259}
+@media(max-width:680px){.historical-collection-toolbar,.historical-collect-banner{align-items:flex-start;flex-direction:column}.historical-collect-banner button{width:100%}.historical-detail-metrics{grid-template-columns:1fr}.historical-event-feed article{flex-direction:column}.historical-day-row{grid-template-columns:74px minmax(40px,1fr) 36px}}
