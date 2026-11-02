@@ -3766,8 +3766,8 @@ export default {
         .bind(yearValue).first<{ eventYear: number; startAt: string; endAt: string }>()
       if (!event) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
       const members = await db.prepare(
-        "SELECT p.player_id AS playerId, p.player_name AS playerName, EXISTS(SELECT 1 FROM halloween_historical_keys k WHERE k.player_id = p.player_id) AS keyConnected, (SELECT j.status FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS collectionStatus, (SELECT j.pages_collected FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS pagesCollected, (SELECT COUNT(*) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedLogCount, (SELECT COALESCE(SUM(l.is_hit), 0) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedHitCount, (SELECT MAX(l.collected_at) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS lastCollectedAt FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL"
-      ).bind(yearValue, yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
+        "SELECT p.player_id AS playerId, p.player_name AS playerName, es.start_minute_of_day AS startMinuteOfDay, EXISTS(SELECT 1 FROM halloween_historical_keys k WHERE k.player_id = p.player_id) AS keyConnected, (SELECT j.status FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS collectionStatus, (SELECT j.pages_collected FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS pagesCollected, (SELECT COUNT(*) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedLogCount, (SELECT COALESCE(SUM(l.is_hit), 0) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedHitCount, (SELECT MAX(l.collected_at) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS lastCollectedAt FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id LEFT JOIN halloween_member_event_slots es ON es.player_id = p.player_id AND es.event_year = ? WHERE p.faction_id = ? AND st.disabled_at IS NULL"
+      ).bind(yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
       const leaderboard = (members.results ?? []).map((row) => {
         const status = typeof row.collectionStatus === "string" ? row.collectionStatus : null
         const statusText = status ?? (row.keyConnected ? "ready" : "not_collected")
@@ -3775,6 +3775,8 @@ export default {
         return {
           playerId: String(row.playerId),
           playerName: String(row.playerName),
+          eventWindowConfigured: row.startMinuteOfDay != null,
+          startTime: row.startMinuteOfDay == null ? null : formatHalloweenStartTime(Number(row.startMinuteOfDay)),
           keyConnected: row.keyConnected === 1,
           collectionStatus: statusText,
           pagesCollected: Number(row.pagesCollected ?? 0),
@@ -3784,7 +3786,8 @@ export default {
           coverage: complete ? "complete" : statusText === "running" || statusText === "queued" ? "collecting" : statusText === "failed" ? "partial" : "not_collected",
         }
       }).sort((a, b) => (b.totalHits ?? -1) - (a.totalHits ?? -1) || a.playerName.localeCompare(b.playerName))
-      return jsonResponse({ event, leaderboard, myCollection: leaderboard.find((row) => row.playerId === session.player_id) ?? null }, 200, origin)
+      const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
+      return jsonResponse({ event, myWindow: personal?.window ?? null, leaderboard, myCollection: leaderboard.find((row) => row.playerId === session.player_id) ?? null }, 200, origin)
     }
     const halloweenMemberMatch = url.pathname.match(/^\/api\/me\/halloween\/members\/(\d+)$/)
     if (halloweenMemberMatch && request.method === "GET") {
