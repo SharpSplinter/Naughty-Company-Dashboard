@@ -815,38 +815,16 @@ export function FloorApp() {
       setApiKey("")
       setSecondaryCompanyKey("")
       const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
-      let companies: SavedCompany[] = []
       if (listResponse.ok) {
         const list = await listResponse.json() as { companies: SavedCompany[] }
-        companies = list.companies || []
+        const companies = list.companies || []
         setSavedCompanies(companies)
+        setCompanyKeySaved(companies.length > 0)
       }
-      if (companies.length) {
-        const company = companies[0]
-        setSelectedCompanyId(company.company_id)
-        let companyResponse = await fetch(`${API_BASE}/api/me/companies/${company.company_id}`, { headers: { Authorization: `Bearer ${payload.token}` } })
-        if (!companyResponse.ok) companyResponse = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${payload.token}` }, body: JSON.stringify({ companyId: company.company_id }) })
-        if (companyResponse.ok) {
-          const data = await companyResponse.json() as { profile: unknown; employees: unknown; stock?: unknown; incomeHistory?: IncomeSnapshot[]; companyId?: string | number }
-          const normalized = runEngine(data.profile, data.employees, catalog)
-          if (normalized) {
-            setResult({ profile: data.profile, employees: data.employees, stock: data.stock, incomeHistory: data.incomeHistory, model: normalized })
-            setSelectedCompanyId(String(data.companyId ?? normalized.company.id))
-            setSelectedRankingType(normalized.company.typeName)
-          }
-          const refreshedList = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
-          if (refreshedList.ok) { const saved = await refreshedList.json() as { companies: SavedCompany[] }; setSavedCompanies(saved.companies || []) }
-        }
-      } else if (payload.company?.key?.saved) {
-        const companyResponse = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { Authorization: `Bearer ${payload.token}` } })
-        if (companyResponse.ok) {
-          const data = await companyResponse.json() as { profile: unknown; employees: unknown; stock?: unknown; companyId?: string | number; incomeHistory?: IncomeSnapshot[] }
-          const normalized = runEngine(data.profile, data.employees, catalog)
-          if (normalized) { setResult({ profile: data.profile, employees: data.employees, stock: data.stock, incomeHistory: data.incomeHistory, model: normalized }); setSelectedCompanyId(String(data.companyId ?? normalized.company.id)); setSelectedRankingType(normalized.company.typeName) }
-          const refreshedList = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
-          if (refreshedList.ok) { const saved = await refreshedList.json() as { companies: SavedCompany[] }; setSavedCompanies(saved.companies || []) }
-        }
-      }
+      // A successful faction sign-in always lands on the portal. Company data
+      // is not requested until the member explicitly opens /company.
+      window.history.replaceState({}, "", "/")
+      setRoutePath("/")
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not sign in.")
     } finally { setLoading(false) }
