@@ -138,7 +138,7 @@ async function revalidateFactionMembershipBatch(env: WorkerEnv, scheduledTime: n
 }
 
 async function authenticate(request: Request, env: WorkerEnv): Promise<Session | null> {
-  const token = request.headers.get("Authorization")?.match(/^Bearer\\s+(.+)$/i)?.[1]?.trim()
+  const token = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
   if (!token || !env.DB) return null
   const hash = await sha256(token)
   const session = await requireDb(env).prepare(
@@ -901,6 +901,10 @@ async function purgeHalloweenMemberData(env: WorkerEnv, playerId: string): Promi
 
 async function removeDepartedFactionAccess(env: WorkerEnv, playerId: string): Promise<void> {
   const db = requireDb(env)
+  // Revoke the durable admin role first. If later archive/session cleanup fails,
+  // administrator access is still removed immediately.
+  await db.prepare("UPDATE administrators SET revoked_by = 'system', revoked_at = ? WHERE player_id = ? AND revoked_at IS NULL")
+    .bind(new Date().toISOString(), playerId).run()
   await purgeHalloweenMemberData(env, playerId)
   await db.prepare("DELETE FROM sessions WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM api_keys WHERE player_id = ?").bind(playerId).run()
