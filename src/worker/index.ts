@@ -3718,8 +3718,8 @@ export default {
         .bind(yearValue).first<{ eventYear: number; startAt: string; endAt: string; liveCollectionEnabled: number }>()
       if (!event) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
       const rows = await db.prepare(
-        "SELECT p.player_id AS playerId, p.player_name AS playerName, (SELECT s.treats_current FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsCurrent, (SELECT s.treats_total FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsTotal, (SELECT s.upgrades_json FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS upgradesJson, (SELECT s.captured_at FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS capturedAt, (SELECT s.snapshot_kind FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS snapshotKind, (SELECT s.source_timestamp FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS sourceTimestamp FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL"
-      ).bind(yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
+        "SELECT p.player_id AS playerId, p.player_name AS playerName, es.start_minute_of_day AS startMinuteOfDay, (SELECT s.treats_current FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsCurrent, (SELECT s.treats_total FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsTotal, (SELECT s.upgrades_json FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS upgradesJson, (SELECT s.captured_at FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS capturedAt, (SELECT s.snapshot_kind FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS snapshotKind, (SELECT s.source_timestamp FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS sourceTimestamp FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id LEFT JOIN halloween_member_event_slots es ON es.player_id = p.player_id AND es.event_year = ? WHERE p.faction_id = ? AND st.disabled_at IS NULL"
+      ).bind(yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
       const leaderboard = (rows.results ?? []).map((row) => {
         let upgrades: unknown[] | null = null
         if (row.capturedAt != null && row.upgradesJson != null) {
@@ -3728,6 +3728,10 @@ export default {
         return {
           playerId: String(row.playerId),
           playerName: String(row.playerName),
+          eventWindowConfigured: row.startMinuteOfDay != null,
+          startTime: row.startMinuteOfDay == null ? null : formatHalloweenStartTime(Number(row.startMinuteOfDay)),
+          eventStartAt: row.startMinuteOfDay == null ? null : buildHalloweenMemberEventWindow(event, Number(row.startMinuteOfDay)).startAt,
+          eventEndAt: row.startMinuteOfDay == null ? null : buildHalloweenMemberEventWindow(event, Number(row.startMinuteOfDay)).endAt,
           currentTreats: row.treatsCurrent == null ? null : Number(row.treatsCurrent),
           totalTreats: row.treatsTotal == null ? null : Number(row.treatsTotal),
           upgradesUnlocked: upgrades === null ? null : upgrades.length,
@@ -3738,7 +3742,8 @@ export default {
           coverage: row.capturedAt ? "captured" : "not_collected",
         }
       }).sort((a, b) => (b.totalTreats ?? -1) - (a.totalTreats ?? -1) || a.playerName.localeCompare(b.playerName))
-      return jsonResponse({ event, leaderboard, mySnapshot: leaderboard.find((row) => row.playerId === session.player_id) ?? null }, 200, origin)
+      const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
+      return jsonResponse({ event, myWindow: personal?.window ?? null, leaderboard, mySnapshot: leaderboard.find((row) => row.playerId === session.player_id) ?? null }, 200, origin)
     }
     if (url.pathname === "/api/me/halloween/live-snapshot" && request.method === "POST") {
       const session = await authenticate(request, env)
