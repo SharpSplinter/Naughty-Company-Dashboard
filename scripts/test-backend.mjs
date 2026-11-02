@@ -329,7 +329,7 @@ try {
     assert.ok(workerSource.includes("setTimeout(resolve, 800)"))
     assert.ok(workerSource.includes("error.status === 429 || error.status >= 500 || error.code === 9"))
     assert.doesNotMatch(workerSource, /The CI-only secret is not a Worker binding/)
-    assert.match(workerSource, /status === "completed" \\? capturedAt : null/)
+    assert.ok(workerSource.includes('status === "completed" ? capturedAt : null'))
   })
 
   await test("company stock refreshes preserve current values and append historical stock snapshots", () => {
