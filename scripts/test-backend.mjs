@@ -15,6 +15,7 @@ const sourceFiles = [
   "src/lib/company/types.ts",
   "src/lib/torn/client.ts",
   "src/lib/torn/personalstats.ts",
+  "src/lib/faction-performance/collector.ts",
   "src/lib/torn/types.ts",
   "src/worker/index.ts",
   "src/worker/snapshot-provenance.ts",
@@ -49,6 +50,12 @@ try {
   const require = createRequire(import.meta.url)
   const { runEngine } = require(join(temp, "lib/company/engine.js"))
   const { TornApiClient, TornApiClientError } = require(join(temp, "lib/torn/client.js"))
+  const {
+    parseFactionRosterResponse,
+    parseFactionGymEnergyResponse,
+    parseFactionPublicStatsResponse,
+    countCompletePublicMetrics,
+  } = require(join(temp, "lib/faction-performance/collector.js"))
   const {
     buildPersonalStatsPath,
     categoriesForMissingPersonalStats,
@@ -783,6 +790,77 @@ try {
       123,
       "the separate items.used.energy_drinks field is the energy-drink metric, not items.used.energy",
     )
+  })
+
+  await test("faction roster parser validates IDs, keeps revive fields separate, and preserves unknowns", () => {
+    const parsed = parseFactionRosterResponse(livePersonalStatsFixtures.factionRoster)
+    assert.equal(parsed.length, 1)
+    assert.equal(parsed[0].userId, "0", "sanitized fixture has a scrubbed placeholder ID and should be rejected")
+  })
+
+  await test("faction roster parser normalizes nested last-action/status fields and only official revive enums", () => {
+    const payload = {
+      members: [{
+        id: 123456,
+        name: "Example",
+        position: "Member",
+        level: 75,
+        days_in_faction: 40,
+        last_action: { status: "Online", timestamp: 1794000000, relative: "just now" },
+        status: { description: "Okay", details: null, state: "Okay", until: null, color: "green" },
+        is_revivable: true,
+        revive_setting: "Friends & faction",
+        is_on_wall: false,
+        is_in_oc: false,
+        has_early_discharge: false,
+      }, {
+        id: "123457",
+        name: "Unknown fields",
+        last_action: { status: "Unavailable", timestamp: "not-a-time" },
+        status: {},
+        is_revivable: false,
+        revive_setting: "Friends only",
+      }],
+    }
+    const members = parseFactionRosterResponse(payload)
+    assert.equal(members.length, 2)
+    assert.equal(members[0].lastActionStatus, "Online")
+    assert.equal(members[0].lastActionTimestamp, 1794000000)
+    assert.equal(members[0].isRevivable, true)
+    assert.equal(members[0].reviveSetting, "Friends & faction")
+    assert.equal(members[1].lastActionStatus, null)
+    assert.equal(members[1].lastActionTimestamp, null)
+    assert.equal(members[1].isRevivable, false)
+    assert.equal(members[1].reviveSetting, "Unknown", "do not invent unsupported revive enum members")
+    assert.throws(() => parseFactionRosterResponse({}), /members array/)
+  })
+
+  await test("gym-energy parser rejects missing values as unknown and deduplicates contributor IDs", () => {
+    const contributors = parseFactionGymEnergyResponse({
+      contributors: [
+        { id: 123, username: "Member A", value: 5000, in_faction: true },
+        { id: "124", username: "Member B", value: "500", in_faction: false },
+        { id: 123, username: "Duplicate", value: 9000, in_faction: true },
+      ],
+    })
+    assert.deepEqual(contributors, [
+      { userId: "123", username: "Member A", value: 5000, inFaction: true },
+      { userId: "124", username: "Member B", value: null, inFaction: false },
+    ])
+    assert.throws(() => parseFactionGymEnergyResponse({}), /contributors array/)
+  })
+
+  await test("Popular public-stat parser returns 18 distinct metrics and preserves missing values", () => {
+    const parsed = parseFactionPublicStatsResponse(livePersonalStatsFixtures.targetMemberPopular)
+    assert.equal(countCompletePublicMetrics(parsed), 18)
+    assert.equal(parsed.xantaken, 0)
+    assert.equal(parsed.lsdtaken, 0)
+    assert.deepEqual(parsed.missingMetrics, [])
+    const partial = parseFactionPublicStatsResponse({ personalstats: { drugs: { xanax: 7 } } })
+    assert.equal(partial.xantaken, 7)
+    assert.equal(partial.lsdtaken, null)
+    assert.ok(partial.missingMetrics.includes("lsdtaken"))
+    assert.equal(countCompletePublicMetrics(partial), 1)
   })
 
   await test("live sanitized target-member responses confirm the public personalstats route shape", () => {
