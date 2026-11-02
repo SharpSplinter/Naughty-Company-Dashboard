@@ -516,6 +516,11 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const coverageLabel = (coverage: string) => coverage === "complete" ? "Complete" : coverage === "collecting" ? "Collecting" : coverage === "partial" ? "Partial" : "Not collected"
   const maxDailyHits = Math.max(1, ...(memberDetail?.dailyActivity || []).map(day => Number(day.totalHits || 0)))
   const formatWhen = (timestamp: number) => new Date(timestamp * 1000).toLocaleString()
+  const personalStartMs = personalWindow?.startAt ? Date.parse(personalWindow.startAt) : Number.NaN
+  const personalEndMs = personalWindow?.endAt ? Date.parse(personalWindow.endAt) : Number.NaN
+  const nowMs = Date.now()
+  const personalEventPhase = !personalWindow?.configured ? "TIME SLOT REQUIRED" : nowMs < personalStartMs ? "UPCOMING FOR YOU" : nowMs < personalEndMs ? "ACTIVE FOR YOU" : "YOUR EVENT WINDOW CONCLUDED"
+  const canCapturePersonalSnapshot = Boolean(personalWindow?.configured && nowMs >= personalStartMs && nowMs < personalEndMs)
 
   return (
     <main className="module-page halloween-module">
@@ -525,15 +530,39 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
         <button type="button" className={tab === "live" ? "active" : ""} onClick={() => setTab("live")}><span>◉</span> Live / Current Year</button>
         <button type="button" className={tab === "historical" ? "active" : ""} onClick={() => setTab("historical")}><span>◷</span> Historical</button>
       </nav>
+      <section className="halloween-personal-window" aria-labelledby="halloween-personal-window-title">
+        <div className="halloween-personal-window-copy">
+          <div className="halloween-status"><i /> YOUR PERSONAL EVENT WINDOW · {eventYear}</div>
+          <h2 id="halloween-personal-window-title">Your Trick or Treat start time</h2>
+          <p>Choose the same start time you selected in Torn's Calendar. TCT is UTC. Your personal window starts on October 25 and ends on November 1 at the same selected clock time, so members can have different start and finish times.</p>
+          {personalWindow?.configured && personalWindow.startAt && personalWindow.endAt ? (
+            <div className="halloween-personal-window-range">
+              <span><small>START</small><strong>{formatTctDateTime(personalWindow.startAt)} TCT</strong></span>
+              <span><small>END</small><strong>{formatTctDateTime(personalWindow.endAt)} TCT</strong></span>
+            </div>
+          ) : <div className="halloween-personal-window-unset">No personal time saved yet. Select your Torn event slot before contributing historical logs or receiving scheduled live snapshots.</div>}
+        </div>
+        <div className="halloween-personal-window-control">
+          <label htmlFor="halloween-personal-start-time">Start time (TCT)</label>
+          <select id="halloween-personal-start-time" value={personalStartTime} onChange={event => setPersonalStartTime(event.target.value)} disabled={eventWindowBusy || eventWindowLocked}>
+            <option value="">Choose your time</option>
+            {halloweenStartTimeOptions.map(time => <option value={time} key={time}>{time}</option>)}
+          </select>
+          <button type="button" onClick={() => void savePersonalEventWindow()} disabled={eventWindowBusy || eventWindowLocked || !personalStartTime}>{eventWindowBusy ? "Saving…" : eventWindowLocked ? "Time locked after collection" : "Save my event time"}</button>
+          {eventWindowLocked && <small className="halloween-slot-hint">Locked because collection or snapshot capture has started. This protects existing records from being assigned to a different window.</small>}
+          {eventWindowError && <p className="historical-key-error" role="alert">{eventWindowError}</p>}
+          {eventWindowNotice && <p className="historical-key-message" role="status">{eventWindowNotice}</p>}
+        </div>
+      </section>
       {tab === "live" ? (
         <section className="halloween-panel">
-          <div className="halloween-status"><i /> {live && Date.now() > Date.parse(live.event.endAt) ? "EVENT CONCLUDED" : live && Date.now() < Date.parse(live.event.startAt) ? "UPCOMING EVENT" : "CURRENT YEAR"} · {eventYear}</div>
+          <div className="halloween-status"><i /> {personalEventPhase} · {eventYear}</div>
           <h2>Live event intelligence</h2>
           <p>The current-year leaderboard uses each member's own saved limited-access login key. Detailed logs and hit history are collected separately through each member's Full Access historical key.</p>
           <div className="historical-collection-toolbar">
             <div><small>FACTION LIVE LEADERBOARD</small><strong>{live?.leaderboard.length ?? 0} member accounts</strong></div>
             <div className="live-toolbar-actions">
-              {live && Date.now() >= Date.parse(live.event.startAt) && Date.now() <= Date.parse(live.event.endAt) && <button type="button" onClick={() => void captureLiveSnapshot()} disabled={liveCaptureBusy}>{liveCaptureBusy ? "Capturing…" : "Capture my snapshot"}</button>}
+              {canCapturePersonalSnapshot && <button type="button" onClick={() => void captureLiveSnapshot()} disabled={liveCaptureBusy}>{liveCaptureBusy ? "Capturing…" : "Capture my snapshot"}</button>}
               <button type="button" onClick={() => void loadLive()} disabled={liveBusy}>{liveBusy ? "Refreshing…" : "Refresh live board ↻"}</button>
             </div>
           </div>
@@ -548,7 +577,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
               {live.leaderboard.length ? <table><thead><tr><th>RANK</th><th>MEMBER</th><th>CURRENT TREATS</th><th>TOTAL TREATS</th><th>UPGRADES</th><th>COVERAGE</th></tr></thead><tbody>
                 {live.leaderboard.map((member, index) => <tr key={member.playerId}>
                   <td>{member.totalTreats === null ? "—" : index + 1}</td>
-                  <td>{member.playerName}<small>#{member.playerId} · {member.snapshotKind ?? "no snapshot"} · {member.sourceTimestamp == null ? "source time unavailable" : "Torn " + new Date(member.sourceTimestamp * 1000).toLocaleString()}</small></td>
+                  <td>{member.playerName}<small>#{member.playerId} · {member.startTime ? "Event slot " + member.startTime + " TCT" : "Event slot not set"} · {member.snapshotKind ?? "no snapshot"} · {member.sourceTimestamp == null ? "source time unavailable" : "Torn " + new Date(member.sourceTimestamp * 1000).toLocaleString()}</small></td>
                   <td>{member.currentTreats === null ? "—" : member.currentTreats.toLocaleString()}</td>
                   <td>{member.totalTreats === null ? "—" : member.totalTreats.toLocaleString()}</td>
                   <td>{member.upgradesUnlocked === null ? "—" : member.upgradesUnlocked}</td>
@@ -556,7 +585,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
                 </tr>)}
               </tbody></table> : <div className="historical-empty"><strong>No live snapshots have been collected yet.</strong><span>Opening, periodic and closing collection is controlled by the event's live-collection setting.</span></div>}
             </div>
-            <p className="historical-key-muted">{live.event.liveCollectionEnabled ? "Scheduled live collection is enabled for this event." : "Scheduled live collection is currently disabled for this event."} Event window: {new Date(live.event.startAt).toLocaleString()} to {new Date(live.event.endAt).toLocaleString()}.</p>
+            <p className="historical-key-muted">{live.event.liveCollectionEnabled ? "Scheduled live collection is enabled for this event." : "Scheduled live collection is currently disabled for this event."} {personalWindow?.configured && personalWindow.startAt && personalWindow.endAt ? "Your event window: " + formatTctDateTime(personalWindow.startAt) + " to " + formatTctDateTime(personalWindow.endAt) + " TCT." : "Set your personal TCT time above to enable a member-specific event window."}</p>
           </> : !liveBusy ? <div className="historical-empty"><strong>Live snapshots are unavailable.</strong><span>Refresh to check the current faction leaderboard.</span></div> : null}
         </section>
       ) : (
@@ -587,12 +616,12 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
           <div className="historical-collection-toolbar"><div><small>FACTION HISTORICAL LEADERBOARD</small><strong>{archive?.leaderboard.length ?? 0} member accounts in the archive</strong></div><button type="button" onClick={() => { void loadArchive(); void loadHistoricalKeyStatus() }} disabled={archiveBusy}>{archiveBusy ? "Refreshing…" : "Refresh archive ↻"}</button></div>
           {archiveError && <p className="historical-key-error" role="alert">{archiveError}</p>}
           {collectMessage && <p className="historical-key-message" role="status">{collectMessage}</p>}
-          {archive?.myCollection?.coverage !== "complete" && historicalKeyStatus?.connected && <div className="historical-collect-banner"><div><strong>Contribute your historical event logs</strong><span>Collection runs in the background, one date/page at a time, and can be resumed without re-entering your key.</span></div><button type="button" onClick={startHistoricalCollection} disabled={collectBusy || archive?.myCollection?.coverage === "collecting"}>{collectBusy ? "Queueing…" : archive?.myCollection?.coverage === "collecting" ? "Collection running…" : "Collect my history"}</button></div>}
+          {archive?.myCollection?.coverage !== "complete" && historicalKeyStatus?.connected && <div className="historical-collect-banner"><div><strong>Contribute your historical event logs</strong><span>Collection follows your saved personal window, from your selected October 25 start time through November 1 at the same TCT time.</span></div><button type="button" onClick={startHistoricalCollection} disabled={collectBusy || archive?.myCollection?.coverage === "collecting" || !personalWindow?.configured}>{collectBusy ? "Queueing…" : archive?.myCollection?.coverage === "collecting" ? "Collection running…" : !personalWindow?.configured ? "Set event time above" : "Collect my history"}</button></div>}
           <div className="historical-leaderboard">
             {!archive && archiveBusy ? <p className="historical-key-muted">Loading faction archive…</p> : archive?.leaderboard.length ? <table><thead><tr><th>RANK</th><th>MEMBER</th><th>TOTAL HITS</th><th>LOGS</th><th>COVERAGE</th></tr></thead><tbody>
               {archive.leaderboard.map((member, index) => <tr key={member.playerId} className={selectedMember?.playerId === member.playerId ? "selected" : ""}>
                 <td>{member.totalHits === null ? "—" : index + 1}</td>
-                <td><button type="button" className="historical-member-link" onClick={() => void loadMemberDetail({ playerId: member.playerId, playerName: member.playerName })}>{member.playerName}<small>#{member.playerId}</small></button></td>
+                <td><button type="button" className="historical-member-link" onClick={() => void loadMemberDetail({ playerId: member.playerId, playerName: member.playerName })}>{member.playerName}<small>#{member.playerId} · {member.startTime ? "Event slot " + member.startTime + " TCT" : "Event slot not set"}</small></button></td>
                 <td>{member.totalHits === null ? "—" : member.totalHits.toLocaleString()}</td>
                 <td>{member.coverage === "complete" || member.coverage === "collecting" || member.coverage === "partial" ? member.logsCollected.toLocaleString() : "—"}</td>
                 <td><span className={"coverage-pill " + member.coverage}>{coverageLabel(member.coverage)}</span></td>
