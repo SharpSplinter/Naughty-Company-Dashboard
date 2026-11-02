@@ -106,6 +106,14 @@ export class TornApiClient {
     return this.request<Record<string, unknown>>("/faction/members")
   }
 
+  async getFactionMembersForRoster(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("/faction/members?striptags=true")
+  }
+
+  async getFactionGymEnergyContributors(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("/faction/contributors?stat=gymenergy")
+  }
+
   async getUserJobFor(playerId: string | number): Promise<Record<string, unknown>> {
     if (!/^\d+$/.test(String(playerId))) throw new TornApiClientError("Player ID must be numeric.", { status: 400 })
     return this.request<Record<string, unknown>>(`/user/${playerId}/job`)
