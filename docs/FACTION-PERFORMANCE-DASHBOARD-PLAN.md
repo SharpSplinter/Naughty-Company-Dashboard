@@ -683,12 +683,13 @@ Live API contract checks and client entry points:
 - [x] Pace public-stat requests by 800 ms between member calls, leaving margin under Torn's 100-request/minute upper bound. Rate-limit, transient upstream and network failures retry the current member rather than being written as a permanent zero/failed sample.
 - [x] Persist missing metrics as NULL and classify samples complete/partial/failed. A partial collection does not advance `last_success_at`.
 - [x] Add parser, sanitized-live-fixture, migration and Worker scheduling/retry regression checks.
+- [x] Add `GET /api/faction/performance`, protected by current faction membership, to return the latest public roster, Popular stats and gym-energy snapshots with per-source timestamps and collection status. It never returns API keys, bars or cooldowns.
 
 Still to implement or validate:
 
 - [ ] Apply migration 0019 to a non-production D1 database and exercise the full queue pipeline against it.
 - [ ] Validate restart/retry behavior and membership join/leave transitions with a stateful D1 integration test, not only parser/static regression coverage.
-- [ ] Add collection status/freshness read APIs and admin/leadership diagnostics for run failures, partial samples, retry exhaustion and last successful capture.
+- [ ] Add leadership/admin diagnostics for run failures, partial samples, retry exhaustion and last successful capture.
 - [ ] Run a controlled live collection against the configured Worker secret after deployment, then confirm row counts and captured timestamps. No deployment or production migration has been performed in this work session.
 
 ### Phase 2 — Weekly calculation engine
@@ -820,6 +821,7 @@ The project is not complete until all of the following are implemented and teste
 | Faction collection runtime | Worker uses TORN_FACTION_API_KEY, five-minute roster and fifteen-minute Popular/gym-energy queue buckets; awaits deployment and D1 integration validation |
 | Faction collection throttling | Public member-stat fan-out is five per queue page with 800 ms spacing and retry/backoff for 429/5xx/network failures |
 | Faction collection history | Migration 0019 creates no player foreign keys; departure cleanup remains scoped to access/secrets and does not delete faction-performance history |
+| Faction performance read API | GET /api/faction/performance requires a current faction session and returns only public roster, public personalstats and gym-energy snapshots; no member credentials or owner-only live fields |
 | Personalstats fallback | Category fallback is available but not needed with current Popular coverage; missing paths remain null |
 | Personalstats response | Owner route with key access level 4 returned the broad Full shape for cat=all; target route cat=all maps to FullPublic; cat=popular returns Popular; stat+timestamp returns Historic |
 | Personalstats route selection | Owner current requests require cat; no-category request produced Torn error 21 (Incorrect category) |
