@@ -143,7 +143,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [historicalKeyMessage, setHistoricalKeyMessage] = useState("")
   const [historicalKeyError, setHistoricalKeyError] = useState("")
   const [live, setLive] = useState<HalloweenLivePayload | null>(null)
-  const [liveBusy, setLiveBusy] = useState(false)
+  const [liveBusy, setLiveBusy] = useState(true)
   const [liveCaptureBusy, setLiveCaptureBusy] = useState(false)
   const [liveError, setLiveError] = useState("")
   const [archive, setArchive] = useState<{ event: { eventYear: number; startAt: string; endAt: string }; leaderboard: Array<{ playerId: string; playerName: string; keyConnected: boolean; collectionStatus: string; pagesCollected: number; logsCollected: number; totalHits: number | null; lastCollectedAt: string | null; coverage: string }>; myCollection: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null } | null>(null)
@@ -286,7 +286,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
       </nav>
       {tab === "live" ? (
         <section className="halloween-panel">
-          <div className="halloween-status"><i /> CURRENT YEAR · {eventYear}</div>
+          <div className="halloween-status"><i /> {live && Date.now() > Date.parse(live.event.endAt) ? "EVENT CONCLUDED" : live && Date.now() < Date.parse(live.event.startAt) ? "UPCOMING EVENT" : "CURRENT YEAR"} · {eventYear}</div>
           <h2>Live event intelligence</h2>
           <p>The current-year leaderboard uses each member's own saved limited-access login key. Detailed logs and hit history are collected separately through each member's Full Access historical key.</p>
           <div className="historical-collection-toolbar">
@@ -298,7 +298,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
           </div>
           {liveError && <p className="historical-key-error" role="alert">{liveError}</p>}
           {liveBusy && !live ? <p className="historical-key-muted">Loading live faction snapshots…</p> : live ? <>
-            {live.mySnapshot ? <div className="coverage-grid">
+            {live.mySnapshot?.capturedAt ? <div className="coverage-grid">
               <div><small>MY CURRENT TREATS</small><strong>{live.mySnapshot.currentTreats?.toLocaleString() ?? "—"}</strong><span>Latest saved current count</span></div>
               <div><small>MY TOTAL TREATS</small><strong>{live.mySnapshot.totalTreats?.toLocaleString() ?? "—"}</strong><span>Latest saved event total</span></div>
               <div><small>UPGRADES UNLOCKED</small><strong>{live.mySnapshot.upgradesUnlocked ?? "—"}</strong><span>{live.mySnapshot.capturedAt ? "Captured " + new Date(live.mySnapshot.capturedAt).toLocaleString() : "No snapshot timestamp"}</span></div>
