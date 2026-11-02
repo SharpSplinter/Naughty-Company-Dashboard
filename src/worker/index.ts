@@ -94,8 +94,9 @@ async function revalidateFactionMembershipBatch(env: WorkerEnv, scheduledTime: n
   let checked = 0
   for (const candidate of candidates.results ?? []) {
     const playerId = String(candidate.playerId)
-    const attemptedAt = new Date(scheduledTime).toISOString()
-    const claimBefore = new Date(scheduledTime - 5 * 60 * 1000).toISOString()
+    const attemptTime = Date.now()
+    const attemptedAt = new Date(attemptTime).toISOString()
+    const claimBefore = new Date(attemptTime - 5 * 60 * 1000).toISOString()
     const claim = await db.prepare("UPDATE players SET membership_check_attempted_at = ? WHERE player_id = ? AND (membership_check_attempted_at IS NULL OR membership_check_attempted_at < ?)")
       .bind(attemptedAt, playerId, claimBefore).run()
     // The cron candidate list can race with an authenticated request or another
