@@ -64,7 +64,14 @@ export default {
     if (url.pathname === "/v2/faction/contributors" && url.searchParams.get("stat") === "gymenergy") {
       return json(gymEnergyContributors())
     }
-    if (/^\/v2\/user\/[1-9]\d*\/personalstats$/.test(url.pathname) && url.searchParams.get("cat") === "popular") {
+    const personalStatsMatch = url.pathname.match(/^\/v2\/user\/([1-9]\d*)\/personalstats$/)
+    if (personalStatsMatch && url.searchParams.get("cat") === "popular") {
+      if (personalStatsMatch[1] === "980000007") {
+        return json({ error: { code: 3, error: "Fixture member key permission failure." } }, 403)
+      }
+      if (personalStatsMatch[1] === "980000008") {
+        return json({ error: { code: 9, error: "Fixture Torn rate limit." } }, 429)
+      }
       return json(liveFixtures.targetMemberPopular)
     }
     return json({ error: "Unknown integration fixture route." }, 404)
