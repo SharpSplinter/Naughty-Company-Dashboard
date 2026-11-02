@@ -300,6 +300,20 @@ try {
     assert.match(migration, /networth REAL/)
   })
 
+  await test("member departure revokes access but never deletes faction performance history", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const departureStart = workerSource.indexOf("async function removeDepartedFactionAccess")
+    const departureEnd = workerSource.indexOf("async function applyConfirmedFactionDeparture", departureStart)
+    const cleanup = workerSource.slice(departureStart, departureEnd)
+    for (const table of [
+      "faction_roster_snapshots",
+      "faction_member_roster_snapshots",
+      "faction_member_stat_snapshots",
+      "faction_gym_energy_snapshots",
+      "faction_membership_intervals",
+    ]) assert.doesNotMatch(cleanup, new RegExp(`DELETE FROM ${table}`))
+  })
+
   await test("faction performance scheduler and queue use a dedicated Worker secret and bounded idempotent runs", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     assert.match(workerSource, /TORN_FACTION_API_KEY/)
@@ -315,6 +329,7 @@ try {
     assert.match(workerSource, /setTimeout\\(resolve, 800\\)/)
     assert.match(workerSource, /error.status === 429 \\|\\| error.status >= 500 \\|\\| error.code === 9/)
     assert.doesNotMatch(workerSource, /The CI-only secret is not a Worker binding/)
+    assert.match(workerSource, /status === "completed" \\? capturedAt : null/)
   })
 
   await test("company stock refreshes preserve current values and append historical stock snapshots", () => {
