@@ -1,4 +1,11 @@
 import { TornApiClient, TornApiClientError } from "../lib/torn/client"
+import {
+  FACTION_PUBLIC_STAT_COLUMNS,
+  parseFactionGymEnergyResponse,
+  parseFactionPublicStatsResponse,
+  parseFactionRosterResponse,
+} from "../lib/faction-performance/collector"
+import { PERSONAL_STATS_HISTORICAL_NAMES } from "../lib/torn/personalstats"
 import { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } from "./snapshot-provenance"
 import { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isSnapshotStale, normalizeWebhookUrl, normalizeAlertThreshold, normalizeCooldownHours } from "../lib/automation/rules"
 
@@ -7,7 +14,7 @@ type D1Statement = { bind(...values: (string | number | null)[]): D1Statement; f
 type D1Database = { prepare(sql: string): D1Statement }
 type QueueProducer = { send(message: unknown): Promise<unknown> }
 type QueueMessage = { body: unknown; attempts?: number; ack(): void; retry(options?: { delaySeconds?: number }): void }
-type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
+type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; TORN_FACTION_API_KEY?: string; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
 type Session = { player_id: string; player_name: string; is_admin: number; faction_id?: string | null; faction_verified_at?: string | null; membership_check_attempted_at?: string | null; membership_check_status?: string | null }
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }
@@ -296,6 +303,312 @@ async function saveKey(env: WorkerEnv, playerId: string, apiKey: string): Promis
 async function savedKey(env: WorkerEnv, playerId: string): Promise<string | null> {
   const row = await requireDb(env).prepare("SELECT ciphertext, iv FROM api_keys WHERE player_id = ?").bind(playerId).first<{ ciphertext: string; iv: string }>()
   return row ? decryptKey(env, row.ciphertext, row.iv) : null
+}
+
+type FactionPerformanceRunRow = {
+  runId: string
+  factionId: string
+  collectionKind: "roster" | "personalstats" | "gym_energy"
+  status: "queued" | "running" | "completed" | "partial" | "failed"
+  scheduledAt: string
+  targetUserIdsJson: string | null
+  nextIndex: number
+  lastEnqueuedAt: string | null
+}
+
+const FACTION_PERFORMANCE_PAGE_SIZE = 5
+const FACTION_PERFORMANCE_QUEUE_KIND = "faction-performance-collection"
+
+function factionCollectionSafeError(error: unknown): { summary: string; tornCode: number | null } {
+  if (error instanceof TornApiClientError) {
+    return {
+      summary: error.code === undefined ? "Torn API request failed." : `Torn API error ${error.code}.`,
+      tornCode: typeof error.code === "number" ? error.code : null,
+    }
+  }
+  return { summary: "Collection failed due to an upstream or storage error.", tornCode: null }
+}
+
+async function updateFactionCollectionState(
+  env: WorkerEnv,
+  factionId: string,
+  kind: FactionPerformanceRunRow["collectionKind"],
+  runId: string,
+  capturedAt: string | null,
+  error: string | null,
+): Promise<void> {
+  await requireDb(env).prepare(
+    "INSERT INTO faction_performance_collection_state (faction_id, collection_kind, last_success_at, last_run_id, last_error, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(faction_id, collection_kind) DO UPDATE SET last_success_at = COALESCE(excluded.last_success_at, faction_performance_collection_state.last_success_at), last_run_id = excluded.last_run_id, last_error = excluded.last_error, updated_at = excluded.updated_at"
+  ).bind(factionId, kind, capturedAt, runId, error, new Date().toISOString()).run()
+}
+
+async function finishFactionPerformanceRun(
+  env: WorkerEnv,
+  run: FactionPerformanceRunRow,
+  status: "completed" | "partial",
+  capturedAt: string,
+  error: string | null = null,
+): Promise<void> {
+  const now = new Date().toISOString()
+  await requireDb(env).prepare(
+    "UPDATE faction_performance_collection_runs SET status = ?, completed_at = ?, last_error = ?, updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'partial', 'failed')"
+  ).bind(status, now, error, now, run.runId).run()
+  await updateFactionCollectionState(env, run.factionId, run.collectionKind, run.runId, capturedAt, error)
+}
+
+async function markFactionPerformanceRunFailed(env: WorkerEnv, runId: string, error: unknown): Promise<void> {
+  if (!env.DB) return
+  const safe = factionCollectionSafeError(error)
+  const now = new Date().toISOString()
+  const run = await requireDb(env).prepare(
+    "SELECT faction_id AS factionId, collection_kind AS collectionKind FROM faction_performance_collection_runs WHERE run_id = ?"
+  ).bind(runId).first<{ factionId: string; collectionKind: FactionPerformanceRunRow["collectionKind"] }>()
+  await requireDb(env).prepare(
+    "UPDATE faction_performance_collection_runs SET status = 'failed', completed_at = ?, last_error = ?, updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'partial', 'failed')"
+  ).bind(now, safe.summary, now, runId).run()
+  if (run) await updateFactionCollectionState(env, run.factionId, run.collectionKind, runId, null, safe.summary).catch(() => undefined)
+}
+
+async function enqueueOneFactionPerformanceRun(
+  env: WorkerEnv,
+  scheduledTime: number,
+  kind: FactionPerformanceRunRow["collectionKind"],
+  intervalMs: number,
+): Promise<boolean> {
+  if (!env.DB || !env.GLOBAL_RANKINGS_QUEUE || !env.TORN_FACTION_API_KEY?.trim()) return false
+  const db = requireDb(env)
+  const bucketStart = Math.floor(scheduledTime / intervalMs) * intervalMs
+  const scheduledAt = new Date(bucketStart).toISOString()
+  const collectionKey = `${NAUGHTY_SOULS_FACTION_ID}:${kind}:${bucketStart}`
+  let targetUserIds: string[] | null = null
+
+  if (kind === "personalstats") {
+    const active = await db.prepare(
+      "SELECT user_id AS userId FROM faction_membership_intervals WHERE faction_id = ? AND left_observed_at IS NULL ORDER BY user_id"
+    ).bind(NAUGHTY_SOULS_FACTION_ID).all<{ userId: string }>()
+    targetUserIds = Array.from(new Set((active.results ?? []).map((row) => String(row.userId)).filter((id) => /^[1-9]\\d*$/.test(id))))
+    if (!targetUserIds.length) return false
+  }
+
+  let run = await db.prepare(
+    "SELECT run_id AS runId, faction_id AS factionId, collection_kind AS collectionKind, status, scheduled_at AS scheduledAt, target_user_ids_json AS targetUserIdsJson, next_index AS nextIndex, last_enqueued_at AS lastEnqueuedAt FROM faction_performance_collection_runs WHERE collection_key = ?"
+  ).bind(collectionKey).first<FactionPerformanceRunRow>()
+
+  if (!run) {
+    const now = new Date().toISOString()
+    const runId = crypto.randomUUID()
+    await db.prepare(
+      "INSERT OR IGNORE INTO faction_performance_collection_runs (run_id, collection_key, faction_id, collection_kind, status, scheduled_at, target_user_ids_json, next_index, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?)"
+    ).bind(runId, collectionKey, NAUGHTY_SOULS_FACTION_ID, kind, scheduledAt, targetUserIds ? asJson(targetUserIds) : null, now, now).run()
+    run = await db.prepare(
+      "SELECT run_id AS runId, faction_id AS factionId, collection_kind AS collectionKind, status, scheduled_at AS scheduledAt, target_user_ids_json AS targetUserIdsJson, next_index AS nextIndex, last_enqueued_at AS lastEnqueuedAt FROM faction_performance_collection_runs WHERE collection_key = ?"
+    ).bind(collectionKey).first<FactionPerformanceRunRow>()
+  }
+  if (!run || run.status === "completed" || run.status === "partial" || run.status === "failed") return false
+
+  const lastEnqueuedMs = run.lastEnqueuedAt ? Date.parse(run.lastEnqueuedAt) : Number.NEGATIVE_INFINITY
+  const staleAfterMs = run.status === "running" ? 10 * 60 * 1000 : 4 * 60 * 1000
+  if (Number.isFinite(lastEnqueuedMs) && scheduledTime - lastEnqueuedMs < staleAfterMs) return false
+
+  await env.GLOBAL_RANKINGS_QUEUE.send({ kind: FACTION_PERFORMANCE_QUEUE_KIND, runId: run.runId })
+  const enqueuedAt = new Date().toISOString()
+  await db.prepare(
+    "UPDATE faction_performance_collection_runs SET last_enqueued_at = ?, updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
+  ).bind(enqueuedAt, enqueuedAt, run.runId).run()
+  return true
+}
+
+async function enqueueFactionPerformanceCollections(env: WorkerEnv, scheduledTime: number): Promise<number> {
+  // The CI-only secret is not a Worker binding. Runtime collection stays idle
+  // until an operator configures TORN_FACTION_API_KEY as a Cloudflare secret.
+  if (!env.DB || !env.GLOBAL_RANKINGS_QUEUE || !env.TORN_FACTION_API_KEY?.trim()) return 0
+  let enqueued = 0
+  if (await enqueueOneFactionPerformanceRun(env, scheduledTime, "roster", 5 * 60 * 1000)) enqueued += 1
+  const fiveMinuteBucket = Math.floor(scheduledTime / (5 * 60 * 1000))
+  if (fiveMinuteBucket % 3 === 0) {
+    if (await enqueueOneFactionPerformanceRun(env, scheduledTime, "personalstats", 15 * 60 * 1000)) enqueued += 1
+    if (await enqueueOneFactionPerformanceRun(env, scheduledTime, "gym_energy", 15 * 60 * 1000)) enqueued += 1
+  }
+  return enqueued
+}
+
+function sqliteBoolean(value: boolean | null): number | null {
+  return value === null ? null : value ? 1 : 0
+}
+
+async function runFactionRosterCollection(env: WorkerEnv, run: FactionPerformanceRunRow, client: TornApiClient): Promise<void> {
+  const payload = await client.getFactionMembersForRoster()
+  const members = parseFactionRosterResponse(payload)
+  const capturedAt = new Date().toISOString()
+  const db = requireDb(env)
+
+  await db.prepare(
+    "INSERT INTO faction_roster_snapshots (run_id, faction_id, captured_at, scheduled_at, member_count, response_version) VALUES (?, ?, ?, ?, ?, 'torn-v2') ON CONFLICT(run_id) DO UPDATE SET captured_at = excluded.captured_at, member_count = excluded.member_count"
+  ).bind(run.runId, run.factionId, capturedAt, run.scheduledAt, members.length).run()
+
+  const activeRows = await db.prepare(
+    "SELECT interval_id AS intervalId, user_id AS userId FROM faction_membership_intervals WHERE faction_id = ? AND left_observed_at IS NULL"
+  ).bind(run.factionId).all<{ intervalId: string; userId: string }>()
+  const activeByUser = new Map((activeRows.results ?? []).map((row) => [String(row.userId), String(row.intervalId)]))
+  const seen = new Set<string>()
+
+  for (const member of members) {
+    seen.add(member.userId)
+    const activeIntervalId = activeByUser.get(member.userId)
+    const estimatedJoinedAt = member.daysInFaction === null
+      ? null
+      : new Date(Date.parse(capturedAt) - Math.max(0, member.daysInFaction) * DAY * 1000).toISOString()
+    if (activeIntervalId) {
+      await db.prepare(
+        "UPDATE faction_membership_intervals SET member_name = ?, position = ?, level = ?, days_in_faction = ?, last_seen_at = ? WHERE interval_id = ? AND left_observed_at IS NULL"
+      ).bind(member.name, member.position, member.level, member.daysInFaction, capturedAt, activeIntervalId).run()
+    } else {
+      await db.prepare(
+        "INSERT INTO faction_membership_intervals (interval_id, faction_id, user_id, member_name, position, level, days_in_faction, estimated_joined_at, first_seen_at, last_seen_at, left_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)"
+      ).bind(crypto.randomUUID(), run.factionId, member.userId, member.name, member.position, member.level, member.daysInFaction, estimatedJoinedAt, capturedAt, capturedAt).run()
+    }
+
+    await db.prepare(
+      "INSERT INTO faction_member_roster_snapshots (run_id, faction_id, user_id, captured_at, name, position, level, days_in_faction, last_action_status, last_action_timestamp, last_action_relative, status_description, status_details, status_state, status_until, status_color, is_revivable, revive_setting, is_on_wall, is_in_oc, has_early_discharge) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, user_id) DO UPDATE SET captured_at = excluded.captured_at, name = excluded.name, position = excluded.position, level = excluded.level, days_in_faction = excluded.days_in_faction, last_action_status = excluded.last_action_status, last_action_timestamp = excluded.last_action_timestamp, last_action_relative = excluded.last_action_relative, status_description = excluded.status_description, status_details = excluded.status_details, status_state = excluded.status_state, status_until = excluded.status_until, status_color = excluded.status_color, is_revivable = excluded.is_revivable, revive_setting = excluded.revive_setting, is_on_wall = excluded.is_on_wall, is_in_oc = excluded.is_in_oc, has_early_discharge = excluded.has_early_discharge"
+    ).bind(
+      run.runId, run.factionId, member.userId, capturedAt, member.name, member.position, member.level, member.daysInFaction,
+      member.lastActionStatus, member.lastActionTimestamp, member.lastActionRelative, member.statusDescription, member.statusDetails,
+      member.statusState, member.statusUntil, member.statusColor, sqliteBoolean(member.isRevivable), member.reviveSetting,
+      sqliteBoolean(member.isOnWall), sqliteBoolean(member.isInOc), sqliteBoolean(member.hasEarlyDischarge),
+    ).run()
+  }
+
+  for (const active of activeRows.results ?? []) {
+    const userId = String(active.userId)
+    if (seen.has(userId)) continue
+    await db.prepare(
+      "UPDATE faction_membership_intervals SET left_observed_at = ? WHERE interval_id = ? AND left_observed_at IS NULL"
+    ).bind(capturedAt, String(active.intervalId)).run()
+  }
+
+  await finishFactionPerformanceRun(env, run, "completed", capturedAt)
+}
+
+function emptyFactionPublicStats(): Record<string, null> {
+  return Object.fromEntries(PERSONAL_STATS_HISTORICAL_NAMES.map((name) => [name, null]))
+}
+
+async function saveFactionMemberStatSample(
+  env: WorkerEnv,
+  run: FactionPerformanceRunRow,
+  userId: string,
+  capturedAt: string,
+  stats: ReturnType<typeof parseFactionPublicStatsResponse>,
+  status: "complete" | "partial" | "failed",
+  tornErrorCode: number | null = null,
+): Promise<void> {
+  const columns = FACTION_PUBLIC_STAT_COLUMNS.join(", ")
+  const values = FACTION_PUBLIC_STAT_COLUMNS.map((name) => stats[name])
+  const placeholders = Array.from({ length: values.length + 7 }, () => "?").join(", ")
+  const updateColumns = [
+    "captured_at", "scheduled_at", "collection_status", ...FACTION_PUBLIC_STAT_COLUMNS, "missing_metrics_json", "torn_error_code",
+  ]
+  const updateSql = updateColumns.map((column) => `${column} = excluded.${column}`).join(", ")
+  await requireDb(env).prepare(
+    `INSERT INTO faction_member_stat_snapshots (run_id, faction_id, user_id, captured_at, scheduled_at, response_variant, collection_status, ${columns}, missing_metrics_json, torn_error_code) VALUES (${placeholders}) ON CONFLICT(run_id, user_id) DO UPDATE SET ${updateSql}`
+  ).bind(
+    run.runId, run.factionId, userId, capturedAt, run.scheduledAt, "popular", status, ...values,
+    asJson(stats.missingMetrics), tornErrorCode,
+  ).run()
+}
+
+async function runFactionPersonalStatsCollectionPage(env: WorkerEnv, run: FactionPerformanceRunRow, client: TornApiClient): Promise<void> {
+  let targetUserIds: string[]
+  try {
+    const parsed: unknown = run.targetUserIdsJson ? JSON.parse(run.targetUserIdsJson) : []
+    targetUserIds = Array.isArray(parsed) ? Array.from(new Set(parsed.filter((value): value is string => typeof value === "string" && /^[1-9]\\d*$/.test(value)))) : []
+  } catch {
+    throw new Error("Faction personalstats run has an invalid target list.")
+  }
+  let index = Math.max(0, Number(run.nextIndex) || 0)
+  const endIndex = Math.min(targetUserIds.length, index + FACTION_PERFORMANCE_PAGE_SIZE)
+  let partialCount = 0
+
+  while (index < endIndex) {
+    const userId = targetUserIds[index]
+    const attemptedAt = new Date().toISOString()
+    try {
+      const payload = await client.getUserPersonalStatsFor(userId, { kind: "popular" })
+      const stats = parseFactionPublicStatsResponse(payload)
+      const status = stats.missingMetrics.length ? "partial" : "complete"
+      if (status === "partial") partialCount += 1
+      await saveFactionMemberStatSample(env, run, userId, new Date().toISOString(), stats, status)
+    } catch (error) {
+      partialCount += 1
+      const safe = factionCollectionSafeError(error)
+      const empty = emptyFactionPublicStats() as ReturnType<typeof parseFactionPublicStatsResponse>
+      empty.missingMetrics = [...PERSONAL_STATS_HISTORICAL_NAMES]
+      await saveFactionMemberStatSample(env, run, userId, attemptedAt, empty, "failed", safe.tornCode)
+    }
+    index += 1
+    await requireDb(env).prepare(
+      "UPDATE faction_performance_collection_runs SET next_index = ?, updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
+    ).bind(index, new Date().toISOString(), run.runId).run()
+  }
+
+  if (index < targetUserIds.length) {
+    await requireDb(env).prepare(
+      "UPDATE faction_performance_collection_runs SET status = 'queued', updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'partial', 'failed')"
+    ).bind(new Date().toISOString(), run.runId).run()
+    if (!env.GLOBAL_RANKINGS_QUEUE) throw new Error("Faction performance collection queue is not configured.")
+    await env.GLOBAL_RANKINGS_QUEUE.send({ kind: FACTION_PERFORMANCE_QUEUE_KIND, runId: run.runId })
+    await requireDb(env).prepare(
+      "UPDATE faction_performance_collection_runs SET last_enqueued_at = ?, updated_at = ? WHERE run_id = ?"
+    ).bind(new Date().toISOString(), new Date().toISOString(), run.runId).run()
+    return
+  }
+
+  const failures = await requireDb(env).prepare(
+    "SELECT COUNT(*) AS count FROM faction_member_stat_snapshots WHERE run_id = ? AND collection_status != 'complete'"
+  ).bind(run.runId).first<{ count: number }>()
+  const status = partialCount > 0 || Number(failures?.count ?? 0) > 0 ? "partial" : "completed"
+  const capturedAt = new Date().toISOString()
+  await finishFactionPerformanceRun(env, run, status, capturedAt, status === "partial" ? "One or more member stat samples were incomplete or unavailable." : null)
+}
+
+async function runFactionGymEnergyCollection(env: WorkerEnv, run: FactionPerformanceRunRow, client: TornApiClient): Promise<void> {
+  const payload = await client.getFactionGymEnergyContributors()
+  const contributors = parseFactionGymEnergyResponse(payload)
+  const capturedAt = new Date().toISOString()
+  let partial = false
+  for (const contributor of contributors) {
+    const status = contributor.value === null || contributor.inFaction === null ? "partial" : "complete"
+    if (status === "partial") partial = true
+    await requireDb(env).prepare(
+      "INSERT INTO faction_gym_energy_snapshots (run_id, faction_id, user_id, captured_at, gym_energy_total, in_faction, collection_status) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, user_id) DO UPDATE SET captured_at = excluded.captured_at, gym_energy_total = excluded.gym_energy_total, in_faction = excluded.in_faction, collection_status = excluded.collection_status"
+    ).bind(run.runId, run.factionId, contributor.userId, capturedAt, contributor.value, sqliteBoolean(contributor.inFaction), status).run()
+  }
+  await finishFactionPerformanceRun(env, run, partial ? "partial" : "completed", capturedAt, partial ? "One or more gym-energy values were missing." : null)
+}
+
+async function runFactionPerformanceCollection(env: WorkerEnv, runId: string): Promise<void> {
+  const db = requireDb(env)
+  const run = await db.prepare(
+    "SELECT run_id AS runId, faction_id AS factionId, collection_kind AS collectionKind, status, scheduled_at AS scheduledAt, target_user_ids_json AS targetUserIdsJson, next_index AS nextIndex, last_enqueued_at AS lastEnqueuedAt FROM faction_performance_collection_runs WHERE run_id = ?"
+  ).bind(runId).first<FactionPerformanceRunRow>()
+  if (!run || run.status === "completed" || run.status === "partial" || run.status === "failed") return
+  const apiKey = env.TORN_FACTION_API_KEY?.trim()
+  if (!apiKey) throw new Error("Faction collector secret is not configured.")
+  const now = new Date().toISOString()
+  await db.prepare(
+    "UPDATE faction_performance_collection_runs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
+  ).bind(now, now, runId).run()
+  const client = new TornApiClient({ apiKey })
+
+  if (run.collectionKind === "roster") {
+    await runFactionRosterCollection(env, run, client)
+  } else if (run.collectionKind === "personalstats") {
+    await runFactionPersonalStatsCollectionPage(env, run, client)
+  } else if (run.collectionKind === "gym_energy") {
+    await runFactionGymEnergyCollection(env, run, client)
+  } else {
+    throw new Error("Unknown faction performance collection kind.")
+  }
 }
 async function saveCompanyKey(env: WorkerEnv, playerId: string, apiKey: string): Promise<void> {
   const encrypted = await encryptKey(env, apiKey)
