@@ -99,12 +99,6 @@ export function FloorApp() {
   const [playerName, setPlayerName] = useState("")
   const [playerId, setPlayerId] = useState("")
   const [isAdmin, setIsAdmin] = useState(false)
-  const [adminElevatedUntil, setAdminElevatedUntil] = useState<number | null>(null)
-  const [adminAuthOpen, setAdminAuthOpen] = useState(false)
-  const [adminUsername, setAdminUsername] = useState("")
-  const [adminPassword, setAdminPassword] = useState("")
-  const [adminAuthError, setAdminAuthError] = useState("")
-  const [adminAuthBusy, setAdminAuthBusy] = useState(false)
   const [selectedCompanyId, setSelectedCompanyId] = useState("")
   const [showCompanySelector, setShowCompanySelector] = useState(false)
   const [keySaved, setKeySaved] = useState(false)
@@ -204,17 +198,16 @@ export function FloorApp() {
       try {
         const response = await fetch(`${API_BASE}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } })
         if (!response.ok) throw new Error("Session expired")
-        const session = await response.json() as { player: { id: string; name: string }; isAdmin?: boolean; adminElevatedUntil?: number | null; key: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
+        const session = await response.json() as { player: { id: string; name: string }; isAdmin?: boolean; key: { saved: boolean } }
         if (cancelled) return
         setSessionToken(token)
         setPlayerName(session.player.name)
         setPlayerId(session.player.id)
-        setIsAdmin(session.isAdmin === true && session.player.id === "351311")
-        setAdminElevatedUntil(typeof session.adminElevatedUntil === "number" ? session.adminElevatedUntil : null)
+        setIsAdmin(session.isAdmin === true)
         setKeySaved(session.key.saved)
-        setIsDirector(session.company?.isDirector ?? false)
-        setCompanyKeySaved(session.company?.key?.saved ?? false)
-        setNeedsSecondaryKey(session.company?.needsSecondaryKey ?? !(session.company?.key?.saved ?? false))
+        setIsDirector(false)
+        setCompanyKeySaved(false)
+        setNeedsSecondaryKey(true)
         const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${token}` } })
         if (!listResponse.ok) return
         const list = await listResponse.json() as { companies: SavedCompany[] }
@@ -250,16 +243,6 @@ export function FloorApp() {
     const adminOnlyViews = ["admin", "dashboard-members", "member-insights"]
     if (!authChecking && adminOnlyViews.includes(activeView) && (!isAdmin || demoMode)) setActiveView("overview")
   }, [authChecking, activeView, isAdmin, demoMode])
-
-  useEffect(() => {
-    if (!isAdmin || !adminElevatedUntil) return
-    const timeout = window.setTimeout(() => {
-      setIsAdmin(false)
-      setAdminElevatedUntil(null)
-      setActiveView((view) => ["admin", "dashboard-members", "member-insights"].includes(view) ? "overview" : view)
-    }, Math.max(0, adminElevatedUntil * 1000 - Date.now()))
-    return () => window.clearTimeout(timeout)
-  }, [isAdmin, adminElevatedUntil])
 
   useEffect(() => {
     if (!sessionToken) return
@@ -815,21 +798,20 @@ export function FloorApp() {
       const response = await fetch(`${API_BASE}/api/auth/sign-in`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ apiKey: apiKey.trim(), secondaryCompanyKey: secondaryCompanyKey.trim() }),
+        body: JSON.stringify({ apiKey: apiKey.trim() }),
       })
-      const payload = await response.json() as { error?: string; token?: string; isAdmin?: boolean; player?: { id: string; name: string }; key?: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
+      const payload = await response.json() as { error?: string; token?: string; isAdmin?: boolean; player?: { id: string; name: string }; key?: { saved: boolean } }
       if (!response.ok) throw new Error(payload.error || "Sign-in failed. Check that your Torn key is valid and has limited permissions.")
       if (!payload.token) throw new Error("The sign-in service did not return a session. Please try again.")
       localStorage.setItem("ncd_session", payload.token)
       setSessionToken(payload.token)
       setPlayerName(payload.player?.name || "Torn member")
       setPlayerId(payload.player?.id || "")
-      setIsAdmin(false)
-      setAdminElevatedUntil(null)
+      setIsAdmin(payload.isAdmin === true)
       setKeySaved(payload.key?.saved ?? true)
-      setIsDirector(payload.company?.isDirector ?? false)
-      setCompanyKeySaved(payload.company?.key?.saved ?? false)
-      setNeedsSecondaryKey(payload.company?.needsSecondaryKey ?? !(payload.company?.key?.saved ?? false))
+      setIsDirector(false)
+      setCompanyKeySaved(false)
+      setNeedsSecondaryKey(true)
       setApiKey("")
       setSecondaryCompanyKey("")
       const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
@@ -870,58 +852,6 @@ export function FloorApp() {
     } finally { setLoading(false) }
   }
 
-  async function elevateAdmin(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!sessionToken || playerId !== "351311" || adminAuthBusy) return
-    setAdminAuthBusy(true)
-    setAdminAuthError("")
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/admin/elevate`, {
-        method: "POST",
-        headers: { "content-type": "application/json", Authorization: `Bearer ${sessionToken}` },
-        body: JSON.stringify({ username: adminUsername, password: adminPassword }),
-      })
-      const payload = await response.json() as { error?: string; diagnostic?: string; isAdmin?: boolean; adminElevatedUntil?: number }
-      if (!response.ok || payload.isAdmin !== true || typeof payload.adminElevatedUntil !== "number") {
-        const diagnosticMessages: Record<string, string> = {
-          username_mismatch: "The username does not match the configured ADMIN_USERNAME secret.",
-          stored_hash_invalid: "The configured ADMIN_PASSWORD_HASH is malformed or incomplete. Generate a new hash and replace the entire hash line in Cloudflare.",
-          password_policy: "The password does not meet the current policy. Use at least 8 characters with a letter, digit, and symbol, and avoid sequences such as abc, cba, 123, or 321.",
-          password_mismatch: "The credential does not match the active Worker hash. Do not repeat resets blindly; use the direct-API recovery workflow and check its hash-binding fingerprint diagnostic. Never copy or share passwords or hashes.",
-        }
-        const detail = payload.diagnostic ? diagnosticMessages[payload.diagnostic] : undefined
-        const missingDiagnostic = response.status === 401 && payload.error === "Administrator sign-in failed."
-          ? "The API did not return an owner-only diagnostic. This usually means the active Torn session is not being recognized as the allowlisted owner, or the dashboard API deployment is out of sync. Confirm this is the owner Torn account (player ID 351311), reload the dashboard, and try only once more. Do not regenerate the password hash yet."
-          : undefined
-        throw new Error([payload.error || "Administrator sign-in failed.", detail ?? missingDiagnostic].filter(Boolean).join(" "))
-      }
-      setIsAdmin(true)
-      setAdminElevatedUntil(payload.adminElevatedUntil)
-      setAdminAuthOpen(false)
-      setAdminPassword("")
-      setAdminUsername("")
-      setActiveView("admin")
-    } catch (caught) {
-      setAdminAuthError(caught instanceof Error ? caught.message : "Administrator sign-in failed.")
-    } finally { setAdminAuthBusy(false) }
-  }
-
-  async function deElevateAdmin() {
-    if (!sessionToken || adminAuthBusy) return
-    setAdminAuthBusy(true)
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/admin/de-elevate`, { method: "POST", headers: { Authorization: `Bearer ${sessionToken}` } })
-      if (!response.ok) throw new Error("Could not lock administrator access. Try again.")
-      setIsAdmin(false)
-      setAdminElevatedUntil(null)
-      setAdminAuthOpen(false)
-      setActiveView((view) => ["admin", "dashboard-members", "member-insights"].includes(view) ? "overview" : view)
-    } catch (caught) {
-      setAdminAuthError(caught instanceof Error ? caught.message : "Could not lock administrator access.")
-      setAdminAuthOpen(true)
-    } finally { setAdminAuthBusy(false) }
-  }
-
   function signOut(revokeServerSession = true) {
     const token = sessionToken || localStorage.getItem("ncd_session") || ""
     if (revokeServerSession && token) {
@@ -935,12 +865,7 @@ export function FloorApp() {
     setPlayerName("")
     setPlayerId("")
     setIsAdmin(false)
-    setAdminElevatedUntil(null)
-    setAdminAuthOpen(false)
-    setAdminUsername("")
-    setAdminPassword("")
-    setAdminAuthError("")
-    setSelectedCompanyId("")
+remove sign-out step-up cleanup    setSelectedCompanyId("")
     setShowCompanySelector(false)
     setKeySaved(false)
     setCompanyKeySaved(false)
@@ -1049,7 +974,6 @@ export function FloorApp() {
 
   return (
     <div className={`app-shell dashboard-density-${dashboardPreferences.density} dashboard-width-${dashboardPreferences.contentWidth}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
-      {adminAuthOpen && playerId === "351311" && !isAdmin && !demoMode && <div className="login-screen admin-elevation-screen"><section className="login-card" role="dialog" aria-modal="true" aria-labelledby="admin-elevation-title"><div className="login-brand"><span className="brand-mark">NC</span><span><strong>NAUGHTY</strong><small>ADMINISTRATOR VERIFICATION</small></span></div><div className="login-eyebrow"><span className="eyebrow-line" /> STEP-UP AUTHENTICATION</div><h1 id="admin-elevation-title">Unlock administration</h1><p className="login-subtitle">Your Torn session is standard access. Verify your separate administrator credentials to unlock privileged controls for 30 minutes.</p><form className="login-form" onSubmit={elevateAdmin}><label htmlFor="admin-username">Administrator username</label><input id="admin-username" type="text" autoComplete="username" value={adminUsername} onChange={(event) => setAdminUsername(event.target.value)} required maxLength={120} /><label htmlFor="admin-password">Administrator password</label><input id="admin-password" type="password" autoComplete="current-password" aria-describedby="admin-password-policy-hint" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} required minLength={8} maxLength={1024} /><p className="field-hint" id="admin-password-policy-hint">At least 8 characters, including a letter, digit and symbol. Avoid sequences such as abc, cba, 123 or 321.</p>{adminAuthError && <div className="error-banner" role="alert">{adminAuthError}</div>}<button className="primary-button form-submit" disabled={adminAuthBusy}>{adminAuthBusy ? "Verifying…" : "Verify and unlock"}</button><button className="text-button" type="button" disabled={adminAuthBusy} onClick={() => { setAdminAuthOpen(false); setAdminPassword(""); setAdminAuthError("") }}>Cancel</button></form><p className="login-hint">Repeated failed attempts are rate-limited. Administrator access expires automatically.</p></section></div>}
       <aside className="sidebar">
         <a className="brand" href="/" onClick={(event) => { event.preventDefault(); navigateToPath("/") }}>
           <span className="brand-mark">NC</span>
@@ -1075,7 +999,7 @@ export function FloorApp() {
         {demoMode && <div className="demo-banner"><strong>DEMO MODE</strong><span>All player, company, employee and income data below is fictional. Live Torn connections are disabled.</span><button type="button" onClick={exitDemo}>Exit demo ×</button></div>}
         <header className="topbar">
           <div className="topbar-leading"><button className="sidebar-toggle" type="button" onClick={() => setSidebarCollapsed((collapsed) => !collapsed)} aria-label={sidebarCollapsed ? "Expand navigation sidebar" : "Minimize navigation sidebar"} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? "Expand navigation" : "Minimize navigation"}><span aria-hidden="true">{sidebarCollapsed ? "☰" : "‹"}</span></button><div className="breadcrumbs">Workspace <span>/</span> {activePageGroup} <span>/</span> <strong>{activePageTitle}</strong></div></div>
-          <div className="topbar-right">{playerId === "351311" && !demoMode && <button className="admin-step-up-button" type="button" aria-label={isAdmin ? "Lock administration" : "Unlock administration"} title={isAdmin ? "Lock administration" : "Unlock administration"} disabled={adminAuthBusy} onClick={() => isAdmin ? void deElevateAdmin() : (setAdminAuthError(""), setAdminAuthOpen(true))}>{adminAuthBusy ? "Please wait…" : isAdmin ? "Lock admin" : "Unlock admin"}</button>}<span className="environment-pill"><i /> {demoMode ? "DEMO DATA" : "CLOUDFLARE WORKER"}</span><div className="user-company-switcher"><button className="user-company-trigger" type="button" aria-expanded={showCompanySelector} onClick={() => setShowCompanySelector((open) => !open)}><span className="avatar">{playerName.slice(0, 2).toUpperCase() || "NC"}</span><span className="user-company-label"><strong>{playerName || "Connected user"}</strong><small>Torn ID {playerId || "—"} · {result?.model.company.name || "No company loaded"} · {result?.model.company.typeName || "No company type"}</small></span><span className="switch-chevron">⌄</span></button>{showCompanySelector && <div className="company-switcher-menu"><div className="company-switcher-menu-heading"><strong>Choose a company</strong><button type="button" className="company-connect-plus" onClick={() => { setShowCompanySelector(false); setActiveView("connect") }} aria-label="Connect company" title="Connect company">＋</button></div>{savedCompanies.length ? savedCompanies.map((company) => <button key={company.company_id} type="button" className={selectedCompanyId === company.company_id ? "company-switcher-option selected" : "company-switcher-option"} onClick={() => void loadSavedCompany(company.company_id)}><span>{company.company_name || `Company #${company.company_id}`}</span><small>{company.company_type || "Company"} · #{company.company_id}</small></button>) : <p>No saved companies yet. Connect a company key to add one.</p>}</div>}</div></div>
+          <div className="topbar-right">{isAdmin && !demoMode && <span className="admin-role-indicator">ADMINISTRATOR</span>}<span className="environment-pill"><i /> {demoMode ? "DEMO DATA" : "CLOUDFLARE WORKER"}</span><div className="user-company-switcher"><button className="user-company-trigger" type="button" aria-expanded={showCompanySelector} onClick={() => setShowCompanySelector((open) => !open)}><span className="avatar">{playerName.slice(0, 2).toUpperCase() || "NC"}</span><span className="user-company-label"><strong>{playerName || "Connected user"}</strong><small>Torn ID {playerId || "—"} · {result?.model.company.name || "No company loaded"} · {result?.model.company.typeName || "No company type"}</small></span><span className="switch-chevron">⌄</span></button>{showCompanySelector && <div className="company-switcher-menu"><div className="company-switcher-menu-heading"><strong>Choose a company</strong><button type="button" className="company-connect-plus" onClick={() => { setShowCompanySelector(false); setActiveView("connect") }} aria-label="Connect company" title="Connect company">＋</button></div>{savedCompanies.length ? savedCompanies.map((company) => <button key={company.company_id} type="button" className={selectedCompanyId === company.company_id ? "company-switcher-option selected" : "company-switcher-option"} onClick={() => void loadSavedCompany(company.company_id)}><span>{company.company_name || `Company #${company.company_id}`}</span><small>{company.company_type || "Company"} · #{company.company_id}</small></button>) : <p>No saved companies yet. Connect a company key to add one.</p>}</div>}</div></div>
         </header>
 
         <div className="page-content">
