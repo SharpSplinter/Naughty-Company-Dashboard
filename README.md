@@ -13,6 +13,10 @@ A React + Vite multi-workspace portal for Naughty Souls faction members in Torn.
 
 All workspaces use the same authenticated member session. Sign-in is based on a member's own Torn API key and verified Naughty Souls membership. Company access is configured separately and is not a requirement for faction portal sign-in.
 
+## Faction performance roadmap
+
+The complete next-phase product specification, API contract notes, data model, implementation phases and acceptance tests are maintained in [docs/FACTION-PERFORMANCE-DASHBOARD-PLAN.md](docs/FACTION-PERFORMANCE-DASHBOARD-PLAN.md). This roadmap adds weekly UTC rankings, public-stat and gym-energy collection, live faction status/revive visibility, member-consented owner-only bars/cooldowns, historical comparisons and inactivity monitoring without replacing the existing portal workspaces.
+
 ## Local development
 
 - Install Node.js 20 or later.
