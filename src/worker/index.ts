@@ -121,7 +121,7 @@ async function revalidateFactionMembershipBatch(env: WorkerEnv, scheduledTime: n
 }
 
 async function authenticate(request: Request, env: WorkerEnv): Promise<Session | null> {
-  const token = request.headers.get("Authorization")?.match(/^Bearer\\s+(.+)$/i)?.[1]?.trim()
+  const token = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
   if (!token || !env.DB) return null
   const hash = await sha256(token)
   const session = await requireDb(env).prepare(
