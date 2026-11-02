@@ -290,7 +290,7 @@ try {
     assert.match(route, /faction_member_stat_snapshots/)
     assert.match(route, /faction_gym_energy_snapshots/)
     assert.match(route, /faction_performance_collection_runs/)
-    assert.match(route, /status = \\'completed\\'/)
+    assert.match(route, /status = 'completed'/)
     assert.match(route, /statsCapturedAt/)
     assert.match(route, /gymEnergyCapturedAt/)
     assert.match(route, /private, max-age=30/)
