@@ -1,0 +1,11 @@
+name = "naughty-company-api-staging"
+main = "src/worker/index.ts"
+compatibility_date = "2026-10-08"
+
+# This file is intentionally migration-only: it has no cron triggers, queue
+# consumers, routes, or production bindings. The staging D1 ID is pinned here.
+[[d1_databases]]
+binding = "DB"
+database_name = "naughty-company-api-staging"
+database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"
+migrations_dir = "migrations/auth"
