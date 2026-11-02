@@ -53,7 +53,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS faction_membership_active_user_idx
   ON faction_membership_intervals(faction_id, user_id)
   WHERE left_observed_at IS NULL;
 CREATE INDEX IF NOT EXISTS faction_membership_history_user_idx
-  ON faction_membership_intervals(user_id, faction_id, joined_at DESC);
+  ON faction_membership_intervals(user_id, faction_id, estimated_joined_at DESC);
 CREATE INDEX IF NOT EXISTS faction_membership_active_idx
   ON faction_membership_intervals(faction_id, left_observed_at, user_id);
 
