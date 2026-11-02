@@ -844,6 +844,13 @@ async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Pro
   const job = await db.prepare("SELECT job_id, player_id, event_year, status, cursor_ts, cursor_url, cursor_direction, pages_collected, logs_collected FROM halloween_collection_jobs WHERE job_id = ?")
     .bind(jobId).first<{ job_id: string; player_id: string; event_year: number; status: string; cursor_ts: number; cursor_url: string | null; cursor_direction: string | null; pages_collected: number; logs_collected: number }>()
   if (!job || ["complete", "failed", "cancelled"].includes(job.status)) return
+  const memberStatus = await db.prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?")
+    .bind(job.player_id).first<{ disabled_at: string | null }>()
+  if (memberStatus?.disabled_at) {
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'cancelled', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("Collection was cancelled because this member's dashboard access is disabled.", new Date().toISOString(), jobId).run()
+    return
+  }
   const event = await db.prepare("SELECT start_at, end_at, historical_collection_enabled FROM halloween_event_windows WHERE event_year = ?")
     .bind(job.event_year).first<{ start_at: string; end_at: string; historical_collection_enabled: number }>()
   if (!event || event.historical_collection_enabled !== 1) {
@@ -1007,6 +1014,13 @@ async function runHalloweenLiveSnapshotJob(env: WorkerEnv, jobId: string): Promi
   const job = await db.prepare("SELECT job_id AS jobId, player_id AS playerId, event_year AS eventYear, snapshot_kind AS snapshotKind, status FROM halloween_live_snapshot_jobs WHERE job_id = ?")
     .bind(jobId).first<{ jobId: string; playerId: string; eventYear: number; snapshotKind: "opening" | "periodic" | "closing"; status: string }>()
   if (!job || job.status === "complete" || job.status === "failed") return
+  const memberStatus = await db.prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?")
+    .bind(job.playerId).first<{ disabled_at: string | null }>()
+  if (memberStatus?.disabled_at) {
+    await db.prepare("UPDATE halloween_live_snapshot_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("Snapshot was cancelled because this member's dashboard access is disabled.", new Date().toISOString(), jobId).run()
+    return
+  }
   await db.prepare("UPDATE halloween_live_snapshot_jobs SET status = 'running', updated_at = ? WHERE job_id = ?")
     .bind(new Date().toISOString(), jobId).run()
   try {
@@ -3536,7 +3550,7 @@ export default {
         .bind(yearValue).first<{ eventYear: number; startAt: string; endAt: string }>()
       if (!event) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
       const members = await db.prepare(
-        "SELECT p.player_id AS playerId, p.player_name AS playerName, EXISTS(SELECT 1 FROM halloween_historical_keys k WHERE k.player_id = p.player_id) AS keyConnected, (SELECT j.status FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS collectionStatus, (SELECT j.pages_collected FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS pagesCollected, (SELECT COUNT(*) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedLogCount, (SELECT COALESCE(SUM(l.is_hit), 0) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedHitCount, (SELECT MAX(l.collected_at) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS lastCollectedAt FROM players p WHERE p.faction_id = ?"
+        "SELECT p.player_id AS playerId, p.player_name AS playerName, EXISTS(SELECT 1 FROM halloween_historical_keys k WHERE k.player_id = p.player_id) AS keyConnected, (SELECT j.status FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS collectionStatus, (SELECT j.pages_collected FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS pagesCollected, (SELECT COUNT(*) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedLogCount, (SELECT COALESCE(SUM(l.is_hit), 0) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedHitCount, (SELECT MAX(l.collected_at) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS lastCollectedAt FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL"
       ).bind(yearValue, yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
       const leaderboard = (members.results ?? []).map((row) => {
         const status = typeof row.collectionStatus === "string" ? row.collectionStatus : null
@@ -3564,7 +3578,7 @@ export default {
       const yearValue = Number(url.searchParams.get("year") || new Date().getUTCFullYear())
       if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
       const db = requireDb(env)
-      const member = await db.prepare("SELECT player_id AS playerId, player_name AS playerName FROM players WHERE player_id = ? AND faction_id = ?")
+      const member = await db.prepare("SELECT player_id AS playerId, player_name AS playerName FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.player_id = ? AND p.faction_id = ? AND st.disabled_at IS NULL")
         .bind(targetId, NAUGHTY_SOULS_FACTION_ID).first<{ playerId: string; playerName: string }>()
       if (!member) return jsonResponse({ error: "That member is not currently verified as a Naughty Souls member." }, 404, origin)
       const [job, logs, daily] = await Promise.all([
