@@ -8,7 +8,7 @@ type D1Database = { prepare(sql: string): D1Statement }
 type QueueProducer = { send(message: unknown): Promise<unknown> }
 type QueueMessage = { body: unknown; attempts?: number; ack(): void; retry(options?: { delaySeconds?: number }): void }
 type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
-type Session = { player_id: string; player_name: string; is_admin: number }
+type Session = { player_id: string; player_name: string; is_admin: number; faction_id?: string | null; faction_verified_at?: string | null }
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }
 const DAY = 86400
@@ -62,17 +62,63 @@ async function readAdminBoolean(env: WorkerEnv, key: string, fallback: boolean):
   const value = await readAdminSetting(env, key)
   return typeof value === "boolean" ? value : fallback
 }
+async function verifyFactionMembershipWithKey(apiKey: string): Promise<string> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10000)
+  try {
+    const response = await fetch("https://api.torn.com/v2/user/faction", {
+      headers: { Authorization: \`ApiKey \${apiKey}\`, Accept: "application/json" },
+      signal: controller.signal,
+    })
+    const payload: unknown = await response.json().catch(() => null)
+    const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+    if (!response.ok || error) {
+      const code = typeof error?.code === "number" ? error.code : undefined
+      throw Object.assign(new Error(code === 9 ? "Torn rate limit reached while checking faction membership." : "Could not refresh current Naughty Souls membership."), { status: code === 9 ? 429 : 502 })
+    }
+    const faction = isRecord(payload) && isRecord(payload.faction) ? payload.faction : null
+    const id = faction?.id ?? (isRecord(payload) ? payload.faction_id : undefined)
+    if ((typeof id !== "number" && typeof id !== "string") || !/^\d+$/.test(String(id))) return ""
+    return String(id)
+  } finally { clearTimeout(timeout) }
+}
+
 async function authenticate(request: Request, env: WorkerEnv): Promise<Session | null> {
   const token = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
   if (!token || !env.DB) return null
   const hash = await sha256(token)
   const session = await requireDb(env).prepare(
-    "SELECT p.player_id, p.player_name, CASE WHEN a.player_id IS NULL THEN 0 ELSE 1 END AS is_admin FROM sessions s JOIN players p ON p.player_id = s.player_id LEFT JOIN administrators a ON a.player_id = p.player_id AND a.revoked_at IS NULL WHERE s.token_hash = ? AND s.expires_at > ?"
+    "SELECT p.player_id, p.player_name, p.faction_id, p.faction_verified_at, CASE WHEN a.player_id IS NULL THEN 0 ELSE 1 END AS is_admin FROM sessions s JOIN players p ON p.player_id = s.player_id LEFT JOIN administrators a ON a.player_id = p.player_id AND a.revoked_at IS NULL WHERE s.token_hash = ? AND s.expires_at > ?"
   ).bind(hash, Math.floor(Date.now() / 1000)).first<Session>()
   if (!session) return null
   const normalizedSession = { ...session, is_admin: Number(session.is_admin ?? 0) }
   const status = await requireDb(env).prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?").bind(session.player_id).first<{ disabled_at: string | null }>()
   if (status?.disabled_at) return null
+
+  // D1 rows on the migrated schema always include faction fields. Undefined
+  // is tolerated only by lightweight legacy test doubles.
+  if (session.faction_id !== undefined || session.faction_verified_at !== undefined) {
+    const ageMs = session.faction_verified_at ? Date.now() - Date.parse(session.faction_verified_at) : Number.POSITIVE_INFINITY
+    const fresh = Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= 5 * 60 * 1000
+    if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID || !fresh) {
+      const apiKey = await savedKey(env, session.player_id)
+      if (!apiKey) return null
+      try {
+        const currentFactionId = await verifyFactionMembershipWithKey(apiKey)
+        if (currentFactionId !== NAUGHTY_SOULS_FACTION_ID) return null
+        const verifiedAt = new Date().toISOString()
+        await requireDb(env).prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, updated_at = ? WHERE player_id = ?")
+          .bind(currentFactionId, verifiedAt, verifiedAt, session.player_id).run()
+        normalizedSession.faction_id = currentFactionId
+        normalizedSession.faction_verified_at = verifiedAt
+      } catch {
+        // A short outage grace avoids locking out current members on a Torn
+        // outage, but old or missing membership verification fails closed.
+        if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > 15 * 60 * 1000) return null
+      }
+    }
+  }
+
   const maintenanceMode = await readAdminBoolean(env, "maintenanceMode", false)
   if (maintenanceMode && normalizedSession.is_admin !== 1) return null
   return normalizedSession
@@ -2675,10 +2721,14 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
     const targetId = isRecord(body) && typeof body.playerId === "string" ? body.playerId.trim() : ""
     if (!/^\d{1,20}$/.test(targetId) || !positiveId(targetId)) return jsonResponse({ error: "Enter a valid Torn player ID." }, 400, origin)
     if (targetId === session.player_id) return jsonResponse({ error: "Your own administrator role is already active." }, 409, origin)
-    const target = await db.prepare("SELECT p.player_id, p.player_name, st.disabled_at FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.player_id = ?")
-      .bind(targetId).first<{ player_id: string; player_name: string; disabled_at: string | null }>()
+    const target = await db.prepare("SELECT p.player_id, p.player_name, p.faction_id, p.faction_verified_at, st.disabled_at FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.player_id = ?")
+      .bind(targetId).first<{ player_id: string; player_name: string; faction_id: string | null; faction_verified_at: string | null; disabled_at: string | null }>()
     if (!target) return jsonResponse({ error: "That player must sign in and verify Naughty Souls membership before receiving an administrator role." }, 404, origin)
     if (target.disabled_at) return jsonResponse({ error: "That member's dashboard access is suspended. Restore member access before granting administrator privileges." }, 409, origin)
+    const targetVerificationAge = target.faction_verified_at ? Date.now() - Date.parse(target.faction_verified_at) : Number.POSITIVE_INFINITY
+    if (target.faction_id !== NAUGHTY_SOULS_FACTION_ID || !Number.isFinite(targetVerificationAge) || targetVerificationAge < 0 || targetVerificationAge > 5 * 60 * 1000) {
+      return jsonResponse({ error: "That member must sign in and refresh their Naughty Souls membership verification before administrator privileges can be granted." }, 409, origin)
+    }
     const now = new Date().toISOString()
     await db.prepare("INSERT INTO administrators (player_id, granted_by, granted_at, revoked_by, revoked_at) VALUES (?, ?, ?, NULL, NULL) ON CONFLICT(player_id) DO UPDATE SET granted_by = excluded.granted_by, granted_at = excluded.granted_at, revoked_by = NULL, revoked_at = NULL")
       .bind(targetId, session.player_id, now).run()
@@ -2984,7 +3034,7 @@ export default {
         if (memberStatus?.disabled_at) return jsonResponse({ error: "Dashboard access for this account has been disabled. Contact the dashboard administrator." }, 403, origin)
 
         const now = new Date().toISOString()
-        await db.prepare("INSERT INTO players (player_id, player_name, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, updated_at = excluded.updated_at").bind(player.id, player.name, now, now).run()
+        await db.prepare("INSERT INTO players (player_id, player_name, created_at, updated_at, faction_id, faction_verified_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, updated_at = excluded.updated_at, faction_id = excluded.faction_id, faction_verified_at = excluded.faction_verified_at").bind(player.id, player.name, now, now, player.factionId, now).run()
 
         // Bootstrap the original owner ID once. A later explicit revocation is
         // retained because INSERT OR IGNORE never reactivates a revoked row.

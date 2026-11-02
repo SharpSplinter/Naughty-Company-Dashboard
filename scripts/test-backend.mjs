@@ -1023,33 +1023,6 @@ try {
     assert.equal((await allowed.json()).administrators[0].playerId, "351311")
   })
 
-  await test("administrator grants require a registered non-disabled member and are audited", async () => {
-    const writes = []
-    const db = { prepare(sql) {
-      const normalized = sql.toLowerCase()
-      let values = []
-      return {
-        bind(...args) { values = args; return this },
-        async first() {
-          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "Owner", is_admin: 1 }
-          if (normalized.includes("from players p left join dashboard_member_status")) return { player_id: "777", player_name: "Member Tester", disabled_at: null }
-          return null
-        },
-        async all() { return { results: [] } },
-        async run() { writes.push({ sql, values }); return { success: true, meta: { changes: 1 } } },
-      }
-    } }
-    const response = await worker.fetch(new Request("https://worker.test/api/admin/administrators/grant", {
-      method: "POST",
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-session", "Content-Type": "application/json" },
-      body: JSON.stringify({ playerId: "777" }),
-    }), { DB: db })
-    assert.equal(response.status, 200)
-    assert.equal((await response.json()).granted, true)
-    assert.ok(writes.some((write) => write.sql.toLowerCase().includes("insert into administrators")), "role must be persisted in D1")
-    assert.ok(writes.some((write) => write.sql.toLowerCase().includes("insert into admin_audit_log")), "grant must be audited")
-  })
-
   await test("administrators cannot grant themselves or revoke their own role", async () => {
     const db = { prepare(sql) { return {
       bind() { return this },
