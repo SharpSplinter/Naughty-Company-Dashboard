@@ -489,8 +489,9 @@ async function runFactionRosterCollection(env: WorkerEnv, run: FactionPerformanc
   await finishFactionPerformanceRun(env, run, "completed", capturedAt)
 }
 
-function emptyFactionPublicStats(): Record<string, null> {
-  return Object.fromEntries(PERSONAL_STATS_HISTORICAL_NAMES.map((name) => [name, null]))
+function emptyFactionPublicStats(): ReturnType<typeof parseFactionPublicStatsResponse> {
+  const metrics = Object.fromEntries(PERSONAL_STATS_HISTORICAL_NAMES.map((name) => [name, null])) as Record<(typeof PERSONAL_STATS_HISTORICAL_NAMES)[number], number | null>
+  return { ...metrics, missingMetrics: [...PERSONAL_STATS_HISTORICAL_NAMES] }
 }
 
 async function saveFactionMemberStatSample(
@@ -504,7 +505,7 @@ async function saveFactionMemberStatSample(
 ): Promise<void> {
   const columns = FACTION_PUBLIC_STAT_COLUMNS.join(", ")
   const values = FACTION_PUBLIC_STAT_COLUMNS.map((name) => stats[name])
-  const placeholders = Array.from({ length: values.length + 7 }, () => "?").join(", ")
+  const placeholders = Array.from({ length: values.length + 9 }, () => "?").join(", ")
   const updateColumns = [
     "captured_at", "scheduled_at", "collection_status", ...FACTION_PUBLIC_STAT_COLUMNS, "missing_metrics_json", "torn_error_code",
   ]
@@ -541,8 +542,7 @@ async function runFactionPersonalStatsCollectionPage(env: WorkerEnv, run: Factio
     } catch (error) {
       partialCount += 1
       const safe = factionCollectionSafeError(error)
-      const empty = emptyFactionPublicStats() as ReturnType<typeof parseFactionPublicStatsResponse>
-      empty.missingMetrics = [...PERSONAL_STATS_HISTORICAL_NAMES]
+      const empty = emptyFactionPublicStats()
       await saveFactionMemberStatSample(env, run, userId, attemptedAt, empty, "failed", safe.tornCode)
     }
     index += 1
@@ -1622,7 +1622,9 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
       const runId = typeof body.runId === "string" ? body.runId : ""
       const halloweenJobId = typeof body.jobId === "string" ? body.jobId : ""
       const liveSnapshotJobId = typeof body.jobId === "string" ? body.jobId : ""
-      if (body.kind === "halloween-live-snapshot" && liveSnapshotJobId) {
+      if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
+        await markFactionPerformanceRunFailed(env, runId, new Error("Faction performance collection exhausted its queue retries."))
+      } else if (body.kind === "halloween-live-snapshot" && liveSnapshotJobId) {
         await requireDb(env).prepare("UPDATE halloween_live_snapshot_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
           .bind("Live Halloween snapshot exhausted its queue retries.", new Date().toISOString(), liveSnapshotJobId).run()
       } else if (body.kind === "halloween-log-collection" && halloweenJobId) {
@@ -1642,6 +1644,20 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
     const runId = typeof body.runId === "string" ? body.runId : ""
     const halloweenJobId = typeof body.jobId === "string" ? body.jobId : ""
     const liveSnapshotJobId = typeof body.jobId === "string" ? body.jobId : ""
+    if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
+      try {
+        await runFactionPerformanceCollection(env, runId)
+        message.ack()
+      } catch (error) {
+        const attempts = Number(message.attempts ?? 1)
+        if (attempts < 4) message.retry({ delaySeconds: Math.min(60, attempts * 10) })
+        else {
+          await markFactionPerformanceRunFailed(env, runId, error)
+          message.ack()
+        }
+      }
+      continue
+    }
     if (body.kind === "halloween-live-snapshot" && liveSnapshotJobId) {
       try {
         await runHalloweenLiveSnapshotJob(env, liveSnapshotJobId)
@@ -3872,10 +3888,11 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
 }
 
 async function runFiveMinuteScheduledJobs(env: WorkerEnv, scheduledTime: number): Promise<void> {
-  // Membership checks are independent of the Halloween snapshot collector.
-  // A transient DB/Torn failure must not prevent the scheduled snapshot sweep.
+  // Membership checks, faction performance collection and Halloween snapshots
+  // are isolated: one source outage must not suppress the other scheduled work.
   try { await revalidateFactionMembershipBatch(env, scheduledTime) } catch { /* Retry stale members on a later tick. */ }
-  await enqueueScheduledHalloweenSnapshots(env, scheduledTime)
+  try { await enqueueFactionPerformanceCollections(env, scheduledTime) } catch { /* Idempotent schedule buckets retry on a later tick. */ }
+  try { await enqueueScheduledHalloweenSnapshots(env, scheduledTime) } catch { /* Retry the next event sweep. */ }
 }
 
 export default {
