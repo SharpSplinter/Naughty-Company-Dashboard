@@ -112,6 +112,20 @@ Use the public current personal-stat response for other faction members. Do not 
 
 The complete generated response contract and decoder notes are maintained in [TORN-PERSONALSTATS-RESPONSE-SCHEMA.md](TORN-PERSONALSTATS-RESPONSE-SCHEMA.md).
 
+#### Phase 0 implementation status: personalstats contract slice
+
+The first contract-validation slice is now implemented on the PR branch:
+
+- `src/lib/torn/personalstats.ts` defines request variants, the endpoint-relative path builder, runtime response decoders and the metric-to-category fallback map.
+- `TornApiClient.getUserPersonalStatsFor()` routes requests through the shared API client so Authorization, timeout and Torn error handling stay centralized.
+- The decoder distinguishes current full, public-all, popular, category-specific and historical response modes using the request context. It validates the runtime envelope and never treats the generated `unknown` payloads as trusted TypeScript types.
+- Current category values are resolved only through the nested schema paths documented above. Missing or non-numeric values remain null and are listed as missing.
+- Historical responses are validated as arrays of `{ name, value, timestamp }`; returned timestamps are retained per stat, unexpected future names are preserved, and requested-but-omitted stats are reported missing.
+- Historical request path construction rejects empty batches, duplicate names, invalid timestamps and more than 10 names.
+- The backend test harness contains synthetic fixtures for Full, FullPublic, Popular, category-specific and Historic modes. These are contract-shaped test data, not live Torn captures.
+
+**Still required before the decoder is considered production-verified:** obtain sanitized, real responses for each available selection mode using appropriately permissioned keys; validate the actual `personalstats` shapes for Full, FullPublic and Popular (the generated schema marks these payloads unknown); confirm which required counters Popular actually contains; and test the precise category fallbacks against Torn. Do not claim live shape verification from the synthetic fixture suite. Until then, an unrecognized or missing path safely remains unknown.
+
 Use these requested current lifetime counters, validating each current-response path and historical stat name against the live contract and sanitized fixtures:
 
 | Display metric | Current category-response path | Historical `stat` name |
@@ -628,13 +642,15 @@ Do not use color as the only status signal; include readable text and accessible
 ## 19. Implementation phases
 
 ### Phase 0 — Contract and architecture verification
-- Preserve current app architecture.
-- Generate typed Torn response fixtures from the current v2 OpenAPI schema, including the /user/personalstats response union.
-- Add sanitized fixtures for Full, FullPublic, Popular, category-specific and Historic response variants; test unknown payloads before mapping.
-- Verify nested current-response metric paths separately from historical stat names, and validate each required field and permission.
-- Build data-source/permission matrix and request-budget estimate.
-- Decide and document historical retention separation before coding.
-- Define weekly boundary scheduler and late/missed capture policy.
+- [x] Preserve current app architecture; use the existing Torn client, typed Worker library and backend test harness.
+- [x] Add a typed personalstats selection/path builder for full, all, popular, category-specific and historic requests.
+- [x] Add runtime-safe separate decoders for the five response modes and nested category metric paths.
+- [x] Add synthetic schema-shaped fixtures and regression tests for selection, nested mappings, omitted historical stats, per-stat timestamps and the 10-stat cap.
+- [ ] Capture sanitized live fixtures for Full, FullPublic, Popular, category-specific and Historic variants, and validate the current decoder paths against Torn's actual responses.
+- [ ] Verify which dashboard metrics are actually present in Popular and precisely which category fallback requests are required.
+- [ ] Complete the data-source/permission matrix and request-budget estimate with the selected faction key.
+- [x] Decide and document historical retention separation before weekly data migrations.
+- [ ] Define the operational Sunday-boundary scheduler and late/missed capture policy in executable design/tests.
 
 ### Phase 1 — Faction roster and public-data ingestion
 - Faction member collection and membership interval tracking.
@@ -768,6 +784,8 @@ The project is not complete until all of the following are implemented and teste
 |---|---|
 | Weekly timezone | UTC/TCT only; Sunday 00:00 inclusive to next Sunday 00:00 exclusive |
 | Personal stats | Decode the response union; prefer cat=popular when it covers the required public fields, then request a specific category where practical, and use cat=all only when needed |
+| Personalstats implementation | Shared Torn client method and runtime decoder added; live Full/FullPublic/Popular shapes still require sanitized real-response fixtures |
+| Personalstats fallback | Missing metric paths stay null; fallback helper identifies the smallest relevant category set and does not automatically escalate to cat=all |
 | Personalstats response | Full (Limited/Full/Custom full selection), FullPublic (cat=all), Popular (cat=popular), category-specific or Historic; generated Full/FullPublic/Popular payloads are unknown pending sanitized fixtures |
 | Current category mapping | Use nested category paths, e.g. drugs.xanax, items.used.energy_drinks, other.refills.energy, networth.total |
 | Historical personalstats | stat + timestamp, max 10 stat names; returns name/value/last-updated timestamp records; not the exact weekly boundary source because Torn resolves timestamp to nearest date |
