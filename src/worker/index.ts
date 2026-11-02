@@ -335,19 +335,6 @@ function factionCollectionSafeError(error: unknown): { summary: string; tornCode
   return { summary: "Collection failed due to an upstream or storage error.", tornCode: null }
 }
 
-async function updateFactionCollectionState(
-  env: WorkerEnv,
-  factionId: string,
-  kind: FactionPerformanceRunRow["collectionKind"],
-  runId: string,
-  capturedAt: string | null,
-  error: string | null,
-): Promise<void> {
-  await requireDb(env).prepare(
-    "INSERT INTO faction_performance_collection_state (faction_id, collection_kind, last_success_at, last_run_id, last_error, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(faction_id, collection_kind) DO UPDATE SET last_success_at = COALESCE(excluded.last_success_at, faction_performance_collection_state.last_success_at), last_run_id = excluded.last_run_id, last_error = excluded.last_error, updated_at = excluded.updated_at"
-  ).bind(factionId, kind, capturedAt, runId, error, new Date().toISOString()).run()
-}
-
 async function finishFactionPerformanceRun(
   env: WorkerEnv,
   run: FactionPerformanceRunRow,
@@ -381,13 +368,25 @@ async function markFactionPerformanceRunFailed(env: WorkerEnv, runId: string, er
   if (!env.DB) return
   const safe = factionCollectionSafeError(error)
   const now = new Date().toISOString()
-  const run = await requireDb(env).prepare(
-    "SELECT faction_id AS factionId, collection_kind AS collectionKind FROM faction_performance_collection_runs WHERE run_id = ?"
-  ).bind(runId).first<{ factionId: string; collectionKind: FactionPerformanceRunRow["collectionKind"] }>()
-  await requireDb(env).prepare(
+  const db = requireDb(env)
+  const run = await db.prepare(
+    "SELECT faction_id AS factionId, collection_kind AS collectionKind, status FROM faction_performance_collection_runs WHERE run_id = ?"
+  ).bind(runId).first<{ factionId: string; collectionKind: FactionPerformanceRunRow["collectionKind"]; status: FactionPerformanceRunRow["status"] }>()
+  if (!run || run.status === "completed" || run.status === "partial" || run.status === "failed") return
+
+  const failRun = db.prepare(
     "UPDATE faction_performance_collection_runs SET status = 'failed', completed_at = ?, last_error = ?, updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'partial', 'failed')"
-  ).bind(now, safe.summary, now, runId).run()
-  if (run) await updateFactionCollectionState(env, run.factionId, run.collectionKind, runId, null, safe.summary).catch(() => undefined)
+  ).bind(now, safe.summary, now, runId)
+  const failState = db.prepare(
+    "INSERT INTO faction_performance_collection_state (faction_id, collection_kind, last_success_at, last_run_id, last_error, updated_at) VALUES (?, ?, NULL, ?, ?, ?) ON CONFLICT(faction_id, collection_kind) DO UPDATE SET last_run_id = excluded.last_run_id, last_error = excluded.last_error, updated_at = excluded.updated_at"
+  ).bind(run.factionId, run.collectionKind, runId, safe.summary, now)
+  if (db.batch) {
+    // Keep the run's terminal failure and collection status in one D1 transaction.
+    await db.batch([failRun, failState])
+  } else {
+    await failRun.run()
+    await failState.run()
+  }
 }
 
 async function enqueueOneFactionPerformanceRun(
