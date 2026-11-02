@@ -42,6 +42,11 @@ jobs:
           npm run typecheck
           npm test
 
+      - name: Check integration harness JavaScript syntax
+        run: |
+          node --check scripts/ensure-faction-performance-integration-queues.mjs
+          node --check scripts/run-faction-performance-staging-integration.mjs
+
       - name: Verify isolated staging configurations
         shell: bash
         run: |
