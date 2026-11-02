@@ -278,6 +278,23 @@ try {
     assert.doesNotMatch(floorSource, /currentStockQuantity - previousStockSnapshot\.stockQuantity/)
   })
 
+  await test("faction performance read API is faction-authenticated and exposes only public collection fields", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const routeStart = workerSource.indexOf('if (url.pathname === "/api/faction/performance" && request.method === "GET")')
+    const routeEnd = workerSource.indexOf('if (url.pathname === "/api/faction/shared-company-data"', routeStart)
+    assert.ok(routeStart >= 0 && routeEnd > routeStart)
+    const route = workerSource.slice(routeStart, routeEnd)
+    assert.match(route, /authenticate\(request, env\)/)
+    assert.match(route, /session\.faction_id !== NAUGHTY_SOULS_FACTION_ID/)
+    assert.match(route, /faction_member_roster_snapshots/)
+    assert.match(route, /faction_member_stat_snapshots/)
+    assert.match(route, /faction_gym_energy_snapshots/)
+    assert.match(route, /statsCapturedAt/)
+    assert.match(route, /gymEnergyCapturedAt/)
+    assert.match(route, /private, max-age=30/)
+    assert.doesNotMatch(route, /api_keys|encrypted_api_key|cooldowns|bars/)
+  })
+
   await test("faction performance migration preserves historical data independently of player rows", () => {
     const migration = readFileSync(join(root, "migrations/auth/0019_faction_performance_collection.sql"), "utf8")
     for (const table of [
