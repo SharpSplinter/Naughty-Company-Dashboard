@@ -120,6 +120,8 @@
 .faction-directory-heading input{width:min(290px,100%);border:1px solid #43545a;border-radius:7px;background:#0e171f;color:#edf4f0;padding:10px 11px;font-size:9px;outline:none}
 .faction-directory-heading input:focus{border-color:#65bda5}
 .faction-directory-panel .historical-leaderboard table{min-width:850px}
+.faction-roster-panel{margin-top:14px}
+.faction-roster-panel td strong{display:block;font-size:9px;color:#dcebe3}
 .faction-directory-panel td strong,.faction-directory-panel td small{display:block}
 .faction-directory-panel td strong{font-size:9px;color:#dcebe3}
 .faction-directory-panel td small{font-size:8px;color:#7f969d;margin-top:4px}
