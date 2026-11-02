@@ -16,6 +16,8 @@ type HalloweenLiveMember = {
   upgradesUnlocked: number | null
   upgrades: unknown[] | null
   capturedAt: string | null
+  snapshotKind: string | null
+  sourceTimestamp: number | null
   coverage: string
 }
 
@@ -307,7 +309,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
               {live.leaderboard.length ? <table><thead><tr><th>RANK</th><th>MEMBER</th><th>CURRENT TREATS</th><th>TOTAL TREATS</th><th>UPGRADES</th><th>COVERAGE</th></tr></thead><tbody>
                 {live.leaderboard.map((member, index) => <tr key={member.playerId}>
                   <td>{member.totalTreats === null ? "—" : index + 1}</td>
-                  <td>{member.playerName}<small>#{member.playerId}</small></td>
+                  <td>{member.playerName}<small>#{member.playerId} · {member.snapshotKind ?? "no snapshot"} · {member.sourceTimestamp == null ? "source time unavailable" : "Torn " + new Date(member.sourceTimestamp * 1000).toLocaleString()}</small></td>
                   <td>{member.currentTreats === null ? "—" : member.currentTreats.toLocaleString()}</td>
                   <td>{member.totalTreats === null ? "—" : member.totalTreats.toLocaleString()}</td>
                   <td>{member.upgradesUnlocked === null ? "—" : member.upgradesUnlocked}</td>
