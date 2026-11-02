@@ -1,3 +1,4 @@
+import { buildPersonalStatsPath, type PersonalStatsRequest } from "./personalstats"
 import type {
   TornClientOptions,
   TornCompanyData,
@@ -108,6 +109,15 @@ export class TornApiClient {
   async getUserJobFor(playerId: string | number): Promise<Record<string, unknown>> {
     if (!/^\d+$/.test(String(playerId))) throw new TornApiClientError("Player ID must be numeric.", { status: 400 })
     return this.request<Record<string, unknown>>(`/user/${playerId}/job`)
+  }
+
+  async getUserPersonalStatsFor(playerId: string | number, selection: PersonalStatsRequest): Promise<unknown> {
+    try {
+      return await this.request<unknown>(buildPersonalStatsPath(playerId, selection))
+    } catch (error) {
+      if (error instanceof TornApiClientError) throw error
+      throw new TornApiClientError("Could not load Torn personal stats.", { status: 502 })
+    }
   }
 
   async getCompanyProfileById(companyId: string | number): Promise<TornCompanyResponse<TornCompanyProfile>> {
