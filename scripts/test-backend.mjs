@@ -354,7 +354,6 @@ try {
     const uiSource = readFileSync(join(root, "src/components/floor/admin-panel.tsx"), "utf8")
     const floorAppSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
     const migrationSource = readFileSync(join(root, "migrations/auth/0008_admin_endpoint_refresh.sql"), "utf8")
-    const stepUpMigrationSource = readFileSync(join(root, "migrations/auth/0010_admin_step_up.sql"), "utf8")
     const adminStart = workerSource.indexOf("async function handleAdminRequest")
     const jobsRoute = workerSource.indexOf('if (url.pathname === "/api/admin/jobs" && request.method === "POST")', adminStart)
     const adminRoutes = workerSource.slice(adminStart, workerSource.indexOf("\nasync function ", adminStart + 30))
@@ -362,16 +361,13 @@ try {
     const refreshEnd = workerSource.indexOf("async function runAdminJob", refreshStart)
     const refreshBody = workerSource.slice(refreshStart, refreshEnd)
     assert.ok(adminStart >= 0 && jobsRoute > adminStart)
-    assert.match(adminRoutes, /!isAdminElevated\(session\)/, "admin routes must require active session-scoped elevation")
-    assert.match(workerSource, /isAdmin: false, canElevateAdmin:/, "normal Torn sign-in must never grant admin")
-    assert.doesNotMatch(workerSource, /isAdmin: player\.id === ADMIN_PLAYER_ID/, "Torn player ID is only an elevation allowlist")
-    assert.match(workerSource, /ADMIN_PASSWORD_HASH/)
-    assert.match(workerSource, /ADMIN_USERNAME/)
-    assert.match(workerSource, /ADMIN_MAX_ATTEMPTS = 5/)
-    assert.match(workerSource, /admin_elevated_until/)
-    assert.match(floorAppSource, /Unlock administration/)
-    assert.match(floorAppSource, /\/api\/auth\/admin\/elevate/)
-    assert.match(stepUpMigrationSource, /ALTER TABLE sessions ADD COLUMN admin_elevated_until/)
+    assert.match(adminRoutes, /session\\.is_admin !== 1/, "admin routes must require the current D1 role")
+    assert.match(workerSource, /LEFT JOIN administrators a ON a\\.player_id = p\\.player_id AND a\\.revoked_at IS NULL/)
+    assert.match(workerSource, /INSERT INTO administrators \\(player_id, granted_by, granted_at/)
+    assert.match(workerSource, /administrator\\.granted/)
+    assert.match(workerSource, /administrator\\.revoked/)
+    assert.doesNotMatch(workerSource, /ADMIN_PASSWORD_HASH|ADMIN_USERNAME|isAdminElevated|admin_elevated_until/)
+    assert.doesNotMatch(floorAppSource, /Unlock administration|adminPassword|adminUsername/)
     assert.match(adminRoutes, /ensureAdminJobPayloadSchema\(env\)/)
     assert.match(adminRoutes, /"endpoint-refresh"/)
     assert.match(adminRoutes, /rawIds\.length > 100/, "selected-user jobs must be bounded")
@@ -1181,7 +1177,7 @@ try {
     const writes = []
     const db = { prepare(sql) { let values = []; return {
       bind(...args) { values = args; return this },
-      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: Math.floor(Date.now() / 1000) + 1800 }; return null },
+      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", is_admin: 1 }; return null },
       async all() { return { results: [] } },
       async run() { if (sql.toLowerCase().includes("insert into admin_settings")) writes.push(values); return { success: true, meta: { changes: 1 } } },
     } } }
