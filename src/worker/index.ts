@@ -17,7 +17,8 @@ type D1Database = {
 }
 type QueueProducer = { send(message: unknown): Promise<unknown> }
 type QueueMessage = { body: unknown; attempts?: number; ack(): void; retry(options?: { delaySeconds?: number }): void }
-type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; TORN_FACTION_API_KEY?: string; TORN_API_BASE_URL?: string; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
+type TornFixtureBinding = { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> }
+type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; TORN_FACTION_API_KEY?: string; TORN_API_BASE_URL?: string; TORN_API_FIXTURE?: TornFixtureBinding; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
 type Session = { player_id: string; player_name: string; is_admin: number; faction_id?: string | null; faction_verified_at?: string | null; membership_check_attempted_at?: string | null; membership_check_status?: string | null }
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }
@@ -633,7 +634,13 @@ async function runFactionPerformanceCollection(env: WorkerEnv, runId: string): P
   await db.prepare(
     "UPDATE faction_performance_collection_runs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
   ).bind(now, now, runId).run()
-  const client = new TornApiClient({ apiKey, baseUrl: env.TORN_API_BASE_URL })
+  const client = new TornApiClient({
+    apiKey,
+    baseUrl: env.TORN_API_BASE_URL,
+    // The staging acceptance test routes the Torn client through an isolated
+    // Service Binding to deterministic fixture responses, never public Torn.
+    fetcher: env.TORN_API_FIXTURE?.fetch.bind(env.TORN_API_FIXTURE),
+  })
 
   if (run.collectionKind === "roster") {
     await runFactionRosterCollection(env, run, client)
@@ -1684,6 +1691,14 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
         await runFactionPerformanceCollection(env, runId)
         message.ack()
       } catch (error) {
+        // Emit only the classified, sanitized reason; never log the key,
+        // request headers, raw upstream body, or arbitrary exception text.
+        const safe = factionCollectionSafeError(error)
+        console.error("Faction performance collection attempt failed", {
+          runId,
+          summary: safe.summary,
+          tornCode: safe.tornCode,
+        })
         // Leave retry exhaustion to Cloudflare Queues so the configured DLQ
         // receives the message and records the terminal collection failure.
         const attempts = Math.max(1, Number(message.attempts ?? 1))
