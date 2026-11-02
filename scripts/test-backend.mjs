@@ -342,6 +342,7 @@ try {
     assert.match(batchSource, /membership_check_attempted_at/)
     assert.ok(batchSource.includes("catch {") && batchSource.includes("continue"), "Torn and decryption failures must be retried, not treated as faction departure")
     assert.ok(batchSource.includes("await removeDepartedFactionAccess(env, playerId)"))
+    assert.ok(batchSource.indexOf("await removeDepartedFactionAccess(env, playerId)") < batchSource.lastIndexOf("UPDATE players SET faction_id = ?"), "confirmed departure cleanup must complete before the membership row is changed")
     const departedStart = workerSource.indexOf("async function removeDepartedFactionAccess")
     const departedEnd = workerSource.indexOf("function classifyHalloweenLog", departedStart)
     const departedSource = workerSource.slice(departedStart, departedEnd)
