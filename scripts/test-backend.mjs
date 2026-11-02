@@ -14,6 +14,7 @@ const sourceFiles = [
   "src/lib/company/engine.ts",
   "src/lib/company/types.ts",
   "src/lib/torn/client.ts",
+  "src/lib/torn/personalstats.ts",
   "src/lib/torn/types.ts",
   "src/worker/index.ts",
   "src/worker/snapshot-provenance.ts",
@@ -48,6 +49,16 @@ try {
   const require = createRequire(import.meta.url)
   const { runEngine } = require(join(temp, "lib/company/engine.js"))
   const { TornApiClient, TornApiClientError } = require(join(temp, "lib/torn/client.js"))
+  const {
+    buildPersonalStatsPath,
+    categoriesForMissingPersonalStats,
+    decodePersonalStatsResponse,
+  } = require(join(temp, "lib/torn/personalstats.js"))
+  const personalStatsFixtures = JSON.parse(readFileSync(resolve(root, "scripts/fixtures/torn-personalstats.json"), "utf8"))
+  const PERSONAL_STATS_HISTORIC_NAMES_FOR_TEST = [
+    "xantaken", "lsdtaken", "drugsused", "overdosed", "alcoholused", "boostersused",
+    "energydrinkused", "refills", "statenhancersused", "networth", "cantaken",
+  ]
   const worker = require(join(temp, "worker/index.js")).default
   const { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } = require(join(temp, "worker/snapshot-provenance.js"))
   const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
@@ -727,6 +738,124 @@ try {
       "https://api.torn.com/v2/user/12345/job",
       "https://api.torn.com/v2/company/96639/profile",
     ])
+  })
+
+  await test("decodes all current personalstats response variants using guarded runtime paths", () => {
+    const cases = [
+      ["full", { kind: "full" }, 20, 14],
+      ["fullPublic", { kind: "all" }, 10, 4],
+      ["popular", { kind: "popular" }, 7, 10],
+    ]
+    for (const [fixtureName, request, expectedXanax, expectedLsd] of cases) {
+      const decoded = decodePersonalStatsResponse(personalStatsFixtures[fixtureName], request)
+      assert.equal(decoded.kind, "current")
+      assert.equal(decoded.metrics.xantaken, expectedXanax)
+      assert.equal(decoded.metrics.lsdtaken, expectedLsd)
+      assert.equal(decoded.metrics.drugsused, fixtureName === "full" ? 145 : fixtureName === "fullPublic" ? 55 : 17)
+      assert.equal(decoded.metrics.alcoholused, fixtureName === "full" ? 22 : fixtureName === "fullPublic" ? 12 : 5)
+      assert.equal(decoded.metrics.energydrinkused, fixtureName === "full" ? 23 : fixtureName === "fullPublic" ? 13 : 6)
+      assert.equal(decoded.metrics.refills, fixtureName === "full" ? 25 : fixtureName === "fullPublic" ? 15 : 2)
+      assert.equal(decoded.metrics.networth, fixtureName === "full" ? 260000000 : fixtureName === "fullPublic" ? 160000000 : 180000000)
+      assert.equal(decoded.missingMetrics.length, 0)
+    }
+  })
+
+  await test("decodes category-specific nested personalstats and proposes only required category fallbacks", () => {
+    const drugs = decodePersonalStatsResponse(personalStatsFixtures.categoryDrugs, { kind: "category", category: "drugs" })
+    assert.equal(drugs.kind, "current")
+    assert.equal(drugs.category, "drugs")
+    assert.equal(drugs.metrics.xantaken, 20)
+    assert.equal(drugs.metrics.lsdtaken, 14)
+    assert.equal(drugs.metrics.alcoholused, null, "fields outside the requested category remain unknown")
+    assert.ok(drugs.missingMetrics.includes("alcoholused"))
+
+    const items = decodePersonalStatsResponse(personalStatsFixtures.categoryItems, { kind: "category", category: "items" })
+    assert.equal(items.metrics.alcoholused, 22)
+    assert.equal(items.metrics.boostersused, 21)
+    assert.equal(items.metrics.energydrinkused, 23)
+    assert.equal(items.metrics.statenhancersused, 24)
+
+    const other = decodePersonalStatsResponse(personalStatsFixtures.categoryOther, { kind: "category", category: "other" })
+    assert.equal(other.metrics.refills, 25)
+
+    const networth = decodePersonalStatsResponse(personalStatsFixtures.categoryNetworth, { kind: "category", category: "networth" })
+    assert.equal(networth.metrics.networth, 260000000)
+
+    assert.deepEqual(
+      categoriesForMissingPersonalStats(["energydrinkused", "refills", "networth"]),
+      ["items", "other", "networth"],
+      "fallback selection should request only the categories needed by missing metrics",
+    )
+  })
+
+  await test("decodes historic stat arrays, preserves per-stat timestamps, and marks omitted stats unknown", () => {
+    const decoded = decodePersonalStatsResponse(personalStatsFixtures.historic, {
+      kind: "historic",
+      stats: ["xantaken", "lsdtaken", "overdosed"],
+      timestamp: 1794000000,
+    })
+    assert.equal(decoded.kind, "historic")
+    assert.deepEqual(decoded.stats.slice(0, 2), [
+      { name: "xantaken", value: 247, timestamp: 1794000000 },
+      { name: "lsdtaken", value: 390, timestamp: 1794000015 },
+    ])
+    assert.deepEqual(decoded.missingStats, ["overdosed"], "a stat omitted by Torn must not become zero")
+    assert.equal(decoded.stats[2].name, "new_stat_not_requested", "unknown future stat names are retained rather than discarded")
+  })
+
+  await test("builds valid personalstats request paths and enforces the historical ten-stat limit", () => {
+    assert.equal(buildPersonalStatsPath(12345, { kind: "popular" }), "/user/12345/personalstats?cat=popular")
+    assert.equal(buildPersonalStatsPath("12345", { kind: "all" }), "/user/12345/personalstats?cat=all")
+    assert.equal(buildPersonalStatsPath(12345, { kind: "category", category: "drugs" }), "/user/12345/personalstats?cat=drugs")
+    assert.equal(buildPersonalStatsPath(12345, { kind: "full" }), "/user/12345/personalstats")
+    const historicPath = buildPersonalStatsPath(12345, {
+      kind: "historic",
+      stats: ["xantaken", "lsdtaken"],
+      timestamp: 1794000000,
+    })
+    const historicUrl = new URL(historicPath, "https://api.torn.com/v2")
+    assert.equal(historicUrl.searchParams.get("stat"), "xantaken,lsdtaken")
+    assert.equal(historicUrl.searchParams.get("timestamp"), "1794000000")
+    assert.throws(() => buildPersonalStatsPath(0, { kind: "popular" }), /Player ID/)
+    assert.throws(() => buildPersonalStatsPath(12345, {
+      kind: "historic",
+      stats: PERSONAL_STATS_HISTORIC_NAMES_FOR_TEST,
+      timestamp: 1794000000,
+    }), /between 1 and 10/)
+    assert.throws(() => buildPersonalStatsPath(12345, {
+      kind: "historic",
+      stats: ["xantaken"],
+      timestamp: 0,
+    }), /Unix timestamp/)
+  })
+
+  await test("rejects invalid current and historical personalstats payloads rather than casting unknown data", () => {
+    assert.throws(() => decodePersonalStatsResponse({}, { kind: "popular" }), /missing its personalstats/)
+    assert.throws(() => decodePersonalStatsResponse({ personalstats: [] }, { kind: "popular" }), /must contain a personalstats object/)
+    assert.throws(() => decodePersonalStatsResponse({ personalstats: { items: {} } }, { kind: "category", category: "drugs" }), /did not include the requested drugs/)
+    assert.throws(() => decodePersonalStatsResponse({ personalstats: {} }, {
+      kind: "historic", stats: ["xantaken"], timestamp: 1794000000,
+    }), /must contain a personalstats array/)
+    assert.throws(() => decodePersonalStatsResponse({ personalstats: [{ name: "xantaken", value: "7", timestamp: 1794000000 }] }, {
+      kind: "historic", stats: ["xantaken"], timestamp: 1794000000,
+    }), /invalid name, value or timestamp/)
+  })
+
+  await test("requests a member's personalstats with the requested selection and Authorization header", async () => {
+    let requestedUrl = ""
+    let authorization = ""
+    const client = new TornApiClient({
+      apiKey: "personalstats-test-key",
+      fetcher: async (input, init) => {
+        requestedUrl = String(input)
+        authorization = new Headers(init?.headers).get("Authorization") ?? ""
+        return new Response(JSON.stringify(personalStatsFixtures.popular))
+      },
+    })
+    const response = await client.getUserPersonalStatsFor(12345, { kind: "popular" })
+    assert.equal(requestedUrl, "https://api.torn.com/v2/user/12345/personalstats?cat=popular")
+    assert.equal(authorization, "ApiKey personalstats-test-key")
+    assert.equal(decodePersonalStatsResponse(response, { kind: "popular" }).metrics.xantaken, 7)
   })
 
   await test("sends the Torn key in Authorization, never in the URL", async () => {
