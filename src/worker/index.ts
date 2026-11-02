@@ -1673,12 +1673,10 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
         await runFactionPerformanceCollection(env, runId)
         message.ack()
       } catch (error) {
-        const attempts = Number(message.attempts ?? 1)
-        if (attempts < 4) message.retry({ delaySeconds: Math.min(60, attempts * 10) })
-        else {
-          await markFactionPerformanceRunFailed(env, runId, error)
-          message.ack()
-        }
+        // Leave retry exhaustion to Cloudflare Queues so the configured DLQ
+        // receives the message and records the terminal collection failure.
+        const attempts = Math.max(1, Number(message.attempts ?? 1))
+        message.retry({ delaySeconds: Math.min(60, attempts * 10) })
       }
       continue
     }
