@@ -1055,346 +1055,89 @@ try {
     assert.equal(response.status, 403)
   })
 
-  await test("administrator elevation fails closed when Worker secrets are not configured", async () => {
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST",
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-session", "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "owner", password: "not-a-real-password" }),
-    }), { DB: db })
-    assert.equal(response.status, 503)
-    assert.match((await response.json()).error, /not configured/i)
+  await test("administrator access uses active player-ID roles rather than password step-up", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const appSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
+    const roleMigration = readFileSync(join(root, "migrations/auth/0012_administrator_registry.sql"), "utf8")
+    assert.match(workerSource, /LEFT JOIN administrators a ON a\.player_id = p\.player_id AND a\.revoked_at IS NULL/)
+    assert.match(workerSource, /if \(session\.is_admin !== 1\)/)
+    assert.match(workerSource, /INSERT INTO administrators \(player_id, granted_by, granted_at/)
+    assert.match(workerSource, /administrator\.granted/)
+    assert.match(workerSource, /administrator\.revoked/)
+    assert.match(roleMigration, /CREATE TABLE IF NOT EXISTS administrators/)
+    assert.match(roleMigration, /WHERE player_id = '351311'/)
+    assert.doesNotMatch(workerSource, /ADMIN_USERNAME|ADMIN_PASSWORD_HASH|isAdminElevated|admin_elevated_until/)
+    assert.doesNotMatch(appSource, /Unlock administration|\/api\/auth\/admin\/elevate|adminPassword|adminUsername/)
   })
 
-  await test("administrator elevation rejects a sequential password even when its stored hash matches", async () => {
-    const { pbkdf2Sync } = require("node:crypto")
-    const weakPassword = "abc123!x"
-    const salt = Buffer.alloc(16, 9)
-    const digest = pbkdf2Sync(weakPassword, salt, 210000, 32, "sha256")
-    const passwordHash = ["pbkdf2-sha256", "210000", salt.toString("base64"), digest.toString("base64")].join("$")
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) {
-          return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
-        }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST",
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-policy-session", "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "owner", password: weakPassword }),
-    }), { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: passwordHash })
-    assert.equal(response.status, 401)
-    const payload = await response.json()
-    assert.match(payload.error, /administrator sign-in failed/i)
-    assert.equal(payload.diagnostic, "password_policy")
-  })
-
-  await test("owner elevation diagnostics identify username mismatch and malformed hash without exposing secrets", async () => {
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) {
-          return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
-        }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-diagnostics-session", "Content-Type": "application/json" }
-    const wrongUsername = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST", headers, body: JSON.stringify({ username: "wrong", password: "Correct!7Horse?9" }),
-    }), { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: "malformed" })
-    assert.equal(wrongUsername.status, 401)
-    assert.equal((await wrongUsername.json()).diagnostic, "username_mismatch")
-
-    const malformedHash = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST", headers, body: JSON.stringify({ username: "owner", password: "Correct!7Horse?9" }),
-    }), { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: "malformed" })
-    assert.equal(malformedHash.status, 401)
-    const payload = await malformedHash.json()
-    assert.equal(payload.diagnostic, "stored_hash_invalid")
-    assert.equal(Object.hasOwn(payload, "password"), false)
-    assert.equal(JSON.stringify(payload).includes("malformed"), false, "diagnostics must not echo secret values")
-  })
-
-  await test("administrator hash diagnostics are owner-only", async () => {
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        const normalized = sql.toLowerCase()
-        if (normalized.includes("from sessions s join players p")) return { player_id: "123456", player_name: "RegularMember", admin_elevated_until: 0 }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session" }
-    const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/hash-diagnostics", { headers }), {
-      DB: db,
-      ADMIN_PASSWORD_HASH: "pbkdf2-sha256$210000$c2FsdHNhbHRzYWx0c2FsdA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-    })
-    assert.equal(response.status, 403)
-    const payload = await response.json()
-    assert.equal(Object.hasOwn(payload, "hashFingerprint"), false)
-  })
-
-  await test("administrator elevation is session-scoped, expires, and can be explicitly revoked", async () => {
-    const { createHash, pbkdf2Sync } = require("node:crypto")
-    const password = "Correct!7Horse?9"
-    const salt = Buffer.alloc(16, 7)
-    const digest = pbkdf2Sync(password, salt, 210000, 32, "sha256")
-    const passwordHash = ["pbkdf2-sha256", "210000", salt.toString("base64"), digest.toString("base64")].join("$")
-    let elevatedUntil = 0
-    const db = { prepare(sql) {
-      let values = []
+  await test("admin registry rejects non-administrator sessions and allows active role sessions", async () => {
+    const makeDb = (isAdmin) => ({ prepare(sql) {
+      const normalized = sql.toLowerCase()
       return {
-        bind(...args) { values = args; return this },
+        bind() { return this },
         async first() {
-          const normalized = sql.toLowerCase()
-          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: elevatedUntil }
+          if (normalized.includes("from sessions s join players p")) return { player_id: isAdmin ? "351311" : "777", player_name: "Registry Tester", is_admin: isAdmin ? 1 : 0 }
           return null
         },
-        async all() { return { results: [] } },
-        async run() {
-          if (sql.toLowerCase().startsWith("update sessions set admin_elevated_until = ?")) elevatedUntil = Number(values[0])
-          else if (sql.toLowerCase().startsWith("update sessions set admin_elevated_until = 0")) elevatedUntil = 0
-          return { success: true, meta: { changes: 1 } }
+        async all() {
+          if (normalized.includes("from administrators a join players p")) return { results: [{ playerId: "351311", playerName: "Registry Tester", grantedBy: "351311", grantedAt: "2026-11-02T00:00:00.000Z", revokedAt: null }] }
+          return { results: [] }
         },
+        async run() { return { success: true, meta: { changes: 1 } } },
       }
-    } }
-    const env = { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: passwordHash }
-    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-session", "Content-Type": "application/json", "cf-connecting-ip": "192.0.2.10" }
-    const elevated = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST", headers, body: JSON.stringify({ username: "owner", password }),
-    }), env)
-    assert.equal(elevated.status, 200)
-    const elevatedPayload = await elevated.json()
-    assert.equal(elevatedPayload.isAdmin, true)
-    assert.ok(elevatedUntil > Math.floor(Date.now() / 1000))
-    assert.ok(elevatedUntil <= Math.floor(Date.now() / 1000) + 1800)
+    } })
+    const denied = await worker.fetch(new Request("https://worker.test/api/admin/administrators", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session" },
+    }), { DB: makeDb(false) })
+    assert.equal(denied.status, 403)
+    assert.match((await denied.json()).error, /administrator access/i)
 
-    const diagnostics = await worker.fetch(new Request("https://worker.test/api/auth/admin/hash-diagnostics", { headers }), env)
-    assert.equal(diagnostics.status, 200)
-    const diagnosticsPayload = await diagnostics.json()
-    assert.equal(diagnosticsPayload.hashFingerprint, createHash("sha256").update(passwordHash, "utf8").digest("hex"))
-    assert.equal(diagnosticsPayload.hashFormatValid, true)
-    assert.equal(diagnosticsPayload.iterations, 210000)
-    assert.equal(Object.hasOwn(diagnosticsPayload, "passwordHash"), false)
-    assert.equal(JSON.stringify(diagnosticsPayload).includes(passwordHash), false, "hash diagnostics must not expose the stored hash")
-
-    const revoked = await worker.fetch(new Request("https://worker.test/api/auth/admin/de-elevate", { method: "POST", headers }), env)
-    assert.equal(revoked.status, 200)
-    assert.equal((await revoked.json()).isAdmin, false)
-    assert.equal(elevatedUntil, 0)
-
-    const adminRequest = await worker.fetch(new Request("https://worker.test/api/admin/overview", { headers }), env)
-    assert.equal(adminRequest.status, 403)
+    const allowed = await worker.fetch(new Request("https://worker.test/api/admin/administrators", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer admin-session" },
+    }), { DB: makeDb(true) })
+    assert.equal(allowed.status, 200)
+    assert.equal((await allowed.json()).administrators[0].playerId, "351311")
   })
 
-  await test("administrator password hash round-trips Unicode and embedded spaces through the Worker verifier", async () => {
-    const { pbkdf2Sync, webcrypto } = require("node:crypto")
-    const password = "Café!2026 Horse?9"
-    assert.equal(validateAdminPassword(password).valid, true, "the synthetic Unicode password should pass policy")
-    const salt = Buffer.alloc(16, 11)
-    const digest = pbkdf2Sync(password, salt, 210000, 32, "sha256")
-    const key = await webcrypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"])
-    const webDigest = Buffer.from(await webcrypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: new Uint8Array(salt), iterations: 210000 }, key, 256))
-    assert.deepEqual(webDigest, digest, "Node and Web Crypto must encode the same candidate password identically")
-    const passwordHash = ["pbkdf2-sha256", "210000", salt.toString("base64"), digest.toString("base64")].join("$")
-
-    let elevatedUntil = 0
+  await test("administrator grants require a registered non-disabled member and are audited", async () => {
+    const writes = []
     const db = { prepare(sql) {
       const normalized = sql.toLowerCase()
       let values = []
       return {
         bind(...args) { values = args; return this },
         async first() {
-          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "Synthetic Owner", admin_elevated_until: elevatedUntil }
+          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "Owner", is_admin: 1 }
+          if (normalized.includes("from players p left join dashboard_member_status")) return { player_id: "777", player_name: "Member Tester", disabled_at: null }
           return null
         },
         async all() { return { results: [] } },
-        async run() {
-          if (normalized.startsWith("update sessions set admin_elevated_until = ?")) elevatedUntil = Number(values[0])
-          else if (normalized.startsWith("update sessions set admin_elevated_until = 0")) elevatedUntil = 0
-          return { success: true, meta: { changes: 1 } }
-        },
+        async run() { writes.push({ sql, values }); return { success: true, meta: { changes: 1 } } },
       }
     } }
-    const env = { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: passwordHash }
-    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer synthetic-unicode-owner-session", "Content-Type": "application/json" }
-    const elevated = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST", headers, body: JSON.stringify({ username: "owner", password }),
-    }), env)
-    assert.equal(elevated.status, 200, "Worker verifier should accept the exact candidate used to generate the hash")
-    assert.equal((await elevated.json()).isAdmin, true)
-    assert.ok(elevatedUntil > Math.floor(Date.now() / 1000))
-
-    const revoked = await worker.fetch(new Request("https://worker.test/api/auth/admin/de-elevate", { method: "POST", headers }), env)
-    assert.equal(revoked.status, 200)
-    assert.equal(elevatedUntil, 0, "synthetic elevated session should be revoked before the negative check")
-
-    const altered = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST", headers, body: JSON.stringify({ username: "owner", password: "Cafe!2026 Horse?9" }),
-    }), env)
-    assert.equal(altered.status, 401)
-    assert.equal((await altered.json()).diagnostic, "password_mismatch", "a one-character candidate change must fail closed")
-    assert.equal(elevatedUntil, 0, "a rejected candidate must not grant elevation")
-  })
-
-  await test("maintenance mode permits owner recovery authentication but blocks ordinary APIs until elevation", async () => {
-    let companyAutoConnectLookup = false
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        const normalized = sql.toLowerCase()
-        if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
-        if (normalized.includes("from admin_settings")) return { value_json: "true" }
-        if (normalized.includes("select company_id from company_api_keys") && normalized.includes("order by updated_at desc limit 1")) companyAutoConnectLookup = true
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-maintenance-session" }
-    const restored = await worker.fetch(new Request("https://worker.test/api/auth/session", { headers }), { DB: db })
-    assert.equal(restored.status, 200, "the allowlisted owner must be able to reach the separate elevation prompt")
-    const session = await restored.json()
-    assert.equal(session.isAdmin, false, "maintenance recovery must not confer admin privileges")
-    assert.equal(session.canElevateAdmin, true)
-    assert.equal(companyAutoConnectLookup, false, "maintenance recovery should not trigger automatic company connection work")
-
-    const protectedData = await worker.fetch(new Request("https://worker.test/api/me/health", { headers }), { DB: db })
-    assert.equal(protectedData.status, 401, "normal authenticated API routes remain blocked during maintenance before elevation")
-  })
-
-  await test("expired administrator elevation is denied at the Worker even if the browser still has stale admin state", async () => {
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) {
-          return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: Math.floor(Date.now() / 1000) - 60 }
-        }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const response = await worker.fetch(new Request("https://worker.test/api/admin/overview", {
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer stale-admin-session" },
-    }), { DB: db })
-    assert.equal(response.status, 403)
-    assert.match((await response.json()).error, /administrator verification/i)
-  })
-
-  await test("administrator elevation rate-limits repeated invalid credentials", async () => {
-    let attempt = { failures: 0, windowStartedAt: Math.floor(Date.now() / 1000), lockedUntil: 0 }
-    const db = { prepare(sql) {
-      let values = []
-      return {
-        bind(...args) { values = args; return this },
-        async first() {
-          const normalized = sql.toLowerCase()
-          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
-          if (normalized.includes("from admin_auth_attempts") && normalized.includes("select locked_until")) return { lockedUntil: attempt.lockedUntil }
-          if (normalized.includes("from admin_auth_attempts") && normalized.includes("select failures")) return { ...attempt, windowStartedAt: attempt.windowStartedAt, lockedUntil: attempt.lockedUntil }
-          return null
-        },
-        async all() { return { results: [] } },
-        async run() {
-          if (sql.toLowerCase().startsWith("insert into admin_auth_attempts")) attempt = { failures: Number(values[1]), windowStartedAt: Number(values[2]), lockedUntil: Number(values[3]) }
-          return { success: true, meta: { changes: 1 } }
-        },
-      }
-    } }
-    const env = { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: "malformed" }
-    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-session", "Content-Type": "application/json", "cf-connecting-ip": "192.0.2.11" }
-    for (let index = 0; index < 5; index++) {
-      const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-        method: "POST", headers, body: JSON.stringify({ username: "wrong", password: "incorrect-password" }),
-      }), env)
-      assert.equal(response.status, index === 4 ? 429 : 401)
-    }
-    assert.equal(attempt.failures, 5)
-    assert.ok(attempt.lockedUntil > Math.floor(Date.now() / 1000))
-    const locked = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST", headers, body: JSON.stringify({ username: "owner", password: "incorrect-password" }),
-    }), env)
-    assert.equal(locked.status, 429)
-  })
-
-  await test("administrator elevation is denied to non-allowlisted Torn identities", async () => {
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "777", player_name: "Member Tester", admin_elevated_until: 0 }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
+    const response = await worker.fetch(new Request("https://worker.test/api/admin/administrators/grant", {
       method: "POST",
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session", "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "owner", password: "some-password" }),
-    }), { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: "malformed" })
-    assert.equal(response.status, 403)
-    assert.match((await response.json()).error, /verification failed/i)
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-session", "Content-Type": "application/json" },
+      body: JSON.stringify({ playerId: "777" }),
+    }), { DB: db })
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).granted, true)
+    assert.ok(writes.some((write) => write.sql.toLowerCase().includes("insert into administrators")), "role must be persisted in D1")
+    assert.ok(writes.some((write) => write.sql.toLowerCase().includes("insert into admin_audit_log")), "grant must be audited")
   })
 
-  await test("admin API rejects requests without an authenticated dashboard session", async () => {
-    const response = await worker.fetch(new Request("https://worker.test/api/admin/overview", {
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev" },
-    }), { DB: { prepare() { return { bind() { return this }, async first() { return null }, async all() { return { results: [] } }, async run() { return { success: true } } } } } })
-    assert.equal(response.status, 401)
-    assert.match((await response.json()).error, /active dashboard session/i)
-  })
-
-  await test("owner Torn session has no admin access until step-up verification", async () => {
+  await test("administrators cannot grant themselves or revoke their own role", async () => {
     const db = { prepare(sql) { return {
       bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
-        return null
-      },
+      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "Owner", is_admin: 1 }; return null },
       async all() { return { results: [] } },
       async run() { return { success: true, meta: { changes: 1 } } },
     } } }
-    const response = await worker.fetch(new Request("https://worker.test/api/admin/overview", {
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-standard-session" },
-    }), { DB: db })
-    assert.equal(response.status, 403)
-    assert.match((await response.json()).error, /administrator verification/i)
-  })
-
-  await test("admin API rejects an authenticated non-administrator", async () => {
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "777", player_name: "Member Tester" }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true } },
-    } } }
-    const response = await worker.fetch(new Request("https://worker.test/api/admin/overview", {
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session" },
-    }), { DB: db })
-    assert.equal(response.status, 403)
-    assert.match((await response.json()).error, /administrator (?:verification|access)/i)
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-session", "Content-Type": "application/json" }
+    const grant = await worker.fetch(new Request("https://worker.test/api/admin/administrators/grant", { method: "POST", headers, body: JSON.stringify({ playerId: "351311" }) }), { DB: db })
+    assert.equal(grant.status, 409)
+    const revoke = await worker.fetch(new Request("https://worker.test/api/admin/administrators/revoke", { method: "POST", headers, body: JSON.stringify({ playerId: "351311" }) }), { DB: db })
+    assert.equal(revoke.status, 409)
   })
 
   await test("admin automation insights aggregate runs for the selected time window", async () => {
@@ -1406,7 +1149,7 @@ try {
         bind(...args) { values = args; return this },
         async first() {
           const normalized = sql.toLowerCase()
-          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: Math.floor(Date.now() / 1000) + 1800 }
+          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", is_admin: 1 }
           if (normalized.includes("count(*) as totalruns")) return { totalRuns: 4, succeededRuns: 2, failedRuns: 1, partialRuns: 1, runningRuns: 0, completedRuns: 4, avgDurationSeconds: 65.2, companiesFailed: 3, alertsCreated: 5, latestRunAt: "2026-10-10T18:00:00.000Z" }
           return null
         },
