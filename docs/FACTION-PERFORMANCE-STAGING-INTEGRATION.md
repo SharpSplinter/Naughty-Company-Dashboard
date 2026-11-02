@@ -35,6 +35,8 @@ The workflow performs these steps in order:
 
 The migration-only workflow `.github/workflows/faction-performance-staging-migration.yml` is also available when migration verification is desired separately.
 
+The repository secret `CLOUDFLARE_API_TOKEN` must be authorized for D1 writes, Worker script deployments, and Queues management (including queue creation and message publishing). The workflow does not need a Torn API secret.
+
 ## Assertions
 
 The driver `scripts/run-faction-performance-staging-integration.mjs` verifies:
