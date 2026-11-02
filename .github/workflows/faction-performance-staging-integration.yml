@@ -61,6 +61,8 @@ jobs:
           grep -F 'database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"' wrangler.staging.toml
           grep -F 'database_name = "naughty-company-api-staging"' wrangler.faction-performance-integration.toml
           grep -F 'database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"' wrangler.faction-performance-integration.toml
+          grep -F 'binding = "TORN_API_FIXTURE"' wrangler.faction-performance-integration.toml
+          grep -F 'service = "naughty-company-api-faction-performance-mock"' wrangler.faction-performance-integration.toml
           ! grep -F 'bbbe128a-c5cc-46ec-b8ef-93860183e795' wrangler.staging.toml
           ! grep -F 'bbbe128a-c5cc-46ec-b8ef-93860183e795' wrangler.faction-performance-integration.toml
           ! grep -Eq '^\[triggers\]|^\[\[queues\.(producers|consumers)\]\]' wrangler.staging.toml
