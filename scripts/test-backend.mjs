@@ -2245,7 +2245,7 @@ try {
             if (normalized.startsWith("select last_request_at from halloween_api_throttles")) {
               return halloweenTables.halloween_api_throttles.get(String(values[0])) ?? null
             }
-            if (normalized.startsWith("select job_id, player_id, event_year, status, cursor_ts, cursor_url, cursor_direction, pages_collected, logs_collected from halloween_collection_jobs where job_id = ?")) {
+            if (normalized.startsWith("select job_id, player_id, event_year, status, cursor_ts, cursor_url, cursor_direction, pages_collected, logs_collected, window_start_at, window_end_at from halloween_collection_jobs where job_id = ?")) {
               return [...halloweenTables.halloween_collection_jobs.values()].find(row => row.job_id === String(values[0])) ?? null
             }
             if (normalized.startsWith("select start_at, end_at, historical_collection_enabled from halloween_event_windows")) {
