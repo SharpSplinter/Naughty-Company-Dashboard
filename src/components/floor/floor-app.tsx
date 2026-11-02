@@ -10,6 +10,8 @@ import { AdminPanel } from "./admin-panel"
 import { InsightsWorkspace } from "./insights-workspace"
 import { AlertsPanel, NotificationSettingsPanel } from "./alerts-panel"
 import { companyTypeIdFromProfile, estimateWeeklyProfit, financialCosts, formatMoney, formatNumber, getObject, pretty, reportedCompanyProfit, stockPriceRows } from "./financial-utils"
+import { AccountSettingsWorkspace, FactionWorkspacePlaceholder, HalloweenWorkspace, PortalHome } from "../portal/workspaces"
+import "../portal/workspaces.css"
 
 const catalog = positionsData as CompanyPositionCatalog
 const companyNames = Object.keys(catalog.companies).sort()
@@ -61,6 +63,7 @@ type SharedCompany = { playerId: string; directorName: string; companyId: string
 
 
 export function FloorApp() {
+  const [routePath, setRoutePath] = useState(() => window.location.pathname || "/")
   const [activeView, setActiveView] = useState<DashboardView>(() => {
     try { const saved = sessionStorage.getItem("ncd_active_view"); if (saved && dashboardViews.includes(saved as DashboardView)) return saved as DashboardView } catch { /* Storage may be disabled. */ }
     return "overview"
@@ -136,6 +139,25 @@ export function FloorApp() {
   const [sharingNotice, setSharingNotice] = useState("")
   const [sharedCompanies, setSharedCompanies] = useState<SharedCompany[]>([])
   const [employeeComparePlayerId, setEmployeeComparePlayerId] = useState("")
+
+  const navigateToPath = useCallback((path: string) => {
+    if (window.location.pathname !== path) window.history.pushState({}, "", path)
+    setRoutePath(path)
+    if (path === "/company") setActiveView("overview")
+    if (path === "/admin") setActiveView("admin")
+    setSidebarCollapsed(true)
+  }, [])
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = window.location.pathname || "/"
+      setRoutePath(path)
+      if (path === "/company") setActiveView("overview")
+      if (path === "/admin") setActiveView("admin")
+    }
+    window.addEventListener("popstate", handlePopState)
+    return () => window.removeEventListener("popstate", handlePopState)
+  }, [])
 
   useEffect(() => {
     try { sessionStorage.setItem("ncd_active_view", activeView) } catch { /* Storage may be disabled. */ }
@@ -906,6 +928,8 @@ export function FloorApp() {
       void fetch(`${API_BASE}/api/auth/sign-out`, { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => undefined)
     }
     localStorage.removeItem("ncd_session")
+    window.history.replaceState({}, "", "/")
+    setRoutePath("/")
     setDemoMode(false)
     setSessionToken("")
     setPlayerName("")
@@ -1017,16 +1041,23 @@ export function FloorApp() {
     </main>
   )
 
+  if (routePath === "/") return <PortalHome playerName={playerName} playerId={playerId} isAdmin={isAdmin} loginKeySaved={keySaved} companyKeySaved={companyKeySaved} companies={savedCompanies} onNavigate={navigateToPath} onSignOut={() => signOut()} />
+  if (routePath === "/faction") return <FactionWorkspacePlaceholder playerName={playerName} onNavigate={navigateToPath} />
+  if (routePath === "/halloween") return <HalloweenWorkspace playerName={playerName} onNavigate={navigateToPath} />
+  if (routePath === "/settings") return <AccountSettingsWorkspace playerName={playerName} playerId={playerId} isAdmin={isAdmin} loginKeySaved={keySaved} companyKeySaved={companyKeySaved} companies={savedCompanies} onNavigate={navigateToPath} onSignOut={() => signOut()} />
+  if (routePath === "/admin" && !isAdmin) return <main className="module-page"><section className="module-placeholder"><div className="portal-eyebrow"><span /> RESTRICTED WORKSPACE</div><h1>Administrator access required</h1><p>This workspace is available only to accounts with an active administrator role.</p><button type="button" className="portal-primary-button" onClick={() => navigateToPath("/")}>Return to portal →</button></section></main>
+
   return (
     <div className={`app-shell dashboard-density-${dashboardPreferences.density} dashboard-width-${dashboardPreferences.contentWidth}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       {adminAuthOpen && playerId === "351311" && !isAdmin && !demoMode && <div className="login-screen admin-elevation-screen"><section className="login-card" role="dialog" aria-modal="true" aria-labelledby="admin-elevation-title"><div className="login-brand"><span className="brand-mark">NC</span><span><strong>NAUGHTY</strong><small>ADMINISTRATOR VERIFICATION</small></span></div><div className="login-eyebrow"><span className="eyebrow-line" /> STEP-UP AUTHENTICATION</div><h1 id="admin-elevation-title">Unlock administration</h1><p className="login-subtitle">Your Torn session is standard access. Verify your separate administrator credentials to unlock privileged controls for 30 minutes.</p><form className="login-form" onSubmit={elevateAdmin}><label htmlFor="admin-username">Administrator username</label><input id="admin-username" type="text" autoComplete="username" value={adminUsername} onChange={(event) => setAdminUsername(event.target.value)} required maxLength={120} /><label htmlFor="admin-password">Administrator password</label><input id="admin-password" type="password" autoComplete="current-password" aria-describedby="admin-password-policy-hint" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} required minLength={8} maxLength={1024} /><p className="field-hint" id="admin-password-policy-hint">At least 8 characters, including a letter, digit and symbol. Avoid sequences such as abc, cba, 123 or 321.</p>{adminAuthError && <div className="error-banner" role="alert">{adminAuthError}</div>}<button className="primary-button form-submit" disabled={adminAuthBusy}>{adminAuthBusy ? "Verifying…" : "Verify and unlock"}</button><button className="text-button" type="button" disabled={adminAuthBusy} onClick={() => { setAdminAuthOpen(false); setAdminPassword(""); setAdminAuthError("") }}>Cancel</button></form><p className="login-hint">Repeated failed attempts are rate-limited. Administrator access expires automatically.</p></section></div>}
       <aside className="sidebar">
-        <a className="brand" href="#" onClick={(event) => { event.preventDefault(); setActiveView("overview") }}>
+        <a className="brand" href="/" onClick={(event) => { event.preventDefault(); navigateToPath("/") }}>
           <span className="brand-mark">NC</span>
           <span><strong>NAUGHTY</strong><small>COMPANY OPERATIONS</small></span>
         </a>
         <button className="sidebar-mobile-close" type="button" onClick={() => setSidebarCollapsed(true)} aria-label="Close navigation">×</button>
         <div className="side-label">WORKSPACE</div>
+        <button type="button" className="nav-item portal-nav-link" onClick={() => navigateToPath("/")}><span aria-hidden="true">⌂</span><span className="nav-label">Portal Home</span></button>
         <nav className="nav-list" aria-label="Main navigation">
           <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.company} onClick={() => setOpenNavGroups((groups) => ({ ...groups, company: !groups.company }))}><span>Company</span><b>{openNavGroups.company ? "⌄" : "›"}</b></button>{openNavGroups.company && <div className="nav-subitems"><button className={activeView === "overview" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("overview")}><span aria-hidden="true">◫</span><span className="nav-label">Company Details</span></button><button className={activeView === "employees" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("employees")}><span aria-hidden="true">♙</span><span className="nav-label">Employees</span></button><button className={activeView === "charts" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("charts")}><span aria-hidden="true">⌁</span><span className="nav-label">Trends & Charts</span></button><button className={activeView === "roster-insights" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("roster-insights")}><span aria-hidden="true">♙</span><span className="nav-label">Roster Insights</span></button><button className={activeView === "executive" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("executive")}><span aria-hidden="true">▤</span><span className="nav-label">Executive Overview</span></button><button className={activeView === "layout" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("layout")}><span aria-hidden="true">▤</span><span className="nav-label">Customize Layout</span></button></div>}</div>
           <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.rankings} onClick={() => setOpenNavGroups((groups) => ({ ...groups, rankings: !groups.rankings }))}><span>Rankings</span><b>{openNavGroups.rankings ? "⌄" : "›"}</b></button>{openNavGroups.rankings && <div className="nav-subitems"><button className={activeView === "type-rankings" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("type-rankings")}><span aria-hidden="true">↗</span><span className="nav-label">Company Rankings</span></button><button className={activeView === "faction-rankings" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("faction-rankings")}><span aria-hidden="true">♜</span><span className="nav-label">Faction Rankings</span></button></div>}</div>
