@@ -21,6 +21,7 @@
     "src/lib/**/*.ts",
     "src/lib/**/*.json",
     "src/worker/**/*.ts",
+    "scripts/**/*.ts",
     "vite.config.ts"
   ]
 }
