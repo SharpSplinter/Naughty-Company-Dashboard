@@ -3083,6 +3083,59 @@ export default {
         return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), updatedAt: new Date().toISOString() }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
+    if (url.pathname === "/api/me/halloween/key" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const row = await requireDb(env).prepare("SELECT last_four, access_level, consent_version, consented_at, last_validated_at, created_at, updated_at FROM halloween_historical_keys WHERE player_id = ?")
+        .bind(session.player_id).first<{ last_four: string; access_level: string; consent_version: string; consented_at: string; last_validated_at: string; created_at: string; updated_at: string }>()
+      return jsonResponse({ connected: Boolean(row), key: row ? { lastFour: row.last_four, accessLevel: row.access_level, consentVersion: row.consent_version, consentedAt: row.consented_at, lastValidatedAt: row.last_validated_at, updatedAt: row.updated_at } : null }, 200, origin)
+    }
+    if (url.pathname === "/api/me/halloween/key" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      try {
+        const body: unknown = await request.json().catch(() => null)
+        const apiKey = isRecord(body) && typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+        const consent = isRecord(body) && body.consent === true
+        const consentVersion = isRecord(body) && typeof body.consentVersion === "string" ? body.consentVersion : ""
+        if (!apiKey) return jsonResponse({ error: "A Full Access Torn API key is required." }, 400, origin)
+        if (!consent || consentVersion !== "halloween-history-v1") return jsonResponse({ error: "Please review and accept the historical Halloween data-sharing terms before saving this key." }, 400, origin)
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 12000)
+        let payload: unknown
+        let response: Response
+        try {
+          response = await fetch("https://api.torn.com/v2/key/info", {
+            headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+            signal: controller.signal,
+          })
+          payload = await response.json().catch(() => null)
+        } finally { clearTimeout(timeout) }
+        const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+        if (!response.ok || error) {
+          const code = typeof error?.code === "number" ? error.code : undefined
+          return jsonResponse({ error: code === 9 ? "Torn's API is temporarily unavailable or rate limited. Please retry later." : "Torn could not validate that API key. Check the key and try again." }, code === 9 ? 429 : 400, origin)
+        }
+        const root = isRecord(payload) && isRecord(payload.info) ? payload.info : null
+        const keyOwner = isRecord(root?.user) ? root.user.id : undefined
+        const access = isRecord(root?.access) ? root.access : null
+        const selections = isRecord(root?.selections) ? root.selections : null
+        const userSelections = Array.isArray(selections?.user) ? selections.user : []
+        if (String(keyOwner ?? "") !== session.player_id) return jsonResponse({ error: "That key belongs to a different Torn player. Use a key created on your own account." }, 403, origin)
+        if (access?.type !== "Full Access" || !userSelections.includes("log")) return jsonResponse({ error: "Historical Halloween log collection requires your own Full Access key with user log access. Custom Access keys are not accepted." }, 400, origin)
+        const encrypted = await encryptKey(env, apiKey)
+        const now = new Date().toISOString()
+        await requireDb(env).prepare("INSERT INTO halloween_historical_keys (player_id, ciphertext, iv, last_four, access_level, consent_version, consented_at, last_validated_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'Full Access', ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, access_level = 'Full Access', consent_version = excluded.consent_version, consented_at = excluded.consented_at, last_validated_at = excluded.last_validated_at, updated_at = excluded.updated_at")
+          .bind(session.player_id, encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), "halloween-history-v1", now, now, now, now).run()
+        return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), accessLevel: "Full Access", consentedAt: now, lastValidatedAt: now }, 200, origin)
+      } catch (error) { return tornError(error, origin) }
+    }
+    if (url.pathname === "/api/me/halloween/key" && request.method === "DELETE") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      await requireDb(env).prepare("DELETE FROM halloween_historical_keys WHERE player_id = ?").bind(session.player_id).run()
+      return jsonResponse({ deleted: true, historicalRecordsRetained: true }, 200, origin)
+    }
     if (url.pathname === "/api/auth/company-key" && request.method === "POST") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)

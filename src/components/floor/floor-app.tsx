@@ -946,7 +946,7 @@ export function FloorApp() {
 
   if (routePath === "/") return <PortalHome playerName={playerName} playerId={playerId} isAdmin={isAdmin} loginKeySaved={keySaved} companyKeySaved={companyKeySaved} companies={savedCompanies} onNavigate={navigateToPath} onSignOut={() => signOut()} />
   if (routePath === "/faction") return <FactionWorkspacePlaceholder playerName={playerName} onNavigate={navigateToPath} />
-  if (routePath === "/halloween") return <HalloweenWorkspace playerName={playerName} onNavigate={navigateToPath} />
+  if (routePath === "/halloween") return <HalloweenWorkspace playerName={playerName} apiBase={API_BASE} sessionToken={sessionToken} onNavigate={navigateToPath} />
   if (routePath === "/settings") return <AccountSettingsWorkspace playerName={playerName} playerId={playerId} isAdmin={isAdmin} loginKeySaved={keySaved} companyKeySaved={companyKeySaved} companies={savedCompanies} onNavigate={navigateToPath} onSignOut={() => signOut()} />
   if (routePath === "/admin" && !isAdmin) return <main className="module-page"><section className="module-placeholder"><div className="portal-eyebrow"><span /> RESTRICTED WORKSPACE</div><h1>Administrator access required</h1><p>This workspace is available only to accounts with an active administrator role.</p><button type="button" className="portal-primary-button" onClick={() => navigateToPath("/")}>Return to portal →</button></section></main>
 

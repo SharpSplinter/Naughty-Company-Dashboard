@@ -116,8 +116,57 @@ export function FactionWorkspacePlaceholder({ playerName, onNavigate }: Pick<Wor
   )
 }
 
-export function HalloweenWorkspace({ playerName, onNavigate }: Pick<WorkspaceProps, "playerName" | "onNavigate">) {
+export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionToken }: Pick<WorkspaceProps, "playerName" | "onNavigate"> & { apiBase: string; sessionToken: string }) {
   const [tab, setTab] = useState<"live" | "historical">("live")
+  const [historicalKey, setHistoricalKey] = useState("")
+  const [historicalConsent, setHistoricalConsent] = useState(false)
+  const [historicalKeyStatus, setHistoricalKeyStatus] = useState<{ connected: boolean; key: { lastFour: string; accessLevel: string; consentedAt: string; lastValidatedAt: string } | null } | null>(null)
+  const [historicalKeyBusy, setHistoricalKeyBusy] = useState(false)
+  const [historicalKeyMessage, setHistoricalKeyMessage] = useState("")
+  const [historicalKeyError, setHistoricalKeyError] = useState("")
+
+  const loadHistoricalKeyStatus = async () => {
+    try {
+      const response = await fetch(apiBase + "/api/me/halloween/key", { headers: { Authorization: "Bearer " + sessionToken } })
+      const payload = await response.json() as { error?: string; connected?: boolean; key?: { lastFour: string; accessLevel: string; consentedAt: string; lastValidatedAt: string } | null }
+      if (!response.ok) throw new Error(payload.error || "Could not load your Halloween key status.")
+      setHistoricalKeyStatus({ connected: payload.connected === true, key: payload.key ?? null })
+    } catch (caught) { setHistoricalKeyError(caught instanceof Error ? caught.message : "Could not load your Halloween key status.") }
+  }
+
+  useEffect(() => { void loadHistoricalKeyStatus() }, [apiBase, sessionToken])
+
+  const saveHistoricalKey = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!historicalConsent || !historicalKey.trim() || historicalKeyBusy) return
+    setHistoricalKeyBusy(true); setHistoricalKeyError(""); setHistoricalKeyMessage("")
+    try {
+      const response = await fetch(apiBase + "/api/me/halloween/key", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + sessionToken, "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: historicalKey.trim(), consent: true, consentVersion: "halloween-history-v1" }),
+      })
+      const payload = await response.json() as { error?: string; saved?: boolean }
+      if (!response.ok) throw new Error(payload.error || "Could not save your Full Access key.")
+      setHistoricalKey(""); setHistoricalConsent(false)
+      setHistoricalKeyMessage("Your Full Access key is validated and stored encrypted on your account.")
+      await loadHistoricalKeyStatus()
+    } catch (caught) { setHistoricalKeyError(caught instanceof Error ? caught.message : "Could not save your Full Access key.") }
+    finally { setHistoricalKeyBusy(false) }
+  }
+
+  const removeHistoricalKey = async () => {
+    if (historicalKeyBusy || !window.confirm("Disconnect your Full Access key? Previously collected Halloween records remain in the shared faction archive.")) return
+    setHistoricalKeyBusy(true); setHistoricalKeyError(""); setHistoricalKeyMessage("")
+    try {
+      const response = await fetch(apiBase + "/api/me/halloween/key", { method: "DELETE", headers: { Authorization: "Bearer " + sessionToken } })
+      const payload = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not disconnect your Full Access key.")
+      setHistoricalKeyMessage("Your key has been disconnected. Previously collected faction records were retained.")
+      await loadHistoricalKeyStatus()
+    } catch (caught) { setHistoricalKeyError(caught instanceof Error ? caught.message : "Could not disconnect your Full Access key.") }
+    finally { setHistoricalKeyBusy(false) }
+  }
   return (
     <main className="module-page halloween-module">
       <header className="module-topbar"><a className="portal-brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("/") }}><span className="portal-brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>HALLOWEEN INTELLIGENCE</small></span></a><button type="button" onClick={() => onNavigate("/")}>← Return to portal</button></header>
@@ -138,7 +187,26 @@ export function HalloweenWorkspace({ playerName, onNavigate }: Pick<WorkspacePro
           <div className="halloween-status historical"><i /> FACTION ARCHIVE</div>
           <h2>Historical event records</h2>
           <p>Historical log collection uses each member's own Full Access API key. Custom Access keys are not supported for this log collector.</p>
-          <div className="historical-key-notice"><strong>Your own key. Your own records. Shared faction history.</strong><span>Connect once in Account Settings when the historical collector is enabled. Your key will be stored encrypted and reused for your collection jobs. Members can still browse the faction archive without connecting a Full Access key.</span></div>
+          <div className="historical-key-notice"><strong>Your own key. Your own records. Shared faction history.</strong><span>Connect your own Full Access key once. It is encrypted at rest, associated with your Torn player ID, and used only for your historical event-log collection. Members can browse the shared faction archive without connecting a key.</span></div>
+          <section className="historical-key-card">
+            <div className="historical-key-heading"><div><small>YOUR HISTORICAL COLLECTION KEY</small><strong>{historicalKeyStatus?.connected ? "Connected · •••• " + (historicalKeyStatus.key?.lastFour || "••••") : "Not connected"}</strong></div><span className={historicalKeyStatus?.connected ? "key-status connected" : "key-status"}><i /> {historicalKeyStatus?.connected ? "FULL ACCESS VERIFIED" : "KEY REQUIRED TO CONTRIBUTE"}</span></div>
+            {historicalKeyStatus?.connected ? <div className="historical-key-connected"><p>Your Full Access key is saved securely and will be reused for your collection. Last validation: {historicalKeyStatus.key?.lastValidatedAt ? new Date(historicalKeyStatus.key.lastValidatedAt).toLocaleString() : "Not available"}.</p><button type="button" disabled={historicalKeyBusy} onClick={removeHistoricalKey}>Disconnect key</button></div> : <form className="historical-key-form" onSubmit={saveHistoricalKey}>
+              <label htmlFor="halloween-full-access-key">Your Full Access API key</label>
+              <input id="halloween-full-access-key" type="password" autoComplete="off" value={historicalKey} onChange={event => setHistoricalKey(event.target.value)} placeholder="Paste your own Full Access Torn API key" disabled={historicalKeyBusy} />
+              <div className="historical-tos"><strong>Historical Halloween data use</strong><table><tbody>
+                <tr><th>Data Storage</th><td>Persistent, until account deletion or faction change. Disconnecting the key does not erase records already contributed.</td></tr>
+                <tr><th>Data Sharing</th><td>All authenticated Naughty Souls faction members.</td></tr>
+                <tr><th>Purpose of Use</th><td>Halloween event analytics, personal event history, and faction-wide leaderboard/archive.</td></tr>
+                <tr><th>Key Storage & Sharing</th><td>Stored remotely encrypted; used only by this service's historical collection workflows. The raw key is not shared with faction members.</td></tr>
+                <tr><th>Key Access Level</th><td>Full Access only, with user log access. Custom Access keys are not accepted.</td></tr>
+              </tbody></table></div>
+              <label className="historical-consent"><input type="checkbox" checked={historicalConsent} onChange={event => setHistoricalConsent(event.target.checked)} disabled={historicalKeyBusy} /><span>I have reviewed the data-use terms and agree to encrypted storage of my Full Access key and sharing my collected Halloween event records with authenticated Naughty Souls faction members.</span></label>
+              <button className="historical-connect-button" type="submit" disabled={historicalKeyBusy || !historicalConsent || !historicalKey.trim()}>{historicalKeyBusy ? "Validating key…" : "Validate & save Full Access key"}</button>
+            </form>}
+            {historicalKeyError && <p className="historical-key-error" role="alert">{historicalKeyError}</p>}
+            {historicalKeyMessage && <p className="historical-key-message" role="status">{historicalKeyMessage}</p>}
+            {!historicalKeyStatus && <p className="historical-key-muted">Checking your saved key status…</p>}
+          </section>
           <div className="coverage-grid"><div><small>LEADERBOARD</small><strong>Faction-wide</strong><span>Shared historical totals and member profiles</span></div><div><small>LOG DETAIL</small><strong>By coverage</strong><span>Player, year, source, and collection timestamp retained</span></div><div><small>KEY REQUIREMENT</small><strong>Full Access only</strong><span>Personal key supplied and controlled by each member</span></div></div>
         </section>
       )}
