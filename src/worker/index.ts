@@ -105,7 +105,13 @@ async function authenticate(request: Request, env: WorkerEnv): Promise<Session |
       if (!apiKey) return null
       try {
         const currentFactionId = await verifyFactionMembershipWithKey(apiKey)
-        if (currentFactionId !== NAUGHTY_SOULS_FACTION_ID) return null
+        if (currentFactionId !== NAUGHTY_SOULS_FACTION_ID) {
+          const verifiedAt = new Date().toISOString()
+          await requireDb(env).prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, updated_at = ? WHERE player_id = ?")
+            .bind(currentFactionId || null, verifiedAt, verifiedAt, session.player_id).run()
+          await purgeHalloweenMemberData(env, session.player_id)
+          return null
+        }
         const verifiedAt = new Date().toISOString()
         await requireDb(env).prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, updated_at = ? WHERE player_id = ?")
           .bind(currentFactionId, verifiedAt, verifiedAt, session.player_id).run()
@@ -3310,6 +3316,8 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       await requireDb(env).prepare("DELETE FROM halloween_historical_keys WHERE player_id = ?").bind(session.player_id).run()
+      await requireDb(env).prepare("UPDATE halloween_collection_jobs SET status = 'cancelled', last_error = ?, updated_at = ? WHERE player_id = ? AND status IN ('queued', 'running')")
+        .bind("The member disconnected their historical Full Access key.", new Date().toISOString(), session.player_id).run()
       return jsonResponse({ deleted: true, historicalRecordsRetained: true }, 200, origin)
     }
     if (url.pathname === "/api/auth/company-key" && request.method === "POST") {
