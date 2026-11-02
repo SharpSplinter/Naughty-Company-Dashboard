@@ -3653,6 +3653,61 @@ export default {
         .bind("The member disconnected their historical Full Access key.", new Date().toISOString(), session.player_id).run()
       return jsonResponse({ deleted: true, historicalRecordsRetained: true }, 200, origin)
     }
+    if (url.pathname === "/api/me/halloween/event-window" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const yearValue = Number(url.searchParams.get("year") || new Date().getUTCFullYear())
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
+      if (!personal) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
+      const db = requireDb(env)
+      const [job, snapshot, log] = await Promise.all([
+        db.prepare("SELECT job_id FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ job_id: string }>(),
+        db.prepare("SELECT captured_at FROM halloween_live_snapshots WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ captured_at: string }>(),
+        db.prepare("SELECT log_id FROM halloween_event_logs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ log_id: string }>(),
+      ])
+      return jsonResponse({
+        event: { eventYear: personal.event.eventYear, calendarStartAt: personal.event.startAt, calendarEndAt: personal.event.endAt },
+        myWindow: personal.window,
+        locked: Boolean(job || snapshot || log),
+        timeZone: "TCT (UTC)",
+      }, 200, origin)
+    }
+    if (url.pathname === "/api/me/halloween/event-window" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const body: unknown = await request.json().catch(() => null)
+      const yearValue = isRecord(body) ? Number(body.year) : Number.NaN
+      const startTime = isRecord(body) && typeof body.startTime === "string" ? body.startTime : ""
+      const timeMatch = startTime.match(/^(\\d{2}):(\\d{2})$/)
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100 || !timeMatch) return jsonResponse({ error: "Choose a valid event year and start time." }, 400, origin)
+      const startMinuteOfDay = Number(timeMatch[1]) * 60 + Number(timeMatch[2])
+      if (startMinuteOfDay < 600 || startMinuteOfDay > 960 || startMinuteOfDay % 15 !== 0) {
+        return jsonResponse({ error: "Start times must be between 10:00 and 16:00 TCT in 15-minute increments." }, 400, origin)
+      }
+      const db = requireDb(env)
+      const event = await db.prepare("SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt FROM halloween_event_windows WHERE event_year = ?")
+        .bind(yearValue).first<HalloweenEventDefinition>()
+      if (!event) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
+      let personalWindow: HalloweenMemberEventWindow
+      try { personalWindow = buildHalloweenMemberEventWindow(event, startMinuteOfDay) }
+      catch (error) { return jsonResponse({ error: error instanceof Error ? error.message : "The event window is invalid." }, 409, origin) }
+      const existingSlot = await db.prepare("SELECT start_minute_of_day AS startMinuteOfDay FROM halloween_member_event_slots WHERE player_id = ? AND event_year = ?")
+        .bind(session.player_id, yearValue).first<{ startMinuteOfDay: number }>()
+      const [job, snapshot, log] = await Promise.all([
+        db.prepare("SELECT job_id FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ job_id: string }>(),
+        db.prepare("SELECT captured_at FROM halloween_live_snapshots WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ captured_at: string }>(),
+        db.prepare("SELECT log_id FROM halloween_event_logs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ log_id: string }>(),
+      ])
+      if (job || snapshot || log) {
+        if (Number(existingSlot?.startMinuteOfDay) === startMinuteOfDay) return jsonResponse({ saved: true, locked: true, myWindow: personalWindow }, 200, origin)
+        return jsonResponse({ error: "Your event time is locked because collection or snapshot capture has already started. Contact an administrator to correct it safely." }, 409, origin)
+      }
+      const now = new Date().toISOString()
+      await db.prepare("INSERT INTO halloween_member_event_slots (event_year, player_id, start_minute_of_day, created_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(event_year, player_id) DO UPDATE SET start_minute_of_day = excluded.start_minute_of_day, updated_at = excluded.updated_at")
+        .bind(yearValue, session.player_id, startMinuteOfDay, now, now).run()
+      return jsonResponse({ saved: true, locked: false, myWindow: personalWindow }, 200, origin)
+    }
     if (url.pathname === "/api/me/halloween/live" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
