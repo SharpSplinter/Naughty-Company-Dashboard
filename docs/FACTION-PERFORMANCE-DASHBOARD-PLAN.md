@@ -69,6 +69,8 @@ The current schema describes a FactionMember containing:
 
 The endpoint is documented as requiring a public access key. For the requesting faction's own members, revive_setting is populated rather than Unknown when the key also has faction permissions; the documented qualifying key tiers are Custom, Limited or Full.
 
+Live verification on 2026-11-02 called `GET /v2/faction/members?striptags=true` with the repository's faction-enabled key. Torn returned HTTP 200 with 100 member records. The sanitized fixture confirmed these fields are present: id, name, level, days_in_faction, last_action, status, revive_setting, position, is_revivable, is_on_wall, is_in_oc and has_early_discharge. Nested `last_action` contained status/timestamp/relative; nested `status` contained description/details/state/color/until. Member identifiers, names and values were scrubbed before persistence.
+
 **Keep the two revive values completely separate.**
 
 - is_revivable is an owner-specific answer: whether the current API-key owner can revive that member. It is not a universal property of the target. The owner's Reviver skill matters, and friend/faction eligibility can matter. A false value must never be reinterpreted as the target's revive setting.
@@ -123,13 +125,13 @@ The request builder, runtime decoder, live capture and fixture tests are now imp
 - `src/lib/torn/personalstats.ts` defines typed request variants for `cat=popular`, `cat=all`, category-specific calls and historical calls. The path builder supports both the owner route (`/user/personalstats`) and public target route (`/user/{id}/personalstats`), and does not allow the invalid no-category request.
 - `TornApiClient.getMyPersonalStats()` and `getUserPersonalStatsFor()` share the existing authenticated API transport.
 - The decoder validates object envelopes for current responses and array records for historical responses. It keeps missing values null, retains returned per-stat timestamps and reports requested-but-omitted historical stats.
-- A manually dispatched GitHub Actions run (#12) used the repository's `TORN_API_KEY` secret only in the runner environment. The workflow called only read endpoints and uploaded a 7-day artifact after replacing every numeric stat value with 0, redacting arbitrary strings and retaining only recognized historical stat enum names. No API key, player ID, faction ID or live stat value was written to the artifact or logs.
+- Manually dispatched GitHub Actions run #13 used the repository's `TORN_API_KEY` secret only in the runner environment. The workflow called only read endpoints and uploaded a 7-day artifact after replacing every numeric value with 0, redacting arbitrary strings and retaining only recognized historical stat enum names and structural field names. It verified owner personalstats, current faction roster, two other members' public personalstats, faction gym-energy contributors and historical batches. No API key, player ID, faction ID, username or live stat/contributor value was written to the artifact or logs.
 - The live capture confirmed `cat=popular` contains all 18 requested metrics: Xanax, LSD, total drugs, overdoses, alcohol, boosters, energy drinks, energy refills, stat enhancers, public total networth and the eight separate drug counters. The required energy-drink metric is `items.used.energy_drinks`, distinct from `items.used.energy`.
 - Live category responses confirmed the nested mappings for `drugs`, `items`, `other` and `networth`. These are fallback selections only; normal member polling should use `cat=popular` and avoid extra category calls.
 - Historical batches of 10 and 8 stat names returned arrays of `{ name, value, timestamp }`. The sanitized fixture preserves enum names and substitutes a fixed valid timestamp; raw values remain scrubbed.
 - The key-info response confirmed access level 4 (Full Access) and a faction-permission field. Only the access level/type and a boolean permission-presence marker were retained.
 
-The decoder has now been checked against both synthetic cases and sanitized live structural fixtures. Live response shapes are verified for the owner key and the required metrics. The separate public-member `/user/{id}/personalstats?cat=popular` route is implemented in the same client and remains to be exercised against faction-member IDs during Phase 1 integration.
+The decoder has been checked against synthetic fixtures and sanitized live structural fixtures for both the owner route and the public target-member route. During the Phase 1 live probe, two different current faction members were sampled through `/user/{id}/personalstats?cat=popular`; both returned HTTP 200 with all 18 required counters and no missing metric paths. No IDs, names or live values were written to the fixture.
 
 Use these requested current lifetime counters, validating each current-response path and historical stat name against the live contract and sanitized fixtures:
 
@@ -173,6 +175,8 @@ The response contains contributors with:
 - username
 - value
 - in_faction
+
+Live verification called `GET /v2/faction/contributors?stat=gymenergy` and returned HTTP 200 with 100 contributor records. The sanitized response confirmed exactly the expected four fields: `id`, `username`, `value` and `in_faction`. The actual identifiers, usernames and numeric contributor totals were replaced before the fixture was committed.
 
 Use id as the permanent join key. value is the faction contributor total for the requested stat; in_faction identifies current faction membership. Capture timestamped values on our own schedule and calculate interval deltas. Do not combine gym energy with drinks, refills or current energy bars.
 
@@ -656,17 +660,28 @@ Do not use color as the only status signal; include readable text and accessible
 - [x] Verify all 18 requested dashboard metrics are present in Popular; normal collection needs no category fallback.
 - [x] Verify category paths and historical `name/value/timestamp` record shape against live sanitized fixtures.
 - [x] Confirm the configured key reports access level 4 (Full Access) and faction permission is present, without retaining owner/faction identifiers.
-- [ ] Exercise the public-member `/user/{id}/personalstats?cat=popular` route with an actual current faction-member ID during Phase 1 integration.
+- [x] Exercise the public-member `/user/{id}/personalstats?cat=popular` route against two current faction members; both returned all 18 required counters.
 - [ ] Complete the collection request-budget estimate and scheduler strategy with the faction roster size.
 - [x] Decide and document historical retention separation before weekly data migrations.
 - [ ] Define the operational Sunday-boundary scheduler and late/missed capture policy in executable design/tests.
 
 ### Phase 1 — Faction roster and public-data ingestion
-- Faction member collection and membership interval tracking.
-- Public personalstats collection for all required counters.
-- Faction gymenergy contributors.
-- D1 migrations, timestamps, caching, throttling, retries and monitoring.
-- API fixture tests and data-quality validation.
+
+Live API contract checks and client entry points are now in place:
+
+- [x] Verify faction roster response shape with the faction-enabled key; the live response returned 100 members and the required status/revive fields.
+- [x] Add `TornApiClient.getFactionMembersForRoster()` using `/faction/members?striptags=true`.
+- [x] Verify two other faction members' public `cat=popular` requests; each returned all 18 required public counters.
+- [x] Add `TornApiClient.getFactionGymEnergyContributors()` using `stat=gymenergy`.
+- [x] Verify live gym-energy contributor response; 100 rows returned with `id`, `username`, `value`, `in_faction`.
+
+Still to implement:
+
+- [ ] D1 migrations for membership intervals, roster snapshots, public member-stat snapshots, gym-energy snapshots and collection runs.
+- [ ] Idempotent scheduled/queued roster and member-stat ingestion, including cache, concurrency limits, global request budget, retries/backoff and operational health.
+- [ ] Durable history and departure-safe retention boundaries for public weekly source snapshots.
+- [ ] API-fixture tests for varied/partial roster records, public member records, contributor membership changes and missing/null fields.
+- [ ] Data-quality monitoring and freshness metadata per collected source.
 
 ### Phase 2 — Weekly calculation engine
 - Sunday 00:00 UTC boundary jobs.
@@ -819,8 +834,8 @@ The project is not complete until all of the following are implemented and teste
 - Faction member endpoint contract: https://api-playground.torn.com/faction/:id/members
 - Personal stats endpoint contract: https://api-playground.torn.com/user/:id/personalstats
 - Generated personalstats response schema and metric-path reference: [TORN-PERSONALSTATS-RESPONSE-SCHEMA.md](TORN-PERSONALSTATS-RESPONSE-SCHEMA.md)
-- Sanitized live response-shape capture workflow: [run #12](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/41524558224)
-- Sanitized live mapping fixture: [scripts/fixtures/torn-personalstats-live-sanitized.json](../scripts/fixtures/torn-personalstats-live-sanitized.json)
+- Sanitized live response-shape capture workflow: [run #13](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/41525422680)
+- Sanitized live mapping/roster/contributor fixture: [scripts/fixtures/torn-personalstats-live-sanitized.json](../scripts/fixtures/torn-personalstats-live-sanitized.json)
 - Official Torn clarification on is_revivable being owner-specific: https://www.torn.com/forums.php?a=0&b=0&f=19&p=threads&t=16496684
 
 ---
