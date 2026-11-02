@@ -42,7 +42,7 @@ Members use their own Limited Access Torn API key to verify identity and Naughty
 
 The faction-wide Halloween archive is shared with authenticated Naughty Souls members. Missing collection coverage must remain distinguishable from a true zero. Removing a saved credential must not silently erase event records already contributed to the shared archive.
 
-Membership is rechecked during authenticated requests and by a bounded scheduled sweep for inactive accounts. A confirmed faction departure invalidates sessions, removes the saved faction login key and Halloween contribution data, revokes administrator access, clears the stale faction-directory entry, and removes company-sharing relationships. Torn outages, rate limits, and key-validation failures are not treated as proof that someone has left.
+Membership is rechecked during authenticated requests and by a bounded scheduled sweep for inactive accounts. Both paths atomically claim a per-member five-minute check window so overlapping requests and cron runs do not duplicate Torn calls. Authenticated requests use only a short outage grace tied to the last successful verification (at most 15 minutes); an attempted check never extends that grace. A confirmed faction departure invalidates sessions, removes the saved faction login key and Halloween contribution data, revokes administrator access, clears the stale faction-directory entry, and removes company-sharing relationships. Torn outages, rate limits, and key-validation failures are not treated as proof that someone has left.
 
 Never submit another player's key, Torn password, session token, or other authentication material. API keys must only be used for data the member is authorized to access.
 
