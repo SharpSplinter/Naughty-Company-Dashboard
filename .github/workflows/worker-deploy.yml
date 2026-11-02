@@ -41,14 +41,16 @@ jobs:
           npm run typecheck
           npm test
       - name: Apply pending D1 migrations
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@v4
         with:
+          wranglerVersion: "4.156.2"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 6c03b978ed9a59adc3f61c715bdad45c
           command: d1 migrations apply naughty-company-dashboard --remote --config wrangler.toml
       - name: Deploy Worker to Cloudflare
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@v4
         with:
+          wranglerVersion: "4.156.2"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 6c03b978ed9a59adc3f61c715bdad45c
           command: deploy --config wrangler.toml
