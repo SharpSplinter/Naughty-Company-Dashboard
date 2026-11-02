@@ -6,6 +6,7 @@ type SavedCompanySummary = {
   company_type: string | null
   key_last_four?: string | null
   key_updated_at?: string | null
+  has_api_key?: boolean
 }
 
 type HalloweenLiveMember = {
@@ -375,17 +376,65 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     </main>
   )
 }
-export function AccountSettingsWorkspace(props: WorkspaceProps) {
+type AccountSettingsProps = WorkspaceProps & {
+  apiBase: string
+  sessionToken: string
+  onCompaniesChanged: (companies: SavedCompanySummary[]) => void
+  onLoginKeyChanged: (saved: boolean) => void
+}
+
+export function AccountSettingsWorkspace(props: AccountSettingsProps) {
+  const connectedCompanies = props.companies.filter(company => company.has_api_key === true)
   return (
     <main className="module-page">
       <header className="module-topbar"><a className="portal-brand" href="/" onClick={(event) => { event.preventDefault(); props.onNavigate("/") }}><span className="portal-brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>ACCOUNT SETTINGS</small></span></a><button type="button" onClick={() => props.onNavigate("/")}>← Return to portal</button></header>
-      <section className="module-heading"><div className="portal-eyebrow"><span /> PERSONAL ACCOUNT</div><h1>Account <em>Settings</em></h1><p>Manage the connections and security settings attached to your own Torn account.</p></section>
+      <section className="module-heading"><div className="portal-eyebrow"><span /> PERSONAL ACCOUNT</div><h1>Account <em>Settings</em></h1><p>Manage the connections and security settings attached to your own Torn account. Credentials remain private to your player ID.</p></section>
       <section className="settings-member-card"><span className="portal-user-avatar">{props.playerName.slice(0, 2).toUpperCase() || "NS"}</span><div><strong>{props.playerName}</strong><small>Torn ID {props.playerId} · Naughty Souls member</small></div><span className="settings-badge">AUTHENTICATED</span></section>
+      {accountError && <p className="settings-feedback error" role="alert">{accountError}</p>}
+      {accountNotice && <p className="settings-feedback success" role="status">{accountNotice}</p>}
       <section className="settings-grid">
-        <article className="settings-card"><div className="settings-card-icon">⌘</div><small>IDENTITY & MEMBERSHIP</small><h2>Faction login key</h2><p>Your own limited-access key verifies your Torn identity and Naughty Souls membership.</p><span className={props.loginKeySaved ? "settings-connection good" : "settings-connection"}><i /> {props.loginKeySaved ? "Saved securely" : "Not saved"}</span></article>
-        <article className="settings-card"><div className="settings-card-icon">▦</div><small>COMPANY WORKSPACE</small><h2>Company API connections</h2><p>Director and secondary company keys belong to you and are never collected or managed by administrators.</p><span className={props.companies.length || props.companyKeySaved ? "settings-connection good" : "settings-connection"}><i /> {props.companies.length || (props.companyKeySaved ? 1 : 0)} saved company connection(s)</span><button type="button" onClick={() => props.onNavigate("/company")}>Manage company keys →</button></article>
-        <article className="settings-card"><div className="settings-card-icon">♧</div><small>HALLOWEEN ARCHIVE</small><h2>Historical collection key</h2><p>Historical log collection requires your own Full Access key. It is separate from your faction login key unless one key satisfies both needs.</p><span className="settings-connection"><i /> Not connected in this setup phase</span><button type="button" onClick={() => props.onNavigate("/halloween")}>Open Halloween settings →</button></article>
-        <article className="settings-card"><div className="settings-card-icon">◈</div><small>ACCOUNT SECURITY</small><h2>Sessions & access</h2><p>Credentials are associated with your verified Torn player ID. Disconnecting a key does not erase already-collected faction history.</p><span className="settings-connection good"><i /> Member session active</span></article>
+        <article className="settings-card settings-card-wide">
+          <div className="settings-card-icon">⌘</div><small>IDENTITY & MEMBERSHIP</small><h2>Faction login key</h2>
+          <p>Your own Limited Access key verifies your Torn identity and Naughty Souls membership. Replacing it requires a valid key belonging to this same Torn player.</p>
+          <span className={props.loginKeySaved ? "settings-connection good" : "settings-connection"}><i /> {props.loginKeySaved ? "Saved securely" : "Not saved"}</span>
+          <form className="settings-inline-form" onSubmit={replaceLoginKey}>
+            <label htmlFor="settings-login-key">Replace faction login key</label>
+            <input id="settings-login-key" type="password" autoComplete="off" spellCheck={false} value={loginKey} onChange={event => setLoginKey(event.target.value)} placeholder="Paste your own Limited Access key" disabled={loginBusy} />
+            <button type="submit" disabled={loginBusy || !loginKey.trim()}>{loginBusy ? "Validating…" : "Validate & replace key"}</button>
+            <span className="settings-form-hint">The key is validated against your Torn player ID and current faction membership before being saved.</span>
+          </form>
+        </article>
+        <article className="settings-card settings-card-wide">
+          <div className="settings-card-icon">▦</div><small>COMPANY WORKSPACE</small><h2>Company API connections</h2>
+          <p>Add your own director or company-specific key. Each key is checked against its company profile, stored encrypted, and kept separate from faction sign-in.</p>
+          <div className="settings-connection good"><i /> {connectedCompanies.length} saved company key{connectedCompanies.length === 1 ? "" : "s"}</div>
+          <form className="settings-inline-form" onSubmit={addCompanyKey}>
+            <label htmlFor="settings-company-key">Add a company API key</label>
+            <input id="settings-company-key" type="password" autoComplete="off" spellCheck={false} value={companyKey} onChange={event => setCompanyKey(event.target.value)} placeholder="Paste your own company-access key" disabled={companyBusy} />
+            <button type="submit" disabled={companyBusy || !companyKey.trim()}>{companyBusy ? "Validating…" : "Validate & add company"}</button>
+          </form>
+          <div className="settings-company-list">
+            {connectedCompanies.length ? connectedCompanies.map(company => (
+              <div className="settings-company-row" key={company.company_id}>
+                <div><strong>{company.company_name || "Company #" + company.company_id}</strong><small>{company.company_type || "Company"} · ID {company.company_id}{company.key_last_four ? " · Key •••• " + company.key_last_four : ""}</small></div>
+                <button type="button" disabled={companyBusy} onClick={() => void removeCompanyKey(company)}>{companyBusy ? "Working…" : "Remove key"}</button>
+              </div>
+            )) : <p className="settings-form-hint">No separate company API keys are saved yet.</p>}
+          </div>
+          <button type="button" className="settings-link-button" onClick={() => props.onNavigate("/company")}>Open Company Dashboard →</button>
+        </article>
+        <article className="settings-card">
+          <div className="settings-card-icon">♧</div><small>HALLOWEEN ARCHIVE</small><h2>Historical collection key</h2>
+          <p>Historical log collection requires your own Full Access key with user log access. This key is separate from your faction login key.</p>
+          <span className="settings-connection"><i /> Managed in Halloween workspace</span>
+          <button type="button" onClick={() => props.onNavigate("/halloween")}>Open Halloween settings →</button>
+        </article>
+        <article className="settings-card">
+          <div className="settings-card-icon">◈</div><small>ACCOUNT SECURITY</small><h2>Sessions & access</h2>
+          <p>Revoke all active sessions when you suspect another device may still have access. You will be signed out here as well.</p>
+          <span className="settings-connection good"><i /> Member session active</span>
+          <button type="button" disabled={sessionBusy} onClick={() => void signOutEverywhere()}>{sessionBusy ? "Revoking sessions…" : "Sign out on all devices"}</button>
+        </article>
       </section>
       <footer className="module-footer"><span>ACCOUNT SETTINGS</span><button type="button" onClick={props.onSignOut}>Sign out</button></footer>
     </main>
