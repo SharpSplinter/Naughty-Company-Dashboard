@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: faction-performance-staging-integration
+  group: naughty-company-api-staging-migrations
   cancel-in-progress: false
 
 jobs:
