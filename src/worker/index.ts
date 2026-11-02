@@ -195,6 +195,7 @@ async function authenticate(request: Request, env: WorkerEnv): Promise<Session |
           if (session.membership_check_status !== "unavailable" || session.faction_id !== NAUGHTY_SOULS_FACTION_ID || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > 15 * 60 * 1000) return null
         } else {
           let currentFactionId: string
+          let verified = true
           try {
             currentFactionId = await verifyFactionMembershipWithKey(apiKey)
           } catch {
@@ -208,11 +209,12 @@ async function authenticate(request: Request, env: WorkerEnv): Promise<Session |
             await requireDb(env).prepare("UPDATE players SET membership_check_status = 'unavailable' WHERE player_id = ? AND membership_check_attempted_at = ?")
               .bind(session.player_id, attemptedAt).run().catch(() => undefined)
             // A short outage grace is tied to the last successful verification,
-            // never to the attempted check timestamp.
+            // never to the attempted check timestamp. Do not refresh it here.
             if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > 15 * 60 * 1000) return null
             normalizedSession.membership_check_attempted_at = attemptedAt
             normalizedSession.membership_check_status = "unavailable"
             currentFactionId = NAUGHTY_SOULS_FACTION_ID
+            verified = false
           }
           if (currentFactionId !== NAUGHTY_SOULS_FACTION_ID) {
             // Departure is authoritative. Failed cleanup remains explicitly
@@ -228,13 +230,15 @@ async function authenticate(request: Request, env: WorkerEnv): Promise<Session |
               .bind(currentFactionId || null, verifiedAt, verifiedAt, verifiedAt, session.player_id).run()
             return null
           }
-          const verifiedAt = new Date().toISOString()
-          await requireDb(env).prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, membership_check_attempted_at = ?, membership_check_status = NULL, updated_at = ? WHERE player_id = ?")
-            .bind(currentFactionId, verifiedAt, attemptedAt, verifiedAt, session.player_id).run()
-          normalizedSession.faction_id = currentFactionId
-          normalizedSession.faction_verified_at = verifiedAt
-          normalizedSession.membership_check_attempted_at = attemptedAt
-          normalizedSession.membership_check_status = null
+          if (verified) {
+            const verifiedAt = new Date().toISOString()
+            await requireDb(env).prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, membership_check_attempted_at = ?, membership_check_status = NULL, updated_at = ? WHERE player_id = ?")
+              .bind(currentFactionId, verifiedAt, attemptedAt, verifiedAt, session.player_id).run()
+            normalizedSession.faction_id = currentFactionId
+            normalizedSession.faction_verified_at = verifiedAt
+            normalizedSession.membership_check_attempted_at = attemptedAt
+            normalizedSession.membership_check_status = null
+          }
         }
       }
     }
