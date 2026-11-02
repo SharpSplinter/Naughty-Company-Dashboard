@@ -149,11 +149,19 @@ type FactionDirectoryPayload = {
   source: string
 }
 
+type FactionDirectorHistory = {
+  director: FactionDirectorSummary
+  history: Array<{ day: string; dailyIncome: number | null; weeklyIncome: number | null; dailyProfit: number | null; stockQuantity: number | null; stock: unknown }>
+  stockHistoryAvailable: boolean
+}
+
 export function FactionWorkspacePlaceholder({ playerName, onNavigate, apiBase, sessionToken }: Pick<WorkspaceProps, "playerName" | "onNavigate"> & { apiBase: string; sessionToken: string }) {
   const [directory, setDirectory] = useState<FactionDirectoryPayload | null>(null)
   const [search, setSearch] = useState("")
   const [busy, setBusy] = useState(true)
   const [refreshBusy, setRefreshBusy] = useState(false)
+  const [historyBusy, setHistoryBusy] = useState(false)
+  const [selectedHistory, setSelectedHistory] = useState<FactionDirectorHistory | null>(null)
   const [error, setError] = useState("")
 
   const loadDirectory = async () => {
@@ -188,6 +196,18 @@ export function FactionWorkspacePlaceholder({ playerName, onNavigate, apiBase, s
     finally { setRefreshBusy(false) }
   }
 
+  const loadDirectorHistory = async (director: FactionDirectorSummary) => {
+    setHistoryBusy(true); setError(""); setSelectedHistory(null)
+    try {
+      const response = await fetch(apiBase + "/api/faction/compare?playerId=" + encodeURIComponent(director.playerId), { headers: { Authorization: "Bearer " + sessionToken } })
+      const payload = await response.json() as { error?: string; director?: FactionDirectorSummary; history?: FactionDirectorHistory["history"]; stockHistoryAvailable?: boolean }
+      if (!response.ok) throw new Error(payload.error || "Could not load this director's historical company data.")
+      if (!payload.director) throw new Error("The faction directory did not return this director's company profile.")
+      setSelectedHistory({ director: payload.director, history: payload.history || [], stockHistoryAvailable: payload.stockHistoryAvailable === true })
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load this director's historical company data.") }
+    finally { setHistoryBusy(false) }
+  }
+
   useEffect(() => { void loadDirectory() }, [apiBase, sessionToken])
 
   const directors = (directory?.directors || []).filter(director => {
@@ -218,7 +238,7 @@ export function FactionWorkspacePlaceholder({ playerName, onNavigate, apiBase, s
         <div className="faction-directory-heading"><div><div className="halloween-status"><i /> DIRECTOR DIRECTORY</div><h2>Company leadership</h2><p>Ranked by cached weekly income. Missing financial fields remain unavailable rather than being treated as zero.</p></div><input aria-label="Search faction directors" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search director, company, or ID…" /></div>
         {busy && !directory ? <p className="historical-key-muted">Loading the faction directory…</p> : directors.length ? (
           <div className="historical-leaderboard">
-            <table><thead><tr><th>DIRECTOR</th><th>COMPANY</th><th>TYPE</th><th>STARS</th><th>DAILY INCOME</th><th>WEEKLY INCOME</th><th>UPDATED</th></tr></thead><tbody>
+            <table><thead><tr><th>DIRECTOR</th><th>COMPANY</th><th>TYPE</th><th>STARS</th><th>DAILY INCOME</th><th>WEEKLY INCOME</th><th>UPDATED</th><th>HISTORY</th></tr></thead><tbody>
               {directors.map(director => <tr key={director.playerId + ":" + director.companyId}>
                 <td><strong>{director.directorName}</strong><small>#{director.playerId}</small></td>
                 <td><strong>{director.companyName || "Company #" + director.companyId}</strong><small>ID {director.companyId}</small></td>
@@ -227,11 +247,27 @@ export function FactionWorkspacePlaceholder({ playerName, onNavigate, apiBase, s
                 <td>{money(director.dailyIncome)}</td>
                 <td>{money(director.weeklyIncome)}</td>
                 <td>{director.fetchedAt ? new Date(director.fetchedAt).toLocaleString() : "—"}</td>
+                <td><button type="button" className="faction-history-button" disabled={historyBusy} onClick={() => void loadDirectorHistory(director)}>{historyBusy ? "Loading…" : "View history"}</button></td>
               </tr>)}
             </tbody></table>
           </div>
         ) : <div className="historical-empty"><strong>{directory?.directors.length ? "No directors match that search." : "No faction director records are available yet."}</strong><span>{directory?.directors.length ? "Try a director name, company name, or Torn ID." : "Use Sync from Torn to refresh the directory with your saved faction login key."}</span></div>}
       </section>
+      {selectedHistory && <section className="halloween-panel faction-history-panel">
+        <div className="faction-directory-heading"><div><div className="halloween-status"><i /> DIRECTOR HISTORY</div><h2>{selectedHistory.director.companyName}</h2><p>{selectedHistory.director.directorName} · Company #{selectedHistory.director.companyId} · {selectedHistory.history.length} saved snapshots</p></div><button type="button" className="faction-history-button" onClick={() => setSelectedHistory(null)}>Close history</button></div>
+        <div className="coverage-grid">
+          <div><small>LATEST DAILY INCOME</small><strong>{money(selectedHistory.history.at(-1)?.dailyIncome ?? null)}</strong><span>From the latest shared snapshot</span></div>
+          <div><small>LATEST WEEKLY INCOME</small><strong>{money(selectedHistory.history.at(-1)?.weeklyIncome ?? null)}</strong><span>From the latest shared snapshot</span></div>
+          <div><small>STOCK HISTORY</small><strong>{selectedHistory.stockHistoryAvailable ? "Shared" : "Not shared"}</strong><span>Stock details follow the director's sharing permissions</span></div>
+        </div>
+        <div className="historical-leaderboard">
+          {selectedHistory.history.length ? <table><thead><tr><th>SNAPSHOT DAY</th><th>DAILY INCOME</th><th>WEEKLY INCOME</th><th>DAILY PROFIT</th><th>STOCK QUANTITY</th></tr></thead><tbody>
+            {selectedHistory.history.slice(-30).slice().reverse().map(point => <tr key={point.day}>
+              <td>{point.day}</td><td>{money(point.dailyIncome)}</td><td>{money(point.weeklyIncome)}</td><td>{money(point.dailyProfit)}</td><td>{point.stockQuantity === null ? "—" : point.stockQuantity.toLocaleString()}</td>
+            </tr>)}
+          </tbody></table> : <div className="historical-empty"><strong>No historical snapshots are available.</strong><span>This director has not accumulated enough saved history yet, or no history has been shared with your account.</span></div>}
+        </div>
+      </section>}
       <section className="faction-star-panel">
         <div><small>WEEKLY STAR DISTRIBUTION</small><strong>Faction company ratings</strong><span>{directory?.weeklyStarCountsCapturedAt ? "Captured " + new Date(directory.weeklyStarCountsCapturedAt).toLocaleString() : "No weekly snapshot timestamp available"}</span></div>
         <div className="faction-star-list">
