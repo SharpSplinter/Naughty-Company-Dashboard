@@ -2238,6 +2238,19 @@ try {
               return { disabled_at: disabled.get(String(values[0])) ?? null }
             }
             if (normalized.startsWith("select ciphertext, iv from api_keys")) return apiKeys.get(String(values[0])) ?? null
+            if (normalized.startsWith("select ciphertext, iv from halloween_historical_keys")) {
+              const row = halloweenTables.halloween_historical_keys.get(String(values[0]))
+              return row?.ciphertext && row?.iv ? row : null
+            }
+            if (normalized.startsWith("select last_request_at from halloween_api_throttles")) {
+              return halloweenTables.halloween_api_throttles.get(String(values[0])) ?? null
+            }
+            if (normalized.startsWith("select job_id, player_id, event_year, status, cursor_ts, cursor_url, cursor_direction, pages_collected, logs_collected from halloween_collection_jobs where job_id = ?")) {
+              return [...halloweenTables.halloween_collection_jobs.values()].find(row => row.job_id === String(values[0])) ?? null
+            }
+            if (normalized.startsWith("select start_at, end_at, historical_collection_enabled from halloween_event_windows")) {
+              return { start_at: "2026-10-25T10:00:00.000Z", end_at: "2026-11-01T10:00:00.000Z", historical_collection_enabled: 1 }
+            }
             if (normalized.startsWith("select value_json from admin_settings")) return null
             if (normalized.includes("from administrators a join players p")) {
               const role = administrators.get(String(values[0]))
@@ -2480,6 +2493,89 @@ try {
       assert.equal(fixture.apiKeys.has("224"), true)
       assert.equal(fixture.administrators.get("224").revoked_at, null)
       assert.ok(fixture.halloweenTables.halloween_historical_keys.has("224"))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test("Torn outage beyond the 15-minute last-success window fails closed without treating the member as departed", async () => {
+    const originalFetch = globalThis.fetch
+    const fixture = await makeMembershipFixture({
+      members: [{
+        playerId: "225",
+        playerName: "Stale Verification Member",
+        apiKey: "stale-login-key",
+        isAdmin: true,
+        verifiedAt: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
+      }],
+    })
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: 9 } }), { status: 429 })
+    try {
+      const response = await worker.fetch(new Request("https://worker.test/api/auth/session", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + fixture.tokenByPlayer.get("225") },
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(response.status, 401, "outage grace must not extend beyond 15 minutes from the last successful verification")
+      assert.equal(fixture.players.get("225").membership_check_status, "unavailable")
+      assert.equal(fixture.players.get("225").faction_id, "8317", "a Torn outage must not be interpreted as faction departure")
+      assert.equal(fixture.sessions.size, 1)
+      assert.equal(fixture.apiKeys.has("225"), true)
+      assert.equal(fixture.administrators.get("225").revoked_at, null)
+      assert.ok(fixture.halloweenTables.halloween_historical_keys.has("225"))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test("historical collector discovery of faction departure uses the same full access invalidation path", async () => {
+    const originalFetch = globalThis.fetch
+    const fixture = await makeMembershipFixture({
+      members: [{ playerId: "226", playerName: "Collector-Detected Departure", apiKey: "full-access-key", isAdmin: true }],
+    })
+    const encrypted = fixture.apiKeys.get("226")
+    fixture.halloweenTables.halloween_historical_keys.set("226", {
+      player_id: "226",
+      ciphertext: encrypted.ciphertext,
+      iv: encrypted.iv,
+    })
+    fixture.halloweenTables.halloween_collection_jobs.set("226", {
+      job_id: "collector-job-226",
+      player_id: "226",
+      event_year: 2026,
+      status: "running",
+      cursor_ts: Math.floor(Date.parse("2026-10-25T10:00:00.000Z") / 1000),
+      cursor_url: null,
+      cursor_direction: null,
+      pages_collected: 0,
+      logs_collected: 0,
+      window_start_at: "2026-10-25T10:00:00.000Z",
+      window_end_at: "2026-11-01T10:00:00.000Z",
+    })
+    globalThis.fetch = async input => {
+      const path = new URL(String(input)).pathname
+      if (path !== "/v2/user/faction") throw new Error("Unexpected Torn request in collector departure test: " + path)
+      return new Response(JSON.stringify({ faction: { id: 9999, name: "Different Faction" } }))
+    }
+    try {
+      let acknowledged = false
+      let retried = false
+      await worker.queue({
+        messages: [{
+          body: { kind: "halloween-log-collection", jobId: "collector-job-226" },
+          attempts: 1,
+          ack() { acknowledged = true },
+          retry() { retried = true },
+        }],
+      }, fixture.env)
+      assert.equal(acknowledged, true, "the departure cleanup should complete and the queue message should ack")
+      assert.equal(retried, false)
+      assert.equal(fixture.players.get("226").faction_id, "9999")
+      assert.equal(fixture.players.get("226").membership_check_status, null)
+      assert.equal(fixture.sessions.size, 0)
+      assert.equal(fixture.apiKeys.has("226"), false)
+      assert.equal(fixture.factionCache.has("226"), false)
+      assert.equal([...fixture.sharing.values()].some(row => row.owner_player_id === "226" || row.recipient_player_id === "226"), false)
+      assert.equal(fixture.administrators.get("226").revoked_by, "system")
+      for (const table of Object.values(fixture.halloweenTables)) assert.equal(table.has("226"), false)
     } finally {
       globalThis.fetch = originalFetch
     }
