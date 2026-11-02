@@ -447,8 +447,14 @@ function sqliteBoolean(value: boolean | null): number | null {
 async function runFactionRosterCollection(env: WorkerEnv, run: FactionPerformanceRunRow, client: TornApiClient): Promise<void> {
   const payload = await client.getFactionMembersForRoster()
   const members = parseFactionRosterResponse(payload)
+  if (members.length === 0) {
+    throw new Error("Torn returned an empty faction roster; existing membership intervals were preserved.")
+  }
   const capturedAt = new Date().toISOString()
   const db = requireDb(env)
+  // A retried run may have persisted a subset from an earlier response. Replace
+  // its child rows so members absent from the successful retry cannot linger.
+  await db.prepare("DELETE FROM faction_member_roster_snapshots WHERE run_id = ?").bind(run.runId).run()
 
   await db.prepare(
     "INSERT INTO faction_roster_snapshots (run_id, faction_id, captured_at, scheduled_at, member_count, response_version) VALUES (?, ?, ?, ?, ?, 'torn-v2') ON CONFLICT(run_id) DO UPDATE SET captured_at = excluded.captured_at, member_count = excluded.member_count"
@@ -4380,10 +4386,10 @@ export default {
             "SELECT collection_kind AS collectionKind, last_success_at AS lastSuccessAt, last_run_id AS lastRunId, last_error AS lastError, updated_at AS updatedAt FROM faction_performance_collection_state WHERE faction_id = ? ORDER BY collection_kind",
           ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
           db.prepare(
-            "SELECT run_id AS runId, captured_at AS capturedAt, scheduled_at AS scheduledAt, member_count AS memberCount FROM faction_roster_snapshots WHERE faction_id = ? ORDER BY captured_at DESC LIMIT 1",
+            "SELECT s.run_id AS runId, s.captured_at AS capturedAt, s.scheduled_at AS scheduledAt, s.member_count AS memberCount FROM faction_roster_snapshots s JOIN faction_performance_collection_runs c ON c.run_id = s.run_id AND c.status = 'completed' WHERE s.faction_id = ? ORDER BY s.captured_at DESC LIMIT 1",
           ).bind(NAUGHTY_SOULS_FACTION_ID).first<Record<string, unknown>>(),
           db.prepare(
-            "SELECT m.user_id AS userId, m.name, m.position, m.level, m.days_in_faction AS daysInFaction, m.captured_at AS rosterCapturedAt, m.last_action_status AS lastActionStatus, m.last_action_timestamp AS lastActionTimestamp, m.last_action_relative AS lastActionRelative, m.status_description AS statusDescription, m.status_details AS statusDetails, m.status_state AS statusState, m.status_until AS statusUntil, m.status_color AS statusColor, m.is_revivable AS isRevivable, m.revive_setting AS reviveSetting, m.is_on_wall AS isOnWall, m.is_in_oc AS isInOc, m.has_early_discharge AS hasEarlyDischarge FROM faction_member_roster_snapshots m JOIN faction_roster_snapshots r ON r.run_id = m.run_id WHERE r.faction_id = ? AND r.run_id = (SELECT run_id FROM faction_roster_snapshots WHERE faction_id = ? ORDER BY captured_at DESC LIMIT 1) ORDER BY m.name COLLATE NOCASE, m.user_id",
+            "SELECT m.user_id AS userId, m.name, m.position, m.level, m.days_in_faction AS daysInFaction, m.captured_at AS rosterCapturedAt, m.last_action_status AS lastActionStatus, m.last_action_timestamp AS lastActionTimestamp, m.last_action_relative AS lastActionRelative, m.status_description AS statusDescription, m.status_details AS statusDetails, m.status_state AS statusState, m.status_until AS statusUntil, m.status_color AS statusColor, m.is_revivable AS isRevivable, m.revive_setting AS reviveSetting, m.is_on_wall AS isOnWall, m.is_in_oc AS isInOc, m.has_early_discharge AS hasEarlyDischarge FROM faction_member_roster_snapshots m JOIN faction_roster_snapshots r ON r.run_id = m.run_id JOIN faction_performance_collection_runs c ON c.run_id = r.run_id AND c.status = 'completed' WHERE r.faction_id = ? AND r.run_id = (SELECT s.run_id FROM faction_roster_snapshots s JOIN faction_performance_collection_runs cr ON cr.run_id = s.run_id AND cr.status = 'completed' WHERE s.faction_id = ? ORDER BY s.captured_at DESC LIMIT 1) ORDER BY m.name COLLATE NOCASE, m.user_id",
           ).bind(NAUGHTY_SOULS_FACTION_ID, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
           db.prepare(
             "SELECT s.user_id AS userId, s.captured_at AS statsCapturedAt, s.collection_status AS statsCollectionStatus, s.xantaken, s.lsdtaken, s.drugsused, s.overdosed, s.alcoholused, s.boostersused, s.energydrinkused, s.refills, s.statenhancersused, s.networth, s.cantaken, s.exttaken, s.kettaken, s.opitaken, s.shrtaken, s.spetaken, s.pcptaken, s.victaken, s.missing_metrics_json AS missingMetricsJson FROM faction_member_stat_snapshots s WHERE s.faction_id = ? AND NOT EXISTS (SELECT 1 FROM faction_member_stat_snapshots newer WHERE newer.faction_id = s.faction_id AND newer.user_id = s.user_id AND (newer.captured_at > s.captured_at OR (newer.captured_at = s.captured_at AND newer.snapshot_id > s.snapshot_id)))",
