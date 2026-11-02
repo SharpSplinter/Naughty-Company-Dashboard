@@ -24,6 +24,8 @@ concurrency:
 
 jobs:
   deploy-worker:
+    # workflow_dispatch can target any branch. Production changes must only run from main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
