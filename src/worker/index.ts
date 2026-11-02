@@ -924,10 +924,55 @@ async function sendHalloweenCollectionJob(env: WorkerEnv, jobId: string): Promis
   await env.GLOBAL_RANKINGS_QUEUE.send({ kind: "halloween-log-collection", jobId })
 }
 
+type HalloweenEventDefinition = { eventYear: number; startAt: string; endAt: string }
+type HalloweenMemberEventWindow = {
+  configured: boolean
+  startMinuteOfDay: number | null
+  startTime: string | null
+  startAt: string | null
+  endAt: string | null
+}
+
+function formatHalloweenStartTime(startMinuteOfDay: number): string {
+  const hour = Math.floor(startMinuteOfDay / 60)
+  const minute = startMinuteOfDay % 60
+  return String(hour).padStart(2, "0") + ":" + String(minute).padStart(2, "0")
+}
+
+function buildHalloweenMemberEventWindow(event: HalloweenEventDefinition, startMinuteOfDay: number): HalloweenMemberEventWindow {
+  if (!Number.isInteger(startMinuteOfDay) || startMinuteOfDay < 600 || startMinuteOfDay > 960 || startMinuteOfDay % 15 !== 0) {
+    throw new Error("Choose a Trick or Treat start time from 10:00 through 16:00 TCT in 15-minute increments.")
+  }
+  const startDate = event.startAt.slice(0, 10)
+  const endDate = event.endAt.slice(0, 10)
+  const startDay = Date.parse(startDate + "T00:00:00.000Z")
+  const endDay = Date.parse(endDate + "T00:00:00.000Z")
+  if (!Number.isFinite(startDay) || !Number.isFinite(endDay) || endDay <= startDay) {
+    throw new Error("The configured Halloween calendar dates are invalid.")
+  }
+  const time = formatHalloweenStartTime(startMinuteOfDay)
+  const startAt = new Date(startDay + startMinuteOfDay * 60 * 1000).toISOString()
+  const endAt = new Date(endDay + startMinuteOfDay * 60 * 1000).toISOString()
+  return { configured: true, startMinuteOfDay, startTime: time, startAt, endAt }
+}
+
+async function getHalloweenMemberEventWindow(env: WorkerEnv, playerId: string, eventYear: number): Promise<{ event: HalloweenEventDefinition; window: HalloweenMemberEventWindow } | null> {
+  const db = requireDb(env)
+  const event = await db.prepare("SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt FROM halloween_event_windows WHERE event_year = ?")
+    .bind(eventYear).first<HalloweenEventDefinition>()
+  if (!event) return null
+  const slot = await db.prepare("SELECT start_minute_of_day AS startMinuteOfDay FROM halloween_member_event_slots WHERE player_id = ? AND event_year = ?")
+    .bind(playerId, eventYear).first<{ startMinuteOfDay: number }>()
+  if (!slot || slot.startMinuteOfDay == null) {
+    return { event, window: { configured: false, startMinuteOfDay: null, startTime: null, startAt: null, endAt: null } }
+  }
+  return { event, window: buildHalloweenMemberEventWindow(event, Number(slot.startMinuteOfDay)) }
+}
+
 async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Promise<void> {
   const db = requireDb(env)
-  const job = await db.prepare("SELECT job_id, player_id, event_year, status, cursor_ts, cursor_url, cursor_direction, pages_collected, logs_collected FROM halloween_collection_jobs WHERE job_id = ?")
-    .bind(jobId).first<{ job_id: string; player_id: string; event_year: number; status: string; cursor_ts: number; cursor_url: string | null; cursor_direction: string | null; pages_collected: number; logs_collected: number }>()
+  const job = await db.prepare("SELECT job_id, player_id, event_year, status, cursor_ts, cursor_url, cursor_direction, pages_collected, logs_collected, window_start_at, window_end_at FROM halloween_collection_jobs WHERE job_id = ?")
+    .bind(jobId).first<{ job_id: string; player_id: string; event_year: number; status: string; cursor_ts: number; cursor_url: string | null; cursor_direction: string | null; pages_collected: number; logs_collected: number; window_start_at: string | null; window_end_at: string | null }>()
   if (!job || ["complete", "failed", "cancelled"].includes(job.status)) return
   const memberStatus = await db.prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?")
     .bind(job.player_id).first<{ disabled_at: string | null }>()
@@ -958,9 +1003,15 @@ async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Pro
     return
   }
 
-  const eventEnd = Math.floor(Date.parse(event.end_at) / 1000)
+  const eventStart = Math.floor(Date.parse(job.window_start_at || event.start_at) / 1000)
+  const eventEnd = Math.floor(Date.parse(job.window_end_at || event.end_at) / 1000)
   const dayStart = Number(job.cursor_ts)
-  if (!Number.isFinite(dayStart) || dayStart >= eventEnd) {
+  if (!Number.isFinite(eventStart) || !Number.isFinite(eventEnd) || eventEnd <= eventStart || !Number.isFinite(dayStart) || dayStart < eventStart) {
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("The personal Halloween event window is invalid.", new Date().toISOString(), jobId).run()
+    return
+  }
+  if (dayStart >= eventEnd) {
     await db.prepare("UPDATE halloween_collection_jobs SET status = 'complete', completed_at = ?, updated_at = ?, last_error = NULL WHERE job_id = ?")
       .bind(new Date().toISOString(), new Date().toISOString(), jobId).run()
     return
@@ -1005,6 +1056,8 @@ async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Pro
   let inserted = 0
   for (const raw of payload.log) {
     if (!isRecord(raw) || raw.id == null || !Number.isFinite(Number(raw.timestamp))) continue
+    const eventTimestamp = Number(raw.timestamp)
+    if (eventTimestamp < eventStart || eventTimestamp >= eventEnd) continue
     const classification = classifyHalloweenLog(raw)
     if (!classification.relevant) continue
     const details = isRecord(raw.details) ? raw.details : {}
@@ -1041,14 +1094,14 @@ async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Pro
 
 async function runHalloweenLiveSnapshot(env: WorkerEnv, playerId: string, eventYear: number, snapshotKind: "opening" | "periodic" | "closing" | "manual"): Promise<Record<string, unknown>> {
   const db = requireDb(env)
-  const event = await db.prepare("SELECT start_at AS startAt, end_at AS endAt FROM halloween_event_windows WHERE event_year = ?")
-    .bind(eventYear).first<{ startAt: string; endAt: string }>()
-  if (!event) throw new Error("No Halloween event window is configured for that year.")
-  const startMs = Date.parse(event.startAt)
-  const endMs = Date.parse(event.endAt)
+  const personal = await getHalloweenMemberEventWindow(env, playerId, eventYear)
+  if (!personal) throw new Error("No Halloween event window is configured for that year.")
+  if (!personal.window.configured || !personal.window.startAt || !personal.window.endAt) throw new Error("Select your personal Trick or Treat start time before collecting live snapshots.")
+  const startMs = Date.parse(personal.window.startAt)
+  const endMs = Date.parse(personal.window.endAt)
   const nowMs = Date.now()
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) throw new Error("The Halloween event window is invalid.")
-  if (snapshotKind === "manual" && (nowMs < startMs || nowMs > endMs)) throw new Error("Manual live snapshots are only available while the Halloween event is active.")
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) throw new Error("The personal Halloween event window is invalid.")
+  if (snapshotKind === "manual" && (nowMs < startMs || nowMs >= endMs)) throw new Error("Manual live snapshots are only available during your personal Halloween event window.")
 
   const apiKey = await savedKey(env, playerId)
   if (!apiKey) throw new Error("This member has no saved faction login key.")
@@ -1151,22 +1204,27 @@ async function enqueueScheduledHalloweenSnapshots(env: WorkerEnv, scheduledTime:
     const startMs = Date.parse(event.startAt)
     const endMs = Date.parse(event.endAt)
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) continue
-    const members = await db.prepare("SELECT p.player_id AS playerId FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL")
-      .bind(NAUGHTY_SOULS_FACTION_ID).all<{ playerId: string }>()
+    const members = await db.prepare("SELECT p.player_id AS playerId, s.start_minute_of_day AS startMinuteOfDay FROM players p JOIN halloween_member_event_slots s ON s.player_id = p.player_id AND s.event_year = ? LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL")
+      .bind(event.eventYear, NAUGHTY_SOULS_FACTION_ID).all<{ playerId: string; startMinuteOfDay: number }>()
     for (const member of members.results ?? []) {
+      let personalWindow: HalloweenMemberEventWindow
+      try { personalWindow = buildHalloweenMemberEventWindow(event, Number(member.startMinuteOfDay)) } catch { continue }
+      const memberStartMs = Date.parse(personalWindow.startAt || "")
+      const memberEndMs = Date.parse(personalWindow.endAt || "")
+      if (!Number.isFinite(memberStartMs) || !Number.isFinite(memberEndMs) || memberEndMs <= memberStartMs) continue
       const openingExists = await db.prepare("SELECT job_id FROM halloween_live_snapshot_jobs WHERE event_year = ? AND player_id = ? AND snapshot_kind = 'opening' AND status = 'complete' LIMIT 1")
         .bind(event.eventYear, member.playerId).first<{ job_id: string }>()
-      if (!openingExists && nowMs >= startMs - 5 * 60 * 1000 && nowMs <= startMs + 60 * 1000) {
-        await enqueueHalloweenLiveSnapshot(env, event.eventYear, member.playerId, "opening", Math.floor(startMs / 1000))
+      if (!openingExists && nowMs >= memberStartMs - 5 * 60 * 1000 && nowMs <= memberStartMs + 60 * 1000) {
+        await enqueueHalloweenLiveSnapshot(env, event.eventYear, member.playerId, "opening", Math.floor(memberStartMs / 1000))
         queued++
         continue
       }
-      if (nowMs >= startMs && nowMs < endMs) {
+      if (nowMs >= memberStartMs && nowMs < memberEndMs) {
         const last = await db.prepare("SELECT MAX(captured_at) AS capturedAt FROM halloween_live_snapshots WHERE event_year = ? AND player_id = ?")
           .bind(event.eventYear, member.playerId).first<{ capturedAt: string | null }>()
         const lastMs = last?.capturedAt ? Date.parse(last.capturedAt) : Number.NEGATIVE_INFINITY
         if (!Number.isFinite(lastMs) || nowMs - lastMs >= 6 * 60 * 60 * 1000) {
-          const bucket = startMs + Math.floor((nowMs - startMs) / (6 * 60 * 60 * 1000)) * (6 * 60 * 60 * 1000)
+          const bucket = memberStartMs + Math.floor((nowMs - memberStartMs) / (6 * 60 * 60 * 1000)) * (6 * 60 * 60 * 1000)
           await enqueueHalloweenLiveSnapshot(env, event.eventYear, member.playerId, "periodic", Math.floor(bucket / 1000))
           queued++
           continue
@@ -1174,8 +1232,8 @@ async function enqueueScheduledHalloweenSnapshots(env: WorkerEnv, scheduledTime:
       }
       const closingExists = await db.prepare("SELECT job_id FROM halloween_live_snapshot_jobs WHERE event_year = ? AND player_id = ? AND snapshot_kind = 'closing' AND status = 'complete' LIMIT 1")
         .bind(event.eventYear, member.playerId).first<{ job_id: string }>()
-      if (!closingExists && nowMs >= endMs && nowMs <= endMs + 5 * 60 * 1000) {
-        await enqueueHalloweenLiveSnapshot(env, event.eventYear, member.playerId, "closing", Math.floor(endMs / 1000))
+      if (!closingExists && nowMs >= memberEndMs && nowMs <= memberEndMs + 5 * 60 * 1000) {
+        await enqueueHalloweenLiveSnapshot(env, event.eventYear, member.playerId, "closing", Math.floor(memberEndMs / 1000))
         queued++
       }
     }
