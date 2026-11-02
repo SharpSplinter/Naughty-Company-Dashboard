@@ -31,7 +31,7 @@ assert.ok(worker.includes("p.player_id = ? AND p.faction_id = ? AND st.disabled_
 assert.ok(worker.includes("Collection was cancelled because this member's dashboard access is disabled."), "queued historical collection must stop for disabled accounts")
 assert.ok(worker.includes("Snapshot was cancelled because this member's dashboard access is disabled."), "queued live snapshots must stop for disabled accounts")
 assert.ok(worker.includes("AS snapshotKind") && worker.includes("AS sourceTimestamp"))
-assert.ok(worker.includes("if (row.capturedAt != null && row.upgradesJson != null)"), "members without a live snapshot must retain unknown upgrade counts")
+assert.ok(worker.includes("if (hasSnapshotInWindow && row.upgradesJson != null)") && worker.includes("upgradesUnlocked: upgrades === null ? null : upgrades.length"), "members without a snapshot inside their own event window must retain unknown upgrade counts")
 assert.ok(workspace.includes("/api/me/halloween/live?year="), "the Live tab must load the faction leaderboard API")
 assert.ok(workspace.includes("live.leaderboard.map"), "the Live tab must render per-member snapshot rows")
 assert.ok(workspace.includes("member.sourceTimestamp"), "the Live leaderboard must show Torn source-time provenance")
