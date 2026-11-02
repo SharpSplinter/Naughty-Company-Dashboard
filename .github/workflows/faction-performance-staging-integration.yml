@@ -1,0 +1,98 @@
+name: Faction performance staging integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_target:
+        description: Run the stateful integration test against this non-production D1 database
+        required: true
+        type: choice
+        options:
+          - naughty-company-api-staging
+
+permissions:
+  contents: read
+
+concurrency:
+  group: faction-performance-staging-integration
+  cancel-in-progress: false
+
+jobs:
+  staging-integration:
+    if: github.ref == 'refs/heads/portal-rebuild' && inputs.confirm_target == 'naughty-company-api-staging'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out reviewed PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: portal-rebuild
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run existing quality gates
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Verify isolated staging configurations
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'database_name = "naughty-company-api-staging"' wrangler.staging.toml
+          grep -F 'database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"' wrangler.staging.toml
+          grep -F 'database_name = "naughty-company-api-staging"' wrangler.faction-performance-integration.toml
+          grep -F 'database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"' wrangler.faction-performance-integration.toml
+          ! grep -F 'bbbe128a-c5cc-46ec-b8ef-93860183e795' wrangler.staging.toml
+          ! grep -F 'bbbe128a-c5cc-46ec-b8ef-93860183e795' wrangler.faction-performance-integration.toml
+          ! grep -Eq '^\[triggers\]|^\[\[queues\.(producers|consumers)\]\]' wrangler.staging.toml
+          ! grep -Eq '^\[triggers\]' wrangler.faction-performance-integration.toml
+          echo "Both integration configs point at staging D1; no cron trigger or production D1 binding is present."
+
+      - name: Apply pending branch migrations to staging D1 only
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: d1 migrations apply naughty-company-api-staging --remote --config wrangler.staging.toml
+
+      - name: Verify staging migration ledger
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: d1 migrations list naughty-company-api-staging --remote --config wrangler.staging.toml
+
+      - name: Ensure dedicated integration queues exist
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 6c03b978ed9a59adc3f61c715bdad45c
+        run: node scripts/ensure-faction-performance-integration-queues.mjs
+
+      - name: Deploy sanitized Torn fixture Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: deploy --config wrangler.faction-performance-mock.toml
+
+      - name: Deploy isolated faction integration Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: deploy --config wrangler.faction-performance-integration.toml
+
+      - name: Exercise the real staging D1 and Queue pipeline
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 6c03b978ed9a59adc3f61c715bdad45c
+          FACTION_PERFORMANCE_WORKER_URL: https://naughty-company-api-faction-performance-integration.kboone801.workers.dev
+        run: node scripts/run-faction-performance-staging-integration.mjs
