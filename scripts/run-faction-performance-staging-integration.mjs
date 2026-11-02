@@ -122,6 +122,24 @@ async function waitForRun(runId, label) {
   throw new Error(`${label} collection did not reach a terminal state within eight minutes.`)
 }
 
+async function waitForFailedRun(runId, label) {
+  const deadline = Date.now() + 8 * 60 * 1000
+  while (Date.now() < deadline) {
+    const rows = await d1Query(
+      "SELECT status, next_index, last_error FROM faction_performance_collection_runs WHERE run_id = ?",
+      [runId],
+    )
+    const row = rows[0]
+    if (!row) throw new Error(`${label} run disappeared from staging D1.`)
+    if (row.status === "failed") return row
+    if (row.status === "completed" || row.status === "partial") {
+      throw new Error(`${label} run unexpectedly finished as ${row.status} instead of reaching the DLQ.`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+  }
+  throw new Error(`${label} message did not reach the dead-letter queue within eight minutes.`)
+}
+
 async function assertMigrationReady() {
   const rows = await d1Query(
     "SELECT name FROM d1_migrations WHERE name = ?",
@@ -196,6 +214,20 @@ async function main() {
   await assertMigrationReady()
   const queueId = await findQueue()
 
+  const departedUserId = String(991000000000000 + randomInt(1, 999999))
+  const departedIntervalId = randomUUID()
+  const seedTime = new Date().toISOString()
+  await d1Query(
+    `INSERT INTO faction_membership_intervals
+      (interval_id, faction_id, user_id, member_name, position, level, days_in_faction,
+       estimated_joined_at, first_seen_at, last_seen_at, left_observed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+    [
+      departedIntervalId, FACTION_ID, departedUserId, "Integration Departed Member",
+      "Member", 99, 12, seedTime, seedTime, seedTime,
+    ],
+  )
+
   const rosterRunId = await createRun("roster", queueId)
   const rosterRun = await waitForRun(rosterRunId, "Roster")
   if (rosterRun.status !== "completed") throw new Error("The fixture roster collection was unexpectedly partial.")
@@ -215,7 +247,14 @@ async function main() {
   if (MEMBER_IDS.some((id) => !activeIds.includes(id))) {
     throw new Error("The roster collector did not persist all fixture membership intervals.")
   }
-  console.log(`PASS roster collection persisted ${MEMBER_IDS.length} members and membership intervals.`)
+  const departedRows = await d1Query(
+    "SELECT left_observed_at FROM faction_membership_intervals WHERE interval_id = ?",
+    [departedIntervalId],
+  )
+  if (departedRows.length !== 1 || !departedRows[0].left_observed_at) {
+    throw new Error("Roster collection did not close the membership interval for the departed fixture member.")
+  }
+  console.log(`PASS roster collection persisted ${MEMBER_IDS.length} members, added joins, and retained a departed member interval.`)
 
   const statsRunId = await createRun("personalstats", queueId, MEMBER_IDS)
   const statsRun = await waitForRun(statsRunId, "Public personalstats")
@@ -263,6 +302,50 @@ async function main() {
   console.log("PASS collection success timestamps advanced only after complete runs.")
 
   await assertApiRoute(rosterRunId)
+
+  const successfulStatsState = await d1Query(
+    "SELECT last_success_at FROM faction_performance_collection_state WHERE faction_id = ? AND collection_kind = 'personalstats'",
+    [FACTION_ID],
+  )
+  const lastSuccessfulStatsAt = successfulStatsState[0]?.last_success_at
+  if (!lastSuccessfulStatsAt) throw new Error("The successful personalstats run did not record last_success_at.")
+
+  const partialRunId = await createRun("personalstats", queueId, ["980000007"])
+  const partialRun = await waitForRun(partialRunId, "Permanent per-member API failure")
+  if (partialRun.status !== "partial") throw new Error("A permanent per-member API error must produce a partial run.")
+  const partialSampleRows = await d1Query(
+    "SELECT collection_status, xantaken, lsdtaken, missing_metrics_json, torn_error_code FROM faction_member_stat_snapshots WHERE run_id = ? AND user_id = ?",
+    [partialRunId, "980000007"],
+  )
+  const partialSample = partialSampleRows[0]
+  if (!partialSample || partialSample.collection_status !== "failed" ||
+      partialSample.xantaken !== null || partialSample.lsdtaken !== null ||
+      Number(partialSample.torn_error_code) !== 3) {
+    throw new Error("Permanent member API errors must persist failed samples with unknown metrics, not zeroes.")
+  }
+  const afterPartialState = await d1Query(
+    "SELECT last_success_at FROM faction_performance_collection_state WHERE faction_id = ? AND collection_kind = 'personalstats'",
+    [FACTION_ID],
+  )
+  if (afterPartialState[0]?.last_success_at !== lastSuccessfulStatsAt) {
+    throw new Error("A partial personalstats run incorrectly advanced last_success_at.")
+  }
+  console.log("PASS permanent member API errors stayed unknown and did not advance last_success_at.")
+
+  const deadLetterRunId = await createRun("personalstats", queueId, ["980000008"])
+  const deadLetterRun = await waitForFailedRun(deadLetterRunId, "Rate-limited personalstats")
+  if (!String(deadLetterRun.last_error ?? "").includes("exhausted its queue retries")) {
+    throw new Error("The dead-letter consumer did not persist the terminal retry-exhaustion state.")
+  }
+  const afterDeadLetterState = await d1Query(
+    "SELECT last_success_at FROM faction_performance_collection_state WHERE faction_id = ? AND collection_kind = 'personalstats'",
+    [FACTION_ID],
+  )
+  if (afterDeadLetterState[0]?.last_success_at !== lastSuccessfulStatsAt) {
+    throw new Error("A dead-lettered personalstats run incorrectly advanced last_success_at.")
+  }
+  console.log("PASS transient Torn rate limits retried through Cloudflare Queues and terminated in the staging DLQ.")
+
   console.log("STAGING INTEGRATION PASSED. No production D1 or Worker was contacted.");
 }
 
