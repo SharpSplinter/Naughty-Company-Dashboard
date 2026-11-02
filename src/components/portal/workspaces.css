@@ -103,3 +103,5 @@
 .settings-card>button{display:block;margin-top:13px;border:0;background:transparent;color:#b7e7d7;padding:0;font-size:10px}
 .module-footer{align-items:center}
 @media(max-width:760px){.portal-topbar,.module-topbar{height:66px}.portal-user>span:nth-child(2){display:none}.portal-hero{padding:49px 0 36px}.portal-hero h1{font-size:49px}.portal-card-grid,.settings-grid{grid-template-columns:1fr}.portal-card{min-height:205px}.portal-card-admin{grid-column:auto}.portal-account-strip{align-items:flex-start;flex-wrap:wrap}.portal-connection-status{margin-left:0}.portal-account-strip>button{margin-left:auto}.coverage-grid{grid-template-columns:1fr}.halloween-panel{padding:18px}.portal-footer,.module-footer{font-size:7px;letter-spacing:.08em}.portal-footer span:last-child{text-align:right}.settings-member-card{align-items:flex-start}.settings-badge{margin-top:4px}}
+
+.admin-role-indicator{display:inline-flex;align-items:center;border:1px solid #53af9675;border-radius:6px;padding:6px 8px;color:#91e2c9;font-size:8px;font-weight:700;letter-spacing:.12em;background:#1d443a55}
