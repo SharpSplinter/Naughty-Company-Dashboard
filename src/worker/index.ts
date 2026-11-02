@@ -1,6 +1,5 @@
 import { TornApiClient, TornApiClientError } from "../lib/torn/client"
 import { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } from "./snapshot-provenance"
-import { validateAdminPassword } from "../lib/admin-password-policy.js"
 import { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isSnapshotStale, normalizeWebhookUrl, normalizeAlertThreshold, normalizeCooldownHours } from "../lib/automation/rules"
 
 type D1Result<T = Record<string, unknown>> = { results?: T[]; success?: boolean; meta?: { changes?: number } }
@@ -589,7 +588,7 @@ async function completeLinkedAdminRankingJob(env: WorkerEnv, run: GlobalRankingR
   const now = new Date().toISOString()
   await db.prepare("UPDATE admin_jobs SET status = 'completed', finished_at = ?, result_json = ?, error_message = NULL WHERE job_id = ? AND status = 'running'")
     .bind(now, asJson(result), run.admin_job_id).run()
-  const actor = { player_id: ADMIN_PLAYER_ID, player_name: "SharpSplinter", admin_elevated_until: 0 }
+  const actor: Session = { player_id: ADMIN_PLAYER_ID, player_name: "SharpSplinter", is_admin: 1 }
   await writeAdminAudit(env, actor, "job.completed", "job", run.admin_job_id, succeeded ? "succeeded" : "failed",
     succeeded ? "Administrative endpoint refresh completed, including resumable global company rankings." : "Administrative endpoint refresh completed with a failed global company ranking endpoint.",
     { jobType: "endpoint-refresh", refreshRunId: run.run_id, partialFailure: !succeeded })
@@ -2066,7 +2065,7 @@ async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
       throw new Error("Unsupported administrative job type.")
     }
     await db.prepare("UPDATE admin_jobs SET status = 'completed', finished_at = ?, result_json = ?, error_message = NULL WHERE job_id = ?").bind(new Date().toISOString(), asJson(result), jobId).run()
-    const actor = { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
+    const actor: Session = { player_id: "351311", player_name: "SharpSplinter", is_admin: 1 }
     await writeAdminAudit(env, actor, "job.completed", "job", jobId, "succeeded", `Administrative job ${job.job_type} completed.`, { jobType: job.job_type, targetPlayerId: job.target_player_id, targetCompanyId: job.target_company_id })
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 220) : "The operation failed unexpectedly."
@@ -2665,6 +2664,41 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
   await ensureAdminJobPayloadSchema(env)
   await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
   await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
+  if (url.pathname === "/api/admin/administrators" && request.method === "GET") {
+    const rows = await db.prepare(
+      "SELECT a.player_id AS playerId, p.player_name AS playerName, a.granted_by AS grantedBy, grantor.player_name AS grantedByName, a.granted_at AS grantedAt, a.revoked_by AS revokedBy, revoker.player_name AS revokedByName, a.revoked_at AS revokedAt FROM administrators a JOIN players p ON p.player_id = a.player_id LEFT JOIN players grantor ON grantor.player_id = a.granted_by LEFT JOIN players revoker ON revoker.player_id = a.revoked_by ORDER BY CASE WHEN a.revoked_at IS NULL THEN 0 ELSE 1 END, p.player_name COLLATE NOCASE"
+    ).all<Record<string, unknown>>()
+    return jsonResponse({ administrators: rows.results ?? [] }, 200, origin)
+  }
+  if (url.pathname === "/api/admin/administrators/grant" && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    const targetId = isRecord(body) && typeof body.playerId === "string" ? body.playerId.trim() : ""
+    if (!/^\d{1,20}$/.test(targetId) || !positiveId(targetId)) return jsonResponse({ error: "Enter a valid Torn player ID." }, 400, origin)
+    if (targetId === session.player_id) return jsonResponse({ error: "Your own administrator role is already active." }, 409, origin)
+    const target = await db.prepare("SELECT p.player_id, p.player_name, st.disabled_at FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.player_id = ?")
+      .bind(targetId).first<{ player_id: string; player_name: string; disabled_at: string | null }>()
+    if (!target) return jsonResponse({ error: "That player must sign in and verify Naughty Souls membership before receiving an administrator role." }, 404, origin)
+    if (target.disabled_at) return jsonResponse({ error: "That member's dashboard access is suspended. Restore member access before granting administrator privileges." }, 409, origin)
+    const now = new Date().toISOString()
+    await db.prepare("INSERT INTO administrators (player_id, granted_by, granted_at, revoked_by, revoked_at) VALUES (?, ?, ?, NULL, NULL) ON CONFLICT(player_id) DO UPDATE SET granted_by = excluded.granted_by, granted_at = excluded.granted_at, revoked_by = NULL, revoked_at = NULL")
+      .bind(targetId, session.player_id, now).run()
+    await writeAdminAudit(env, session, "administrator.granted", "administrator", targetId, "succeeded", `Granted administrator privileges to ${target.player_name}.`, { playerId: targetId })
+    return jsonResponse({ granted: true, playerId: targetId, playerName: target.player_name, grantedAt: now }, 200, origin)
+  }
+  if (url.pathname === "/api/admin/administrators/revoke" && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    const targetId = isRecord(body) && typeof body.playerId === "string" ? body.playerId.trim() : ""
+    if (!/^\d{1,20}$/.test(targetId) || !positiveId(targetId)) return jsonResponse({ error: "Enter a valid Torn player ID." }, 400, origin)
+    if (targetId === session.player_id) return jsonResponse({ error: "You cannot revoke your own administrator role. Another administrator must do that." }, 409, origin)
+    const target = await db.prepare("SELECT p.player_name, a.revoked_at FROM administrators a JOIN players p ON p.player_id = a.player_id WHERE a.player_id = ?")
+      .bind(targetId).first<{ player_name: string; revoked_at: string | null }>()
+    if (!target || target.revoked_at) return jsonResponse({ error: "That player does not have an active administrator role." }, 404, origin)
+    const now = new Date().toISOString()
+    await db.prepare("UPDATE administrators SET revoked_by = ?, revoked_at = ? WHERE player_id = ? AND revoked_at IS NULL")
+      .bind(session.player_id, now, targetId).run()
+    await writeAdminAudit(env, session, "administrator.revoked", "administrator", targetId, "succeeded", `Revoked administrator privileges from ${target.player_name}.`, { playerId: targetId })
+    return jsonResponse({ revoked: true, playerId: targetId, playerName: target.player_name, revokedAt: now }, 200, origin)
+  }
   const memberMatch = url.pathname.match(/^\/api\/admin\/members\/(\d+)(?:\/(status|connection-test|connection-repair))?$/)
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 50) || 50))
   if (url.pathname === "/api/admin/member-activity" && request.method === "GET") {
