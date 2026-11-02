@@ -257,3 +257,20 @@
 .event-hit-pill{background:#573434;color:#ffb4a9;border:1px solid #8e5952}
 .event-label-pill{background:#1e3835;color:#a9d7c5;border:1px solid #3a6259}
 @media(max-width:680px){.historical-collection-toolbar,.historical-collect-banner{align-items:flex-start;flex-direction:column}.historical-collect-banner button{width:100%}.historical-detail-metrics{grid-template-columns:1fr}.historical-event-feed article{flex-direction:column}.historical-day-row{grid-template-columns:74px minmax(40px,1fr) 36px}}
+
+.halloween-personal-window{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(240px,.65fr);gap:26px;margin:18px 0 20px;padding:22px 24px;border:1px solid #355448;border-radius:13px;background:linear-gradient(135deg,#142821,#111d25)}
+.halloween-personal-window-copy h2{margin:12px 0 9px;font:600 20px 'Space Grotesk',sans-serif;color:#e6f2e9}
+.halloween-personal-window-copy>p{max-width:720px;margin:0;color:#9bb2ad;font-size:10px;line-height:1.75}
+.halloween-personal-window-range{display:flex;flex-wrap:wrap;gap:22px;margin-top:16px}
+.halloween-personal-window-range span,.halloween-personal-window-range small,.halloween-personal-window-range strong{display:block}
+.halloween-personal-window-range small{font-size:7px;letter-spacing:.14em;color:#76968a}
+.halloween-personal-window-range strong{margin-top:5px;font:600 11px 'Space Grotesk',sans-serif;color:#b8e6d2}
+.halloween-personal-window-unset{margin-top:15px;padding:10px 12px;border:1px dashed #526b62;border-radius:8px;color:#b7c9bf;font-size:9px;line-height:1.6}
+.halloween-personal-window-control{display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:8px}
+.halloween-personal-window-control label{font-size:9px;font-weight:700;color:#acc3b7;letter-spacing:.1em;text-transform:uppercase}
+.halloween-personal-window-control select{width:100%;height:39px;padding:0 10px;border:1px solid #49645a;border-radius:7px;background:#0c1718;color:#e5f2eb;font-size:12px}
+.halloween-personal-window-control select:disabled{opacity:.65}
+.halloween-personal-window-control button{min-height:38px;border:1px solid #4b8a70;border-radius:7px;background:#205b48;color:#e5fff0;font-size:10px;font-weight:700}
+.halloween-personal-window-control button:disabled{opacity:.55;cursor:not-allowed}
+.halloween-slot-hint{color:#8fa79b;font-size:8px;line-height:1.6}
+@media(max-width:760px){.halloween-personal-window{grid-template-columns:1fr;gap:18px;padding:18px}.halloween-personal-window-control{max-width:340px}}
