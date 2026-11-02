@@ -667,21 +667,29 @@ Do not use color as the only status signal; include readable text and accessible
 
 ### Phase 1 — Faction roster and public-data ingestion
 
-Live API contract checks and client entry points are now in place:
+**Implemented on the PR branch; not deployed or run against production D1 yet.**
+
+Live API contract checks and client entry points:
 
 - [x] Verify faction roster response shape with the faction-enabled key; the live response returned 100 members and the required status/revive fields.
 - [x] Add `TornApiClient.getFactionMembersForRoster()` using `/faction/members?striptags=true`.
 - [x] Verify two other faction members' public `cat=popular` requests; each returned all 18 required public counters.
 - [x] Add `TornApiClient.getFactionGymEnergyContributors()` using `stat=gymenergy`.
 - [x] Verify live gym-energy contributor response; 100 rows returned with `id`, `username`, `value`, `in_faction`.
+- [x] Add migration `0019_faction_performance_collection.sql` for collection runs/state, membership intervals, roster snapshots, 18-metric public-stat snapshots and gym-energy snapshots. These records intentionally have no foreign key to `players`, so departure cleanup cannot cascade-delete public performance history.
+- [x] Add the Worker collection pipeline using the dedicated Cloudflare secret `TORN_FACTION_API_KEY`; it never borrows an individual member login key.
+- [x] Extend the existing five-minute cron and serialized queue. Roster runs are bucketed every five minutes; Popular stats and gym-energy contributor runs are bucketed every fifteen minutes.
+- [x] Make scheduled runs idempotent with a unique collection key, durable run state, resumable five-member stat pages, queue retry/dead-letter handling and safe error summaries.
+- [x] Pace public-stat requests by 800 ms between member calls, leaving margin under Torn's 100-request/minute upper bound. Rate-limit, transient upstream and network failures retry the current member rather than being written as a permanent zero/failed sample.
+- [x] Persist missing metrics as NULL and classify samples complete/partial/failed. A partial collection does not advance `last_success_at`.
+- [x] Add parser, sanitized-live-fixture, migration and Worker scheduling/retry regression checks.
 
-Still to implement:
+Still to implement or validate:
 
-- [ ] D1 migrations for membership intervals, roster snapshots, public member-stat snapshots, gym-energy snapshots and collection runs.
-- [ ] Idempotent scheduled/queued roster and member-stat ingestion, including cache, concurrency limits, global request budget, retries/backoff and operational health.
-- [ ] Durable history and departure-safe retention boundaries for public weekly source snapshots.
-- [ ] API-fixture tests for varied/partial roster records, public member records, contributor membership changes and missing/null fields.
-- [ ] Data-quality monitoring and freshness metadata per collected source.
+- [ ] Apply migration 0019 to a non-production D1 database and exercise the full queue pipeline against it.
+- [ ] Validate restart/retry behavior and membership join/leave transitions with a stateful D1 integration test, not only parser/static regression coverage.
+- [ ] Add collection status/freshness read APIs and admin/leadership diagnostics for run failures, partial samples, retry exhaustion and last successful capture.
+- [ ] Run a controlled live collection against the configured Worker secret after deployment, then confirm row counts and captured timestamps. No deployment or production migration has been performed in this work session.
 
 ### Phase 2 — Weekly calculation engine
 - Sunday 00:00 UTC boundary jobs.
@@ -808,7 +816,10 @@ The project is not complete until all of the following are implemented and teste
 |---|---|
 | Weekly timezone | UTC/TCT only; Sunday 00:00 inclusive to next Sunday 00:00 exclusive |
 | Personal stats | Use cat=popular for routine member polling; live verification found all 18 required dashboard metrics and no missing paths |
-| Personalstats implementation | Owner and target request paths plus guarded decoders are implemented; owner shapes and category/historic variants have sanitized live fixtures |
+| Personalstats implementation | Owner and target request paths plus guarded decoders are implemented; owner/target Popular, category/historic variants have sanitized live fixtures |
+| Faction collection runtime | Worker uses TORN_FACTION_API_KEY, five-minute roster and fifteen-minute Popular/gym-energy queue buckets; awaits deployment and D1 integration validation |
+| Faction collection throttling | Public member-stat fan-out is five per queue page with 800 ms spacing and retry/backoff for 429/5xx/network failures |
+| Faction collection history | Migration 0019 creates no player foreign keys; departure cleanup remains scoped to access/secrets and does not delete faction-performance history |
 | Personalstats fallback | Category fallback is available but not needed with current Popular coverage; missing paths remain null |
 | Personalstats response | Owner route with key access level 4 returned the broad Full shape for cat=all; target route cat=all maps to FullPublic; cat=popular returns Popular; stat+timestamp returns Historic |
 | Personalstats route selection | Owner current requests require cat; no-category request produced Torn error 21 (Incorrect category) |
@@ -836,6 +847,8 @@ The project is not complete until all of the following are implemented and teste
 - Generated personalstats response schema and metric-path reference: [TORN-PERSONALSTATS-RESPONSE-SCHEMA.md](TORN-PERSONALSTATS-RESPONSE-SCHEMA.md)
 - Sanitized live response-shape capture workflow: [run #13](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/41525791088)
 - Sanitized live mapping/roster/contributor fixture: [scripts/fixtures/torn-personalstats-live-sanitized.json](../scripts/fixtures/torn-personalstats-live-sanitized.json)
+- Phase 1 D1 schema: [migrations/auth/0019_faction_performance_collection.sql](../migrations/auth/0019_faction_performance_collection.sql)
+- Scheduled collection and queue dispatcher: `src/worker/index.ts` (`TORN_FACTION_API_KEY` is a Cloudflare Worker secret binding; its value is never stored in source).
 - Official Torn clarification on is_revivable being owner-specific: https://www.torn.com/forums.php?a=0&b=0&f=19&p=threads&t=16496684
 
 ---
