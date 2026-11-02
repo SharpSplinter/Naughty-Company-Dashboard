@@ -340,6 +340,8 @@ try {
     assert.ok(batchSource.includes("LIMIT ?"))
     assert.ok(batchSource.includes("membership_check_attempted_at IS NULL OR membership_check_attempted_at < ?"), "scheduled jobs must atomically claim stale membership checks")
     assert.ok(batchSource.includes("claim.meta?.changes"), "overlapping scheduled or request-time checks must not duplicate Torn calls")
+    assert.ok(batchSource.indexOf("claim.meta?.changes") < batchSource.indexOf("await savedKey(env, playerId)"), "the scheduled sweep must win the atomic claim before decrypting or contacting Torn")
+    assert.ok(batchSource.includes("const attemptTime = Date.now()"), "scheduled claims must use execution time so delayed cron delivery cannot create an already-expired lock")
     assert.ok(batchSource.includes("Math.min(10, batchSize)"))
     assert.match(batchSource, /membership_check_attempted_at/)
     assert.ok(batchSource.includes("catch {") && batchSource.includes("continue"), "Torn and decryption failures must be retried, not treated as faction departure")
