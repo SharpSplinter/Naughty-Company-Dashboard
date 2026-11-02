@@ -155,8 +155,17 @@ type FactionDirectorHistory = {
   stockHistoryAvailable: boolean
 }
 
+type FactionMemberSummary = {
+  playerId: string
+  playerName: string
+  companyName: string | null
+  companyType: string | null
+  companyTypeId: number | string | null
+}
+
 export function FactionWorkspacePlaceholder({ playerName, onNavigate, apiBase, sessionToken }: Pick<WorkspaceProps, "playerName" | "onNavigate"> & { apiBase: string; sessionToken: string }) {
   const [directory, setDirectory] = useState<FactionDirectoryPayload | null>(null)
+  const [members, setMembers] = useState<FactionMemberSummary[]>([])
   const [search, setSearch] = useState("")
   const [busy, setBusy] = useState(true)
   const [refreshBusy, setRefreshBusy] = useState(false)
@@ -177,6 +186,10 @@ export function FactionWorkspacePlaceholder({ playerName, onNavigate, apiBase, s
         generatedAt: payload.generatedAt || "",
         source: payload.source || "Faction directory cache",
       })
+      const memberResponse = await fetch(apiBase + "/api/dashboard-members", { headers: { Authorization: "Bearer " + sessionToken } })
+      const memberPayload = await memberResponse.json() as { error?: string; members?: FactionMemberSummary[] }
+      if (!memberResponse.ok) throw new Error(memberPayload.error || "Could not load the active faction member roster.")
+      setMembers(Array.isArray(memberPayload.members) ? memberPayload.members : [])
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load the faction company directory.") }
     finally { setBusy(false) }
   }
@@ -214,6 +227,10 @@ export function FactionWorkspacePlaceholder({ playerName, onNavigate, apiBase, s
     const term = search.trim().toLowerCase()
     return !term || [director.directorName, director.companyName, director.companyType, director.playerId, director.companyId].some(value => String(value ?? "").toLowerCase().includes(term))
   })
+  const filteredMembers = members.filter(member => {
+    const term = search.trim().toLowerCase()
+    return !term || [member.playerName, member.playerId, member.companyName, member.companyType].some(value => String(value ?? "").toLowerCase().includes(term))
+  })
   const totalWeeklyIncome = (directory?.directors || []).reduce((sum, director) => sum + (typeof director.weeklyIncome === "number" ? director.weeklyIncome : 0), 0)
   const totalDailyIncome = (directory?.directors || []).reduce((sum, director) => sum + (typeof director.dailyIncome === "number" ? director.dailyIncome : 0), 0)
   const knownWeekly = (directory?.directors || []).filter(director => typeof director.weeklyIncome === "number").length
@@ -230,7 +247,7 @@ export function FactionWorkspacePlaceholder({ playerName, onNavigate, apiBase, s
         <div className="live-toolbar-actions"><button type="button" onClick={() => void loadDirectory()} disabled={busy}>{busy ? "Refreshing cache…" : "Reload directory ↻"}</button><button type="button" onClick={() => void refreshDirectory()} disabled={refreshBusy}>{refreshBusy ? "Syncing Torn…" : "Sync from Torn"}</button></div>
       </section>
       <section className="faction-metric-grid">
-        <article><small>CONFIRMED COMPANIES</small><strong>{directory?.directors.length ?? "—"}</strong><span>Cached faction directors</span></article>
+        <article><small>ACTIVE FACTION MEMBERS</small><strong>{members.length || (busy ? "—" : 0)}</strong><span>Verified and enabled member accounts</span></article>
         <article><small>KNOWN DAILY INCOME</small><strong>{directory ? money(totalDailyIncome) : "—"}</strong><span>{knownDaily} of {directory?.directors.length ?? 0} with income data</span></article>
         <article><small>KNOWN WEEKLY INCOME</small><strong>{directory ? money(totalWeeklyIncome) : "—"}</strong><span>{knownWeekly} of {directory?.directors.length ?? 0} with income data</span></article>
       </section>
@@ -268,6 +285,19 @@ export function FactionWorkspacePlaceholder({ playerName, onNavigate, apiBase, s
           </tbody></table> : <div className="historical-empty"><strong>No historical snapshots are available.</strong><span>This director has not accumulated enough saved history yet, or no history has been shared with your account.</span></div>}
         </div>
       </section>}
+      <section className="halloween-panel faction-roster-panel">
+        <div className="faction-directory-heading"><div><div className="halloween-status"><i /> ACTIVE FACTION ROSTER</div><h2>Naughty Souls members</h2><p>Only currently verified and enabled faction accounts are included. Company assignments are shown when available.</p></div></div>
+        <div className="historical-leaderboard">
+          {busy && !members.length ? <p className="historical-key-muted">Loading the active member roster…</p> : filteredMembers.length ? <table><thead><tr><th>MEMBER</th><th>TORN ID</th><th>COMPANY</th><th>COMPANY TYPE</th></tr></thead><tbody>
+            {filteredMembers.map(member => <tr key={member.playerId}>
+              <td><strong>{member.playerName}</strong></td>
+              <td>#{member.playerId}</td>
+              <td>{member.companyName || "—"}</td>
+              <td>{member.companyType || "—"}</td>
+            </tr>)}
+          </tbody></table> : <div className="historical-empty"><strong>No matching faction members.</strong><span>{members.length ? "Try another name, Torn ID, or company search." : "No active verified member accounts are available in the roster yet."}</span></div>}
+        </div>
+      </section>
       <section className="faction-star-panel">
         <div><small>WEEKLY STAR DISTRIBUTION</small><strong>Faction company ratings</strong><span>{directory?.weeklyStarCountsCapturedAt ? "Captured " + new Date(directory.weeklyStarCountsCapturedAt).toLocaleString() : "No weekly snapshot timestamp available"}</span></div>
         <div className="faction-star-list">
