@@ -345,6 +345,10 @@ try {
     assert.match(workerSource, /left_observed_at IS NULL/)
     assert.ok(workerSource.includes("setTimeout(resolve, 800)"))
     assert.ok(workerSource.includes("error.status === 429 || error.status >= 500 || error.code === 9"))
+    const statsPageStart = workerSource.indexOf("async function runFactionPersonalStatsCollectionPage")
+    const statsPage = workerSource.slice(statsPageStart, workerSource.indexOf("async function runFactionGymEnergyCollection", statsPageStart))
+    assert.ok(statsPage.indexOf("await saveFactionMemberStatSample") > statsPage.indexOf("} catch (error) {"),
+      "D1 persistence must stay outside the per-member Torn API catch so storage failures retry the queue message")
     assert.doesNotMatch(workerSource, /The CI-only secret is not a Worker binding/)
     assert.ok(workerSource.includes('status === "completed" ? capturedAt : null'))
   })
