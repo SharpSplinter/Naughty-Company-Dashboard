@@ -291,6 +291,8 @@ try {
     ]) assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
     assert.match(migration, /WHERE left_observed_at IS NULL/)
     assert.match(migration, /estimated_joined_at/)
+    assert.match(migration, /ON faction_membership_intervals\\(user_id, faction_id, estimated_joined_at DESC\\)/)
+    assert.doesNotMatch(migration, /joined_at DESC/)
     assert.doesNotMatch(migration, /REFERENCES players|ON DELETE CASCADE|DROP TABLE|DELETE FROM/i)
     assert.match(migration, /xantaken REAL/)
     assert.match(migration, /lsdtaken REAL/)
@@ -310,6 +312,9 @@ try {
     assert.match(workerSource, /message\.retry\(\{ delaySeconds: Math\.min\(60, attempts \* 10\) \}\)/)
     assert.match(workerSource, /WHERE run_id = \? AND status NOT IN \('completed', 'partial', 'failed'\)/)
     assert.match(workerSource, /WHERE left_observed_at IS NULL/)
+    assert.match(workerSource, /setTimeout\\(resolve, 800\\)/)
+    assert.match(workerSource, /error.status === 429 \\|\\| error.status >= 500 \\|\\| error.code === 9/)
+    assert.doesNotMatch(workerSource, /The CI-only secret is not a Worker binding/)
   })
 
   await test("company stock refreshes preserve current values and append historical stock snapshots", () => {
