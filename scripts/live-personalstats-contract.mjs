@@ -100,7 +100,7 @@ let ownerPlayerId = null
 
 const report = {
   generatedAt: new Date().toISOString(),
-  source: "Torn API v2 owner-only GET /user/personalstats",
+  source: "Torn API v2 read-only live contract capture: owner stats, public member stats, faction roster and gym-energy contributors",
   privacy: {
     apiKeyIncluded: false,
     liveStatValuesIncluded: false,
@@ -325,6 +325,7 @@ const popular = report.results.find((result) => result.label === "popular")
 const allOwner = report.results.find((result) => result.label === "allOwner")
 const historic = report.results.filter((result) => result.label.startsWith("historicBatch"))
 const availablePopularMetrics = report.fixtures.popular?.availableDashboardMetrics ?? []
+const targetMemberSamples = report.results.filter((result) => result.label.startsWith("factionMemberPopular"))
 report.acceptance = {
   popularCaptured: popular?.outcome === "captured",
   popularCoversAllRequiredMetrics: requestedStats.every((name) => availablePopularMetrics.includes(name)),
@@ -332,6 +333,12 @@ report.acceptance = {
   keyInfoCaptured: report.keyInfo?.outcome === "captured",
   historicalBatchesCaptured: historic.filter((result) => result.outcome === "captured").length,
   historicalBatchesRequested: 2,
+  factionRosterCaptured: report.factionRoster?.outcome === "captured",
+  targetMemberSamplesCaptured: targetMemberSamples.filter((result) => result.outcome === "captured").length,
+  targetMemberSamplesRequested: report.factionRoster?.distinctTargetSampleCount ?? 0,
+  publicTargetRouteVerified: report.factionRoster?.sampleTargetsWereOtherMembers === true &&
+    targetMemberSamples.some((result) => result.outcome === "captured"),
+  gymEnergyContributorsCaptured: report.gymEnergyContributors?.outcome === "captured",
 }
 
 mkdirSync("artifacts", { recursive: true })
@@ -339,7 +346,15 @@ writeFileSync(outputPath, JSON.stringify(report, null, 2) + "\n", { mode: 0o600 
 console.log(`Sanitized personalstats response-shape report written to ${outputPath}`)
 console.log(`Captured ${report.results.filter((result) => result.outcome === "captured").length} personalstats responses; faction roster=${report.factionRoster?.outcome ?? "not checked"}; gym-energy contributors=${report.gymEnergyContributors?.outcome ?? "not checked"}; no live stat values or credentials were written.`)
 
-if (popular?.outcome !== "captured" || !report.acceptance.popularCoversAllRequiredMetrics) {
-  console.error("The required Popular selection could not be captured. Inspect the sanitized artifact status only; raw API responses are suppressed.")
+if (
+  popular?.outcome !== "captured" ||
+  !report.acceptance.popularCoversAllRequiredMetrics ||
+  !report.acceptance.factionRosterCaptured ||
+  !report.acceptance.publicTargetRouteVerified ||
+  !report.acceptance.gymEnergyContributorsCaptured ||
+  report.acceptance.targetMemberSamplesCaptured !== report.acceptance.targetMemberSamplesRequested ||
+  report.acceptance.historicalBatchesCaptured !== report.acceptance.historicalBatchesRequested
+) {
+  console.error("One or more required read-only Torn data-source checks failed. Inspect the sanitized artifact status only; raw API responses are suppressed.")
   process.exitCode = 1
 }
