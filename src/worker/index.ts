@@ -323,6 +323,9 @@ const FACTION_PERFORMANCE_PAGE_SIZE = 5
 const FACTION_PERFORMANCE_QUEUE_KIND = "faction-performance-collection"
 
 function factionCollectionSafeError(error: unknown): { summary: string; tornCode: number | null } {
+  if (error instanceof Error && error.message === "Faction performance collection exhausted its queue retries.") {
+    return { summary: "Faction performance collection exhausted its queue retries.", tornCode: null }
+  }
   if (error instanceof TornApiClientError) {
     return {
       summary: error.code === undefined ? "Torn API request failed." : `Torn API error ${error.code}.`,
