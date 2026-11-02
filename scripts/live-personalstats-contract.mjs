@@ -295,6 +295,8 @@ async function captureGymEnergyContributors() {
 }
 
 const timestamp = Math.floor(Date.now() / 1000)
+await captureKeyInfo()
+
 const currentSelections = [
   { label: "popular", selection: "cat=popular", path: "/user/personalstats?cat=popular" },
   { label: "allOwner", selection: "cat=all (owner key)", path: "/user/personalstats?cat=all" },
@@ -318,8 +320,6 @@ for (let offset = 0; offset < requestedStats.length; offset += 10) {
   query.set("timestamp", String(timestamp))
   await capture(`historicBatch${Math.floor(offset / 10) + 1}`, `historic stat batch (${stats.length} names)`, `/user/personalstats?${query.toString()}`)
 }
-
-await captureKeyInfo()
 
 const popular = report.results.find((result) => result.label === "popular")
 const allOwner = report.results.find((result) => result.label === "allOwner")
