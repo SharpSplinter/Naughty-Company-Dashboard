@@ -89,11 +89,12 @@ async function revalidateFactionMembershipBatch(env: WorkerEnv, scheduledTime: n
   const checkedBefore = new Date(scheduledTime - 30 * 60 * 1000).toISOString()
   const retryBefore = checkedBefore
   const candidates = await db.prepare(
-    "SELECT p.player_id AS playerId FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL AND (p.membership_check_status = 'cleanup_pending' OR ((p.faction_verified_at IS NULL OR p.faction_verified_at < ?) AND (p.membership_check_attempted_at IS NULL OR p.membership_check_attempted_at < ?))) ORDER BY CASE WHEN p.membership_check_status = 'cleanup_pending' THEN 0 ELSE 1 END, COALESCE(p.membership_check_attempted_at, p.faction_verified_at, p.created_at) ASC LIMIT ?"
-  ).bind(NAUGHTY_SOULS_FACTION_ID, checkedBefore, retryBefore, Math.max(1, Math.min(10, batchSize))).all<{ playerId: string }>()
+    "SELECT p.player_id AS playerId, p.membership_check_status AS membershipCheckStatus FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL AND (p.membership_check_status = 'cleanup_pending' OR ((p.faction_verified_at IS NULL OR p.faction_verified_at < ?) AND (p.membership_check_attempted_at IS NULL OR p.membership_check_attempted_at < ?))) ORDER BY CASE WHEN p.membership_check_status = 'cleanup_pending' THEN 0 ELSE 1 END, COALESCE(p.membership_check_attempted_at, p.faction_verified_at, p.created_at) ASC LIMIT ?"
+  ).bind(NAUGHTY_SOULS_FACTION_ID, checkedBefore, retryBefore, Math.max(1, Math.min(10, batchSize))).all<{ playerId: string; membershipCheckStatus: string | null }>()
   let checked = 0
   for (const candidate of candidates.results ?? []) {
     const playerId = String(candidate.playerId)
+    const retryCleanup = candidate.membershipCheckStatus === "cleanup_pending"
     const attemptTime = Date.now()
     const attemptedAt = new Date(attemptTime).toISOString()
     const claimBefore = new Date(attemptTime - 5 * 60 * 1000).toISOString()
@@ -105,7 +106,7 @@ async function revalidateFactionMembershipBatch(env: WorkerEnv, scheduledTime: n
     if (Number(claim.meta?.changes ?? 0) < 1) continue
     const apiKey = await savedKey(env, playerId).catch(() => null)
     if (!apiKey) {
-      await db.prepare("UPDATE players SET membership_check_status = 'unavailable' WHERE player_id = ? AND membership_check_attempted_at = ?")
+      if (!retryCleanup) await db.prepare("UPDATE players SET membership_check_status = 'unavailable' WHERE player_id = ? AND membership_check_attempted_at = ?")
         .bind(playerId, attemptedAt).run().catch(() => undefined)
       continue
     }
@@ -129,7 +130,8 @@ async function revalidateFactionMembershipBatch(env: WorkerEnv, scheduledTime: n
         .bind(factionId || null, verifiedAt, verifiedAt, verifiedAt, playerId).run()
     } catch {
       // Torn network/rate-limit failures are not proof of faction departure.
-      await db.prepare("UPDATE players SET membership_check_status = 'unavailable' WHERE player_id = ? AND membership_check_attempted_at = ?")
+      // But they must never erase a previously confirmed, pending departure.
+      if (!retryCleanup) await db.prepare("UPDATE players SET membership_check_status = 'unavailable' WHERE player_id = ? AND membership_check_attempted_at = ?")
         .bind(playerId, attemptedAt).run().catch(() => undefined)
       continue
     }
@@ -186,6 +188,13 @@ async function authenticate(request: Request, env: WorkerEnv): Promise<Session |
           try {
             currentFactionId = await verifyFactionMembershipWithKey(apiKey)
           } catch {
+            if (retryCleanup) {
+              // A previously confirmed departure remains fail-closed even if
+              // Torn becomes unavailable while cleanup is being retried.
+              await requireDb(env).prepare("UPDATE players SET membership_check_status = 'cleanup_pending' WHERE player_id = ?")
+                .bind(session.player_id).run().catch(() => undefined)
+              return null
+            }
             await requireDb(env).prepare("UPDATE players SET membership_check_status = 'unavailable' WHERE player_id = ? AND membership_check_attempted_at = ?")
               .bind(session.player_id, attemptedAt).run().catch(() => undefined)
             // A short outage grace is tied to the last successful verification,
