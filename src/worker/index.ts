@@ -1017,7 +1017,9 @@ async function runHalloweenLiveSnapshotJob(env: WorkerEnv, jobId: string): Promi
   } catch (error) {
     const now = new Date().toISOString()
     const message = error instanceof Error ? error.message.slice(0, 240) : "Halloween snapshot failed."
-    await db.prepare("UPDATE halloween_live_snapshot_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+    // Keep transient failures eligible for the queue's bounded retry policy.
+    // The consumer marks the job failed only after the final delivery attempt.
+    await db.prepare("UPDATE halloween_live_snapshot_jobs SET status = 'queued', last_error = ?, updated_at = ? WHERE job_id = ?")
       .bind(message, now, jobId).run()
     throw error
   }
