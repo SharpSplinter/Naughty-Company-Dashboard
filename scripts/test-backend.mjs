@@ -55,6 +55,7 @@ try {
     decodePersonalStatsResponse,
   } = require(join(temp, "lib/torn/personalstats.js"))
   const personalStatsFixtures = JSON.parse(readFileSync(resolve(root, "scripts/fixtures/torn-personalstats.json"), "utf8"))
+  const livePersonalStatsFixtures = JSON.parse(readFileSync(resolve(root, "scripts/fixtures/torn-personalstats-live-sanitized.json"), "utf8"))
   const PERSONAL_STATS_HISTORIC_NAMES_FOR_TEST = [
     "xantaken", "lsdtaken", "drugsused", "overdosed", "alcoholused", "boostersused",
     "energydrinkused", "refills", "statenhancersused", "networth", "cantaken",
@@ -758,6 +759,66 @@ try {
       assert.equal(decoded.metrics.networth, fixtureName === "full" ? 260000000 : fixtureName === "fullPublic" ? 160000000 : 180000000)
       assert.equal(decoded.missingMetrics.length, 0)
     }
+  })
+
+  await test("live sanitized Popular fixture contains every required dashboard metric", () => {
+    const decoded = decodePersonalStatsResponse(livePersonalStatsFixtures.popular, { kind: "popular" })
+    assert.equal(decoded.kind, "current")
+    assert.equal(decoded.missingMetrics.length, 0)
+    assert.equal(decoded.metrics.xantaken, 0)
+    assert.equal(decoded.metrics.lsdtaken, 0)
+    assert.equal(Object.values(decoded.metrics).filter((value) => value !== null).length, 18)
+    assert.ok(livePersonalStatsFixtures.capture.popularMetricCount === 18)
+    assert.equal(livePersonalStatsFixtures.capture.popularMissingMetricCount, 0)
+
+    const differentiated = structuredClone(livePersonalStatsFixtures.popular)
+    differentiated.personalstats.items.used.energy = 999
+    differentiated.personalstats.items.used.energy_drinks = 123
+    assert.equal(
+      decodePersonalStatsResponse(differentiated, { kind: "popular" }).metrics.energydrinkused,
+      123,
+      "the separate items.used.energy_drinks field is the energy-drink metric, not items.used.energy",
+    )
+  })
+
+  await test("live sanitized category fixtures confirm required nested category paths", () => {
+    const drugs = decodePersonalStatsResponse(livePersonalStatsFixtures.categoryDrugs, { kind: "category", category: "drugs" })
+    assert.equal(drugs.metrics.xantaken, 0)
+    assert.equal(drugs.metrics.lsdtaken, 0)
+    assert.equal(drugs.metrics.cantaken, 0)
+    assert.equal(drugs.missingMetrics.length, 6)
+
+    const items = decodePersonalStatsResponse(livePersonalStatsFixtures.categoryItems, { kind: "category", category: "items" })
+    assert.equal(items.metrics.alcoholused, 0)
+    assert.equal(items.metrics.boostersused, 0)
+    assert.equal(items.metrics.energydrinkused, 0)
+    assert.equal(items.metrics.statenhancersused, 0)
+
+    const other = decodePersonalStatsResponse(livePersonalStatsFixtures.categoryOther, { kind: "category", category: "other" })
+    assert.equal(other.metrics.refills, 0)
+
+    const networth = decodePersonalStatsResponse(livePersonalStatsFixtures.categoryNetworth, { kind: "category", category: "networth" })
+    assert.equal(networth.metrics.networth, 0)
+    assert.ok(livePersonalStatsFixtures.capture.ownerNetworthBreakdownKeys.includes("wallet"))
+  })
+
+  await test("live sanitized historic fixtures confirm name/value/timestamp records", () => {
+    const decoded = decodePersonalStatsResponse(livePersonalStatsFixtures.historicBatch1, {
+      kind: "historic",
+      stats: ["xantaken", "lsdtaken"],
+      timestamp: 1794000000,
+    })
+    assert.equal(decoded.kind, "historic")
+    assert.deepEqual(decoded.stats, [
+      { name: "xantaken", value: 0, timestamp: 1794000000 },
+      { name: "lsdtaken", value: 0, timestamp: 1794000000 },
+    ])
+    assert.deepEqual(decoded.missingStats, [])
+    assert.deepEqual(livePersonalStatsFixtures.capture.ownerAllTopLevelKeys.slice(0, 5), [
+      "attacking", "battle_stats", "jobs", "trading", "jail",
+    ])
+    assert.equal(livePersonalStatsFixtures.capture.keyAccessLevel, 4)
+    assert.equal(livePersonalStatsFixtures.capture.keyAccessType, "Full Access")
   })
 
   await test("decodes category-specific nested personalstats and proposes only required category fallbacks", () => {
