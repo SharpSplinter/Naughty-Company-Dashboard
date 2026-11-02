@@ -3391,13 +3391,20 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
   return jsonResponse({ error: "Administration route not found." }, 404, origin)
 }
 
+async function runFiveMinuteScheduledJobs(env: WorkerEnv, scheduledTime: number): Promise<void> {
+  // Membership checks are independent of the Halloween snapshot collector.
+  // A transient DB/Torn failure must not prevent the scheduled snapshot sweep.
+  try { await revalidateFactionMembershipBatch(env, scheduledTime) } catch { /* Retry stale members on a later tick. */ }
+  await enqueueScheduledHalloweenSnapshots(env, scheduledTime)
+}
+
 export default {
   async queue(batch: { messages: QueueMessage[]; queue?: string }, env: WorkerEnv): Promise<void> {
     await handleGlobalRankingQueueBatch(batch, env)
   },
   async scheduled(controller: { scheduledTime: number; cron: string }, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
     if (controller.cron.trim() === "*/5 * * * *") {
-      ctx.waitUntil(enqueueScheduledHalloweenSnapshots(env, controller.scheduledTime))
+      ctx.waitUntil(runFiveMinuteScheduledJobs(env, controller.scheduledTime))
       return
     }
     ctx.waitUntil(runScheduledAutomation(controller, env))
