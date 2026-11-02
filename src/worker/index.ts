@@ -7,7 +7,7 @@ type D1Statement = { bind(...values: (string | number | null)[]): D1Statement; f
 type D1Database = { prepare(sql: string): D1Statement }
 type QueueProducer = { send(message: unknown): Promise<unknown> }
 type QueueMessage = { body: unknown; attempts?: number; ack(): void; retry(options?: { delaySeconds?: number }): void }
-type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
+type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; GLOBAL_RANKINGS_QUEUE?: QueueProducer; HALLOWEEN_COLLECTION_QUEUE?: QueueProducer }
 type Session = { player_id: string; player_name: string; is_admin: number; faction_id?: string | null; faction_verified_at?: string | null }
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }
@@ -946,6 +946,321 @@ async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Pro
   await db.prepare("UPDATE halloween_collection_jobs SET status = 'complete', pages_collected = ?, logs_collected = ?, last_error = NULL, completed_at = ?, updated_at = ? WHERE job_id = ?")
     .bind(pages, logs, now, now, jobId).run()
 }
+
+function halloweenNormalize(value: unknown): string {
+  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
+}
+
+function classifyHalloweenLog(row: Record<string, unknown>, categoryId: number): string[] {
+  const details = isRecord(row.details) ? row.details : {}
+  const data = isRecord(row.data) ? row.data : {}
+  const title = halloweenNormalize(details.title)
+  const haystack = halloweenNormalize(
+    String(details.title ?? "") + " " +
+    String(details.category ?? "") + " " +
+    String(details.id ?? "") + " " +
+    JSON.stringify(data) + " " +
+    JSON.stringify(isRecord(row.params) ? row.params : {})
+  )
+  const labels: string[] = []
+  if (categoryId === 22) labels.push("energy_outgoing")
+  if (categoryId === 83) labels.push("halloween_basket")
+  if (title.includes("attack") && title.includes("leave")) labels.push("attack_leave")
+  if (title.includes("attack") && title.includes("mug")) labels.push("attack_mug")
+  if (title.includes("attack") && (title.includes("hospital") || title.includes("hospitalize") || title.includes("hospitalise"))) labels.push("attack_hospitalize")
+  if (haystack.includes("halloween") || haystack.includes("basket") || haystack.includes("treat")) labels.push("halloween_activity")
+  if (title.includes("revitalize") || haystack.includes("revitalize")) labels.push("revitalize")
+  if (title.includes("book") && (title.includes("activate") || title.includes("activation") || title.includes("use"))) labels.push("book_activation")
+  if (title.includes("company") && (title.includes("change") || title.includes("joined") || title.includes("left"))) labels.push("company_change")
+  if (title.startsWith("item use ") || title.startsWith("items use ")) labels.push("item_use")
+  if (haystack.includes("boost")) labels.push("boost_activity")
+  return Array.from(new Set(labels))
+}
+
+function halloweenWindowToUnix(value: string): number {
+  const milliseconds = Date.parse(value)
+  if (!Number.isFinite(milliseconds)) throw new Error("The configured Halloween event window is invalid.")
+  return Math.floor(milliseconds / 1000)
+}
+
+function halloweenDateKey(timestamp: number): string {
+  return new Date(timestamp * 1000).toISOString().slice(0, 10)
+}
+
+async function createHalloweenTornClient(apiKey: string) {
+  let lastRequestStartedAt = 0
+  const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+
+  const get = async (urlOrPath: string, params?: Record<string, string | number>): Promise<Record<string, unknown>> => {
+    const url = new URL(urlOrPath.startsWith("http") ? urlOrPath : "https://api.torn.com/v2" + urlOrPath)
+    if (url.protocol !== "https:" || url.hostname !== "api.torn.com" || !url.pathname.startsWith("/v2/")) {
+      throw new Error("Torn pagination returned an unexpected URL. Collection stopped to protect the API key.")
+    }
+    if (params) {
+      for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value))
+    }
+    const elapsed = Date.now() - lastRequestStartedAt
+    if (elapsed < 750) await pause(750 - elapsed)
+    lastRequestStartedAt = Date.now()
+
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 15000)
+    try {
+      const response = await fetch(url.toString(), {
+        headers: {
+          Authorization: "ApiKey " + apiKey,
+          Accept: "application/json",
+          "User-Agent": "Naughty-Family-Halloween-Archive/1.0",
+        },
+        signal: controller.signal,
+      })
+      const payload: unknown = await response.json().catch(() => null)
+      const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+      if (!response.ok || error) {
+        const code = typeof error?.code === "number" ? error.code : undefined
+        const message = code === 2 ? "The saved Halloween API key is invalid."
+          : code === 3 || code === 16 ? "The saved Halloween key no longer has the required Full Access permissions."
+          : code === 5 || code === 9 || response.status === 429 ? "Torn rate limit reached. The collection can be retried later."
+          : "Torn rejected a historical Halloween collection request."
+        throw Object.assign(new Error(message), { status: code === 5 || code === 9 || response.status === 429 ? 429 : 400 })
+      }
+      if (!isRecord(payload)) throw new Error("Torn returned an unexpected response.")
+      return payload
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
+  const pages = async (
+    path: string,
+    collectionName: string,
+    params: Record<string, string | number>,
+  ): Promise<{ rows: Record<string, unknown>[]; pages: number }> => {
+    let next = path
+    let pending: Record<string, string | number> | undefined = {
+      ...params,
+      timestamp: Math.floor(Date.now() / 1000),
+    }
+    let direction: "prev" | "next" | null = null
+    const visited = new Set<string>()
+    const rows: Record<string, unknown>[] = []
+    const seenIds = new Set<string>()
+    let pageCount = 0
+
+    while (next) {
+      const url = next.startsWith("http") ? next : "https://api.torn.com/v2" + next
+      if (visited.has(url)) throw new Error("Torn pagination repeated a page. Collection stopped to avoid duplicates.")
+      visited.add(url)
+      const payload = await get(url, pending)
+      pending = undefined
+      pageCount += 1
+
+      const collection = payload[collectionName]
+      if (Array.isArray(collection)) {
+        for (const item of collection) {
+          if (!isRecord(item)) continue
+          const itemId = item.id == null ? JSON.stringify(item) : String(item.id)
+          if (!seenIds.has(itemId)) {
+            seenIds.add(itemId)
+            rows.push(item)
+          }
+        }
+      }
+
+      const metadata = isRecord(payload._metadata) ? payload._metadata : {}
+      const links = isRecord(metadata.links) ? metadata.links : {}
+      if (direction === null) {
+        if (typeof links.prev === "string" && links.prev) direction = "prev"
+        else if (typeof links.next === "string" && links.next) direction = "next"
+      }
+      const candidate = direction ? links[direction] : null
+      next = typeof candidate === "string" ? candidate : ""
+      if (pageCount >= 100 && next) {
+        throw new Error("This event exceeded the safe 100-page limit for one feed. Collection remains incomplete.")
+      }
+    }
+    return { rows, pages: pageCount }
+  }
+
+  return { get, pages }
+}
+
+async function collectHistoricalHalloweenMember(env: WorkerEnv, playerId: string, eventYear: number): Promise<void> {
+  const db = requireDb(env)
+  const window = await db.prepare(
+    "SELECT starts_at AS startsAt, ends_at AS endsAt FROM halloween_event_windows WHERE event_year = ?"
+  ).bind(eventYear).first<{ startsAt: string | null; endsAt: string | null }>()
+
+  if (!window?.startsAt || !window.endsAt) throw new Error("Exact event dates have not been configured for this Halloween year.")
+  const start = halloweenWindowToUnix(window.startsAt)
+  const endExclusive = halloweenWindowToUnix(window.endsAt)
+  const end = endExclusive - 1
+  if (end <= start) throw new Error("The configured Halloween event window is invalid.")
+
+  const keyRow = await db.prepare(
+    "SELECT ciphertext, iv FROM halloween_historical_keys WHERE player_id = ?"
+  ).bind(playerId).first<{ ciphertext: string; iv: string }>()
+  if (!keyRow) throw new Error("This member has not connected their own Full Access Halloween key.")
+
+  const attemptedAt = new Date().toISOString()
+  await db.prepare(
+    "INSERT INTO halloween_collection_state (event_year, player_id, status, range_start, range_end, last_attempt_at, error_summary) VALUES (?, ?, 'running', ?, ?, ?, NULL) ON CONFLICT(event_year, player_id) DO UPDATE SET status = 'running', range_start = excluded.range_start, range_end = excluded.range_end, last_attempt_at = excluded.last_attempt_at, error_summary = NULL"
+  ).bind(eventYear, playerId, window.startsAt, window.endsAt, attemptedAt).run()
+
+  try {
+    const apiKey = await decryptKey(env, keyRow.ciphertext, keyRow.iv)
+    const torn = await createHalloweenTornClient(apiKey)
+
+    const infoResponse = await torn.get("/key/info")
+    const keyInfo = isRecord(infoResponse.info) ? infoResponse.info : {}
+    const owner = isRecord(keyInfo.user) ? keyInfo.user.id : null
+    const access = isRecord(keyInfo.access) ? keyInfo.access : {}
+    const selections = isRecord(keyInfo.selections) ? keyInfo.selections : {}
+    const userSelections = Array.isArray(selections.user) ? selections.user : []
+    if (String(owner ?? "") !== playerId || access.type !== "Full Access" || !userSelections.includes("log")) {
+      throw new Error("The saved key no longer qualifies as this member's own Full Access key with user log access.")
+    }
+
+    const logMap = new Map<string, { row: Record<string, unknown>; categoryId: number }>()
+    const feedResults = [
+      { categoryId: 22, logId: null },
+      { categoryId: 32, logId: null },
+      { categoryId: 83, logId: null },
+      { categoryId: 83, logId: 8170 },
+      { categoryId: 0, logId: 2406 },
+    ]
+    for (const feed of feedResults) {
+      const params: Record<string, string | number> = {
+        from: start,
+        to: end,
+        limit: 100,
+        sort: "desc",
+      }
+      if (feed.categoryId) params.cat = feed.categoryId
+      if (feed.logId !== null) params.log = feed.logId
+      const result = await torn.pages("/user/log", "log", params)
+      for (const row of result.rows) {
+        const timestamp = Number(row.timestamp)
+        const logId = String(row.id ?? "")
+        if (logId && Number.isFinite(timestamp) && timestamp >= start && timestamp < endExclusive) {
+          logMap.set(logId, { row, categoryId: feed.categoryId })
+        }
+      }
+    }
+
+    const fullAttacks = await torn.pages("/user/attacksfull", "attacks", {
+      from: start, to: end, limit: 1000, sort: "desc",
+    })
+    const detailedAttacks = await torn.pages("/user/attacks", "attacks", {
+      from: start, to: end, limit: 100, sort: "desc",
+    })
+    const attacksById = new Map<string, Record<string, unknown>>()
+    for (const attack of fullAttacks.rows) {
+      const attackId = String(attack.id ?? "")
+      const ended = Number(attack.ended)
+      if (attackId && Number.isFinite(ended) && ended >= start && ended < endExclusive) {
+        attacksById.set(attackId, attack)
+      }
+    }
+    for (const attack of detailedAttacks.rows) {
+      const attackId = String(attack.id ?? "")
+      const ended = Number(attack.ended)
+      if (attackId && Number.isFinite(ended) && ended >= start && ended < endExclusive) {
+        attacksById.set(attackId, { ...(attacksById.get(attackId) ?? {}), ...attack })
+      }
+    }
+
+    const collectedAt = new Date().toISOString()
+    for (const [logId, entry] of logMap) {
+      const details = isRecord(entry.row.details) ? entry.row.details : {}
+      const title = typeof details.title === "string" ? details.title : null
+      const rawTypeId = Number(details.id)
+      const logTypeId = Number.isFinite(rawTypeId) ? rawTypeId : null
+      await db.prepare(
+        "INSERT INTO halloween_event_logs (event_year, player_id, log_id, timestamp, category_id, log_type_id, title, labels_json, log_json, collected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_year, player_id, log_id) DO UPDATE SET timestamp = excluded.timestamp, category_id = excluded.category_id, log_type_id = excluded.log_type_id, title = excluded.title, labels_json = excluded.labels_json, log_json = excluded.log_json, collected_at = excluded.collected_at"
+      ).bind(
+        eventYear, playerId, logId, Number(entry.row.timestamp), entry.categoryId || null,
+        logTypeId, title, asJson(classifyHalloweenLog(entry.row, entry.categoryId)),
+        asJson(entry.row), collectedAt,
+      ).run()
+    }
+
+    let successfulHits = 0
+    let revitalizeProcCount = 0
+    const dailyHits: Record<string, number> = {}
+    for (const [attackId, attack] of attacksById) {
+      const started = Number(attack.started)
+      const ended = Number(attack.ended)
+      if (!Number.isFinite(ended) || ended < start || ended >= endExclusive) continue
+      const result = typeof attack.result === "string" ? attack.result : null
+      const attacker = isRecord(attack.attacker) ? attack.attacker : {}
+      const defender = isRecord(attack.defender) ? attack.defender : {}
+      const effects = Array.isArray(attack.finishing_hit_effects) ? attack.finishing_hit_effects.filter(isRecord) : []
+      const revitalizeEffects = effects.filter((effect) => String(effect.name ?? "").toLowerCase() === "revitalize")
+      if (["Attacked", "Mugged", "Hospitalized", "Looted"].includes(result ?? "")) successfulHits += 1
+      revitalizeProcCount += revitalizeEffects.length
+      const day = halloweenDateKey(ended)
+      dailyHits[day] = (dailyHits[day] ?? 0) + 1
+      const rawChain = attack.chain == null ? null : Number(attack.chain)
+      const chain = rawChain !== null && Number.isFinite(rawChain) ? rawChain : null
+
+      await db.prepare(
+        "INSERT INTO halloween_attacks (event_year, player_id, attack_id, started_at, ended_at, result, attacker_id, attacker_name, defender_id, defender_name, respect_gain, respect_loss, chain, finishing_hit_effects_json, attack_json, collected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_year, player_id, attack_id) DO UPDATE SET started_at = excluded.started_at, ended_at = excluded.ended_at, result = excluded.result, attacker_id = excluded.attacker_id, attacker_name = excluded.attacker_name, defender_id = excluded.defender_id, defender_name = excluded.defender_name, respect_gain = excluded.respect_gain, respect_loss = excluded.respect_loss, chain = excluded.chain, finishing_hit_effects_json = excluded.finishing_hit_effects_json, attack_json = excluded.attack_json, collected_at = excluded.collected_at"
+      ).bind(
+        eventYear, playerId, attackId,
+        Number.isFinite(started) ? started : null, ended, result,
+        attacker.id == null ? null : String(attacker.id), typeof attacker.name === "string" ? attacker.name : null,
+        defender.id == null ? null : String(defender.id), typeof defender.name === "string" ? defender.name : null,
+        Number.isFinite(Number(attack.respect_gain)) ? Number(attack.respect_gain) : null,
+        Number.isFinite(Number(attack.respect_loss)) ? Number(attack.respect_loss) : null,
+        chain, asJson(revitalizeEffects), asJson(attack), collectedAt,
+      ).run()
+    }
+
+    const attackCount = attacksById.size
+    const logCount = logMap.size
+    await db.prepare(
+      "INSERT INTO halloween_collection_state (event_year, player_id, status, range_start, range_end, attack_count, total_hits, successful_hits, revitalize_proc_count, daily_hits_json, log_count, last_attempt_at, completed_at, error_summary) VALUES (?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) ON CONFLICT(event_year, player_id) DO UPDATE SET status = 'completed', range_start = excluded.range_start, range_end = excluded.range_end, attack_count = excluded.attack_count, total_hits = excluded.total_hits, successful_hits = excluded.successful_hits, revitalize_proc_count = excluded.revitalize_proc_count, daily_hits_json = excluded.daily_hits_json, log_count = excluded.log_count, last_attempt_at = excluded.last_attempt_at, completed_at = excluded.completed_at, error_summary = NULL"
+    ).bind(
+      eventYear, playerId, window.startsAt, window.endsAt, attackCount, attackCount,
+      successfulHits, revitalizeProcCount, asJson(dailyHits), logCount, collectedAt, collectedAt,
+    ).run()
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 240) : "Historical Halloween collection failed."
+    await db.prepare(
+      "UPDATE halloween_collection_state SET status = 'failed', last_attempt_at = ?, error_summary = ? WHERE event_year = ? AND player_id = ?"
+    ).bind(new Date().toISOString(), message, eventYear, playerId).run()
+    throw error
+  }
+}
+
+async function handleHalloweenCollectionQueueBatch(batch: { messages: QueueMessage[] }, env: WorkerEnv): Promise<void> {
+  for (const message of batch.messages) {
+    const body = isRecord(message.body) ? message.body : {}
+    const playerId = typeof body.playerId === "string" ? body.playerId : ""
+    const eventYear = Number(body.eventYear)
+    if (body.kind !== "halloween-historical-collect" || !/^\d+$/.test(playerId) || !Number.isInteger(eventYear)) {
+      message.ack()
+      continue
+    }
+    try {
+      await collectHistoricalHalloweenMember(env, playerId, eventYear)
+      message.ack()
+    } catch (error) {
+      const attempts = Number(message.attempts ?? 1)
+      if (attempts < 3) {
+        message.retry({ delaySeconds: Math.min(120, attempts * 30) })
+      } else {
+        const reason = error instanceof Error ? error.message.slice(0, 240) : "Historical Halloween collection exhausted its retries."
+        await requireDb(env).prepare(
+          "UPDATE halloween_collection_state SET status = 'failed', last_attempt_at = ?, error_summary = ? WHERE event_year = ? AND player_id = ?"
+        ).bind(new Date().toISOString(), reason, eventYear, playerId).run()
+        message.ack()
+      }
+    }
+  }
+}
+
 async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; queue?: string }, env: WorkerEnv): Promise<void> {
   if (batch.queue === "ncd-global-rankings-refresh-dlq") {
     for (const message of batch.messages) {
@@ -3178,7 +3493,8 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
 
 export default {
   async queue(batch: { messages: QueueMessage[]; queue?: string }, env: WorkerEnv): Promise<void> {
-    await handleGlobalRankingQueueBatch(batch, env)
+    if (batch.queue === "ncd-halloween-collection") await handleHalloweenCollectionQueueBatch(batch, env)
+    else await handleGlobalRankingQueueBatch(batch, env)
   },
   async scheduled(controller: { scheduledTime: number; cron: string }, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
     ctx.waitUntil(runScheduledAutomation(controller, env))
@@ -3264,6 +3580,93 @@ export default {
         await saveKey(env, player.id, apiKey)
         return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), updatedAt: new Date().toISOString() }, 200, origin)
       } catch (error) { return tornError(error, origin) }
+    }
+
+    if (url.pathname === "/api/me/halloween/archive" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const eventYear = Number(url.searchParams.get("year") || new Date().getUTCFullYear())
+      if (!Number.isInteger(eventYear) || eventYear < 2010 || eventYear > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      const window = await requireDb(env).prepare("SELECT starts_at AS startsAt, ends_at AS endsAt, auto_snapshots_enabled AS autoSnapshotsEnabled FROM halloween_event_windows WHERE event_year = ?")
+        .bind(eventYear).first<{ startsAt: string | null; endsAt: string | null; autoSnapshotsEnabled: number }>()
+      if (!window) return jsonResponse({ error: "No Halloween event window is configured for that year yet." }, 404, origin)
+      const rows = await requireDb(env).prepare("SELECT p.player_id AS playerId, p.player_name AS playerName, s.status AS collectionStatus, s.attack_count AS attackCount, s.total_hits AS totalHits, s.successful_hits AS successfulHits, s.revitalize_proc_count AS revitalizeProcCount, s.daily_hits_json AS dailyHitsJson, s.log_count AS logCount, s.last_attempt_at AS lastAttemptAt, s.completed_at AS completedAt, s.error_summary AS errorSummary, (SELECT l.treats_current FROM halloween_live_snapshots l WHERE l.player_id = p.player_id AND l.event_year = ? ORDER BY l.captured_at DESC LIMIT 1) AS treatsCurrent, (SELECT l.treats_total FROM halloween_live_snapshots l WHERE l.player_id = p.player_id AND l.event_year = ? ORDER BY l.captured_at DESC LIMIT 1) AS treatsTotal, (SELECT l.captured_at FROM halloween_live_snapshots l WHERE l.player_id = p.player_id AND l.event_year = ? ORDER BY l.captured_at DESC LIMIT 1) AS liveUpdatedAt FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id LEFT JOIN halloween_collection_state s ON s.player_id = p.player_id AND s.event_year = ? WHERE p.faction_id = ? AND st.disabled_at IS NULL ORDER BY CASE WHEN s.total_hits IS NULL THEN 1 ELSE 0 END, s.total_hits DESC, p.player_name COLLATE NOCASE")
+        .bind(eventYear, eventYear, eventYear, eventYear, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
+      const members = (rows.results ?? []).map((row) => {
+        let dailyHits: unknown = null
+        try { dailyHits = typeof row.dailyHitsJson === "string" ? JSON.parse(row.dailyHitsJson) : null } catch { dailyHits = null }
+        return {
+          playerId: String(row.playerId),
+          playerName: String(row.playerName),
+          collectionStatus: row.collectionStatus ?? "not_collected",
+          attackCount: row.attackCount == null ? null : Number(row.attackCount),
+          totalHits: row.totalHits == null ? null : Number(row.totalHits),
+          successfulHits: row.successfulHits == null ? null : Number(row.successfulHits),
+          revitalizeProcCount: row.revitalizeProcCount == null ? null : Number(row.revitalizeProcCount),
+          dailyHits,
+          logCount: row.logCount == null ? null : Number(row.logCount),
+          lastAttemptAt: row.lastAttemptAt ?? null,
+          completedAt: row.completedAt ?? null,
+          errorSummary: row.errorSummary ?? null,
+          treatsCurrent: row.treatsCurrent == null ? null : Number(row.treatsCurrent),
+          treatsTotal: row.treatsTotal == null ? null : Number(row.treatsTotal),
+          liveUpdatedAt: row.liveUpdatedAt ?? null,
+        }
+      })
+      const keyStatus = await requireDb(env).prepare("SELECT last_four, access_level, last_validated_at AS lastValidatedAt FROM halloween_historical_keys WHERE player_id = ?").bind(session.player_id).first<{ last_four: string; access_level: string; lastValidatedAt: string }>()
+      return jsonResponse({ eventYear, window, currentPlayerId: session.player_id, historicalKey: keyStatus ? { connected: true, lastFour: keyStatus.last_four, accessLevel: keyStatus.access_level, lastValidatedAt: keyStatus.lastValidatedAt } : { connected: false }, members }, 200, origin)
+    }
+    const halloweenProfileMatch = url.pathname.match(/^\/api\/me\/halloween\/profile\/(\d+)$/)
+    if (halloweenProfileMatch && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const targetId = halloweenProfileMatch[1]
+      const eventYear = Number(url.searchParams.get("year") || new Date().getUTCFullYear())
+      if (!Number.isInteger(eventYear) || eventYear < 2010 || eventYear > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      const target = await requireDb(env).prepare("SELECT player_id AS playerId, player_name AS playerName FROM players WHERE player_id = ? AND faction_id = ?")
+        .bind(targetId, NAUGHTY_SOULS_FACTION_ID).first<{ playerId: string; playerName: string }>()
+      if (!target) return jsonResponse({ error: "That player is not in the current Naughty Souls member archive." }, 404, origin)
+      const [state, attacks, logs, snapshots] = await Promise.all([
+        requireDb(env).prepare("SELECT status, attack_count AS attackCount, total_hits AS totalHits, successful_hits AS successfulHits, revitalize_proc_count AS revitalizeProcCount, daily_hits_json AS dailyHitsJson, log_count AS logCount, last_attempt_at AS lastAttemptAt, completed_at AS completedAt, error_summary AS errorSummary, range_start AS rangeStart, range_end AS rangeEnd FROM halloween_collection_state WHERE event_year = ? AND player_id = ?")
+          .bind(eventYear, targetId).first<Record<string, unknown>>(),
+        requireDb(env).prepare("SELECT attack_id AS attackId, started_at AS startedAt, ended_at AS endedAt, result, attacker_id AS attackerId, attacker_name AS attackerName, defender_id AS defenderId, defender_name AS defenderName, respect_gain AS respectGain, respect_loss AS respectLoss, chain, finishing_hit_effects_json AS finishingHitEffectsJson, attack_json AS attackJson FROM halloween_attacks WHERE event_year = ? AND player_id = ? ORDER BY ended_at ASC, attack_id ASC LIMIT 5000")
+          .bind(eventYear, targetId).all<Record<string, unknown>>(),
+        requireDb(env).prepare("SELECT log_id AS logId, timestamp, category_id AS categoryId, log_type_id AS logTypeId, title, labels_json AS labelsJson, log_json AS logJson FROM halloween_event_logs WHERE event_year = ? AND player_id = ? ORDER BY timestamp ASC, log_id ASC LIMIT 5000")
+          .bind(eventYear, targetId).all<Record<string, unknown>>(),
+        requireDb(env).prepare("SELECT snapshot_kind AS snapshotKind, treats_current AS treatsCurrent, treats_total AS treatsTotal, basket_upgrades_json AS basketUpgradesJson, source_timestamp AS sourceTimestamp, captured_at AS capturedAt FROM halloween_live_snapshots WHERE event_year = ? AND player_id = ? ORDER BY captured_at ASC LIMIT 1000")
+          .bind(eventYear, targetId).all<Record<string, unknown>>(),
+      ])
+      const parseStoredJsonField = (value: unknown) => { try { return typeof value === "string" ? JSON.parse(value) : null } catch { return null } }
+      return jsonResponse({
+        eventYear,
+        player: target,
+        coverage: state ? { ...state, dailyHits: parseStoredJsonField(state.dailyHitsJson), dailyHitsJson: undefined } : { status: "not_collected", totalHits: null, attackCount: null, logCount: null },
+        attacks: (attacks.results ?? []).map((row) => ({ ...row, finishingHitEffects: parseStoredJsonField(row.finishingHitEffectsJson), attack: parseStoredJsonField(row.attackJson), finishingHitEffectsJson: undefined, attackJson: undefined })),
+        logs: (logs.results ?? []).map((row) => ({ ...row, labels: parseStoredJsonField(row.labelsJson), log: parseStoredJsonField(row.logJson), labelsJson: undefined, logJson: undefined })),
+        snapshots: (snapshots.results ?? []).map((row) => ({ ...row, basketUpgrades: parseStoredJsonField(row.basketUpgradesJson), basketUpgradesJson: undefined })),
+      }, 200, origin)
+    }
+    if (url.pathname === "/api/me/halloween/collect" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (!env.HALLOWEEN_COLLECTION_QUEUE) return jsonResponse({ error: "Historical collection is not enabled on this deployment yet." }, 503, origin)
+      const body: unknown = await request.json().catch(() => null)
+      const eventYear = isRecord(body) ? Number(body.year) : Number.NaN
+      if (!Number.isInteger(eventYear) || eventYear < 2010 || eventYear > 2100) return jsonResponse({ error: "Choose a valid Halloween event year." }, 400, origin)
+      const eventWindow = await requireDb(env).prepare("SELECT starts_at AS startsAt, ends_at AS endsAt FROM halloween_event_windows WHERE event_year = ?")
+        .bind(eventYear).first<{ startsAt: string | null; endsAt: string | null }>()
+      if (!eventWindow?.startsAt || !eventWindow.endsAt) return jsonResponse({ error: "Exact event dates have not been configured for that year yet." }, 409, origin)
+      const key = await requireDb(env).prepare("SELECT player_id FROM halloween_historical_keys WHERE player_id = ?").bind(session.player_id).first<{ player_id: string }>()
+      if (!key) return jsonResponse({ error: "Connect your own Full Access key in the Historical tab before contributing your personal event history." }, 409, origin)
+      const existing = await requireDb(env).prepare("SELECT status, completed_at AS completedAt FROM halloween_collection_state WHERE event_year = ? AND player_id = ?")
+        .bind(eventYear, session.player_id).first<{ status: string; completedAt: string | null }>()
+      if (existing?.status === "queued" || existing?.status === "running") return jsonResponse({ queued: true, alreadyRunning: true, status: existing.status }, 202, origin)
+      if (existing?.status === "completed") return jsonResponse({ queued: false, alreadyComplete: true, status: existing.status, completedAt: existing.completedAt }, 200, origin)
+      const now = new Date().toISOString()
+      await requireDb(env).prepare("INSERT INTO halloween_collection_state (event_year, player_id, status, range_start, range_end, last_attempt_at) VALUES (?, ?, 'queued', ?, ?, ?) ON CONFLICT(event_year, player_id) DO UPDATE SET status = 'queued', range_start = excluded.range_start, range_end = excluded.range_end, last_attempt_at = excluded.last_attempt_at, error_summary = NULL")
+        .bind(eventYear, session.player_id, eventWindow.startsAt, eventWindow.endsAt, now).run()
+      await env.HALLOWEEN_COLLECTION_QUEUE.send({ kind: "halloween-historical-collect", playerId: session.player_id, eventYear })
+      return jsonResponse({ queued: true, status: "queued", eventYear }, 202, origin)
     }
     if (url.pathname === "/api/me/halloween/key" && request.method === "GET") {
       const session = await authenticate(request, env)
