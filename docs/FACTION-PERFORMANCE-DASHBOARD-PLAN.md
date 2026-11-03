@@ -745,12 +745,23 @@ Still to implement or validate:
 - [ ] Persist a longer historical activity timeline and add member-specific inactivity trends.
 
 ### Phase 5 — Voluntary private live connections
-- Consent and disclosure.
-- Own-key connection and validation.
-- Minimal bars/cooldowns selections.
-- Optional own-key detailed networth.
-- Revocation and key failure handling.
-- Per-member request budgets and freshness.
+
+**First implementation is on the PR branch. Synthetic Worker tests cover ownership, consent, encryption, selection minimization, opt-in networth, request throttling and revocation. Isolated staging-D1 migration/acceptance and real-member key verification remain outstanding.**
+
+- [x] Add migration 0023 with a separate encrypted owner-key registry, current private-live snapshots, and a per-member API request-throttle table. These tables are separate from the faction login key and the Halloween Full Access/log credential.
+- [x] Require an authenticated current Naughty Souls session, explicit versioned data-sharing consent, and explicit selection of faction sharing. Validate the submitted key's Torn owner ID against the signed-in player before fetching bars, cooldowns or networth.
+- [x] Request only the owner's /user/bars and /user/cooldowns selections. Parse and persist an allowlist of four bars and three cooldowns; unknown or missing values remain unknown. Do not retain arbitrary response fields.
+- [x] Make detailed /user/networth a separate opt-in. If Torn denies only that optional selection, keep the bars/cooldowns connection and leave detailed networth off. Preserve Torn's networth source timestamp and show it separately from the Worker capture time.
+- [x] Encrypt the owner key at rest with the existing AES-GCM Worker secret. Never return ciphertext or plaintext key material from the API. The faction performance API joins only the latest snapshot for members with explicit sharing enabled and excludes disabled accounts.
+- [x] Keep the latest snapshot only; no historical private bars/cooldowns archive is created. An owner can refresh through Account Settings; there is no background private-live collector in this phase.
+- [x] Enforce one shared 30-second per-member D1 throttle across connect and refresh attempts, including failed key validation, to constrain Torn request volume.
+- [x] Allow the owner to disconnect and delete both the encrypted key and current faction-shared snapshot. Confirmed faction departure uses the same deletion path. Permanently invalid, owner-paused or required-selection-revoked keys are disconnected; temporary jail/inactivity/API outages and rate limits retain the key and last successful snapshot.
+- [x] Add Account Settings disclosure and consent controls, owner refresh/disconnect controls, and an opt-in Live Member Status display for shared values with capture age and separate networth source time.
+- [x] Add parser allowlist tests, Worker-level synthetic tests for wrong owner/consent/encrypted storage/networth opt-in/request throttle/disconnect, and a dedicated consent/security contract test.
+- [ ] Apply migration 0023 to isolated staging D1 and verify the remote migration ledger; extend stateful staging integration to exercise the private-live routes and revocation with fixture-backed Torn responses.
+- [ ] Run volunteer real-key acceptance with custom/minimum-permission keys to verify the actual Torn response and access requirements for bars, cooldowns and optional detailed networth.
+- [ ] Add private-live freshness/error visibility to administrator diagnostics and complete the API request-budget review before considering any scheduled refresh.
+
 
 ### Phase 6 — Historical performance and comparisons
 - Week selector and two-week comparison.
