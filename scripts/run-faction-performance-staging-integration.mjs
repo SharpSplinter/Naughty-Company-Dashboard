@@ -695,6 +695,70 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
       throw new Error("Historical reports did not preserve negative networth movement and ending-boundary provenance.")
     }
     console.log("PASS weekly history API lists immutable reports and compares member deltas/rank movement across two completed Sundays.")
+    await d1Query(
+      "INSERT INTO administrators (player_id, granted_by, granted_at, revoked_by, revoked_at) VALUES (?, ?, ?, NULL, NULL)",
+      [playerId, playerId, new Date().toISOString()],
+    )
+    const diagnosticsResponse = await fetch(WORKER_URL + "/api/admin/faction/weekly-boundaries?limit=3", {
+      headers: { Authorization: "Bearer " + token, Accept: "application/json" },
+      signal: AbortSignal.timeout(30000),
+    })
+    const diagnostics = await diagnosticsResponse.json().catch(() => null)
+    const currentBoundary = diagnostics?.boundaries?.find((item) => item.boundaryAt === weeklyFixture.weekStartAt)
+    if (!diagnosticsResponse.ok || !Array.isArray(diagnostics?.boundaries) || !currentBoundary ||
+        currentBoundary.stats?.status !== "completed" || currentBoundary.gymEnergy?.status !== "completed") {
+      throw new Error("Admin weekly boundary diagnostics returned HTTP " + diagnosticsResponse.status + " or omitted the completed Sunday baseline.")
+    }
+    const recoveryRunId = String(currentBoundary.stats.runId)
+    const failureAt = new Date().toISOString()
+    await d1Query(
+      "UPDATE faction_performance_collection_runs SET status = 'failed', completed_at = ?, last_error = ?, updated_at = ? WHERE run_id = ? AND status = 'completed'",
+      [failureAt, "Synthetic admin-recovery fixture", failureAt, recoveryRunId],
+    )
+    const recoveryDiagnosticsResponse = await fetch(WORKER_URL + "/api/admin/faction/weekly-boundaries?limit=3", {
+      headers: { Authorization: "Bearer " + token, Accept: "application/json" },
+      signal: AbortSignal.timeout(30000),
+    })
+    const recoveryDiagnostics = await recoveryDiagnosticsResponse.json().catch(() => null)
+    const recoverableBoundary = recoveryDiagnostics?.boundaries?.find((item) => item.boundaryAt === weeklyFixture.weekStartAt)
+    if (!recoveryDiagnosticsResponse.ok || !recoverableBoundary?.recoverable ||
+        !recoverableBoundary.recoveryCollections.includes("personalstats")) {
+      throw new Error("Admin weekly boundary diagnostics did not flag the synthetic failed stats run as safely recoverable.")
+    }
+    const recoveryResponse = await fetch(WORKER_URL + "/api/admin/faction/weekly-boundaries/recover", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ boundaryAt: weeklyFixture.weekStartAt, collections: ["personalstats"] }),
+      signal: AbortSignal.timeout(30000),
+    })
+    const recovery = await recoveryResponse.json().catch(() => null)
+    if (!recoveryResponse.ok || !recovery.queued?.some((item) => item.collection === "personalstats" && item.runId === recoveryRunId)) {
+      throw new Error("Admin weekly boundary recovery returned HTTP " + recoveryResponse.status + " or did not requeue the failed frozen-cohort stats run.")
+    }
+    const recoveryDeadline = Date.now() + 180000
+    let recoveredRun = null
+    while (Date.now() < recoveryDeadline) {
+      const rows = await d1Query(
+        "SELECT status, last_error FROM faction_performance_collection_runs WHERE run_id = ?",
+        [recoveryRunId],
+      )
+      recoveredRun = rows[0] ?? null
+      if (recoveredRun?.status === "completed" || recoveredRun?.status === "partial" || recoveredRun?.status === "failed") break
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+    }
+    if (recoveredRun?.status !== "completed") {
+      throw new Error("Recovered Sunday stats run ended as " + (recoveredRun?.status ?? "missing") + " instead of completed.")
+    }
+    const lockedRecoveryResponse = await fetch(WORKER_URL + "/api/admin/faction/weekly-boundaries/recover", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ boundaryAt: historyFixture.weekAStart, collections: ["personalstats"] }),
+      signal: AbortSignal.timeout(30000),
+    })
+    if (lockedRecoveryResponse.status !== 409) {
+      throw new Error("Admin recovery should reject the finalized historical report boundary (HTTP " + lockedRecoveryResponse.status + ").")
+    }
+    console.log("PASS admin weekly boundary diagnostics identify failed captures, retry a frozen Sunday run through Queues, audit the action, and refuse to rewrite finalized reports.")
   } finally {
     await d1Query("DELETE FROM players WHERE player_id = ?", [playerId])
   }
