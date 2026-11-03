@@ -5,3 +5,4 @@ Run 5: validate checkout/setup-node v7 Node 24 runtimes with Wrangler 4.156.2; s
 Run 6: validate Sunday boundary calculations, weekly rankings API, gym-energy ranking and midweek leaver retention in staging D1; 2026-11-02T23:58Z
 Run 7: fix weekly gym-energy anomaly type and rerun full validation; 2026-11-03T00:25Z
 Run 8: validate public Live Member Status UI, inactivity filters, hospital/status and separate revive fields; 2026-11-03T00:32Z
+Run 9: fix staging weekly Sunday boundary upsert collision and rerun Live Member Status assertions; 2026-11-03T00:42Z

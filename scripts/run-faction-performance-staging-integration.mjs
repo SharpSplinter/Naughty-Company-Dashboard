@@ -215,7 +215,11 @@ async function seedWeeklyFixtures() {
   await d1Query(
     `INSERT INTO faction_weekly_boundary_runs
       (faction_id, boundary_at, stats_run_id, gym_energy_run_id, created_at)
-     VALUES (?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(faction_id, boundary_at) DO UPDATE SET
+       stats_run_id = excluded.stats_run_id,
+       gym_energy_run_id = excluded.gym_energy_run_id,
+       created_at = excluded.created_at`,
     [FACTION_ID, weekStartAt, statsBaselineRunId, gymBaselineRunId, now],
   )
 
