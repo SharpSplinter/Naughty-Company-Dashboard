@@ -17,6 +17,7 @@ const sourceFiles = [
   "src/lib/torn/personalstats.ts",
   "src/lib/faction-performance/collector.ts",
   "src/lib/faction-performance/weekly.ts",
+  "src/lib/faction-performance/leaderboard.ts",
   "src/lib/torn/types.ts",
   "src/worker/index.ts",
   "src/worker/snapshot-provenance.ts",
@@ -65,6 +66,7 @@ try {
     calculateWeeklyMemberResult,
     rankWeeklyMembers,
   } = require(join(temp, "lib/faction-performance/weekly.js"))
+  const { filterAndSortWeeklyMembers } = require(join(temp, "lib/faction-performance/leaderboard.js"))
   const {
     buildPersonalStatsPath,
     categoriesForMissingPersonalStats,
@@ -408,6 +410,29 @@ try {
     ], "gymEnergy")
     assert.deepEqual(gymRanked.map(item => item.rank), [1, 2, null])
     assert.equal(gymRanked[0].name, "Gym Y")
+  })
+
+  await test("weekly leaderboard filters members and sorts known metrics ahead of unknown values", () => {
+    const metrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 5]))
+    const base = {
+      position: "Member", level: 50, participation: "full_week", status: "complete",
+      metrics, startingNetworth: 1000, endingNetworth: 1100, gymEnergy: 20,
+      knownMetricCount: WEEKLY_METRIC_NAMES.length, anomalyMetrics: [],
+    }
+    const members = [
+      { ...base, userId: "301", name: "Alpha", rank: 1, metrics: { ...metrics, xantaken: 10 } },
+      { ...base, userId: "302", name: "Bravo", rank: 2, status: "partial", participation: "partial_week", knownMetricCount: 14, anomalyMetrics: ["lsdtaken"], metrics: { ...metrics, xantaken: 30 } },
+      { ...base, userId: "303", name: "Charlie", rank: null, status: "waiting_for_baseline", participation: "unknown", knownMetricCount: 0, metrics: { ...metrics, xantaken: null } },
+    ]
+    const descending = filterAndSortWeeklyMembers(members, { sortBy: "xantaken", direction: "desc" })
+    assert.deepEqual(descending.map(member => member.userId), ["302", "301", "303"])
+    const ascending = filterAndSortWeeklyMembers(members, { sortBy: "xantaken", direction: "asc" })
+    assert.deepEqual(ascending.map(member => member.userId), ["301", "302", "303"])
+    const filtered = filterAndSortWeeklyMembers(members, {
+      search: "BRAV", status: "partial", participation: "partial_week", anomaliesOnly: true,
+    })
+    assert.deepEqual(filtered.map(member => member.userId), ["302"])
+    assert.deepEqual(filterAndSortWeeklyMembers(members, { status: "complete" }).map(member => member.userId), ["301"])
   })
 
   await test("official stock lock-in timestamp accepts only fresh source data from the scheduled reporting day", () => {
