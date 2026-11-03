@@ -708,7 +708,9 @@ Still to implement or validate:
 - [x] Protect report headers and member rows with database triggers that reject updates and deletes; preserve raw source snapshots and actual capture timestamps.
 - [x] Use the next Sunday's dedicated boundary run as the ending sample for members still present; use the last observed in-faction sample for a midweek leaver.
 - [x] Expose the latest 26 completed reports through an authenticated history API, with prior value, week-over-week change, previous rank and rank movement.
-- [ ] Add a reviewed late/missed-boundary recovery workflow and admin diagnostics for incomplete or exhausted boundary runs.
+- [x] Add administrator-only Sunday boundary diagnostics for the most recent 26 boundaries, including frozen-cohort size, run status, retry age, expected/captured member counts, first/last actual capture times, timing deviation and adjacent immutable-report references.
+- [x] Add audited recovery for a missing boundary only within 24 hours, or for failed/partial/stale existing runs within eight days. Recovery reuses the original frozen cohort and queue run IDs, uses an optimistic status/timestamp claim, and refuses any boundary referenced by either adjacent finalized weekly report.
+- [x] Add a read-only-by-default Admin Panel section; recovery actions require enabling admin actions and explicit per-boundary confirmation. Staging integration exercises diagnostics, a failed-run retry through Cloudflare Queues, audit evidence, and the immutable-report 409 lock.
 
 ### Phase 3 — Weekly Rankings UI
 
