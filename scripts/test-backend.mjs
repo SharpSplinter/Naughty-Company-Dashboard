@@ -16,6 +16,7 @@ const sourceFiles = [
   "src/lib/torn/client.ts",
   "src/lib/torn/personalstats.ts",
   "src/lib/faction-performance/collector.ts",
+  "src/lib/faction-performance/weekly.ts",
   "src/lib/torn/types.ts",
   "src/worker/index.ts",
   "src/worker/snapshot-provenance.ts",
@@ -57,6 +58,13 @@ try {
     countCompletePublicMetrics,
   } = require(join(temp, "lib/faction-performance/collector.js"))
   const {
+    WEEKLY_METRIC_NAMES,
+    WEEK_MS,
+    utcSundayWindow,
+    calculateWeeklyMemberResult,
+    rankWeeklyMembers,
+  } = require(join(temp, "lib/faction-performance/weekly.js"))
+  const {
     buildPersonalStatsPath,
     categoriesForMissingPersonalStats,
     decodePersonalStatsResponse,
@@ -80,6 +88,234 @@ try {
     passed += 1
     console.log("PASS", name)
   }
+
+  await test("weekly windows start Sunday 00:00 UTC and remain exactly 168 hours across DST changes", () => {
+    const regular = utcSundayWindow(Date.parse("2026-11-02T18:00:00.000Z"))
+    assert.equal(regular.startAt, "2026-11-01T00:00:00.000Z")
+    assert.equal(regular.endAt, "2026-11-08T00:00:00.000Z")
+    assert.equal(Date.parse(regular.endAt) - Date.parse(regular.startAt), WEEK_MS)
+    const dstSunday = utcSundayWindow(Date.parse("2026-03-08T07:30:00.000Z"))
+    assert.equal(dstSunday.startAt, "2026-03-08T00:00:00.000Z")
+    assert.equal(Date.parse(dstSunday.endAt) - Date.parse(dstSunday.startAt), 168 * 60 * 60 * 1000)
+  })
+
+  await test("weekly deltas use Sunday baseline snapshots, keep Xanax and LSD separate, and allow negative networth change", () => {
+    const baselineValues = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const endingValues = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 105]))
+    baselineValues.xantaken = 1240
+    endingValues.xantaken = 1247
+    baselineValues.lsdtaken = 380
+    endingValues.lsdtaken = 390
+    baselineValues.networth = 10000
+    endingValues.networth = 9950
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "101", name: "Weekly Member", position: "Member", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { snapshotId: 1, runId: "sunday-baseline", userId: "101", capturedAt: "2026-11-01T00:03:00.000Z", ...baselineValues },
+        { snapshotId: 2, runId: "later-sample", userId: "101", capturedAt: "2026-11-01T00:20:00.000Z", ...endingValues },
+      ],
+      gymSnapshots: [
+        { snapshotId: 1, runId: "sunday-gym-baseline", userId: "101", capturedAt: "2026-11-01T00:04:00.000Z", gymEnergyTotal: 100 },
+        { snapshotId: 2, runId: "later-gym-sample", userId: "101", capturedAt: "2026-11-01T00:21:00.000Z", gymEnergyTotal: 125 },
+      ],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T12:00:00.000Z",
+      statsBoundaryRunId: "sunday-baseline",
+      gymBoundaryRunId: "sunday-gym-baseline",
+    })
+    assert.equal(result.metrics.xantaken, 7)
+    assert.equal(result.metrics.lsdtaken, 10)
+    assert.notEqual(result.metrics.xantaken, result.metrics.lsdtaken)
+    assert.equal(result.metrics.networth, -50)
+    assert.equal(result.startingNetworth, 10000)
+    assert.equal(result.endingNetworth, 9950)
+    assert.equal(result.gymEnergy, 25)
+    assert.equal(result.status, "complete")
+    assert.equal(result.participation, "full_week")
+  })
+
+  await test("decreased lifetime counters are anomalies and are never ranked as negative usage", () => {
+    const before = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 50]))
+    const after = { ...before, xantaken: 49 }
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "102", name: "Reset Counter", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { runId: "baseline", userId: "102", capturedAt: "2026-11-01T00:01:00.000Z", ...before },
+        { runId: "ending", userId: "102", capturedAt: "2026-11-01T00:16:00.000Z", ...after },
+      ],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T00:00:00.000Z",
+      statsBoundaryRunId: "baseline",
+    })
+    assert.equal(result.metrics.xantaken, null)
+    assert.ok(result.anomalyMetrics.includes("xantaken"))
+    assert.equal(result.status, "anomaly")
+  })
+
+  await test("midweek joiners use their first observed sample as a partial baseline", () => {
+    const before = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 10]))
+    const after = { ...before, xantaken: 15 }
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "103", name: "New Member", estimatedJoinedAt: "2026-11-02T09:00:00.000Z" },
+      statSnapshots: [
+        { runId: "join-baseline", userId: "103", capturedAt: "2026-11-02T09:15:00.000Z", ...before },
+        { runId: "later-sample", userId: "103", capturedAt: "2026-11-02T09:30:00.000Z", ...after },
+      ],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T12:00:00.000Z",
+    })
+    assert.equal(result.participation, "partial_week")
+    assert.equal(result.metrics.xantaken, 5)
+  })
+
+  await test("missing Sunday baseline or ending sample remains unknown rather than zero", () => {
+    const row = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const missingBaseline = calculateWeeklyMemberResult({
+      member: { userId: "104", name: "No Baseline", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [{ runId: "only-later", userId: "104", capturedAt: "2026-11-01T00:20:00.000Z", ...row }],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T00:00:00.000Z",
+      statsBoundaryRunId: "missing-boundary-run",
+    })
+    assert.equal(missingBaseline.status, "waiting_for_baseline")
+    assert.equal(missingBaseline.metrics.xantaken, null)
+
+    const missingEnding = calculateWeeklyMemberResult({
+      member: { userId: "105", name: "No Ending", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [{ runId: "baseline", userId: "105", capturedAt: "2026-11-01T00:20:00.000Z", ...row }],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T00:00:00.000Z",
+      statsBoundaryRunId: "baseline",
+    })
+    assert.equal(missingEnding.status, "waiting_for_update")
+    assert.equal(missingEnding.metrics.xantaken, null)
+  })
+
+  await test("midweek leavers remain partial-week participants and use only pre-departure samples", () => {
+    const before = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const after = { ...before, xantaken: 110 }
+    const afterDeparture = { ...before, xantaken: 900 }
+    const result = calculateWeeklyMemberResult({
+      member: {
+        userId: "106",
+        name: "Departed Midweek",
+        estimatedJoinedAt: "2026-01-01T00:00:00.000Z",
+        leftObservedAt: "2026-11-03T13:00:00.000Z",
+      },
+      statSnapshots: [
+        { runId: "baseline", userId: "106", capturedAt: "2026-11-01T00:06:00.000Z", ...before },
+        { runId: "before-leave", userId: "106", capturedAt: "2026-11-03T12:00:00.000Z", ...after },
+        { runId: "after-leave", userId: "106", capturedAt: "2026-11-04T12:00:00.000Z", ...afterDeparture },
+      ],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-05T00:00:00.000Z",
+      statsBoundaryRunId: "baseline",
+    })
+    assert.equal(result.participation, "partial_week")
+    assert.equal(result.metrics.xantaken, 10, "samples collected after observed departure must not affect the weekly result")
+    assert.equal(result.endingCapturedAt, "2026-11-03T12:00:00.000Z")
+  })
+
+  await test("failed samples do not replace a valid Sunday baseline or the latest successful ending sample", () => {
+    const baseline = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const ending = { ...baseline, xantaken: 107 }
+    const failed = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, null]))
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "108", name: "Failed Sample", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { runId: "baseline", userId: "108", capturedAt: "2026-11-01T00:02:00.000Z", collectionStatus: "complete", ...baseline },
+        { runId: "good-ending", userId: "108", capturedAt: "2026-11-01T00:17:00.000Z", collectionStatus: "complete", ...ending },
+        { runId: "failed-later", userId: "108", capturedAt: "2026-11-01T00:32:00.000Z", collectionStatus: "failed", ...failed },
+      ],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T00:00:00.000Z",
+      statsBoundaryRunId: "baseline",
+    })
+    assert.equal(result.metrics.xantaken, 7)
+    assert.equal(result.endingCapturedAt, "2026-11-01T00:17:00.000Z")
+  })
+
+  await test("the following Sunday 00:00 UTC is exclusive for the ending sample", () => {
+    const before = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const atNextBoundary = { ...before, xantaken: 107 }
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "107", name: "Boundary Member", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { runId: "baseline", userId: "107", capturedAt: "2026-11-01T00:01:00.000Z", ...before },
+        { runId: "next-sunday", userId: "107", capturedAt: "2026-11-08T00:00:00.000Z", ...atNextBoundary },
+      ],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-08T00:00:00.000Z",
+      statsBoundaryRunId: "baseline",
+    })
+    assert.equal(result.status, "waiting_for_update")
+    assert.equal(result.metrics.xantaken, null)
+  })
+
+  await test("decreasing gym-energy contributor totals are marked anomalous and remain unranked", () => {
+    const baseline = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const ending = { ...baseline, xantaken: 105 }
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "109", name: "Gym Counter Reset", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { runId: "stats-baseline", userId: "109", capturedAt: "2026-11-01T00:01:00.000Z", ...baseline },
+        { runId: "stats-ending", userId: "109", capturedAt: "2026-11-01T00:16:00.000Z", ...ending },
+      ],
+      gymSnapshots: [
+        { runId: "gym-baseline", userId: "109", capturedAt: "2026-11-01T00:02:00.000Z", gymEnergyTotal: 1000 },
+        { runId: "gym-ending", userId: "109", capturedAt: "2026-11-01T00:17:00.000Z", gymEnergyTotal: 900 },
+      ],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T00:00:00.000Z",
+      statsBoundaryRunId: "stats-baseline",
+      gymBoundaryRunId: "gym-baseline",
+    })
+    assert.equal(result.gymEnergy, null)
+    assert.ok(result.anomalyMetrics.includes("gymEnergy"))
+    assert.equal(result.status, "anomaly")
+    const ranked = rankWeeklyMembers([{ ...result }], "gymEnergy")
+    assert.equal(ranked[0].rank, null)
+  })
+
+  await test("weekly ranking excludes unknown metrics and gives tied values the same rank", () => {
+    const metrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 10]))
+    const base = {
+      position: "Member", level: 50, participation: "full_week", status: "complete",
+      metrics, gymEnergy: null, knownMetricCount: WEEKLY_METRIC_NAMES.length, anomalyMetrics: [],
+      baselineCapturedAt: null, endingCapturedAt: null, baselineSnapshotId: null, endingSnapshotId: null,
+      gymEnergyBaselineCapturedAt: null, gymEnergyEndingCapturedAt: null,
+    }
+    const ranked = rankWeeklyMembers([
+      { ...base, userId: "201", name: "A", metrics: { ...metrics, xantaken: 12 } },
+      { ...base, userId: "202", name: "B", metrics: { ...metrics, xantaken: 12 } },
+      { ...base, userId: "203", name: "C", metrics: { ...metrics, xantaken: null }, status: "waiting_for_baseline" },
+    ], "xantaken")
+    assert.deepEqual(ranked.map(item => item.rank), [1, 1, null])
+
+    const gymRanked = rankWeeklyMembers([
+      { ...base, userId: "204", name: "Gym X", gymEnergy: 50 },
+      { ...base, userId: "205", name: "Gym Y", gymEnergy: 70 },
+      { ...base, userId: "206", name: "Gym Unknown", gymEnergy: null },
+    ], "gymEnergy")
+    assert.deepEqual(gymRanked.map(item => item.rank), [1, 2, null])
+    assert.equal(gymRanked[0].name, "Gym Y")
+  })
 
   await test("official stock lock-in timestamp accepts only fresh source data from the scheduled reporting day", () => {
     const scheduledAt = Date.parse("2026-10-21T18:10:00.000Z");

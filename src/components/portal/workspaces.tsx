@@ -186,7 +186,220 @@ type FactionMemberSummary = {
   companyTypeId: number | string | null
 }
 
-export function FactionWorkspacePlaceholder({ playerName, onNavigate, apiBase, sessionToken }: Pick<WorkspaceProps, "playerName" | "onNavigate"> & { apiBase: string; sessionToken: string }) {
+type FactionWorkspaceProps = Pick<WorkspaceProps, "playerName" | "onNavigate"> & { apiBase: string; sessionToken: string }
+type FactionWeeklyMetric =
+  | "xantaken" | "lsdtaken" | "drugsused" | "overdosed" | "alcoholused" | "boostersused"
+  | "energydrinkused" | "refills" | "statenhancersused" | "networth" | "cantaken"
+  | "exttaken" | "kettaken" | "opitaken" | "shrtaken" | "spetaken" | "pcptaken" | "victaken"
+type FactionWeeklyRankingMetric = FactionWeeklyMetric | "gymEnergy"
+
+type FactionWeeklyMember = {
+  userId: string
+  name: string
+  position: string | null
+  level: number | null
+  participation: "full_week" | "partial_week" | "unknown"
+  status: "complete" | "partial" | "incomplete" | "waiting_for_baseline" | "waiting_for_update" | "anomaly"
+  metrics: Record<FactionWeeklyMetric, number | null>
+  startingNetworth: number | null
+  endingNetworth: number | null
+  gymEnergy: number | null
+  knownMetricCount: number
+  anomalyMetrics: FactionWeeklyRankingMetric[]
+  rank: number | null
+  baselineCapturedAt: string | null
+  endingCapturedAt: string | null
+}
+
+type FactionWeeklyPayload = {
+  generatedAt: string
+  week: { startAt: string; endAt: string; secondsRemaining: number; generatedAt: string }
+  boundary: {
+    statsStatus: string
+    gymEnergyStatus: string
+    statsCompletedAt: string | null
+    gymEnergyCompletedAt: string | null
+    statsCapturedAt: string | null
+    gymEnergyCapturedAt: string | null
+    statsTimingDeviationSeconds: number | null
+    gymEnergyTimingDeviationSeconds: number | null
+    statsLate: boolean | null
+    gymEnergyLate: boolean | null
+  }
+  selectedMetric: FactionWeeklyRankingMetric
+  summary: Record<FactionWeeklyMetric, { total: number; knownMembers: number }> & { gymEnergy: { total: number; knownMembers: number } }
+  completeMembers: number
+  totalMembers: number
+  members: FactionWeeklyMember[]
+}
+
+const factionWeeklyMetricOptions: Array<{ value: FactionWeeklyRankingMetric; label: string }> = [
+  { value: "xantaken", label: "Xanax used" },
+  { value: "lsdtaken", label: "LSD used" },
+  { value: "alcoholused", label: "Alcohol consumed" },
+  { value: "boostersused", label: "Boosters used" },
+  { value: "energydrinkused", label: "Energy drinks" },
+  { value: "refills", label: "Energy refills" },
+  { value: "drugsused", label: "Total drugs used" },
+  { value: "overdosed", label: "Overdoses" },
+  { value: "statenhancersused", label: "Stat enhancers" },
+  { value: "networth", label: "Networth change" },
+  { value: "cantaken", label: "Cannabis" },
+  { value: "exttaken", label: "Ecstasy" },
+  { value: "kettaken", label: "Ketamine" },
+  { value: "opitaken", label: "Opium" },
+  { value: "shrtaken", label: "Shrooms" },
+  { value: "spetaken", label: "Speed" },
+  { value: "pcptaken", label: "PCP" },
+  { value: "victaken", label: "Vicodin" },
+  { value: "gymEnergy", label: "Gym energy" },
+]
+
+export function FactionWorkspacePlaceholder(props: FactionWorkspaceProps) {
+  const [tab, setTab] = useState<"weekly" | "directory">("weekly")
+  return (
+    <div className="faction-workspace-switcher">
+      <nav className="faction-workspace-tabs" aria-label="Faction dashboard sections">
+        <button type="button" className={tab === "weekly" ? "active" : ""} onClick={() => setTab("weekly")}>Weekly rankings</button>
+        <button type="button" className={tab === "directory" ? "active" : ""} onClick={() => setTab("directory")}>Company directory</button>
+      </nav>
+      {tab === "weekly" ? <FactionWeeklyRankings {...props} /> : <FactionCompanyDirectory {...props} />}
+    </div>
+  )
+}
+
+function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }: FactionWorkspaceProps) {
+  const [payload, setPayload] = useState<FactionWeeklyPayload | null>(null)
+  const [metric, setMetric] = useState<FactionWeeklyRankingMetric>("xantaken")
+  const [search, setSearch] = useState("")
+  const [busy, setBusy] = useState(true)
+  const [error, setError] = useState("")
+
+  const load = async () => {
+    setBusy(true)
+    setError("")
+    try {
+      const response = await fetch(apiBase + "/api/faction/weekly-rankings?metric=" + encodeURIComponent(metric), {
+        headers: { Authorization: "Bearer " + sessionToken },
+      })
+      const result = await response.json() as { error?: string } & Partial<FactionWeeklyPayload>
+      if (!response.ok) throw new Error(result.error || "Could not load faction weekly rankings.")
+      if (!result.week || !Array.isArray(result.members) || !result.summary) throw new Error("The weekly ranking response is incomplete.")
+      setPayload(result as FactionWeeklyPayload)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not load faction weekly rankings.")
+      setPayload(null)
+    } finally { setBusy(false) }
+  }
+
+  useEffect(() => { void load() }, [apiBase, sessionToken, metric])
+
+  const filtered = (payload?.members || []).filter(member =>
+    !search.trim() || [member.name, member.userId, member.position].some(value => String(value ?? "").toLowerCase().includes(search.trim().toLowerCase())),
+  )
+  const formatNumber = (value: number | null, selected: FactionWeeklyRankingMetric = metric) => {
+    if (value === null || !Number.isFinite(value)) return "—"
+    if (selected === "networth") return (value < 0 ? "−$" : "$") + Math.round(Math.abs(value)).toLocaleString()
+    return Math.round(value).toLocaleString()
+  }
+  const formatUtc = (value: string) => new Intl.DateTimeFormat(undefined, {
+    timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(new Date(value)) + " UTC"
+  const remaining = (seconds: number) => {
+    const days = Math.floor(seconds / 86400)
+    const hours = Math.floor((seconds % 86400) / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    return days ? days + "d " + hours + "h remaining" : hours + "h " + minutes + "m remaining"
+  }
+  const statusLabel = (value: FactionWeeklyMember["status"]) => ({
+    complete: "Complete", partial: "Partial data", incomplete: "Incomplete",
+    waiting_for_baseline: "Waiting for Sunday baseline", waiting_for_update: "Waiting for next sample", anomaly: "Counter anomaly",
+  })[value]
+  const metricValue = (member: FactionWeeklyMember, key: FactionWeeklyRankingMetric) => key === "gymEnergy" ? member.gymEnergy : member.metrics[key]
+  const metricTotal = (key: FactionWeeklyMetric) => {
+    const aggregate = payload?.summary[key]
+    return !aggregate || aggregate.knownMembers === 0 ? "—" : formatNumber(aggregate.total, key)
+  }
+  const gymKnownMembers = payload?.summary.gymEnergy.knownMembers ?? 0
+  const gymEnergyTotal = gymKnownMembers
+    ? formatNumber(payload?.summary.gymEnergy.total ?? 0, "drugsused")
+    : "—"
+  const timingLabel = (capturedAt: string | null | undefined, deviation: number | null | undefined, late: boolean | null | undefined) => {
+    if (!capturedAt) return "Awaiting first sample"
+    if (deviation === null || deviation === undefined) return formatUtc(capturedAt)
+    const minutes = Math.max(0, Math.ceil(deviation / 60))
+    return formatUtc(capturedAt) + (late ? " · late by " + minutes + "m" : " · within 5m")
+  }
+  const metricsStatus = payload?.boundary.statsStatus || "not_scheduled"
+  const gymStatus = payload?.boundary.gymEnergyStatus || "not_scheduled"
+
+  return (
+    <main className="module-page faction-module faction-weekly-module">
+      <header className="module-topbar"><a className="portal-brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("/") }}><span className="portal-brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>FACTION WORKSPACE</small></span></a><button type="button" onClick={() => onNavigate("/")}>← Return to portal</button></header>
+      <section className="module-heading"><div className="portal-eyebrow"><span /> NAUGHTY SOULS · WEEKLY PERFORMANCE</div><h1>Faction <em>Weekly Rankings</em></h1><p>Lifetime counters are compared with this week's Sunday 00:00 UTC baseline. Xanax and LSD remain independent rankings. Missing or anomalous samples are never treated as zero.</p></section>
+      {error && <p className="settings-feedback error" role="alert">{error}</p>}
+      <section className="faction-weekly-toolbar">
+        <div><small>REPORTING WINDOW · TCT / UTC</small><strong>{payload ? formatUtc(payload.week.startAt) + " – " + formatUtc(payload.week.endAt) : "Sunday 00:00 UTC – following Sunday 00:00 UTC"}</strong><span>{payload ? remaining(payload.week.secondsRemaining) : "Exact 168-hour reporting week"}</span></div>
+        <div className="faction-weekly-controls">
+          <label>Rank by<select value={metric} onChange={event => setMetric(event.target.value as FactionWeeklyRankingMetric)}>{factionWeeklyMetricOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+          <button type="button" onClick={() => void load()} disabled={busy}>{busy ? "Loading…" : "Refresh ↻"}</button>
+        </div>
+      </section>
+      <section className="faction-weekly-boundary-status">
+        <span>Sunday stats baseline: <strong>{metricsStatus.replace(/_/g, " ")}</strong></span>
+        <span>First stats capture: <strong>{timingLabel(payload?.boundary.statsCapturedAt, payload?.boundary.statsTimingDeviationSeconds, payload?.boundary.statsLate)}</strong></span>
+        <span>Gym-energy baseline: <strong>{gymStatus.replace(/_/g, " ")}</strong></span>
+        <span>First gym capture: <strong>{timingLabel(payload?.boundary.gymEnergyCapturedAt, payload?.boundary.gymEnergyTimingDeviationSeconds, payload?.boundary.gymEnergyLate)}</strong></span>
+        <span>Updated: <strong>{payload ? formatUtc(payload.generatedAt) : "—"}</strong></span>
+      </section>
+      <section className="faction-weekly-summary">
+        <article><small>FACTION MEMBERS</small><strong>{payload?.totalMembers ?? "—"}</strong><span>Current membership intervals</span></article>
+        <article><small>COMPLETE WEEKLY DATA</small><strong>{payload?.completeMembers ?? "—"}</strong><span>All 18 public counters available</span></article>
+        <article><small>KNOWN XANAX THIS WEEK</small><strong>{metricTotal("xantaken")}</strong><span>{payload?.summary.xantaken.knownMembers ?? 0} members with known deltas</span></article>
+        <article><small>KNOWN LSD THIS WEEK</small><strong>{metricTotal("lsdtaken")}</strong><span>{payload?.summary.lsdtaken.knownMembers ?? 0} members with known deltas</span></article>
+        <article><small>KNOWN ALCOHOL THIS WEEK</small><strong>{metricTotal("alcoholused")}</strong><span>{payload?.summary.alcoholused.knownMembers ?? 0} members with known deltas</span></article>
+        <article><small>KNOWN BOOSTERS THIS WEEK</small><strong>{metricTotal("boostersused")}</strong><span>{payload?.summary.boostersused.knownMembers ?? 0} members with known deltas</span></article>
+        <article><small>KNOWN ENERGY DRINKS THIS WEEK</small><strong>{metricTotal("energydrinkused")}</strong><span>{payload?.summary.energydrinkused.knownMembers ?? 0} members with known deltas</span></article>
+        <article><small>KNOWN GYM ENERGY THIS WEEK</small><strong>{gymEnergyTotal}</strong><span>{gymKnownMembers} members with known deltas</span></article>
+      </section>
+      <section className="halloween-panel faction-weekly-ranking-panel">
+        <div className="faction-directory-heading"><div><div className="halloween-status"><i /> LIVE WEEKLY LEADERBOARD</div><h2>{factionWeeklyMetricOptions.find(option => option.value === metric)?.label || "Weekly activity"}</h2><p>Sorted by weekly change, not lifetime totals. Members without a valid baseline or ending sample remain unranked.</p></div><input aria-label="Search faction members" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search member or Torn ID…" /></div>
+        {busy && !payload ? <p className="historical-key-muted">Loading weekly snapshots…</p> : filtered.length ? (
+          <div className="historical-leaderboard">
+            <table><thead><tr><th>RANK</th><th>MEMBER</th><th>POSITION</th><th>SELECTED METRIC</th><th>XANAX</th><th>LSD</th><th>ALCOHOL</th><th>BOOSTERS</th><th>ENERGY DRINKS</th><th>REFILLS</th><th>GYM ENERGY</th><th>STARTING NETWORTH</th><th>CURRENT NETWORTH</th><th>NETWORTH CHANGE</th><th>DATA</th></tr></thead><tbody>
+              {filtered.map(member => <tr key={member.userId}>
+                <td>{member.rank === null ? "—" : "#" + member.rank}</td>
+                <td><strong>{member.name}</strong><small>#{member.userId}</small></td>
+                <td>{member.position || "—"}</td>
+                <td><strong>{formatNumber(metricValue(member, metric), metric)}</strong></td>
+                <td>{formatNumber(member.metrics.xantaken)}</td>
+                <td>{formatNumber(member.metrics.lsdtaken)}</td>
+                <td>{formatNumber(member.metrics.alcoholused)}</td>
+                <td>{formatNumber(member.metrics.boostersused)}</td>
+                <td>{formatNumber(member.metrics.energydrinkused)}</td>
+                <td>{formatNumber(member.metrics.refills)}</td>
+                <td>{formatNumber(member.gymEnergy, "drugsused")}</td>
+                <td>{formatNumber(member.startingNetworth, "networth")}</td>
+                <td>{formatNumber(member.endingNetworth, "networth")}</td>
+                <td>{formatNumber(member.metrics.networth, "networth")}</td>
+                <td>
+                  <span className={"coverage-pill " + (member.status === "complete" ? "complete" : member.status === "anomaly" || member.status === "incomplete" ? "partial" : "collecting")}>{statusLabel(member.status)}</span>
+                  <small>{member.participation.replace(/_/g, " ")}</small>
+                  <small>{member.baselineCapturedAt ? "Base " + formatUtc(member.baselineCapturedAt) : "No baseline sample"}</small>
+                  <small>{member.endingCapturedAt ? "End " + formatUtc(member.endingCapturedAt) : "No ending sample"}</small>
+                  {member.anomalyMetrics.length > 0 && <small className="faction-weekly-anomaly">Decreased: {member.anomalyMetrics.join(", ")}</small>}
+                </td>
+              </tr>)}
+            </tbody></table>
+          </div>
+        ) : <div className="historical-empty"><strong>{payload?.members.length ? "No members match that search." : "Weekly baseline is being prepared."}</strong><span>{payload?.members.length ? "Try another name or Torn ID." : "The five-minute scheduler creates a dedicated Sunday snapshot. Until the baseline and a later sample are available, weekly values remain unknown."}</span></div>}
+      </section>
+      <footer className="module-footer"><span>FACTION WEEKLY RANKINGS</span><span>Signed in as {playerName} · Public faction-key snapshots only</span></footer>
+    </main>
+  )
+}
+
+function FactionCompanyDirectory({ playerName, onNavigate, apiBase, sessionToken }: FactionWorkspaceProps) {
   const [directory, setDirectory] = useState<FactionDirectoryPayload | null>(null)
   const [members, setMembers] = useState<FactionMemberSummary[]>([])
   const [search, setSearch] = useState("")

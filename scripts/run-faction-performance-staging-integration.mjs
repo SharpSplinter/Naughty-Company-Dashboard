@@ -142,11 +142,11 @@ async function waitForFailedRun(runId, label) {
 
 async function assertMigrationReady() {
   const rows = await d1Query(
-    "SELECT name FROM d1_migrations WHERE name = ?",
-    ["0019_faction_performance_collection.sql"],
+    "SELECT name FROM d1_migrations WHERE name IN (?, ?)",
+    ["0019_faction_performance_collection.sql", "0020_faction_weekly_boundaries.sql"],
   )
-  if (rows.length !== 1) {
-    throw new Error("Staging D1 is missing migration 0019. Run the staging migration workflow first.")
+  if (rows.length !== 2) {
+    throw new Error("Staging D1 is missing faction collection or weekly boundary migrations 0019/0020. Run the staging migration workflow first.")
   }
   const expected = [
     "faction_performance_collection_runs",
@@ -156,6 +156,7 @@ async function assertMigrationReady() {
     "faction_member_roster_snapshots",
     "faction_member_stat_snapshots",
     "faction_gym_energy_snapshots",
+    "faction_weekly_boundary_runs",
   ]
   const placeholders = expected.map(() => "?").join(", ")
   const tables = await d1Query(
@@ -171,7 +172,93 @@ async function assertMigrationReady() {
   }
 }
 
-async function assertApiRoute(rosterRunId) {
+function sundayStartIso(timestampMs = Date.now()) {
+  const date = new Date(timestampMs)
+  date.setUTCHours(0, 0, 0, 0)
+  date.setUTCDate(date.getUTCDate() - date.getUTCDay())
+  return date.toISOString()
+}
+
+async function seedWeeklyFixtures() {
+  const weekStartAt = sundayStartIso()
+  const weekStartMs = Date.parse(weekStartAt)
+  const statsBaselineAt = new Date(weekStartMs + 2 * 60 * 1000).toISOString()
+  const now = new Date().toISOString()
+  // End-of-week samples are dated after the integration collection runs above,
+  // so previous staging runs cannot accidentally become the newest ending sample.
+  const statsEndingAt = now
+  const gymBaselineAt = new Date(weekStartMs + 3 * 60 * 1000).toISOString()
+  const gymEndingAt = now
+  const statsBaselineRunId = randomUUID()
+  const statsEndingRunId = randomUUID()
+  const gymBaselineRunId = randomUUID()
+  const gymEndingRunId = randomUUID()
+  const targetJson = JSON.stringify(MEMBER_IDS)
+
+  async function insertCompletedRun(runId, kind, scheduledAt, startedAt, completedAt) {
+    await d1Query(
+      `INSERT INTO faction_performance_collection_runs
+        (run_id, collection_key, faction_id, collection_kind, status, scheduled_at,
+         target_user_ids_json, next_index, started_at, completed_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?)`,
+      [runId, `integration:weekly:${kind}:${runId}`, FACTION_ID, kind, scheduledAt,
+        kind === "personalstats" ? targetJson : null,
+        kind === "personalstats" ? MEMBER_IDS.length : 0, startedAt, completedAt, now, now],
+    )
+  }
+
+  await insertCompletedRun(statsBaselineRunId, "personalstats", weekStartAt, statsBaselineAt, statsBaselineAt)
+  await insertCompletedRun(statsEndingRunId, "personalstats", weekStartAt, statsEndingAt, statsEndingAt)
+  await insertCompletedRun(gymBaselineRunId, "gym_energy", weekStartAt, gymBaselineAt, gymBaselineAt)
+  await insertCompletedRun(gymEndingRunId, "gym_energy", weekStartAt, gymEndingAt, gymEndingAt)
+
+  await d1Query(
+    `INSERT INTO faction_weekly_boundary_runs
+      (faction_id, boundary_at, stats_run_id, gym_energy_run_id, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [FACTION_ID, weekStartAt, statsBaselineRunId, gymBaselineRunId, now],
+  )
+
+  const insertStatSql = `INSERT INTO faction_member_stat_snapshots
+    (run_id, faction_id, user_id, captured_at, scheduled_at, response_variant, collection_status,
+     ${METRIC_COLUMNS.join(", ")}, missing_metrics_json, torn_error_code)
+    VALUES (${Array.from({ length: 7 + METRIC_COLUMNS.length + 2 }, () => "?").join(", ")})`
+  const insertGymSql = `INSERT INTO faction_gym_energy_snapshots
+    (run_id, faction_id, user_id, captured_at, gym_energy_total, in_faction, collection_status)
+    VALUES (?, ?, ?, ?, ?, 1, 'complete')`
+
+  for (let index = 0; index < MEMBER_IDS.length; index++) {
+    const userId = MEMBER_IDS[index]
+    const baseline = Object.fromEntries(METRIC_COLUMNS.map((column) => [
+      column,
+      column === "networth" ? 100000 + index * 1000 : 100 + index,
+    ]))
+    const ending = { ...baseline }
+    ending.xantaken = baseline.xantaken + 5 + index
+    ending.lsdtaken = baseline.lsdtaken + 9 + index
+    ending.networth = baseline.networth - 100
+    for (const column of METRIC_COLUMNS) {
+      if (column !== "xantaken" && column !== "lsdtaken" && column !== "networth") ending[column] = baseline[column] + 2
+    }
+
+    for (const [runId, capturedAt, values] of [
+      [statsBaselineRunId, statsBaselineAt, baseline],
+      [statsEndingRunId, statsEndingAt, ending],
+    ]) {
+      await d1Query(insertStatSql, [
+        runId, FACTION_ID, userId, capturedAt, weekStartAt, "popular", "complete",
+        ...METRIC_COLUMNS.map((column) => values[column]), "[]", null,
+      ])
+    }
+
+    await d1Query(insertGymSql, [gymBaselineRunId, FACTION_ID, userId, gymBaselineAt, 5000 + index * 100])
+    await d1Query(insertGymSql, [gymEndingRunId, FACTION_ID, userId, gymEndingAt, 5025 + index * 100 + index])
+  }
+
+  return { weekStartAt, statsBaselineAt, statsEndingAt }
+}
+
+async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId) {
   const playerId = String(990000000000000 + randomInt(1, 999999))
   const token = `${randomUUID()}.${randomUUID()}`
   const tokenHash = createHash("sha256").update(token).digest("hex")
@@ -209,6 +296,59 @@ async function assertApiRoute(rosterRunId) {
       throw new Error("Faction performance API did not join each member's stat and gym-energy samples.")
     }
     console.log("PASS authenticated faction performance API returned joined roster, stats, and gym-energy data.")
+
+    const weeklyResponse = await fetch(`${WORKER_URL}/api/faction/weekly-rankings?metric=xantaken`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(30000),
+    })
+    const weekly = await weeklyResponse.json().catch(() => null)
+    if (!weeklyResponse.ok || !weekly || !Array.isArray(weekly.members)) {
+      throw new Error(`Faction weekly rankings API returned HTTP ${weeklyResponse.status}.`)
+    }
+    if (weekly.week?.startAt !== weeklyFixture.weekStartAt ||
+        weekly.boundary?.statsStatus !== "completed" ||
+        weekly.boundary?.gymEnergyStatus !== "completed") {
+      throw new Error("Weekly rankings did not expose the synthetic Sunday boundary runs.")
+    }
+    const first = weekly.members.find((member) => member.userId === MEMBER_IDS[0])
+    if (!first ||
+        first.metrics.xantaken !== 5 ||
+        first.metrics.lsdtaken !== 9 ||
+        first.metrics.networth !== -100 ||
+        first.startingNetworth !== 100000 ||
+        first.endingNetworth !== 99900 ||
+        first.gymEnergy !== 25 ||
+        first.status !== "complete" ||
+        first.rank !== MEMBER_IDS.length) {
+      throw new Error("Weekly rankings did not calculate the expected independent counter, networth, gym-energy and rank results.")
+    }
+    if (first.baselineCapturedAt !== weeklyFixture.statsBaselineAt ||
+        first.endingCapturedAt !== weeklyFixture.statsEndingAt ||
+        weekly.boundary.statsCapturedAt !== weeklyFixture.statsBaselineAt) {
+      throw new Error("Weekly rankings did not preserve the actual baseline and ending capture timestamps.")
+    }
+    if (weekly.members[0]?.userId !== MEMBER_IDS[MEMBER_IDS.length - 1]) {
+      throw new Error("Weekly rankings are not ordered by the selected metric.")
+    }
+    const departedMember = weekly.members.find((member) => member.userId === departedUserId)
+    if (!departedMember || departedMember.participation !== "partial_week" ||
+        departedMember.rank !== null || departedMember.metrics.xantaken !== null) {
+      throw new Error("A member who left during the reporting week was hidden or incorrectly ranked without a valid baseline.")
+    }
+    const gymRankResponse = await fetch(`${WORKER_URL}/api/faction/weekly-rankings?metric=gymEnergy`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(30000),
+    })
+    const gymRankings = await gymRankResponse.json().catch(() => null)
+    if (!gymRankResponse.ok || gymRankings?.selectedMetric !== "gymEnergy" ||
+        gymRankings.members?.[0]?.userId !== MEMBER_IDS[MEMBER_IDS.length - 1]) {
+      throw new Error("Gym-energy ranking did not sort independently by the synthetic contributor deltas.")
+    }
+    const firstGymMember = gymRankings.members.find((member) => member.userId === MEMBER_IDS[0])
+    if (firstGymMember?.gymEnergy !== 25 || firstGymMember.rank !== MEMBER_IDS.length) {
+      throw new Error("Gym-energy ranking did not preserve the expected member delta or rank.")
+    }
+    console.log("PASS authenticated weekly rankings API returned Sunday-boundary deltas, actual capture times, and independent personalstats and gym-energy rankings.")
   } finally {
     await d1Query("DELETE FROM players WHERE player_id = ?", [playerId])
   }
@@ -305,7 +445,8 @@ async function main() {
   }
   console.log("PASS collection success timestamps advanced only after complete runs.")
 
-  await assertApiRoute(rosterRunId)
+  const weeklyFixture = await seedWeeklyFixtures()
+  await assertApiRoute(rosterRunId, weeklyFixture, departedUserId)
 
   const successfulStatsState = await d1Query(
     "SELECT last_success_at FROM faction_performance_collection_state WHERE faction_id = ? AND collection_kind = 'personalstats'",

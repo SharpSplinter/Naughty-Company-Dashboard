@@ -5,6 +5,17 @@ import {
   parseFactionPublicStatsResponse,
   parseFactionRosterResponse,
 } from "../lib/faction-performance/collector"
+import {
+  calculateWeeklyMemberResult,
+  rankWeeklyMembers,
+  utcSundayWindow,
+  utcSundayStart,
+  WEEKLY_METRIC_NAMES,
+  type WeeklyMembership,
+  type WeeklyMetricName,
+  type WeeklyRankingMetric,
+  type WeeklySnapshot,
+} from "../lib/faction-performance/weekly"
 import { PERSONAL_STATS_HISTORICAL_NAMES } from "../lib/torn/personalstats"
 import { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } from "./snapshot-provenance"
 import { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isSnapshotStale, normalizeWebhookUrl, normalizeAlertThreshold, normalizeCooldownHours } from "../lib/automation/rules"
@@ -452,6 +463,67 @@ async function enqueueFactionPerformanceCollections(env: WorkerEnv, scheduledTim
   return enqueued
 }
 
+async function enqueueFactionWeeklyBoundaryRun(env: WorkerEnv, scheduledTime: number): Promise<boolean> {
+  if (!env.DB || !env.GLOBAL_RANKINGS_QUEUE || !env.TORN_FACTION_API_KEY?.trim()) return false
+  const db = requireDb(env)
+  const boundaryMs = utcSundayStart(scheduledTime)
+  const boundaryAt = new Date(boundaryMs).toISOString()
+  let boundary = await db.prepare(
+    "SELECT stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId FROM faction_weekly_boundary_runs WHERE faction_id = ? AND boundary_at = ?"
+  ).bind(NAUGHTY_SOULS_FACTION_ID, boundaryAt).first<{ statsRunId: string; gymEnergyRunId: string }>()
+  if (!boundary) {
+    const active = await db.prepare(
+      "SELECT user_id AS userId FROM faction_membership_intervals WHERE faction_id = ? AND left_observed_at IS NULL ORDER BY user_id"
+    ).bind(NAUGHTY_SOULS_FACTION_ID).all<{ userId: string }>()
+    const targetUserIds = Array.from(new Set((active.results ?? [])
+      .map((row) => String(row.userId))
+      .filter((id) => /^[1-9]\d*$/.test(id))))
+    const statsRunId = crypto.randomUUID()
+    const gymRunId = crypto.randomUUID()
+    const now = new Date().toISOString()
+    const statsKey = `${NAUGHTY_SOULS_FACTION_ID}:personalstats:weekly-boundary:${boundaryMs}`
+    const gymKey = `${NAUGHTY_SOULS_FACTION_ID}:gym_energy:weekly-boundary:${boundaryMs}`
+    await db.prepare(
+      "INSERT OR IGNORE INTO faction_performance_collection_runs (run_id, collection_key, faction_id, collection_kind, status, scheduled_at, target_user_ids_json, next_index, created_at, updated_at) VALUES (?, ?, ?, 'personalstats', 'queued', ?, ?, 0, ?, ?)"
+    ).bind(statsRunId, statsKey, NAUGHTY_SOULS_FACTION_ID, boundaryAt, asJson(targetUserIds), now, now).run()
+    await db.prepare(
+      "INSERT OR IGNORE INTO faction_performance_collection_runs (run_id, collection_key, faction_id, collection_kind, status, scheduled_at, target_user_ids_json, next_index, created_at, updated_at) VALUES (?, ?, ?, 'gym_energy', 'queued', ?, NULL, 0, ?, ?)"
+    ).bind(gymRunId, gymKey, NAUGHTY_SOULS_FACTION_ID, boundaryAt, now, now).run()
+    const [savedStatsRun, savedGymRun] = await Promise.all([
+      db.prepare("SELECT run_id AS runId FROM faction_performance_collection_runs WHERE collection_key = ?")
+        .bind(statsKey).first<{ runId: string }>(),
+      db.prepare("SELECT run_id AS runId FROM faction_performance_collection_runs WHERE collection_key = ?")
+        .bind(gymKey).first<{ runId: string }>(),
+    ])
+    if (!savedStatsRun || !savedGymRun) throw new Error("Weekly boundary collection runs could not be initialized.")
+    await db.prepare(
+      "INSERT OR IGNORE INTO faction_weekly_boundary_runs (faction_id, boundary_at, stats_run_id, gym_energy_run_id, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, boundaryAt, savedStatsRun.runId, savedGymRun.runId, now).run()
+    boundary = await db.prepare(
+      "SELECT stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId FROM faction_weekly_boundary_runs WHERE faction_id = ? AND boundary_at = ?"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, boundaryAt).first<{ statsRunId: string; gymEnergyRunId: string }>()
+  }
+  if (!boundary) return false
+
+  let enqueued = false
+  for (const runId of [boundary.statsRunId, boundary.gymEnergyRunId]) {
+    const run = await db.prepare(
+      "SELECT status, last_enqueued_at AS lastEnqueuedAt FROM faction_performance_collection_runs WHERE run_id = ?"
+    ).bind(runId).first<{ status: string; lastEnqueuedAt: string | null }>()
+    if (!run || ["completed", "partial", "failed"].includes(run.status)) continue
+    const lastEnqueuedMs = run.lastEnqueuedAt ? Date.parse(run.lastEnqueuedAt) : Number.NEGATIVE_INFINITY
+    const retryAfter = run.status === "running" ? 10 * 60 * 1000 : 4 * 60 * 1000
+    if (Number.isFinite(lastEnqueuedMs) && scheduledTime - lastEnqueuedMs < retryAfter) continue
+    await env.GLOBAL_RANKINGS_QUEUE.send({ kind: FACTION_PERFORMANCE_QUEUE_KIND, runId })
+    const enqueuedAt = new Date().toISOString()
+    await db.prepare(
+      "UPDATE faction_performance_collection_runs SET last_enqueued_at = ?, updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
+    ).bind(enqueuedAt, enqueuedAt, runId).run()
+    enqueued = true
+  }
+  return enqueued
+}
+
 function sqliteBoolean(value: boolean | null): number | null {
   return value === null ? null : value ? 1 : 0
 }
@@ -558,13 +630,14 @@ async function runFactionPersonalStatsCollectionPage(env: WorkerEnv, run: Factio
 
   while (index < endIndex) {
     const userId = targetUserIds[index]
-    const attemptedAt = new Date().toISOString()
+    let capturedAt = new Date().toISOString()
     let stats = emptyFactionPublicStats()
     let sampleStatus: "complete" | "partial" | "failed" = "failed"
     let tornErrorCode: number | null = null
     try {
       const payload = await client.getUserPersonalStatsFor(userId, { kind: "popular" })
       stats = parseFactionPublicStatsResponse(payload)
+      capturedAt = new Date().toISOString()
       sampleStatus = stats.missingMetrics.length ? "partial" : "complete"
       if (sampleStatus === "partial") partialCount += 1
     } catch (error) {
@@ -576,10 +649,11 @@ async function runFactionPersonalStatsCollectionPage(env: WorkerEnv, run: Factio
         (error.status === 429 || error.status >= 500 || error.code === 9)) {
         throw error
       }
+      capturedAt = new Date().toISOString()
       partialCount += 1
       tornErrorCode = factionCollectionSafeError(error).tornCode
     }
-    await saveFactionMemberStatSample(env, run, userId, attemptedAt, stats, sampleStatus, tornErrorCode)
+    await saveFactionMemberStatSample(env, run, userId, capturedAt, stats, sampleStatus, tornErrorCode)
     index += 1
     if (index < endIndex) await new Promise((resolve) => setTimeout(resolve, 800))
     await requireDb(env).prepare(
@@ -3940,6 +4014,7 @@ async function runFiveMinuteScheduledJobs(env: WorkerEnv, scheduledTime: number)
   // are isolated: one source outage must not suppress the other scheduled work.
   try { await revalidateFactionMembershipBatch(env, scheduledTime) } catch { /* Retry stale members on a later tick. */ }
   try { await enqueueFactionPerformanceCollections(env, scheduledTime) } catch { /* Idempotent schedule buckets retry on a later tick. */ }
+  try { await enqueueFactionWeeklyBoundaryRun(env, scheduledTime) } catch { /* The unique Sunday boundary is retried on a later five-minute tick. */ }
   try { await enqueueScheduledHalloweenSnapshots(env, scheduledTime) } catch { /* Retry the next event sweep. */ }
 }
 
@@ -4396,6 +4471,90 @@ export default {
       const now = new Date().toISOString()
       await db.prepare("INSERT INTO company_sharing_recipients (owner_player_id, recipient_player_id, share_financial_data, share_employee_data, share_trend_data, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(owner_player_id, recipient_player_id) DO UPDATE SET share_financial_data = excluded.share_financial_data, share_employee_data = excluded.share_employee_data, share_trend_data = excluded.share_trend_data, updated_at = excluded.updated_at").bind(session.player_id, recipientId, Number(permissions.shareFinancialData), Number(permissions.shareEmployeeData), Number(permissions.shareTrendData), now).run()
       return jsonResponse({ recipient: { playerId: recipientId, ...permissions }, updatedAt: now }, 200, origin)
+    }
+    if (url.pathname === "/api/faction/weekly-rankings" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) {
+        return jsonResponse({ error: "Faction weekly rankings are available only to current Naughty Souls members." }, 403, origin)
+      }
+      const db = requireDb(env)
+      try {
+        const nowMs = Date.now()
+        const week = utcSundayWindow(nowMs)
+        const requestedMetric = (url.searchParams.get("metric") || "xantaken").trim()
+        const allowedRankingMetrics = [...WEEKLY_METRIC_NAMES, "gymEnergy"] as readonly string[]
+        const selectedMetric = allowedRankingMetrics.includes(requestedMetric)
+          ? requestedMetric as WeeklyRankingMetric
+          : "xantaken"
+        const [membersRows, boundary, statRows, gymRows] = await Promise.all([
+          db.prepare(
+            "SELECT user_id AS userId, member_name AS name, position, level, estimated_joined_at AS estimatedJoinedAt, first_seen_at AS firstSeenAt, left_observed_at AS leftObservedAt FROM faction_membership_intervals WHERE faction_id = ? AND first_seen_at < ? AND (left_observed_at IS NULL OR left_observed_at > ?) ORDER BY member_name COLLATE NOCASE, user_id"
+          ).bind(NAUGHTY_SOULS_FACTION_ID, week.endAt, week.startAt).all<WeeklyMembership>(),
+          db.prepare(
+            "SELECT b.stats_run_id AS statsRunId, b.gym_energy_run_id AS gymEnergyRunId, sr.status AS statsStatus, gr.status AS gymEnergyStatus, sr.completed_at AS statsCompletedAt, gr.completed_at AS gymEnergyCompletedAt, (SELECT MIN(s.captured_at) FROM faction_member_stat_snapshots s WHERE s.run_id = b.stats_run_id) AS statsCapturedAt, (SELECT MIN(g.captured_at) FROM faction_gym_energy_snapshots g WHERE g.run_id = b.gym_energy_run_id) AS gymEnergyCapturedAt FROM faction_weekly_boundary_runs b LEFT JOIN faction_performance_collection_runs sr ON sr.run_id = b.stats_run_id LEFT JOIN faction_performance_collection_runs gr ON gr.run_id = b.gym_energy_run_id WHERE b.faction_id = ? AND b.boundary_at = ?"
+          ).bind(NAUGHTY_SOULS_FACTION_ID, week.startAt).first<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT snapshot_id AS snapshotId, run_id AS runId, user_id AS userId, captured_at AS capturedAt, scheduled_at AS scheduledAt, collection_status AS collectionStatus, xantaken, lsdtaken, drugsused, overdosed, alcoholused, boostersused, energydrinkused, refills, statenhancersused, networth, cantaken, exttaken, kettaken, opitaken, shrtaken, spetaken, pcptaken, victaken FROM faction_member_stat_snapshots WHERE faction_id = ? AND captured_at >= ? AND captured_at <= ? ORDER BY user_id, captured_at, snapshot_id"
+          ).bind(NAUGHTY_SOULS_FACTION_ID, week.startAt, week.generatedAt).all<WeeklySnapshot>(),
+          db.prepare(
+            "SELECT snapshot_id AS snapshotId, run_id AS runId, user_id AS userId, captured_at AS capturedAt, gym_energy_total AS gymEnergyTotal, collection_status AS collectionStatus FROM faction_gym_energy_snapshots WHERE faction_id = ? AND captured_at >= ? AND captured_at <= ? ORDER BY user_id, captured_at, snapshot_id"
+          ).bind(NAUGHTY_SOULS_FACTION_ID, week.startAt, week.generatedAt).all<WeeklySnapshot>(),
+        ])
+        const statSnapshots = statRows.results ?? []
+        const gymSnapshots = gymRows.results ?? []
+        const calculated = (membersRows.results ?? []).map((member) => calculateWeeklyMemberResult({
+          member,
+          statSnapshots,
+          gymSnapshots,
+          weekStart: week.startAt,
+          weekEnd: week.endAt,
+          now: week.generatedAt,
+          statsBoundaryRunId: boundary?.statsRunId == null ? null : String(boundary.statsRunId),
+          gymBoundaryRunId: boundary?.gymEnergyRunId == null ? null : String(boundary.gymEnergyRunId),
+        }))
+        const members = rankWeeklyMembers(calculated, selectedMetric)
+        const statSummary = Object.fromEntries(WEEKLY_METRIC_NAMES.map((metric) => {
+          const known = calculated.map((member) => member.metrics[metric]).filter((value): value is number => value !== null)
+          return [metric, { total: known.reduce((sum, value) => sum + value, 0), knownMembers: known.length }]
+        }))
+        const knownGymEnergy = calculated.map((member) => member.gymEnergy).filter((value): value is number => value !== null)
+        const summary = {
+          ...statSummary,
+          gymEnergy: { total: knownGymEnergy.reduce((sum, value) => sum + value, 0), knownMembers: knownGymEnergy.length },
+        }
+        return jsonResponse({
+          factionId: NAUGHTY_SOULS_FACTION_ID,
+          generatedAt: week.generatedAt,
+          week,
+          selectedMetric,
+          boundary: boundary ? (() => {
+            const statsCapturedAt = boundary.statsCapturedAt == null ? null : String(boundary.statsCapturedAt)
+            const gymEnergyCapturedAt = boundary.gymEnergyCapturedAt == null ? null : String(boundary.gymEnergyCapturedAt)
+            const statsTimingDeviationSeconds = statsCapturedAt ? Math.round((Date.parse(statsCapturedAt) - Date.parse(week.startAt)) / 1000) : null
+            const gymEnergyTimingDeviationSeconds = gymEnergyCapturedAt ? Math.round((Date.parse(gymEnergyCapturedAt) - Date.parse(week.startAt)) / 1000) : null
+            return {
+              scheduledAt: week.startAt,
+              statsStatus: boundary.statsStatus ?? "queued",
+              gymEnergyStatus: boundary.gymEnergyStatus ?? "queued",
+              statsCompletedAt: boundary.statsCompletedAt ?? null,
+              gymEnergyCompletedAt: boundary.gymEnergyCompletedAt ?? null,
+              statsCapturedAt,
+              gymEnergyCapturedAt,
+              statsTimingDeviationSeconds,
+              gymEnergyTimingDeviationSeconds,
+              statsLate: statsTimingDeviationSeconds === null ? null : statsTimingDeviationSeconds > 300,
+              gymEnergyLate: gymEnergyTimingDeviationSeconds === null ? null : gymEnergyTimingDeviationSeconds > 300,
+            }
+          })() : { scheduledAt: week.startAt, statsStatus: "not_scheduled", gymEnergyStatus: "not_scheduled", statsCompletedAt: null, gymEnergyCompletedAt: null, statsCapturedAt: null, gymEnergyCapturedAt: null, statsTimingDeviationSeconds: null, gymEnergyTimingDeviationSeconds: null, statsLate: null, gymEnergyLate: null },
+          summary,
+          completeMembers: calculated.filter((member) => member.status === "complete").length,
+          totalMembers: calculated.length,
+          members,
+        }, 200, origin, { "cache-control": "private, max-age=30" })
+      } catch {
+        return jsonResponse({ error: "Weekly ranking storage is not initialized or is temporarily unavailable. Apply the latest faction-performance migrations and verify the weekly boundary collector." }, 503, origin)
+      }
     }
     if (url.pathname === "/api/faction/performance" && request.method === "GET") {
       const session = await authenticate(request, env)

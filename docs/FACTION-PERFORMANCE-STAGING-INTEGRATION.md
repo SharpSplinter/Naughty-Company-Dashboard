@@ -1,6 +1,6 @@
 # Faction performance staging integration
 
-This is the stateful acceptance test for the Phase 1 faction performance collector. It exercises the actual Worker queue handler and Cloudflare D1 writes against the non-production database, while all Torn API responses come from a deterministic fixture Worker.
+This is the stateful acceptance test for the faction performance collector and active-week weekly rankings. It exercises the actual Worker queue handler, Cloudflare D1 writes and authenticated read APIs against the non-production database, while all Torn API responses come from a deterministic fixture Worker.
 
 ## Resources used
 
@@ -41,12 +41,13 @@ The repository secret `CLOUDFLARE_API_TOKEN` must be authorized for D1 writes, W
 
 The driver `scripts/run-faction-performance-staging-integration.mjs` verifies:
 
-- Migration 0019 and all seven collection tables are present.
+- Migrations 0019 and 0020 and all collection/weekly-boundary tables are present.
 - Roster collection creates six synthetic membership intervals and marks a seeded departed interval as left without deleting it.
 - Public personalstats collection processes six members over the five-member queue page boundary and persists all 18 counters.
 - Gym-energy collection persists all six synthetic contributors.
 - All three successful collection types advance `last_success_at`.
 - The authenticated faction performance API returns the completed roster with joined stats and gym-energy samples.
+- The authenticated weekly-rankings API uses synthetic Sunday-boundary baseline runs and later samples to verify separate Xanax/LSD deltas, negative networth movement, starting/current networth values, gym-energy delta/ranking, actual capture timestamps and selected-metric rank ordering.
 - A permanent per-member Torn API error creates a failed sample with NULL metrics and does not advance `last_success_at`.
 - A synthetic Torn 429 is retried by Cloudflare Queues, reaches the dedicated DLQ, and records a terminal failed run without advancing `last_success_at`.
 

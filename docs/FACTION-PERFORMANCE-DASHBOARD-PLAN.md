@@ -39,7 +39,7 @@ Inspected the current PR branch and repository configuration.
 
 The current portal already provides the shared workspace foundation, faction authentication, Company operations, Halloween collection/archive/live intelligence, a faction director/member workspace, account credential controls and administrator-role management.
 
-The current PR's migrations run through 0018. The repository does **not yet** contain the proposed weekly_rankings, member_stat_snapshots, gym_energy_snapshots or member_live_status data model, nor the requested weekly rankings/weekly comparison/live activity collection subsystem. Treat this handoff as the scope for that major next tranche, not as a claim that those features already exist.
+The PR branch includes migrations through 0020. Migration 0019 adds the public faction-performance collection runs, membership intervals, roster snapshots, 18-counter personalstats snapshots and gym-energy snapshots. Migration 0020 adds an idempotent Sunday-boundary run registry for the weekly baseline captures. The branch now includes the Sunday UTC boundary scheduler, a weekly delta/ranking API, and a default Weekly Rankings workspace tab. It does **not yet** persist immutable completed-week result rows or provide historical week comparisons, Live Member Status, Faction Activity or voluntary private member-key connections. Those remain later phases.
 
 The current application is defined in package.json and wrangler.toml. Preserve the existing React/Vite + Worker + D1 + Queue architecture unless an evidenced technical limitation requires a proposal and discussion first.
 
@@ -693,19 +693,34 @@ Still to implement or validate:
 - [ ] Run a controlled live collection against the configured Worker secret after deployment, then confirm row counts and captured timestamps. No deployment or production migration has been performed in this work session.
 
 ### Phase 2 — Weekly calculation engine
-- Sunday 00:00 UTC boundary jobs.
-- Baseline and ending snapshots.
-- Weekly delta calculations and data-completeness metadata.
-- Partial weeks and membership changes.
-- Anomaly handling for decreased counters and missing snapshots.
-- Historical immutable weekly rankings.
+
+**Active-week calculation slice implemented on the PR branch; immutable closed-week persistence remains outstanding.**
+
+- [x] Add a unique Sunday 00:00 UTC boundary registry and idempotently enqueue dedicated personalstats and gym-energy baseline runs through the existing serialized collection queue.
+- [x] Preserve scheduled boundary time separately from each actual API response capture time; expose first-capture timestamps and timing deviation, and label captures more than five minutes late.
+- [x] Calculate weekly deltas from the dedicated baseline run and the latest later in-week samples; keep all 18 counters independent, including separate Xanax and LSD.
+- [x] Rank faction gym-energy contribution independently from the personalstats counters.
+- [x] Keep missing baseline/ending fields unknown and exclude unknown values from ranks and faction totals.
+- [x] Flag decreased lifetime counters as anomalies instead of presenting negative usage.
+- [x] Mark midweek joiners as partial-week participants using their first observed sample as baseline.
+- [x] Include membership intervals overlapping the reporting week so a midweek leaver remains visible, using only samples captured before their observed departure.
+- [ ] Persist finalized, immutable result rows when a reporting week closes; this slice currently calculates the active week from source snapshots on request.
+- [ ] Add a reviewed late/missed-boundary recovery workflow and admin diagnostics for incomplete or exhausted boundary runs.
 
 ### Phase 3 — Weekly Rankings UI
-- Default weekly tab.
-- Summary cards.
-- Independent metric sorting/ranking.
-- Search, filters and member profiles.
-- Lifetime vs weekly values and freshness.
+
+**Initial active-week rankings view implemented on the PR branch.**
+
+- [x] Make Weekly Rankings the default Faction workspace tab while retaining the previous Company directory as a separate tab.
+- [x] Show the fixed Sunday 00:00 UTC reporting period, remaining time, boundary run state and actual first-capture timing.
+- [x] Add faction summary cards for member count, complete public-stat coverage, Xanax, LSD, alcohol, boosters, energy drinks and gym energy.
+- [x] Add independent metric ranking selection across all 18 public counters and gym-energy contribution.
+- [x] Display starting and latest public networth balances beside the weekly networth change.
+- [x] Show each member's actual baseline/ending capture timestamps and name any decreased counters.
+- [x] Add member search and a weekly leaderboard with rank, member, position, weekly deltas and completeness/anomaly/partial-week labels.
+- [x] Keep unavailable values as an em dash rather than zero, and keep Xanax/LSD separately ranked.
+- [ ] Add clickable member profiles, lifetime-counter context and per-metric freshness detail.
+- [ ] Add sortable columns, advanced filters and historical week navigation/comparison.
 
 ### Phase 4 — Live Member Status and faction activity
 - Faction member online/idle/offline, last action and status.

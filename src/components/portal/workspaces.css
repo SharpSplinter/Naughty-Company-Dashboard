@@ -274,3 +274,37 @@
 .halloween-personal-window-control button:disabled{opacity:.55;cursor:not-allowed}
 .halloween-slot-hint{color:#8fa79b;font-size:8px;line-height:1.6}
 @media(max-width:760px){.halloween-personal-window{grid-template-columns:1fr;gap:18px;padding:18px}.halloween-personal-window-control{max-width:340px}}
+
+
+.faction-workspace-tabs{max-width:1140px;margin:18px auto 0;display:flex;gap:8px;border-bottom:1px solid #ffffff1b}
+.faction-workspace-tabs button{padding:11px 15px;border:0;border-bottom:2px solid transparent;background:transparent;color:#8da1ad;font-size:10px;font-weight:700;letter-spacing:.04em}
+.faction-workspace-tabs button.active{border-bottom-color:#77d9c0;color:#bdebdc}
+.faction-weekly-toolbar{max-width:1140px;margin:18px auto 12px;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 17px;border:1px solid #35534e;border-radius:10px;background:linear-gradient(115deg,#152b29,#121f29)}
+.faction-weekly-toolbar>div:first-child small,.faction-weekly-toolbar>div:first-child strong,.faction-weekly-toolbar>div:first-child span{display:block}
+.faction-weekly-toolbar>div:first-child small{font-size:8px;color:#85c4b3;font-weight:700;letter-spacing:.15em}
+.faction-weekly-toolbar>div:first-child strong{font:600 12px 'Space Grotesk',sans-serif;color:#e1f0e8;margin-top:6px}
+.faction-weekly-toolbar>div:first-child span{font-size:9px;color:#a2b8ad;margin-top:5px}
+.faction-weekly-controls{display:flex;align-items:end;gap:9px}
+.faction-weekly-controls label{display:flex;flex-direction:column;gap:6px;color:#96ada5;font-size:8px;font-weight:700;letter-spacing:.1em;text-transform:uppercase}
+.faction-weekly-controls select{min-width:180px;border:1px solid #45645a;border-radius:7px;background:#0d1a1c;color:#e0eee7;padding:9px 10px;font-size:10px}
+.faction-weekly-controls button{border:1px solid #4b8b75;border-radius:7px;background:#1e5948;color:#dffff0;padding:10px 12px;font-size:9px;font-weight:700}
+.faction-weekly-controls button:disabled{opacity:.55;cursor:not-allowed}
+.faction-weekly-boundary-status{max-width:1140px;margin:0 auto 12px;display:flex;flex-wrap:wrap;gap:9px 18px;padding:10px 13px;border:1px solid #34434a;border-radius:8px;background:#101c24;color:#8fa6ac;font-size:8px}
+.faction-weekly-boundary-status strong{color:#c7d9d2;font-weight:600;text-transform:capitalize}
+.faction-weekly-summary{max-width:1140px;margin:0 auto;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.faction-weekly-summary article{padding:14px 15px;border:1px solid #30454b;border-radius:9px;background:linear-gradient(145deg,#172a30,#111d26)}
+.faction-weekly-summary small,.faction-weekly-summary strong,.faction-weekly-summary span{display:block}
+.faction-weekly-summary small{font-size:7px;letter-spacing:.14em;color:#83a39f;font-weight:700}
+.faction-weekly-summary strong{font:600 19px 'Space Grotesk',sans-serif;color:#e4f2e9;margin:8px 0 5px}
+.faction-weekly-summary span{font-size:8px;color:#8ea4a8}
+.faction-weekly-ranking-panel{margin-top:14px}
+.faction-weekly-ranking-panel .historical-leaderboard table{min-width:1050px}
+.faction-weekly-ranking-panel td strong,.faction-weekly-ranking-panel td small{display:block}
+.faction-weekly-ranking-panel td strong{font-size:9px;color:#dcebe3}
+.faction-weekly-ranking-panel td small{font-size:7px;color:#82999e;margin-top:4px;text-transform:capitalize}
+.faction-weekly-ranking-panel .coverage-pill{max-width:130px;white-space:normal;line-height:1.35}
+@media(max-width:760px){.faction-weekly-toolbar{align-items:stretch;flex-direction:column}.faction-weekly-controls{align-items:stretch;flex-wrap:wrap}.faction-weekly-controls label{flex:1}.faction-weekly-controls select{width:100%;min-width:0}.faction-weekly-controls button{align-self:flex-start}.faction-weekly-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.faction-weekly-ranking-panel .faction-directory-heading{align-items:stretch;flex-direction:column}}
+@media(max-width:520px){.faction-weekly-summary{grid-template-columns:1fr}.faction-workspace-tabs button{flex:1;padding:10px 7px;font-size:9px}}
+
+.faction-weekly-anomaly{color:#ffaaa0!important;font-weight:700}
+.faction-weekly-ranking-panel .historical-leaderboard table{min-width:1320px}
