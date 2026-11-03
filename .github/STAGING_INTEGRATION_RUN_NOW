@@ -13,3 +13,4 @@ Run 13: validate the isolated /faction/stats snapshot collector, authenticated t
 Run 14: rerun corrected faction totals worker and UI integration after parser/queue source fixes.
 Run 15: validate corrected Faction totals component declaration and full staging checks.
 Run 16: rerun full staging acceptance after harness syntax correction.
+Run 17: rerun staging acceptance with isolated, non-overlapping historical membership fixtures.

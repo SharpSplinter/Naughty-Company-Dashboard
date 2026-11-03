@@ -333,6 +333,17 @@ async function seedWeeklyFixtures() {
 }
 
 async function seedClosedWeekFixtures(queueId) {
+  // Retire only this harness's prior synthetic History Member intervals at
+  // their original first-seen time. Their immutable reports remain intact,
+  // while failed/retried runs cannot contaminate a later fixture cohort.
+  await d1Query(
+    "UPDATE faction_membership_intervals SET last_seen_at = first_seen_at, left_observed_at = first_seen_at WHERE faction_id = ? AND user_id LIKE '993%' AND member_name LIKE 'History Member %' AND first_seen_at IS NOT NULL",
+    [FACTION_ID],
+  )
+  const memberIntervals = await d1Query(
+    "SELECT first_seen_at, left_observed_at FROM faction_membership_intervals WHERE faction_id = ?",
+    [FACTION_ID],
+  )
   const currentWeekMs = Date.parse(sundayStartIso())
   const floorAt = new Date(currentWeekMs - 25 * 7 * 24 * 60 * 60 * 1000).toISOString()
   const [usedBoundaries, usedReports] = await Promise.all([
@@ -350,7 +361,13 @@ async function seedClosedWeekFixtures(queueId) {
     const a = new Date(candidateA).toISOString()
     const b = new Date(candidateB).toISOString()
     const c = new Date(candidateC).toISOString()
-    if (![a, b, c].some((value) => occupiedBoundaries.has(value)) &&
+    const candidateHasMembershipOverlap = memberIntervals.some((row) => {
+      const firstSeenMs = Date.parse(row.first_seen_at)
+      const leftAtMs = row.left_observed_at ? Date.parse(row.left_observed_at) : Number.POSITIVE_INFINITY
+      return Number.isFinite(firstSeenMs) && firstSeenMs < candidateC && leftAtMs > candidateA
+    })
+    if (!candidateHasMembershipOverlap &&
+        ![a, b, c].some((value) => occupiedBoundaries.has(value)) &&
         !occupiedReports.has(a) && !occupiedReports.has(b)) {
       weekAStartMs = candidateA
       weekBStartMs = candidateB
