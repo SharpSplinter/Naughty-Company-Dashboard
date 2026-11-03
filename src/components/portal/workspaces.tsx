@@ -1864,20 +1864,20 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
       {accountNotice && <p className="settings-feedback success" role="status">{accountNotice}</p>}
       <section className="settings-grid">
         <article className="settings-card settings-card-wide">
-          <div className="settings-card-icon">⌘</div><small>IDENTITY & MEMBERSHIP</small><h2>Faction login key</h2>
-          <p>Your own Limited Access key verifies your Torn identity and Naughty Souls membership. Replacing it requires a valid key belonging to this same Torn player.</p>
+          <div className="settings-card-icon">⌘</div><small>IDENTITY & MEMBERSHIP</small><h2>Portal API key</h2>
+          <p>Your single Torn key verifies your identity and Naughty Souls membership, and is reused across company data, private live status and optional Halloween collection. Use the recommended Custom Access key or a Full Access key. Replacements must belong to this same Torn player.</p>
           <span className={props.loginKeySaved ? "settings-connection good" : "settings-connection"}><i /> {props.loginKeySaved ? "Saved securely" : "Not saved"}</span>
           <form className="settings-inline-form" onSubmit={replaceLoginKey}>
-            <label htmlFor="settings-login-key">Replace faction login key</label>
-            <input id="settings-login-key" type="password" autoComplete="off" spellCheck={false} value={loginKey} onChange={event => setLoginKey(event.target.value)} placeholder="Paste your own Limited Access key" disabled={loginBusy} />
-            <button type="submit" disabled={loginBusy || !loginKey.trim()}>{loginBusy ? "Validating…" : "Validate & replace key"}</button>
+            <label htmlFor="settings-login-key">Replace portal API key</label>
+            <input id="settings-login-key" type="password" autoComplete="off" spellCheck={false} value={loginKey} onChange={event => setLoginKey(event.target.value)} placeholder="Paste your own Custom Access or Full Access key" disabled={loginBusy} />
+            <button type="submit" disabled={loginBusy || !loginKey.trim()}>{loginBusy ? "Validating…" : "Validate & replace portal key"}</button>
             <span className="settings-form-hint">The key is validated against your Torn player ID and current faction membership before being saved.</span>
           </form>
         </article>
         <article className="settings-card settings-card-wide">
           <div className="settings-card-icon">▦</div><small>COMPANY WORKSPACE</small><h2>Company API connections</h2>
           <p>Your saved portal API key is also used for your own director/company connection when it has the required Company selections. You do not need to submit a second key.</p>
-          <div className="settings-connection good"><i /> {connectedCompanies.length} saved company key{connectedCompanies.length === 1 ? "" : "s"}</div>
+          <div className="settings-connection good"><i /> {connectedCompanies.length} company connection{connectedCompanies.length === 1 ? "" : "s"} using portal key</div>
           <form className="settings-inline-form" onSubmit={addCompanyKey}>
             <button type="submit" disabled={companyBusy}>{companyBusy ? "Connecting…" : "Connect my company using portal key"}</button>
           </form>
@@ -1921,7 +1921,7 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
           </div>}
         </article>
         <article className="settings-card">
-          <div className="settings-card-icon">♧</div><small>HALLOWEEN ARCHIVE</small><h2>Historical collection key</h2>
+          <div className="settings-card-icon">♧</div><small>HALLOWEEN ARCHIVE</small><h2>Halloween historical collection</h2>
           <p>Historical collection reuses your saved portal key, if it includes User → Log access and you opt in.</p>
           <span className="settings-connection"><i /> Managed in Halloween workspace</span>
           <button type="button" onClick={() => props.onNavigate("/halloween")}>Open Halloween settings →</button>
