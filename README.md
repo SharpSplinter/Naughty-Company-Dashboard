@@ -7,7 +7,7 @@ A React + Vite multi-workspace portal for Naughty Souls faction members in Torn.
 - `/` — member portal
 - `/company` — existing company operations dashboard
 - `/halloween` — current-year and historical Halloween intelligence
-- `/faction` — active member roster, cached director directory, company income history, and weekly star distribution
+- `/faction` — weekly rankings and history, faction totals, live member status, recent faction activity, director directory, company income history, and weekly star distribution
 - `/settings` — personal API connections and account settings
 - `/admin` — administrator workspace
 
@@ -15,7 +15,7 @@ All workspaces use the same authenticated member session. Sign-in is based on a 
 
 ## Faction performance roadmap
 
-The complete next-phase product specification, API contract notes, data model, implementation phases and acceptance tests are maintained in [docs/FACTION-PERFORMANCE-DASHBOARD-PLAN.md](docs/FACTION-PERFORMANCE-DASHBOARD-PLAN.md). This roadmap adds weekly UTC rankings, public-stat and gym-energy collection, live faction status/revive visibility, member-consented owner-only bars/cooldowns, historical comparisons and inactivity monitoring without replacing the existing portal workspaces.
+The full product specification, verified API contract, data model, implementation phases and acceptance tests are maintained in [docs/FACTION-PERFORMANCE-DASHBOARD-PLAN.md](docs/FACTION-PERFORMANCE-DASHBOARD-PLAN.md). The branch now implements scheduled public roster/stat/gym-energy collection, Sunday UTC rankings, immutable completed-week reports and comparisons, faction-wide totals, public live member status, a bounded activity feed, and audited administrator-only Sunday-boundary recovery. Voluntary owner-key bars/cooldowns and detailed networth, longer activity trends, and richer member drilldowns remain planned work.
 
 ## Local development
 
@@ -52,6 +52,6 @@ Never submit another player's key, Torn password, session token, or other authen
 
 ## Backend and deployment
 
-The API Worker remains `naughty-company-api` at `https://naughty-company-api.kboone801.workers.dev`, using the `naughty-company-dashboard` D1 database. The portal rebuild adds ordered migrations through `migrations/auth/0018_membership_verification_state.sql`; review and back up the production D1 database, then apply all required migrations in order before deploying Worker code that depends on them. Migration `0016` adds the per-member scheduled membership-check timestamp used by the five-minute maintenance sweep. Migration `0017` adds each member's event-year start slot and snapshots personal collection-job boundaries. Migration `0018` distinguishes checking, unavailable, and cleanup-pending membership states so confirmed departures cannot fall back into outage grace. The migrations are not applied by this PR.
+The API Worker remains `naughty-company-api` at `https://naughty-company-api.kboone801.workers.dev`, using the `naughty-company-dashboard` D1 database. The portal branch contains ordered migrations through `migrations/auth/0022_faction_stats_snapshots.sql`. Migrations `0012`–`0018` cover administrator registry, membership verification and Halloween consent/collection; `0019` adds public faction-performance collection and membership history; `0020` adds idempotent Sunday-boundary runs; `0021` adds immutable completed-week reports; and `0022` adds faction-wide stats snapshots. A separate `naughty-company-api-staging` D1 database and fixture-backed integration Workers are used for stateful acceptance. Staging integration Run 20 passed the D1/Queue pipeline, immutable-report, history/API, boundary-recovery/audit, retry and DLQ assertions. No production D1 migration or production Worker/Pages cutover was performed as part of that validation.
 
 Production Worker deployment is managed separately from Pages. Keep automatic production deployments paused and Pages preview deployments disabled until the migration review, non-admin/admin end-to-end acceptance, and explicit cutover approval are complete. The previous `naughty-company-dashboard.pages.dev` site remains the rollback target.
