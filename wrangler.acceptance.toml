@@ -17,10 +17,8 @@ database_name = "naughtyfamily-acceptance-staging"
 database_id = "02cca699-1232-495f-8a0a-de525058b92a"
 migrations_dir = "migrations/auth"
 
-[triggers]
-# Match production collector cadence while keeping every resource isolated to staging.
-crons = ["10 18 * * *", "10 0 * * *", "*/5 * * * *"]
-
+# Cron triggers are omitted on the Free account because its five-trigger quota
+# is already used. User/admin-triggered background jobs still use this queue.
 [[queues.producers]]
 binding = "GLOBAL_RANKINGS_QUEUE"
 queue = "ncd-naughtyfamily-staging-collection"
