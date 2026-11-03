@@ -164,7 +164,7 @@ async function waitForFactionStatsRun(runId) {
   throw new Error("Faction stats collection did not complete within three minutes.")
 }
 
-async function waitForRun(runId, label) {async function waitForRun(runId, label) {
+async function waitForRun(runId, label) {
   const deadline = Date.now() + 8 * 60 * 1000
   while (Date.now() < deadline) {
     const rows = await d1Query(
