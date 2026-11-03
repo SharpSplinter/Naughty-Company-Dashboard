@@ -1098,10 +1098,11 @@ async function persistCompanyConnection(
   apiKey: string,
   validated: { companyId: number; profile: unknown; employees: unknown; stock: unknown; sourceTimestamp?: number | null },
   captureHistory = true,
+  saveLegacyKey = true,
 ): Promise<void> {
-  // Store the same credential in both legacy and per-company slots, with the
-  // per-company record updated last so it becomes the active primary key.
-  await saveCompanyKey(env, playerId, apiKey)
+  // The member's primary portal key may be retained in the legacy slot.
+  // Secondary company credentials are stored only against their company ID.
+  if (saveLegacyKey) await saveCompanyKey(env, playerId, apiKey)
   await saveCompanyApiKey(env, playerId, validated.companyId, apiKey, validated.profile)
   const profile = validated.profile
   const root = isRecord(profile) && isRecord(profile.company) ? profile.company : isRecord(profile) && isRecord(profile.profile) ? profile.profile : {}
@@ -5232,13 +5233,27 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       try {
-        const apiKey = await savedKey(env, session.player_id)
-        if (!apiKey) return jsonResponse({ error: "Your saved portal API key is missing. Sign in again with your Torn key." }, 409, origin)
+        const body: unknown = await request.json().catch(() => null)
+        const submittedKey = isRecord(body) && typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+        const portalKey = await savedKey(env, session.player_id)
+        const isSecondary = Boolean(submittedKey && submittedKey !== portalKey)
+        const apiKey = submittedKey || portalKey || ""
+        if (!apiKey || apiKey.length > 256 || /\\s/.test(apiKey)) {
+          return jsonResponse({ error: submittedKey ? "Enter a valid company API key." : "Your saved portal API key is missing. Sign in again with your Torn key." }, 409, origin)
+        }
+        if (isSecondary) await validatePrivateLiveKeyOwner(env, apiKey, session.player_id)
         const validated = await validateCompanyKey(apiKey)
-        await persistCompanyConnection(env, session.player_id, apiKey, validated, false)
+        await persistCompanyConnection(env, session.player_id, apiKey, validated, false, !isSecondary)
         const root = isRecord(validated.profile) && isRecord(validated.profile.company) ? validated.profile.company : isRecord(validated.profile) && isRecord(validated.profile.profile) ? validated.profile.profile : {}
         const type = isRecord(root.type) ? root.type : {}
-        return jsonResponse({ saved: true, companyId: validated.companyId, companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}`, companyType: typeof type.name === "string" ? type.name : null }, 200, origin)
+        return jsonResponse({
+          saved: true,
+          secondary: isSecondary,
+          companyId: validated.companyId,
+          companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}`,
+          companyType: typeof type.name === "string" ? type.name : null,
+          lastFour: apiKey.slice(-4),
+        }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
     if (url.pathname === "/api/auth/company-key" && request.method === "DELETE") {
