@@ -20,6 +20,7 @@ import {
   type WeeklySnapshot,
 } from "../lib/faction-performance/weekly"
 import { PERSONAL_STATS_HISTORICAL_NAMES } from "../lib/torn/personalstats"
+import { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } from "../lib/faction-performance/private-live"
 import { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } from "./snapshot-provenance"
 import { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isSnapshotStale, normalizeWebhookUrl, normalizeAlertThreshold, normalizeCooldownHours } from "../lib/automation/rules"
 
@@ -321,6 +322,96 @@ async function saveKey(env: WorkerEnv, playerId: string, apiKey: string): Promis
 async function savedKey(env: WorkerEnv, playerId: string): Promise<string | null> {
   const row = await requireDb(env).prepare("SELECT ciphertext, iv FROM api_keys WHERE player_id = ?").bind(playerId).first<{ ciphertext: string; iv: string }>()
   return row ? decryptKey(env, row.ciphertext, row.iv) : null
+}
+
+async function fetchPrivateLiveSelection(apiKey: string, selection: "bars" | "cooldowns" | "networth"): Promise<unknown> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10000)
+  try {
+    const response = await fetch("https://api.torn.com/v2/user/" + selection, {
+      headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+      signal: controller.signal,
+    })
+    const payload: unknown = await response.json().catch(() => null)
+    const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+    if (!response.ok || error) {
+      const code = typeof error?.code === "number" ? error.code : undefined
+      const status = code === 2 ? 401 : code === 5 ? 429 : code === 7 ? 403 : code === 16 ? 403 : code === 18 ? 401 : response.status >= 500 ? 502 : 502
+      const message = code === 2 ? "The private live Torn API key is invalid."
+        : code === 5 ? "Torn rate limit reached. Wait before refreshing your private live data."
+        : code === 7 || code === 16 ? "This key does not have permission for the requested private Torn selection."
+        : code === 18 ? "This Torn API key has been paused by its owner."
+        : code === 10 ? "The Torn API key owner is in federal jail and the key cannot be used."
+        : code === 13 ? "Torn has temporarily disabled this key because its owner has been inactive."
+        : code === 9 ? "Torn's API is temporarily unavailable. Try again shortly."
+        : "Torn could not provide the requested private live data."
+      throw new TornApiClientError(message, { status, code })
+    }
+    return payload
+  } catch (error) {
+    if (error instanceof TornApiClientError) throw error
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new TornApiClientError("Torn's private live API request timed out.", { status: 504 })
+    }
+    throw new TornApiClientError("Could not reach Torn to refresh private live data.", { status: 502 })
+  } finally { clearTimeout(timeout) }
+}
+
+async function validatePrivateLiveKeyOwner(apiKey: string, playerId: string): Promise<void> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10000)
+  try {
+    const response = await fetch("https://api.torn.com/v2/key/info", {
+      headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+      signal: controller.signal,
+    })
+    const payload: unknown = await response.json().catch(() => null)
+    const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+    if (!response.ok || error) {
+      const code = typeof error?.code === "number" ? error.code : undefined
+      const status = code === 2 ? 401 : code === 5 ? 429 : response.status >= 500 ? 502 : 400
+      throw new TornApiClientError(code === 5 ? "Torn rate limit reached while validating your private live key." : "Torn could not validate this private live API key.", { status, code })
+    }
+    const root = isRecord(payload) && isRecord(payload.info) ? payload.info : null
+    const owner = isRecord(root?.user) ? root.user.id : isRecord(payload) && isRecord(payload.user) ? payload.user.id : undefined
+    if (String(owner ?? "") !== playerId) {
+      throw new TornApiClientError("That key belongs to a different Torn player. Connect a key created on your own account.", { status: 403 })
+    }
+  } catch (error) {
+    if (error instanceof TornApiClientError) throw error
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new TornApiClientError("Torn's key validation request timed out.", { status: 504 })
+    }
+    throw new TornApiClientError("Could not reach Torn to validate your private live key.", { status: 502 })
+  } finally { clearTimeout(timeout) }
+}
+
+async function fetchPrivateLiveBase(apiKey: string): Promise<{ bars: ReturnType<typeof parsePrivateLiveBars>; cooldowns: ReturnType<typeof parsePrivateLiveCooldowns> }> {
+  const [barsPayload, cooldownsPayload] = await Promise.all([
+    fetchPrivateLiveSelection(apiKey, "bars"),
+    fetchPrivateLiveSelection(apiKey, "cooldowns"),
+  ])
+  return {
+    bars: parsePrivateLiveBars(barsPayload),
+    cooldowns: parsePrivateLiveCooldowns(cooldownsPayload),
+  }
+}
+
+function privateLiveSafeError(error: unknown): { status: number; message: string; code?: number } {
+  if (error instanceof TornApiClientError) return { status: error.status, message: error.message, code: error.code }
+  if (error instanceof Error && /Torn did not return|Torn returned/.test(error.message)) {
+    return { status: 502, message: error.message }
+  }
+  return { status: 502, message: "Private live collection failed. The previous successful snapshot has been retained." }
+}
+
+function privateLiveKeyMustBeRevoked(error: unknown): boolean {
+  return error instanceof TornApiClientError && [2, 7, 10, 13, 16, 18].includes(Number(error.code))
+}
+
+function safeStoredJson(value: unknown): unknown {
+  if (typeof value !== "string") return null
+  try { return JSON.parse(value) as unknown } catch { return null }
 }
 
 type FactionPerformanceRunRow = {
