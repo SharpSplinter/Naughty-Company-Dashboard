@@ -61,11 +61,11 @@ jobs:
         run: |
           set -euo pipefail
           grep -F 'name = "naughtyfamily-api-staging"' wrangler.acceptance.toml
-          grep -F 'database_name = "naughty-company-api-staging"' wrangler.acceptance.toml
-          grep -F 'database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"' wrangler.acceptance.toml
+          grep -F 'database_name = "naughtyfamily-acceptance-staging"' wrangler.acceptance.toml
+          grep -F 'database_id = "02cca699-1232-495f-8a0a-de525058b92a"' wrangler.acceptance.toml
           grep -F 'ALLOWED_ORIGIN = "https://naughtyfamily-staging.pages.dev"' wrangler.acceptance.toml
           ! grep -F 'bbbe128a-c5cc-46ec-b8ef-93860183e795' wrangler.acceptance.toml
-          ! grep -Eq '^\\[triggers\\]|^\\[\\[queues\\.(producers|consumers)\\]\\]' wrangler.acceptance.toml
+          ! grep -Eq '^\[triggers\]|^\[\[queues\.(producers|consumers)\]\]' wrangler.acceptance.toml
           grep -F 'database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"' wrangler.staging.toml
           echo "Confirmed: acceptance Worker and migration target use staging D1 only; no cron or Queue bindings are configured."
 
@@ -75,7 +75,7 @@ jobs:
           wranglerVersion: "4.156.2"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 6c03b978ed9a59adc3f61c715bdad45c
-          command: d1 migrations apply naughty-company-api-staging --remote --config wrangler.acceptance.toml
+          command: d1 migrations apply naughtyfamily-acceptance-staging --remote --config wrangler.acceptance.toml
 
       - name: Verify staging migration ledger
         uses: cloudflare/wrangler-action@v4
@@ -83,7 +83,7 @@ jobs:
           wranglerVersion: "4.156.2"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 6c03b978ed9a59adc3f61c715bdad45c
-          command: d1 migrations list naughty-company-api-staging --remote --config wrangler.acceptance.toml
+          command: d1 migrations list naughtyfamily-acceptance-staging --remote --config wrangler.acceptance.toml
 
       - name: Deploy isolated staging API Worker
         uses: cloudflare/wrangler-action@v4
