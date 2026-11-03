@@ -5172,7 +5172,7 @@ export default {
           logsCollected: Number(row.storedLogCount ?? 0),
           totalHits: complete ? Number(row.storedHitCount ?? 0) : null,
           lastCollectedAt: row.lastCollectedAt ?? null,
-          coverage: complete ? "complete" : statusText === "running" || statusText === "queued" ? "collecting" : statusText === "failed" ? "partial" : "not_collected",
+          coverage: complete ? "complete" : statusText === "running" || statusText === "queued" ? "collecting" : statusText === "failed" && Number(row.storedLogCount ?? 0) > 0 ? "partial" : "not_collected",
         }
       }).sort((a, b) => (b.totalHits ?? -1) - (a.totalHits ?? -1) || a.playerName.localeCompare(b.playerName))
       const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
@@ -5199,7 +5199,7 @@ export default {
       ])
       return jsonResponse({
         member,
-        collection: job ? { ...job, coverage: job.status === "complete" ? "complete" : job.status === "failed" ? "partial" : "collecting" } : { status: "not_collected", coverage: "not_collected" },
+        collection: job ? { ...job, coverage: job.status === "complete" ? "complete" : job.status === "failed" ? Number(job.logsCollected ?? 0) > 0 ? "partial" : "not_collected" : "collecting" } : { status: "not_collected", coverage: "not_collected" },
         dailyActivity: daily.results ?? [],
         logs: (logs.results ?? []).map((row) => {
           let parsed: unknown = null
