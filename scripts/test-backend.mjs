@@ -1893,7 +1893,7 @@ try {
     assert.match(workerSource, /weekly report references this Sunday boundary/i)
     assert.match(workerSource, /status = 'queued', next_index = 0/)
     assert.match(workerSource, /WHERE run_id = \? AND status = \? AND updated_at = \?/, "recovery must use an optimistic status/timestamp claim")
-    assert.match(workerSource, /faction\\.weekly_boundary\\.recovered/)
+    assert.match(workerSource, /faction\.weekly_boundary\.recovered/)
     assert.match(adminPanelSource, /weekly-boundaries/)
     assert.match(adminPanelSource, /!actionsArmed \|\| !boundary\.recoverable/,
       "recovery controls must stay disabled until admin actions are explicitly enabled")
