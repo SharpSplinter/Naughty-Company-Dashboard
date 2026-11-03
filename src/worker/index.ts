@@ -5302,7 +5302,7 @@ export default {
     if (url.pathname === "/api/auth/key" && request.method === "DELETE") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
-      await const previousPortalKey = await savedKey(env, session.player_id).catch(() => null)
+      const previousPortalKey = await savedKey(env, session.player_id).catch(() => null)
       await invalidateMemberKeyDependents(env, session.player_id, previousPortalKey)
       await requireDb(env).prepare("DELETE FROM api_keys WHERE player_id = ?").bind(session.player_id).run()
       return jsonResponse({ deleted: true, companyDataRetained: true, featureConnectionsReset: true }, 200, origin)
