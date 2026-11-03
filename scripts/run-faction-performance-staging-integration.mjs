@@ -78,6 +78,29 @@ async function publish(runId, queueId) {
   )
 }
 
+async function publishWeeklyFinalize(weekStartAt, queueId) {
+  await cloudflareRequest(
+    `/accounts/${ACCOUNT_ID}/queues/${queueId}/messages`,
+    {
+      method: "POST",
+      body: JSON.stringify({ body: { kind: "faction-weekly-finalize", weekStartAt }, content_type: "json" }),
+    },
+  )
+}
+
+async function waitForWeeklyReport(weekStartAt) {
+  const deadline = Date.now() + 3 * 60 * 1000
+  while (Date.now() < deadline) {
+    const rows = await d1Query(
+      "SELECT report_status FROM faction_weekly_reports WHERE faction_id = ? AND week_start_at = ?",
+      [FACTION_ID, weekStartAt],
+    )
+    if (rows.length === 1) return rows[0]
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+  }
+  throw new Error(`Weekly report finalization did not complete for ${weekStartAt}.`)
+}
+
 async function createRun(kind, queueId, targetUserIds = null) {
   const runId = randomUUID()
   const now = new Date().toISOString()
@@ -142,11 +165,11 @@ async function waitForFailedRun(runId, label) {
 
 async function assertMigrationReady() {
   const rows = await d1Query(
-    "SELECT name FROM d1_migrations WHERE name IN (?, ?)",
-    ["0019_faction_performance_collection.sql", "0020_faction_weekly_boundaries.sql"],
+    "SELECT name FROM d1_migrations WHERE name IN (?, ?, ?)",
+    ["0019_faction_performance_collection.sql", "0020_faction_weekly_boundaries.sql", "0021_faction_weekly_reports.sql"],
   )
-  if (rows.length !== 2) {
-    throw new Error("Staging D1 is missing faction collection or weekly boundary migrations 0019/0020. Run the staging migration workflow first.")
+  if (rows.length !== 3) {
+    throw new Error("Staging D1 is missing faction collection, weekly boundary or immutable weekly report migrations 0019/0021. Run the staging migration workflow first.")
   }
   const expected = [
     "faction_performance_collection_runs",
@@ -157,6 +180,8 @@ async function assertMigrationReady() {
     "faction_member_stat_snapshots",
     "faction_gym_energy_snapshots",
     "faction_weekly_boundary_runs",
+    "faction_weekly_reports",
+    "faction_weekly_member_results",
   ]
   const placeholders = expected.map(() => "?").join(", ")
   const tables = await d1Query(
@@ -166,6 +191,11 @@ async function assertMigrationReady() {
   const found = new Set(tables.map((row) => row.name))
   const missing = expected.filter((name) => !found.has(name))
   if (missing.length) throw new Error(`Staging D1 is missing tables: ${missing.join(", ")}`)
+  const immutableTriggers = await d1Query(
+    "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name IN (?, ?, ?, ?)",
+    ["faction_weekly_reports_no_update", "faction_weekly_reports_no_delete", "faction_weekly_member_results_no_update", "faction_weekly_member_results_no_delete"],
+  )
+  if (immutableTriggers.length !== 4) throw new Error("Staging D1 is missing the immutable weekly report protection triggers.")
   const foreignKeys = await d1Query("PRAGMA foreign_key_list(faction_membership_intervals)")
   if (foreignKeys.some((row) => row.table === "players")) {
     throw new Error("Membership history must not have a player foreign key or departure cascade.")
@@ -262,7 +292,171 @@ async function seedWeeklyFixtures() {
   return { weekStartAt, statsBaselineAt, statsEndingAt }
 }
 
-async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId) {
+async function seedClosedWeekFixtures(queueId) {
+  const currentWeekMs = Date.parse(sundayStartIso())
+  const floorAt = new Date(currentWeekMs - 25 * 7 * 24 * 60 * 60 * 1000).toISOString()
+  const [usedBoundaries, usedReports] = await Promise.all([
+    d1Query("SELECT boundary_at FROM faction_weekly_boundary_runs WHERE faction_id = ? AND boundary_at >= ?", [FACTION_ID, floorAt]),
+    d1Query("SELECT week_start_at FROM faction_weekly_reports WHERE faction_id = ? AND week_start_at >= ?", [FACTION_ID, floorAt]),
+  ])
+  const occupiedBoundaries = new Set(usedBoundaries.map((row) => row.boundary_at))
+  const occupiedReports = new Set(usedReports.map((row) => row.week_start_at))
+  let weekAStartMs = null
+  let weekBStartMs = null
+  for (let offset = 1; offset <= 24; offset++) {
+    const candidateB = currentWeekMs - offset * 7 * 24 * 60 * 60 * 1000
+    const candidateA = candidateB - 7 * 24 * 60 * 60 * 1000
+    const candidateC = candidateB + 7 * 24 * 60 * 60 * 1000
+    const a = new Date(candidateA).toISOString()
+    const b = new Date(candidateB).toISOString()
+    const c = new Date(candidateC).toISOString()
+    if (![a, b, c].some((value) => occupiedBoundaries.has(value)) &&
+        !occupiedReports.has(a) && !occupiedReports.has(b)) {
+      weekAStartMs = candidateA
+      weekBStartMs = candidateB
+      break
+    }
+  }
+  if (weekAStartMs === null || weekBStartMs === null) {
+    throw new Error("No unused recent Sunday pair is available for immutable weekly-report staging fixtures.")
+  }
+
+  const weekAStart = new Date(weekAStartMs).toISOString()
+  const weekBStart = new Date(weekBStartMs).toISOString()
+  const weekCStart = new Date(weekBStartMs + 7 * 24 * 60 * 60 * 1000).toISOString()
+  const ids = Array.from({ length: 4 }, () => String(993000000000000 + randomInt(1, 999999)))
+  const leaverId = ids[3]
+  const leaverLeftAt = new Date(weekAStartMs + 4 * 24 * 60 * 60 * 1000).toISOString()
+  const now = new Date().toISOString()
+
+  async function insertRun(runId, kind, scheduledAt, targetIds = []) {
+    await d1Query(
+      `INSERT INTO faction_performance_collection_runs
+        (run_id, collection_key, faction_id, collection_kind, status, scheduled_at,
+         target_user_ids_json, next_index, started_at, completed_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        runId, `integration:closed-week:${kind}:${runId}`, FACTION_ID, kind, scheduledAt,
+        kind === "personalstats" ? JSON.stringify(targetIds) : null,
+        kind === "personalstats" ? targetIds.length : 0,
+        scheduledAt, scheduledAt, now, now,
+      ],
+    )
+  }
+
+  async function createBoundary(boundaryAt, generation, targets) {
+    const statsRunId = randomUUID()
+    const gymRunId = randomUUID()
+    await insertRun(statsRunId, "personalstats", boundaryAt, targets)
+    await insertRun(gymRunId, "gym_energy", boundaryAt)
+    await d1Query(
+      "INSERT INTO faction_weekly_boundary_runs (faction_id, boundary_at, stats_run_id, gym_energy_run_id, created_at) VALUES (?, ?, ?, ?, ?)",
+      [FACTION_ID, boundaryAt, statsRunId, gymRunId, now],
+    )
+    return { statsRunId, gymRunId, generation, targets }
+  }
+
+  const boundaryA = await createBoundary(weekAStart, 0, ids)
+  const boundaryB = await createBoundary(weekBStart, 1, ids.slice(0, 3))
+  const boundaryC = await createBoundary(weekCStart, 2, ids.slice(0, 3))
+
+  for (let index = 0; index < ids.length; index++) {
+    const joinedAt = new Date(weekAStartMs - 14 * 24 * 60 * 60 * 1000).toISOString()
+    const leftAt = index === 3 ? leaverLeftAt : null
+    await d1Query(
+      `INSERT INTO faction_membership_intervals
+        (interval_id, faction_id, user_id, member_name, position, level, days_in_faction,
+         estimated_joined_at, first_seen_at, last_seen_at, left_observed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [randomUUID(), FACTION_ID, ids[index], `History Member ${index + 1}`, "Member", 100 - index, 60, joinedAt, joinedAt, leftAt ?? now, leftAt],
+    )
+  }
+
+  const insertStatSql = `INSERT INTO faction_member_stat_snapshots
+    (run_id, faction_id, user_id, captured_at, scheduled_at, response_variant, collection_status,
+     ${METRIC_COLUMNS.join(", ")}, missing_metrics_json, torn_error_code)
+    VALUES (${Array.from({ length: 7 + METRIC_COLUMNS.length + 2 }, () => "?").join(", ")})`
+  const insertGymSql = `INSERT INTO faction_gym_energy_snapshots
+    (run_id, faction_id, user_id, captured_at, gym_energy_total, in_faction, collection_status)
+    VALUES (?, ?, ?, ?, ?, 1, 'complete')`
+
+  async function writeBoundary(boundary, boundaryMs) {
+    for (const userId of boundary.targets) {
+      const index = ids.indexOf(userId)
+      const capturedAt = new Date(boundaryMs + 2 * 60 * 1000).toISOString()
+      const gymCapturedAt = new Date(boundaryMs + 3 * 60 * 1000).toISOString()
+      const xDelta = boundary.generation === 0 ? 0 : boundary.generation === 1 ? 10 + index : [30, 20, 15][index]
+      const values = Object.fromEntries(METRIC_COLUMNS.map((column) => {
+        if (column === "networth") return [column, 1000000 + index * 1000 - boundary.generation * 100]
+        if (column === "xantaken") {
+          return [column, 1000 + index + (boundary.generation === 2 ? 10 + index : 0) + xDelta]
+        }
+        if (column === "lsdtaken") return [column, 300 + index * 10 + boundary.generation * (3 + index)]
+        return [column, 500 + index * 20 + boundary.generation * (10 + index)]
+      }))
+      const gymValue = 20000 + index * 100 + (boundary.generation === 0 ? 0 : boundary.generation === 1 ? 26 + index : 46 - index * 5)
+      await d1Query(insertStatSql, [
+        boundary.statsRunId, FACTION_ID, userId, capturedAt, new Date(boundaryMs).toISOString(),
+        "popular", "complete", ...METRIC_COLUMNS.map((column) => values[column]), "[]", null,
+      ])
+      await d1Query(insertGymSql, [boundary.gymRunId, FACTION_ID, userId, gymCapturedAt, gymValue])
+    }
+  }
+
+  await writeBoundary(boundaryA, weekAStartMs)
+  await writeBoundary(boundaryB, weekBStartMs)
+  await writeBoundary(boundaryC, weekBStartMs + 7 * 24 * 60 * 60 * 1000)
+
+  // A member who left during week A has no ending-Sunday row. Finalization
+  // must use their last in-faction sample and retain the partial-week result.
+  const leaverStatsRunId = randomUUID()
+  const leaverGymRunId = randomUUID()
+  const leaverCapturedAt = new Date(weekAStartMs + 3 * 24 * 60 * 60 * 1000).toISOString()
+  await insertRun(leaverStatsRunId, "personalstats", weekAStart, [leaverId])
+  await insertRun(leaverGymRunId, "gym_energy", weekAStart)
+  const leaverValues = Object.fromEntries(METRIC_COLUMNS.map((column) => {
+    if (column === "networth") return [column, 1002900]
+    if (column === "xantaken") return [column, 1012]
+    if (column === "lsdtaken") return [column, 337]
+    return [column, 570]
+  }))
+  await d1Query(insertStatSql, [
+    leaverStatsRunId, FACTION_ID, leaverId, leaverCapturedAt, weekAStart,
+    "popular", "complete", ...METRIC_COLUMNS.map((column) => leaverValues[column]), "[]", null,
+  ])
+  await d1Query(insertGymSql, [leaverGymRunId, FACTION_ID, leaverId, leaverCapturedAt, 20314])
+
+  await publishWeeklyFinalize(weekAStart, queueId)
+  await publishWeeklyFinalize(weekBStart, queueId)
+  const [reportA, reportB] = await Promise.all([
+    waitForWeeklyReport(weekAStart),
+    waitForWeeklyReport(weekBStart),
+  ])
+  if (reportA.report_status !== "complete" || reportB.report_status !== "complete") {
+    throw new Error("Closed-week reports should be complete when all required fixture captures are complete.")
+  }
+
+  const [headerA, headerB] = await Promise.all([
+    d1Query("SELECT member_count, complete_member_count FROM faction_weekly_reports WHERE faction_id = ? AND week_start_at = ?", [FACTION_ID, weekAStart]),
+    d1Query("SELECT member_count, complete_member_count FROM faction_weekly_reports WHERE faction_id = ? AND week_start_at = ?", [FACTION_ID, weekBStart]),
+  ])
+  if (Number(headerA[0]?.member_count) !== 4 || Number(headerA[0]?.complete_member_count) !== 4 ||
+      Number(headerB[0]?.member_count) !== 3 || Number(headerB[0]?.complete_member_count) !== 3) {
+    throw new Error("Closed-week reports did not preserve midweek leaver inclusion and correct interval membership.")
+  }
+  let immutableRejected = false
+  try {
+    await d1Query(
+      "UPDATE faction_weekly_member_results SET member_name = ? WHERE faction_id = ? AND week_start_at = ? AND user_id = ?",
+      ["Tampered", FACTION_ID, weekAStart, ids[0]],
+    )
+  } catch { immutableRejected = true }
+  if (!immutableRejected) throw new Error("Finalized weekly member results were not protected against later updates.")
+  console.log("PASS two closed Sunday reports were finalized transactionally, preserve a midweek leaver, and reject later mutation.")
+  return { weekAStart, weekBStart, ids, leaverId }
+}
+
+async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, historyFixture) {
   const playerId = String(990000000000000 + randomInt(1, 999999))
   const token = `${randomUUID()}.${randomUUID()}`
   const tokenHash = createHash("sha256").update(token).digest("hex")
@@ -395,6 +589,41 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId) {
       throw new Error("Gym-energy ranking did not preserve the expected member delta or rank.")
     }
     console.log("PASS authenticated weekly rankings API returned Sunday-boundary deltas, actual capture times, and independent personalstats and gym-energy rankings.")
+
+    const historyListResponse = await fetch(`${WORKER_URL}/api/faction/weekly-history`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(30000),
+    })
+    const historyList = await historyListResponse.json().catch(() => null)
+    if (!historyListResponse.ok || !Array.isArray(historyList?.reports) ||
+        !historyList.reports.some((report) => report.weekStartAt === historyFixture.weekBStart) ||
+        !historyList.reports.some((report) => report.weekStartAt === historyFixture.weekAStart)) {
+      throw new Error("Weekly history API did not list both finalized fixture reports.")
+    }
+
+    const comparisonResponse = await fetch(
+      `${WORKER_URL}/api/faction/weekly-history?weekStart=${encodeURIComponent(historyFixture.weekBStart)}&compareTo=${encodeURIComponent(historyFixture.weekAStart)}&metric=xantaken`,
+      { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, signal: AbortSignal.timeout(30000) },
+    )
+    const comparison = await comparisonResponse.json().catch(() => null)
+    const changedMember = comparison?.members?.find((member) => member.userId === historyFixture.ids[0])
+    const previousWeekMember = comparison?.members?.find((member) => member.userId === historyFixture.ids[1])
+    const archivedLeaver = comparison?.members?.find((member) => member.userId === historyFixture.leaverId)
+    if (!comparisonResponse.ok || comparison?.report?.weekStartAt !== historyFixture.weekBStart ||
+        comparison?.comparedReport?.weekStartAt !== historyFixture.weekAStart ||
+        !changedMember || changedMember.metrics.xantaken !== 30 ||
+        changedMember.comparison.previousValue !== 10 ||
+        changedMember.comparison.weeklyChange !== 20 ||
+        changedMember.rank !== 1 || changedMember.comparison.previousRank !== 3 ||
+        changedMember.comparison.rankMovement !== 2 ||
+        archivedLeaver) {
+      throw new Error("Weekly history comparison did not preserve immutable weekly deltas, rank movement and membership exit boundaries.")
+    }
+    if (!previousWeekMember || previousWeekMember.metrics.networth !== -100 ||
+        previousWeekMember.endingIsBoundary !== true) {
+      throw new Error("Historical reports did not preserve negative networth movement and ending-boundary provenance.")
+    }
+    console.log("PASS weekly history API lists immutable reports and compares member deltas/rank movement across two completed Sundays.")
   } finally {
     await d1Query("DELETE FROM players WHERE player_id = ?", [playerId])
   }
@@ -492,7 +721,8 @@ async function main() {
   console.log("PASS collection success timestamps advanced only after complete runs.")
 
   const weeklyFixture = await seedWeeklyFixtures()
-  await assertApiRoute(rosterRunId, weeklyFixture, departedUserId)
+  const historyFixture = await seedClosedWeekFixtures(queueId)
+  await assertApiRoute(rosterRunId, weeklyFixture, departedUserId, historyFixture)
 
   const successfulStatsState = await d1Query(
     "SELECT last_success_at FROM faction_performance_collection_state WHERE faction_id = ? AND collection_kind = 'personalstats'",

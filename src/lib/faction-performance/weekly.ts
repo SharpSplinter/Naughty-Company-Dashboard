@@ -63,8 +63,10 @@ export type WeeklyMemberResult = {
   endingCapturedAt: string | null
   baselineSnapshotId: number | string | null
   endingSnapshotId: number | string | null
+  endingIsBoundary: boolean
   gymEnergyBaselineCapturedAt: string | null
   gymEnergyEndingCapturedAt: string | null
+  gymEnergyEndingIsBoundary: boolean
 }
 
 export type WeeklyWindow = {
@@ -151,6 +153,9 @@ export function calculateWeeklyMemberResult(input: {
   now: string
   statsBoundaryRunId?: string | null
   gymBoundaryRunId?: string | null
+  statsEndingBoundaryRunId?: string | null
+  gymEndingBoundaryRunId?: string | null
+  requireEndingBoundary?: boolean
 }): WeeklyMemberResult {
   const { member } = input
   const weekStartMs = validTime(input.weekStart)
@@ -163,6 +168,7 @@ export function calculateWeeklyMemberResult(input: {
   const joinedAt = validTime(member.estimatedJoinedAt) ?? validTime(member.firstSeenAt)
   const leftAt = validTime(member.leftObservedAt)
   const leftMidweek = leftAt !== null && leftAt < weekEndMs && leftAt > weekStartMs
+  const expectsEndBoundary = leftAt === null || leftAt >= weekEndMs
   const participation = joinedAt === null
     ? "unknown"
     : joinedAt > weekStartMs || leftMidweek ? "partial_week" : "full_week"
@@ -174,10 +180,18 @@ export function calculateWeeklyMemberResult(input: {
   })
   const baseline = baselineFor(eligibleStats, input.statsBoundaryRunId ?? null, joinedAt, weekStartMs)
   const baselineAt = baseline ? validTime(baseline.capturedAt) : null
-  const ending = baselineAt === null ? null : newest(eligibleStats.filter((snapshot) => {
+  const endingBoundaryCandidate = input.statsEndingBoundaryRunId
+    ? newest(input.statSnapshots.filter((snapshot) =>
+        snapshot.userId === member.userId &&
+        snapshot.runId === input.statsEndingBoundaryRunId &&
+        snapshot.collectionStatus !== "failed" &&
+        (validTime(snapshot.capturedAt) ?? Number.POSITIVE_INFINITY) <= nowMs &&
+        (leftAt === null || leftAt >= weekEndMs)))
+    : null
+  const ending = endingBoundaryCandidate ?? (baselineAt === null ? null : newest(eligibleStats.filter((snapshot) => {
     const captured = validTime(snapshot.capturedAt)
     return captured !== null && captured > baselineAt
-  }))
+  })))
 
   const metrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map((name) => [name, null])) as WeeklyMetricValues
   const anomalyMetrics: WeeklyRankingMetric[] = []
@@ -207,10 +221,18 @@ export function calculateWeeklyMemberResult(input: {
   })
   const gymBaseline = baselineFor(eligibleGym, input.gymBoundaryRunId ?? null, joinedAt, weekStartMs)
   const gymBaselineAt = gymBaseline ? validTime(gymBaseline.capturedAt) : null
-  const gymEnding = gymBaselineAt === null ? null : newest(eligibleGym.filter((snapshot) => {
+  const gymEndingBoundaryCandidate = input.gymEndingBoundaryRunId
+    ? newest(input.gymSnapshots.filter((snapshot) =>
+        snapshot.userId === member.userId &&
+        snapshot.runId === input.gymEndingBoundaryRunId &&
+        snapshot.collectionStatus !== "failed" &&
+        (validTime(snapshot.capturedAt) ?? Number.POSITIVE_INFINITY) <= nowMs &&
+        (leftAt === null || leftAt >= weekEndMs)))
+    : null
+  const gymEnding = gymEndingBoundaryCandidate ?? (gymBaselineAt === null ? null : newest(eligibleGym.filter((snapshot) => {
     const captured = validTime(snapshot.capturedAt)
     return captured !== null && captured > gymBaselineAt
-  }))
+  })))
   const gymStartValue = gymBaseline ? numeric(gymBaseline.gymEnergyTotal) : null
   const gymEndValue = gymEnding ? numeric(gymEnding.gymEnergyTotal) : null
   const gymEnergyAnomaly = gymStartValue !== null && gymEndValue !== null && gymEndValue < gymStartValue
@@ -226,6 +248,7 @@ export function calculateWeeklyMemberResult(input: {
   if (!baseline) status = "waiting_for_baseline"
   else if (!ending) status = "waiting_for_update"
   else if (anomalyMetrics.length) status = "anomaly"
+  else if (input.requireEndingBoundary && expectsEndBoundary && (!endingBoundaryCandidate || !gymEndingBoundaryCandidate)) status = "partial"
   else if (knownMetricCount === WEEKLY_METRIC_NAMES.length) status = "complete"
   else if (knownMetricCount > 0) status = "partial"
   else status = "incomplete"
@@ -247,8 +270,10 @@ export function calculateWeeklyMemberResult(input: {
     endingCapturedAt: ending?.capturedAt ?? null,
     baselineSnapshotId: baseline?.snapshotId ?? null,
     endingSnapshotId: ending?.snapshotId ?? null,
+    endingIsBoundary: endingBoundaryCandidate !== null,
     gymEnergyBaselineCapturedAt: gymBaseline?.capturedAt ?? null,
     gymEnergyEndingCapturedAt: gymEnding?.capturedAt ?? null,
+    gymEnergyEndingIsBoundary: gymEndingBoundaryCandidate !== null,
   }
 }
 

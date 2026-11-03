@@ -10,7 +10,9 @@ import {
   rankWeeklyMembers,
   utcSundayWindow,
   utcSundayStart,
+  WEEK_MS,
   WEEKLY_METRIC_NAMES,
+  type WeeklyMemberResult,
   type WeeklyMembership,
   type WeeklyMetricName,
   type WeeklyRankingMetric,
@@ -472,12 +474,19 @@ async function enqueueFactionWeeklyBoundaryRun(env: WorkerEnv, scheduledTime: nu
     "SELECT stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId FROM faction_weekly_boundary_runs WHERE faction_id = ? AND boundary_at = ?"
   ).bind(NAUGHTY_SOULS_FACTION_ID, boundaryAt).first<{ statsRunId: string; gymEnergyRunId: string }>()
   if (!boundary) {
+    // Freeze the cohort that was known to be in-faction at this exact
+    // Sunday boundary. A delayed scheduler must still include members who
+    // left after the boundary, while excluding people who joined afterward.
     const active = await db.prepare(
-      "SELECT user_id AS userId FROM faction_membership_intervals WHERE faction_id = ? AND left_observed_at IS NULL ORDER BY user_id"
-    ).bind(NAUGHTY_SOULS_FACTION_ID).all<{ userId: string }>()
+      "SELECT user_id AS userId FROM faction_membership_intervals WHERE faction_id = ? AND COALESCE(estimated_joined_at, first_seen_at) <= ? AND (left_observed_at IS NULL OR left_observed_at > ?) ORDER BY user_id"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, boundaryAt, boundaryAt).all<{ userId: string }>()
     const targetUserIds = Array.from(new Set((active.results ?? [])
       .map((row) => String(row.userId))
       .filter((id) => /^[1-9]\d*$/.test(id))))
+    // The roster refresh is queued earlier in this scheduler tick. If this is
+    // a fresh install with no observed membership intervals yet, do not lock
+    // an empty Sunday baseline. Retry on the next five-minute tick instead.
+    if (!targetUserIds.length) return false
     const statsRunId = crypto.randomUUID()
     const gymRunId = crypto.randomUUID()
     const now = new Date().toISOString()
@@ -522,6 +531,120 @@ async function enqueueFactionWeeklyBoundaryRun(env: WorkerEnv, scheduledTime: nu
     enqueued = true
   }
   return enqueued
+}
+
+
+async function finalizeFactionWeeklyReport(env: WorkerEnv, weekStartMs: number): Promise<boolean> {
+  if (!env.DB || !Number.isFinite(weekStartMs)) return false
+  const db = requireDb(env)
+  const weekStartAt = new Date(utcSundayStart(weekStartMs)).toISOString()
+  const weekEndAt = new Date(Date.parse(weekStartAt) + WEEK_MS).toISOString()
+  const existing = await db.prepare(
+    "SELECT report_status AS reportStatus FROM faction_weekly_reports WHERE faction_id = ? AND week_start_at = ?"
+  ).bind(NAUGHTY_SOULS_FACTION_ID, weekStartAt).first<{ reportStatus: string }>()
+  if (existing) return false
+
+  const boundaries = await db.prepare(
+    "SELECT boundary_at AS boundaryAt, stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId FROM faction_weekly_boundary_runs WHERE faction_id = ? AND boundary_at IN (?, ?)"
+  ).bind(NAUGHTY_SOULS_FACTION_ID, weekStartAt, weekEndAt).all<{
+    boundaryAt: string; statsRunId: string; gymEnergyRunId: string
+  }>()
+  const boundaryByAt = new Map((boundaries.results ?? []).map((row) => [row.boundaryAt, row]))
+  const startBoundary = boundaryByAt.get(weekStartAt)
+  const endBoundary = boundaryByAt.get(weekEndAt)
+  if (!startBoundary || !endBoundary) return false
+
+  const runIds = [
+    startBoundary.statsRunId, endBoundary.statsRunId,
+    startBoundary.gymEnergyRunId, endBoundary.gymEnergyRunId,
+  ]
+  const placeholders = runIds.map(() => "?").join(",")
+  const runRows = await db.prepare(
+    `SELECT run_id AS runId, collection_kind AS collectionKind, status FROM faction_performance_collection_runs WHERE run_id IN (${placeholders})`
+  ).bind(...runIds).all<{ runId: string; collectionKind: string; status: string }>()
+  const runsById = new Map((runRows.results ?? []).map((row) => [row.runId, row]))
+  const allTerminal = runIds.every((runId) => {
+    const status = runsById.get(runId)?.status
+    return status === "completed" || status === "partial" || status === "failed"
+  })
+  if (!allTerminal) return false
+
+  const now = new Date().toISOString()
+  const [membersRows, statsRows, gymRows, captureRows] = await Promise.all([
+    db.prepare(
+      "SELECT user_id AS userId, member_name AS name, position, level, estimated_joined_at AS estimatedJoinedAt, first_seen_at AS firstSeenAt, left_observed_at AS leftObservedAt FROM faction_membership_intervals WHERE faction_id = ? AND first_seen_at < ? AND (left_observed_at IS NULL OR left_observed_at > ?) ORDER BY member_name COLLATE NOCASE, user_id"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, weekEndAt, weekStartAt).all<WeeklyMembership>(),
+    db.prepare(
+      "SELECT snapshot_id AS snapshotId, run_id AS runId, user_id AS userId, captured_at AS capturedAt, scheduled_at AS scheduledAt, collection_status AS collectionStatus, xantaken, lsdtaken, drugsused, overdosed, alcoholused, boostersused, energydrinkused, refills, statenhancersused, networth, cantaken, exttaken, kettaken, opitaken, shrtaken, spetaken, pcptaken, victaken FROM faction_member_stat_snapshots WHERE faction_id = ? AND ((captured_at >= ? AND captured_at < ?) OR run_id IN (?, ?)) ORDER BY user_id, captured_at, snapshot_id"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, weekStartAt, weekEndAt, startBoundary.statsRunId, endBoundary.statsRunId).all<WeeklySnapshot>(),
+    db.prepare(
+      "SELECT snapshot_id AS snapshotId, run_id AS runId, user_id AS userId, captured_at AS capturedAt, gym_energy_total AS gymEnergyTotal, collection_status AS collectionStatus FROM faction_gym_energy_snapshots WHERE faction_id = ? AND ((captured_at >= ? AND captured_at < ?) OR run_id IN (?, ?)) ORDER BY user_id, captured_at, snapshot_id"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, weekStartAt, weekEndAt, startBoundary.gymEnergyRunId, endBoundary.gymEnergyRunId).all<WeeklySnapshot>(),
+    db.prepare(
+      "SELECT (SELECT MIN(captured_at) FROM faction_member_stat_snapshots WHERE run_id = ?) AS statsStartCapturedAt, (SELECT MIN(captured_at) FROM faction_member_stat_snapshots WHERE run_id = ?) AS statsEndCapturedAt, (SELECT MIN(captured_at) FROM faction_gym_energy_snapshots WHERE run_id = ?) AS gymStartCapturedAt, (SELECT MIN(captured_at) FROM faction_gym_energy_snapshots WHERE run_id = ?) AS gymEndCapturedAt"
+    ).bind(startBoundary.statsRunId, endBoundary.statsRunId, startBoundary.gymEnergyRunId, endBoundary.gymEnergyRunId).first<{
+      statsStartCapturedAt: string | null
+      statsEndCapturedAt: string | null
+      gymStartCapturedAt: string | null
+      gymEndCapturedAt: string | null
+    }>(),
+  ])
+
+  const calculated = (membersRows.results ?? []).map((member) => calculateWeeklyMemberResult({
+    member,
+    statSnapshots: statsRows.results ?? [],
+    gymSnapshots: gymRows.results ?? [],
+    weekStart: weekStartAt,
+    weekEnd: weekEndAt,
+    now,
+    statsBoundaryRunId: startBoundary.statsRunId,
+    gymBoundaryRunId: startBoundary.gymEnergyRunId,
+    statsEndingBoundaryRunId: endBoundary.statsRunId,
+    gymEndingBoundaryRunId: endBoundary.gymEnergyRunId,
+    requireEndingBoundary: true,
+  }))
+
+  const statSummary = Object.fromEntries(WEEKLY_METRIC_NAMES.map((metric) => {
+    const known = calculated.map((member) => member.metrics[metric]).filter((value): value is number => value !== null)
+    return [metric, { total: known.reduce((sum, value) => sum + value, 0), knownMembers: known.length }]
+  }))
+  const knownGymEnergy = calculated.map((member) => member.gymEnergy).filter((value): value is number => value !== null)
+  const summary = {
+    ...statSummary,
+    gymEnergy: { total: knownGymEnergy.reduce((sum, value) => sum + value, 0), knownMembers: knownGymEnergy.length },
+  }
+  const allRunsCompleted = runIds.every((runId) => runsById.get(runId)?.status === "completed")
+  const allMembersComplete = calculated.every((member) => member.status === "complete")
+  const reportStatus = allRunsCompleted && allMembersComplete && calculated.length > 0 ? "complete" : "partial"
+  const finalizedAt = new Date().toISOString()
+
+  if (!db.batch) throw new Error("D1 transactional batch support is required to finalize immutable weekly reports.")
+  const statements = [
+    db.prepare(
+      "INSERT OR IGNORE INTO faction_weekly_reports (faction_id, week_start_at, week_end_at, report_status, stats_start_run_id, stats_end_run_id, gym_start_run_id, gym_end_run_id, stats_start_captured_at, stats_end_captured_at, gym_start_captured_at, gym_end_captured_at, member_count, complete_member_count, summary_json, finalized_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind(
+      NAUGHTY_SOULS_FACTION_ID, weekStartAt, weekEndAt, reportStatus,
+      startBoundary.statsRunId, endBoundary.statsRunId, startBoundary.gymEnergyRunId, endBoundary.gymEnergyRunId,
+      captureRows?.statsStartCapturedAt ?? null, captureRows?.statsEndCapturedAt ?? null,
+      captureRows?.gymStartCapturedAt ?? null, captureRows?.gymEndCapturedAt ?? null,
+      calculated.length, calculated.filter((member) => member.status === "complete").length,
+      asJson(summary), finalizedAt, finalizedAt,
+    ),
+    ...calculated.map((member) => db.prepare(
+      "INSERT OR IGNORE INTO faction_weekly_member_results (faction_id, week_start_at, user_id, member_name, position, level, participation, result_status, metrics_json, starting_networth, ending_networth, gym_energy, known_metric_count, anomaly_metrics_json, baseline_captured_at, ending_captured_at, ending_is_boundary, baseline_snapshot_id, ending_snapshot_id, gym_baseline_captured_at, gym_ending_captured_at, gym_ending_is_boundary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind(
+      NAUGHTY_SOULS_FACTION_ID, weekStartAt, member.userId, member.name, member.position, member.level,
+      member.participation, member.status, asJson(member.metrics), member.startingNetworth, member.endingNetworth,
+      member.gymEnergy, member.knownMetricCount, asJson(member.anomalyMetrics),
+      member.baselineCapturedAt, member.endingCapturedAt, member.endingIsBoundary ? 1 : 0,
+      member.baselineSnapshotId === null ? null : Number(member.baselineSnapshotId),
+      member.endingSnapshotId === null ? null : Number(member.endingSnapshotId),
+      member.gymEnergyBaselineCapturedAt, member.gymEnergyEndingCapturedAt,
+      member.gymEnergyEndingIsBoundary ? 1 : 0, finalizedAt,
+    )),
+  ]
+  await db.batch(statements)
+  return true
 }
 
 function sqliteBoolean(value: boolean | null): number | null {
@@ -1740,6 +1863,8 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
       const liveSnapshotJobId = typeof body.jobId === "string" ? body.jobId : ""
       if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
         await markFactionPerformanceRunFailed(env, runId, new Error("Faction performance collection exhausted its queue retries."))
+      } else if (body.kind === "faction-weekly-finalize") {
+        console.error("Weekly report finalization exhausted its queue retries.")
       } else if (body.kind === "halloween-live-snapshot" && liveSnapshotJobId) {
         await requireDb(env).prepare("UPDATE halloween_live_snapshot_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
           .bind("Live Halloween snapshot exhausted its queue retries.", new Date().toISOString(), liveSnapshotJobId).run()
@@ -1775,6 +1900,22 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
         })
         // Leave retry exhaustion to Cloudflare Queues so the configured DLQ
         // receives the message and records the terminal collection failure.
+        const attempts = Math.max(1, Number(message.attempts ?? 1))
+        message.retry({ delaySeconds: Math.min(60, attempts * 10) })
+      }
+      continue
+    }
+    if (body.kind === "faction-weekly-finalize") {
+      const weekStartAt = typeof body.weekStartAt === "string" ? body.weekStartAt : ""
+      const parsedStart = Date.parse(weekStartAt)
+      if (!Number.isFinite(parsedStart) || new Date(utcSundayStart(parsedStart)).toISOString() !== weekStartAt) {
+        message.ack()
+        continue
+      }
+      try {
+        await finalizeFactionWeeklyReport(env, parsedStart)
+        message.ack()
+      } catch {
         const attempts = Math.max(1, Number(message.attempts ?? 1))
         message.retry({ delaySeconds: Math.min(60, attempts * 10) })
       }
@@ -4015,6 +4156,7 @@ async function runFiveMinuteScheduledJobs(env: WorkerEnv, scheduledTime: number)
   try { await revalidateFactionMembershipBatch(env, scheduledTime) } catch { /* Retry stale members on a later tick. */ }
   try { await enqueueFactionPerformanceCollections(env, scheduledTime) } catch { /* Idempotent schedule buckets retry on a later tick. */ }
   try { await enqueueFactionWeeklyBoundaryRun(env, scheduledTime) } catch { /* The unique Sunday boundary is retried on a later five-minute tick. */ }
+  try { await finalizeFactionWeeklyReport(env, utcSundayStart(scheduledTime) - WEEK_MS) } catch { /* Finalization retries after the ending boundary batches reach a terminal state. */ }
   try { await enqueueScheduledHalloweenSnapshots(env, scheduledTime) } catch { /* Retry the next event sweep. */ }
 }
 
@@ -4654,6 +4796,134 @@ export default {
         }, 200, origin, { "cache-control": "private, max-age=30" })
       } catch {
         return jsonResponse({ error: "Faction activity history is unavailable. Verify the completed roster snapshots and faction membership intervals." }, 503, origin)
+      }
+    }
+    if (url.pathname === "/api/faction/weekly-history" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) {
+        return jsonResponse({ error: "Faction weekly history is available only to current Naughty Souls members." }, 403, origin)
+      }
+      const db = requireDb(env)
+      try {
+        const weeks = url.searchParams.get("weekStart")
+        if (!weeks) {
+          const reports = await db.prepare(
+            "SELECT week_start_at AS weekStartAt, week_end_at AS weekEndAt, report_status AS status, member_count AS memberCount, complete_member_count AS completeMemberCount, stats_start_captured_at AS statsStartCapturedAt, stats_end_captured_at AS statsEndCapturedAt, gym_start_captured_at AS gymStartCapturedAt, gym_end_captured_at AS gymEndCapturedAt, summary_json AS summaryJson, finalized_at AS finalizedAt FROM faction_weekly_reports WHERE faction_id = ? ORDER BY week_start_at DESC LIMIT 26"
+          ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
+          return jsonResponse({
+            reports: (reports.results ?? []).map((row) => ({
+              weekStartAt: row.weekStartAt,
+              weekEndAt: row.weekEndAt,
+              status: row.status,
+              memberCount: row.memberCount,
+              completeMemberCount: row.completeMemberCount,
+              statsStartCapturedAt: row.statsStartCapturedAt,
+              statsEndCapturedAt: row.statsEndCapturedAt,
+              gymStartCapturedAt: row.gymStartCapturedAt,
+              gymEndCapturedAt: row.gymEndCapturedAt,
+              summary: parseStoredJson(row.summaryJson),
+              finalizedAt: row.finalizedAt,
+            })),
+          }, 200, origin, { "cache-control": "private, max-age=30" })
+        }
+
+        const weekStartMs = Date.parse(weeks)
+        if (!Number.isFinite(weekStartMs) || new Date(utcSundayStart(weekStartMs)).toISOString() !== weeks) {
+          return jsonResponse({ error: "Select a valid Sunday 00:00 UTC report boundary." }, 400, origin)
+        }
+        const metricParam = (url.searchParams.get("metric") || "xantaken").trim()
+        const allowedMetrics = [...WEEKLY_METRIC_NAMES, "gymEnergy"] as readonly string[]
+        const metric = allowedMetrics.includes(metricParam) ? metricParam as WeeklyRankingMetric : "xantaken"
+        const currentReport = await db.prepare(
+          "SELECT week_start_at AS weekStartAt, week_end_at AS weekEndAt, report_status AS status, member_count AS memberCount, complete_member_count AS completeMemberCount, summary_json AS summaryJson, finalized_at AS finalizedAt FROM faction_weekly_reports WHERE faction_id = ? AND week_start_at = ?"
+        ).bind(NAUGHTY_SOULS_FACTION_ID, weeks).first<Record<string, unknown>>()
+        if (!currentReport) return jsonResponse({ error: "That completed weekly report is not available." }, 404, origin)
+        const loadRows = async (weekStartAt: string) => db.prepare(
+          "SELECT user_id AS userId, member_name AS name, position, level, participation, result_status AS status, metrics_json AS metricsJson, starting_networth AS startingNetworth, ending_networth AS endingNetworth, gym_energy AS gymEnergy, known_metric_count AS knownMetricCount, anomaly_metrics_json AS anomalyMetricsJson, baseline_captured_at AS baselineCapturedAt, ending_captured_at AS endingCapturedAt, ending_is_boundary AS endingIsBoundary, baseline_snapshot_id AS baselineSnapshotId, ending_snapshot_id AS endingSnapshotId, gym_baseline_captured_at AS gymEnergyBaselineCapturedAt, gym_ending_captured_at AS gymEnergyEndingCapturedAt, gym_ending_is_boundary AS gymEnergyEndingIsBoundary FROM faction_weekly_member_results WHERE faction_id = ? AND week_start_at = ? ORDER BY member_name COLLATE NOCASE, user_id"
+        ).bind(NAUGHTY_SOULS_FACTION_ID, weekStartAt).all<Record<string, unknown>>()
+        const mapStoredMember = (row: Record<string, unknown>): WeeklyMemberResult => {
+          const rawMetrics = parseStoredJson(row.metricsJson)
+          const metrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map((name) => [
+            name,
+            isRecord(rawMetrics) && typeof rawMetrics[name] === "number" && Number.isFinite(rawMetrics[name]) ? rawMetrics[name] : null,
+          ])) as WeeklyMemberResult["metrics"]
+          const rawAnomalies = parseStoredJson(row.anomalyMetricsJson)
+          const anomalyMetrics = Array.isArray(rawAnomalies)
+            ? rawAnomalies.filter((value): value is WeeklyRankingMetric => typeof value === "string" && (value === "gymEnergy" || (WEEKLY_METRIC_NAMES as readonly string[]).includes(value)))
+            : []
+          const optionalNumber = (value: unknown) => value === null || value === undefined ? null : Number.isFinite(Number(value)) ? Number(value) : null
+          return {
+            userId: String(row.userId),
+            name: String(row.name ?? "Unknown member"),
+            position: typeof row.position === "string" ? row.position : null,
+            level: optionalNumber(row.level),
+            participation: row.participation === "full_week" || row.participation === "partial_week" ? row.participation : "unknown",
+            status: row.status === "complete" || row.status === "partial" || row.status === "incomplete" || row.status === "waiting_for_baseline" || row.status === "waiting_for_update" || row.status === "anomaly" ? row.status : "incomplete",
+            metrics,
+            startingNetworth: optionalNumber(row.startingNetworth),
+            endingNetworth: optionalNumber(row.endingNetworth),
+            gymEnergy: optionalNumber(row.gymEnergy),
+            knownMetricCount: Number(row.knownMetricCount ?? 0),
+            anomalyMetrics,
+            baselineCapturedAt: typeof row.baselineCapturedAt === "string" ? row.baselineCapturedAt : null,
+            endingCapturedAt: typeof row.endingCapturedAt === "string" ? row.endingCapturedAt : null,
+            baselineSnapshotId: optionalNumber(row.baselineSnapshotId),
+            endingSnapshotId: optionalNumber(row.endingSnapshotId),
+            endingIsBoundary: Number(row.endingIsBoundary) === 1,
+            gymEnergyBaselineCapturedAt: typeof row.gymEnergyBaselineCapturedAt === "string" ? row.gymEnergyBaselineCapturedAt : null,
+            gymEnergyEndingCapturedAt: typeof row.gymEnergyEndingCapturedAt === "string" ? row.gymEnergyEndingCapturedAt : null,
+            gymEnergyEndingIsBoundary: Number(row.gymEnergyEndingIsBoundary) === 1,
+          }
+        }
+        const currentRows = await loadRows(weeks)
+        const currentMembers = rankWeeklyMembers((currentRows.results ?? []).map(mapStoredMember), metric)
+        const compareTo = url.searchParams.get("compareTo")
+        let priorReport: Record<string, unknown> | null = null
+        let priorRanked = new Map<string, WeeklyMemberResult & { rank: number | null }>()
+        if (compareTo) {
+          const compareMs = Date.parse(compareTo)
+          if (!Number.isFinite(compareMs) || new Date(utcSundayStart(compareMs)).toISOString() !== compareTo || compareMs >= weekStartMs) {
+            return jsonResponse({ error: "Choose an earlier completed Sunday report to compare." }, 400, origin)
+          }
+          priorReport = await db.prepare(
+            "SELECT week_start_at AS weekStartAt, week_end_at AS weekEndAt, report_status AS status, finalized_at AS finalizedAt FROM faction_weekly_reports WHERE faction_id = ? AND week_start_at = ?"
+          ).bind(NAUGHTY_SOULS_FACTION_ID, compareTo).first<Record<string, unknown>>()
+          if (!priorReport) return jsonResponse({ error: "The comparison report is not available." }, 404, origin)
+          const previousRows = await loadRows(compareTo)
+          priorRanked = new Map(rankWeeklyMembers((previousRows.results ?? []).map(mapStoredMember), metric).map((member) => [member.userId, member]))
+        }
+        const members = currentMembers.map((member) => {
+          const previous = priorRanked.get(member.userId)
+          const metricValue = metric === "gymEnergy" ? member.gymEnergy : member.metrics[metric]
+          const previousValue = previous ? (metric === "gymEnergy" ? previous.gymEnergy : previous.metrics[metric]) : null
+          const hasValues = metricValue !== null && previousValue !== null
+          return {
+            ...member,
+            comparison: {
+              previousValue,
+              weeklyChange: hasValues ? metricValue - previousValue : null,
+              previousRank: previous?.rank ?? null,
+              rankMovement: member.rank !== null && previous?.rank !== null && previous?.rank !== undefined ? previous.rank - member.rank : null,
+            },
+          }
+        })
+        return jsonResponse({
+          report: {
+            weekStartAt: currentReport.weekStartAt,
+            weekEndAt: currentReport.weekEndAt,
+            status: currentReport.status,
+            memberCount: currentReport.memberCount,
+            completeMemberCount: currentReport.completeMemberCount,
+            summary: parseStoredJson(currentReport.summaryJson),
+            finalizedAt: currentReport.finalizedAt,
+          },
+          comparedReport: priorReport,
+          selectedMetric: metric,
+          members,
+        }, 200, origin, { "cache-control": "private, max-age=60" })
+      } catch {
+        return jsonResponse({ error: "Weekly history storage is unavailable. Apply migration 0021 and verify the weekly report finalizer." }, 503, origin)
       }
     }
     if (url.pathname === "/api/faction/weekly-rankings" && request.method === "GET") {

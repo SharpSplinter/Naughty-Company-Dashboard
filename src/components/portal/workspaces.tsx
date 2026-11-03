@@ -211,6 +211,30 @@ type FactionWeeklyMember = {
   endingCapturedAt: string | null
 }
 
+type FactionWeeklyHistoryOption = {
+  weekStartAt: string
+  weekEndAt: string
+  status: "complete" | "partial"
+  memberCount: number
+  completeMemberCount: number
+  finalizedAt: string
+}
+type FactionWeeklyHistoryMember = FactionWeeklyMember & {
+  endingIsBoundary: boolean
+  comparison: {
+    previousValue: number | null
+    weeklyChange: number | null
+    previousRank: number | null
+    rankMovement: number | null
+  }
+}
+type FactionWeeklyHistoryPayload = {
+  report: { weekStartAt: string; weekEndAt: string; status: string; memberCount: number; completeMemberCount: number; finalizedAt: string }
+  comparedReport: { weekStartAt: string; weekEndAt: string; status: string; finalizedAt: string } | null
+  selectedMetric: FactionWeeklyRankingMetric
+  members: FactionWeeklyHistoryMember[]
+}
+
 type FactionWeeklyPayload = {
   generatedAt: string
   week: { startAt: string; endAt: string; secondsRemaining: number; generatedAt: string }
@@ -276,6 +300,12 @@ function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }
   const [search, setSearch] = useState("")
   const [busy, setBusy] = useState(true)
   const [error, setError] = useState("")
+  const [historyWeeks, setHistoryWeeks] = useState<FactionWeeklyHistoryOption[]>([])
+  const [historyWeekStart, setHistoryWeekStart] = useState("")
+  const [compareWeekStart, setCompareWeekStart] = useState("")
+  const [historyPayload, setHistoryPayload] = useState<FactionWeeklyHistoryPayload | null>(null)
+  const [historyBusy, setHistoryBusy] = useState(false)
+  const [historyError, setHistoryError] = useState("")
 
   const load = async () => {
     setBusy(true)
@@ -294,7 +324,44 @@ function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }
     } finally { setBusy(false) }
   }
 
+  const loadHistoryWeeks = async () => {
+    try {
+      const response = await fetch(apiBase + "/api/faction/weekly-history", {
+        headers: { Authorization: "Bearer " + sessionToken },
+      })
+      const result = await response.json() as { error?: string; reports?: FactionWeeklyHistoryOption[] }
+      if (!response.ok || !Array.isArray(result.reports)) throw new Error(result.error || "Could not load completed weekly reports.")
+      setHistoryWeeks(result.reports)
+      setHistoryWeekStart(current => current || result.reports?.[0]?.weekStartAt || "")
+      setCompareWeekStart(current => current || result.reports?.[1]?.weekStartAt || "")
+    } catch (caught) {
+      setHistoryError(caught instanceof Error ? caught.message : "Could not load completed weekly reports.")
+    }
+  }
+
+  const loadHistoryComparison = async () => {
+    if (!historyWeekStart) return
+    setHistoryBusy(true)
+    setHistoryError("")
+    try {
+      const query = new URLSearchParams({ weekStart: historyWeekStart, metric })
+      if (compareWeekStart && compareWeekStart < historyWeekStart) query.set("compareTo", compareWeekStart)
+      const response = await fetch(apiBase + "/api/faction/weekly-history?" + query.toString(), {
+        headers: { Authorization: "Bearer " + sessionToken },
+      })
+      const result = await response.json() as { error?: string } & Partial<FactionWeeklyHistoryPayload>
+      if (!response.ok || !result.report || !Array.isArray(result.members)) {
+        throw new Error(result.error || "Could not load that completed weekly report.")
+      }
+      setHistoryPayload(result as FactionWeeklyHistoryPayload)
+    } catch (caught) {
+      setHistoryError(caught instanceof Error ? caught.message : "Could not load completed weekly comparison.")
+      setHistoryPayload(null)
+    } finally { setHistoryBusy(false) }
+  }
+
   useEffect(() => { void load() }, [apiBase, sessionToken, metric])
+  useEffect(() => { void loadHistoryWeeks() }, [apiBase, sessionToken])
 
   const filtered = (payload?.members || []).filter(member =>
     !search.trim() || [member.name, member.userId, member.position].some(value => String(value ?? "").toLowerCase().includes(search.trim().toLowerCase())),
@@ -395,6 +462,75 @@ function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }
             </tbody></table>
           </div>
         ) : <div className="historical-empty"><strong>{payload?.members.length ? "No members match that search." : "Weekly baseline is being prepared."}</strong><span>{payload?.members.length ? "Try another name or Torn ID." : "The five-minute scheduler creates a dedicated Sunday snapshot. Until the baseline and a later sample are available, weekly values remain unknown."}</span></div>}
+      </section>
+      <section className="halloween-panel faction-weekly-history-panel">
+        <div className="faction-directory-heading">
+          <div>
+            <div className="halloween-status"><i /> ARCHIVED WEEKLY REPORTS</div>
+            <h2>History &amp; week-to-week comparison</h2>
+            <p>Completed reports are immutable snapshots. Compare a member's weekly activity and ranking against an earlier Sunday-to-Sunday period.</p>
+          </div>
+        </div>
+        {historyError && <p className="settings-feedback error" role="alert">{historyError}</p>}
+        {historyWeeks.length ? (
+          <>
+            <div className="faction-weekly-history-controls">
+              <label>Completed week
+                <select value={historyWeekStart} onChange={event => {
+                  const selected = event.target.value
+                  setHistoryWeekStart(selected)
+                  if (compareWeekStart && compareWeekStart >= selected) {
+                    setCompareWeekStart(historyWeeks.find(report => report.weekStartAt < selected)?.weekStartAt || "")
+                  }
+                }}>
+                  {historyWeeks.map(report => <option key={report.weekStartAt} value={report.weekStartAt}>{formatUtc(report.weekStartAt)} · {report.status}</option>)}
+                </select>
+              </label>
+              <label>Compare against
+                <select value={compareWeekStart} onChange={event => setCompareWeekStart(event.target.value)}>
+                  <option value="">No comparison</option>
+                  {historyWeeks.filter(report => report.weekStartAt < historyWeekStart).map(report =>
+                    <option key={report.weekStartAt} value={report.weekStartAt}>{formatUtc(report.weekStartAt)} · {report.status}</option>
+                  )}
+                </select>
+              </label>
+              <button type="button" onClick={() => void loadHistoryComparison()} disabled={historyBusy || !historyWeekStart}>
+                {historyBusy ? "Loading…" : "Load report ↗"}
+              </button>
+            </div>
+            {historyPayload ? (
+              <>
+                <div className="faction-weekly-history-meta">
+                  <span>REPORT STATUS <strong>{historyPayload.report.status}</strong></span>
+                  <span>MEMBERS <strong>{historyPayload.report.completeMemberCount}/{historyPayload.report.memberCount} complete</strong></span>
+                  <span>FINALIZED <strong>{formatUtc(historyPayload.report.finalizedAt)}</strong></span>
+                  {historyPayload.comparedReport && <span>COMPARISON <strong>{formatUtc(historyPayload.comparedReport.weekStartAt)}</strong></span>}
+                </div>
+                <div className="historical-leaderboard">
+                  <table>
+                    <thead><tr><th>RANK</th><th>MEMBER</th><th>WEEKLY VALUE</th><th>PREVIOUS WEEK</th><th>WEEK CHANGE</th><th>PREVIOUS RANK</th><th>RANK MOVEMENT</th><th>DATA</th></tr></thead>
+                    <tbody>
+                      {historyPayload.members.map(member => {
+                        const value = metricValue(member, metric)
+                        const movement = member.comparison.rankMovement
+                        return <tr key={member.userId}>
+                          <td>{member.rank === null ? "—" : "#" + member.rank}</td>
+                          <td><strong>{member.name}</strong><small>#{member.userId}</small></td>
+                          <td>{formatNumber(value, metric)}</td>
+                          <td>{formatNumber(member.comparison.previousValue, metric)}</td>
+                          <td>{formatNumber(member.comparison.weeklyChange, metric)}</td>
+                          <td>{member.comparison.previousRank === null ? "—" : "#" + member.comparison.previousRank}</td>
+                          <td>{movement === null ? "—" : movement > 0 ? "↑ " + movement : movement < 0 ? "↓ " + Math.abs(movement) : "—"}</td>
+                          <td><span className={"coverage-pill " + (member.status === "complete" ? "complete" : member.status === "anomaly" || member.status === "incomplete" ? "partial" : "collecting")}>{statusLabel(member.status)}</span><small>{member.participation.replace(/_/g, " ")}</small></td>
+                        </tr>
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : <div className="historical-empty"><strong>No report loaded yet.</strong><span>Choose a completed week and optionally an earlier week, then load the comparison.</span></div>}
+          </>
+        ) : <div className="historical-empty"><strong>No completed weekly reports yet.</strong><span>The first archived report is created after the following Sunday boundary collections finish. The current week remains provisional until then.</span></div>}
       </section>
       <footer className="module-footer"><span>FACTION WEEKLY RANKINGS</span><span>Signed in as {playerName} · Public faction-key snapshots only</span></footer>
     </main>

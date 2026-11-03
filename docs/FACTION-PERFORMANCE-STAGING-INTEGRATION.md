@@ -1,6 +1,6 @@
 # Faction performance staging integration
 
-This is the stateful acceptance test for the faction performance collector and active-week weekly rankings. It exercises the actual Worker queue handler, Cloudflare D1 writes and authenticated read APIs against the non-production database, while all Torn API responses come from a deterministic fixture Worker.
+This is the stateful acceptance test for faction collection, active-week rankings and immutable completed-week history. It exercises the actual Worker queue handler, Cloudflare D1 writes, scheduled finalizer queue path and authenticated read APIs against the non-production database, while all Torn API responses come from a deterministic fixture Worker.
 
 ## Resources used
 
@@ -41,7 +41,7 @@ The repository secret `CLOUDFLARE_API_TOKEN` must be authorized for D1 writes, W
 
 The driver `scripts/run-faction-performance-staging-integration.mjs` verifies:
 
-- Migrations 0019 and 0020 and all collection/weekly-boundary tables are present.
+- Migrations 0019, 0020 and 0021 plus all collection, boundary and immutable report tables are present.
 - Roster collection creates six synthetic membership intervals and marks a seeded departed interval as left without deleting it.
 - Public personalstats collection processes six members over the five-member queue page boundary and persists all 18 counters.
 - Gym-energy collection persists all six synthetic contributors.
@@ -49,6 +49,9 @@ The driver `scripts/run-faction-performance-staging-integration.mjs` verifies:
 - The authenticated faction performance API returns the completed roster with joined stats and gym-energy samples, public last-action fields, and the target's configured revive setting separate from key-owner-specific revivability.
 - The authenticated faction activity API compares the two latest completed roster snapshots and returns typed, bounded membership/status/activity/flag/revive-setting/position changes.
 - The authenticated weekly-rankings API uses synthetic Sunday-boundary baseline runs and later samples to verify separate Xanax/LSD deltas, negative networth movement, starting/current networth values, gym-energy delta/ranking, actual capture timestamps and selected-metric rank ordering.
+- The shared queue handler finalizes two synthetic closed weeks after their ending boundary runs reach terminal states; both report headers and member rows persist atomically.
+- A member who leaves midweek remains in the earlier report using the last pre-departure sample and is absent from the following week's report.
+- Immutable report triggers reject attempted member-result updates; the authenticated history API lists the completed reports and returns weekly value changes, prior rank and rank movement for comparisons.
 - A permanent per-member Torn API error creates a failed sample with NULL metrics and does not advance `last_success_at`.
 - A synthetic Torn 429 is retried by Cloudflare Queues, reaches the dedicated DLQ, and records a terminal failed run without advancing `last_success_at`.
 
@@ -56,6 +59,6 @@ All API responses are generated from the sanitized schema fixture or synthetic d
 
 ## Expected side effects
 
-The workflow applies the pending migrations to staging D1, creates two dedicated queues, and deploys two staging-only Workers. Those Workers remain deployed after the workflow; they have no cron triggers. The integration creates synthetic test collection rows and keeps them in staging D1 as run evidence. It creates and removes a temporary authenticated test player/session during the API check.
+The workflow applies the pending migrations to staging D1, creates two dedicated queues, and deploys two staging-only Workers. Those Workers remain deployed after the workflow; they have no cron triggers. The integration creates synthetic test collection, boundary and immutable report rows and keeps them in staging D1 as run evidence. It selects an unused recent Sunday pair for each run so reruns do not overwrite historical reports. It creates and removes a temporary authenticated test player/session during the API check.
 
 No production D1 migration, production Worker deployment, Pages deployment, or live Torn API collection is part of this test.

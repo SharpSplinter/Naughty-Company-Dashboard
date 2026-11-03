@@ -383,3 +383,17 @@
 .faction-activity-transition b{color:#6daba0;font-size:9px}
 @media(max-width:900px){.faction-activity-freshness{grid-template-columns:repeat(2,minmax(0,1fr))}.faction-activity-freshness button{justify-self:start}.faction-activity-summary{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:600px){.faction-activity-freshness{grid-template-columns:1fr}.faction-activity-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.faction-activity-controls{width:100%}.faction-activity-controls input,.faction-activity-controls select{width:100%}.faction-activity-event-top{align-items:flex-start;flex-direction:column;gap:4px}}
+
+
+.faction-weekly-history-panel{margin-top:16px}
+.faction-weekly-history-controls{display:grid;grid-template-columns:minmax(220px,1.2fr) minmax(220px,1.2fr) auto;align-items:end;gap:12px;margin:12px 0 14px}
+.faction-weekly-history-controls label{display:flex;flex-direction:column;gap:6px;color:#91aaa4;font-size:8px;font-weight:700;letter-spacing:.11em;text-transform:uppercase}
+.faction-weekly-history-controls select{width:100%;min-width:0;border:1px solid #405a56;border-radius:7px;background:#0d1a1c;color:#e0eee7;padding:10px;font-size:10px}
+.faction-weekly-history-controls button{border:1px solid #4b8b75;border-radius:7px;background:#1e5948;color:#dffff0;padding:10px 14px;font-size:9px;font-weight:700;white-space:nowrap}
+.faction-weekly-history-controls button:disabled{opacity:.55;cursor:not-allowed}
+.faction-weekly-history-meta{display:flex;flex-wrap:wrap;gap:9px 20px;padding:11px 13px;margin-bottom:12px;border:1px solid #34464a;border-radius:8px;background:#101c24;color:#8fa6ac;font-size:8px}
+.faction-weekly-history-meta span{display:flex;flex-direction:column;gap:4px}
+.faction-weekly-history-meta strong{color:#d9e9e1;font-size:9px;text-transform:capitalize}
+.faction-weekly-history-panel .historical-leaderboard table{min-width:920px}
+.faction-weekly-history-panel td small{display:block;margin-top:3px;color:#8ba0a1;font-size:7px}
+@media(max-width:720px){.faction-weekly-history-controls{grid-template-columns:1fr}.faction-weekly-history-controls button{justify-self:start}.faction-weekly-history-meta{gap:10px 14px}}

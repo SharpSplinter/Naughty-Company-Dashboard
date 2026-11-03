@@ -39,7 +39,7 @@ Inspected the current PR branch and repository configuration.
 
 The current portal already provides the shared workspace foundation, faction authentication, Company operations, Halloween collection/archive/live intelligence, a faction director/member workspace, account credential controls and administrator-role management.
 
-The PR branch includes migrations through 0020. Migration 0019 adds the public faction-performance collection runs, membership intervals, roster snapshots, 18-counter personalstats snapshots and gym-energy snapshots. Migration 0020 adds an idempotent Sunday-boundary run registry for the weekly baseline captures. The branch now includes the Sunday UTC boundary scheduler, a weekly delta/ranking API, a default Weekly Rankings workspace tab, and an initial public-roster Live Member Status tab. It does **not yet** persist immutable completed-week result rows or provide historical week comparisons, multi-period Faction Activity timelines or voluntary private member-key connections. Those remain later phases.
+The PR branch includes migrations through 0021. Migration 0019 adds the public faction-performance collection runs, membership intervals, roster snapshots, 18-counter personalstats snapshots and gym-energy snapshots. Migration 0020 adds an idempotent Sunday-boundary run registry for the weekly baseline captures. Migration 0021 adds immutable completed-week report and member-result tables, with database triggers protecting finalized rows from updates and deletes. The branch now includes the Sunday UTC boundary scheduler, a weekly delta/ranking API, a default Weekly Rankings workspace tab, and an initial public-roster Live Member Status tab. It does **not yet** persist immutable completed-week result rows or provide historical week comparisons, multi-period Faction Activity timelines or voluntary private member-key connections. Those remain later phases.
 
 The current application is defined in package.json and wrangler.toml. Preserve the existing React/Vite + Worker + D1 + Queue architecture unless an evidenced technical limitation requires a proposal and discussion first.
 
@@ -694,7 +694,7 @@ Still to implement or validate:
 
 ### Phase 2 — Weekly calculation engine
 
-**Active-week calculation slice implemented on the PR branch; immutable closed-week persistence remains outstanding.**
+**Active-week and immutable closed-week reporting implemented on the PR branch. Historical comparisons are now available; recovery tooling remains outstanding.**
 
 - [x] Add a unique Sunday 00:00 UTC boundary registry and idempotently enqueue dedicated personalstats and gym-energy baseline runs through the existing serialized collection queue.
 - [x] Preserve scheduled boundary time separately from each actual API response capture time; expose first-capture timestamps and timing deviation, and label captures more than five minutes late.
@@ -704,7 +704,10 @@ Still to implement or validate:
 - [x] Flag decreased lifetime counters as anomalies instead of presenting negative usage.
 - [x] Mark midweek joiners as partial-week participants using their first observed sample as baseline.
 - [x] Include membership intervals overlapping the reporting week so a midweek leaver remains visible, using only samples captured before their observed departure.
-- [ ] Persist finalized, immutable result rows when a reporting week closes; this slice currently calculates the active week from source snapshots on request.
+- [x] Persist finalized week headers and member deltas after both Sunday ending-boundary runs reach a terminal state.
+- [x] Protect report headers and member rows with database triggers that reject updates and deletes; preserve raw source snapshots and actual capture timestamps.
+- [x] Use the next Sunday's dedicated boundary run as the ending sample for members still present; use the last observed in-faction sample for a midweek leaver.
+- [x] Expose the latest 26 completed reports through an authenticated history API, with prior value, week-over-week change, previous rank and rank movement.
 - [ ] Add a reviewed late/missed-boundary recovery workflow and admin diagnostics for incomplete or exhausted boundary runs.
 
 ### Phase 3 — Weekly Rankings UI
@@ -720,7 +723,8 @@ Still to implement or validate:
 - [x] Add member search and a weekly leaderboard with rank, member, position, weekly deltas and completeness/anomaly/partial-week labels.
 - [x] Keep unavailable values as an em dash rather than zero, and keep Xanax/LSD separately ranked.
 - [ ] Add clickable member profiles, lifetime-counter context and per-metric freshness detail.
-- [ ] Add sortable columns, advanced filters and historical week navigation/comparison.
+- [x] Add completed-week selection and optional earlier-week comparison, including weekly-value movement and rank movement.
+- [ ] Add sortable columns, advanced filters, clickable member profiles and lifetime-counter context.
 
 ### Phase 4 — Live Member Status and faction activity
 

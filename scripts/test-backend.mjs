@@ -221,8 +221,10 @@ try {
       weekEnd: "2026-11-08T00:00:00.000Z",
       now: "2026-11-05T00:00:00.000Z",
       statsBoundaryRunId: "baseline",
+      requireEndingBoundary: true,
     })
     assert.equal(result.participation, "partial_week")
+    assert.equal(result.status, "complete", "a midweek leaver is complete when the last in-faction sample is complete")
     assert.equal(result.metrics.xantaken, 10, "samples collected after observed departure must not affect the weekly result")
     assert.equal(result.endingCapturedAt, "2026-11-03T12:00:00.000Z")
   })
@@ -246,6 +248,65 @@ try {
     })
     assert.equal(result.metrics.xantaken, 7)
     assert.equal(result.endingCapturedAt, "2026-11-01T00:17:00.000Z")
+  })
+
+  await test("closed weeks use next-Sunday boundary runs even when the actual capture is late", () => {
+    const values = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const later = { ...values, xantaken: 112, lsdtaken: 119, networth: 50 }
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "110", name: "Boundary Capture", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { runId: "stats-start", userId: "110", capturedAt: "2026-11-01T00:02:00.000Z", ...values },
+        { runId: "stats-end", userId: "110", capturedAt: "2026-11-08T00:07:00.000Z", ...later },
+      ],
+      gymSnapshots: [
+        { runId: "gym-start", userId: "110", capturedAt: "2026-11-01T00:03:00.000Z", gymEnergyTotal: 500 },
+        { runId: "gym-end", userId: "110", capturedAt: "2026-11-08T00:08:00.000Z", gymEnergyTotal: 540 },
+      ],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-08T00:15:00.000Z",
+      statsBoundaryRunId: "stats-start",
+      gymBoundaryRunId: "gym-start",
+      statsEndingBoundaryRunId: "stats-end",
+      gymEndingBoundaryRunId: "gym-end",
+      requireEndingBoundary: true,
+    })
+    assert.equal(result.metrics.xantaken, 12)
+    assert.equal(result.metrics.lsdtaken, 19)
+    assert.equal(result.metrics.networth, -50)
+    assert.equal(result.gymEnergy, 40)
+    assert.equal(result.endingCapturedAt, "2026-11-08T00:07:00.000Z")
+    assert.equal(result.endingIsBoundary, true)
+    assert.equal(result.gymEnergyEndingIsBoundary, true)
+    assert.equal(result.status, "complete")
+  })
+
+  await test("closed weeks without an ending boundary are marked partial instead of silently finalized as complete", () => {
+    const values = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const later = { ...values, xantaken: 105 }
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "111", name: "Missing Boundary", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { runId: "stats-start", userId: "111", capturedAt: "2026-11-01T00:02:00.000Z", ...values },
+        { runId: "stats-middle", userId: "111", capturedAt: "2026-11-05T12:00:00.000Z", ...later },
+      ],
+      gymSnapshots: [
+        { runId: "gym-start", userId: "111", capturedAt: "2026-11-01T00:03:00.000Z", gymEnergyTotal: 500 },
+        { runId: "gym-middle", userId: "111", capturedAt: "2026-11-05T12:01:00.000Z", gymEnergyTotal: 520 },
+      ],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-09T00:00:00.000Z",
+      statsBoundaryRunId: "stats-start",
+      gymBoundaryRunId: "gym-start",
+      statsEndingBoundaryRunId: "missing-stats-end",
+      gymEndingBoundaryRunId: "missing-gym-end",
+      requireEndingBoundary: true,
+    })
+    assert.equal(result.metrics.xantaken, 5)
+    assert.equal(result.endingIsBoundary, false)
+    assert.equal(result.status, "partial")
   })
 
   await test("the following Sunday 00:00 UTC is exclusive for the ending sample", () => {
