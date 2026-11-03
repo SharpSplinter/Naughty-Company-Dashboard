@@ -2816,11 +2816,12 @@ try {
     assert.equal(writes.some((write) => /DELETE FROM (companies|company_snapshots|company_financials)/i.test(write.sql)), false)
   })
 
-  await test("connection settings expose per-company key removal without deleting company records", () => {
+  await test("company connection settings reuse the single saved portal key", () => {
     const source = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
-    assert.match(source, /deleteSavedCompanyKey/)
-    assert.match(source, /Remove key/)
-    assert.match(source, /\/api\/auth\/company-key\?companyId=/)
+    assert.match(source, /Your single saved portal key is reused for company data/)
+    assert.match(source, /Your portal API key could not connect a company/)
+    assert.match(source, /\/api\/auth\/company-key/)
+    assert.doesNotMatch(source, /deleteSavedCompanyKey|secondaryCompanyKey|company-key/)
   })
 
   await test("historical company trends are owner-scoped, ordered, and summarize period changes", async () => {
