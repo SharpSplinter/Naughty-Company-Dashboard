@@ -21,6 +21,7 @@ on:
       - "index.html"
       - "package.json"
       - "package-lock.json"
+      - "scripts/ensure-naughtyfamily-staging-queues.mjs"
       - "vite.config.ts"
 
 permissions:
@@ -68,6 +69,12 @@ jobs:
           ! grep -Eq '^\[triggers\]|^\[\[queues\.(producers|consumers)\]\]' wrangler.acceptance.toml
           grep -F 'database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"' wrangler.staging.toml
           echo "Confirmed: acceptance Worker and migration target use staging D1 only; no cron or Queue bindings are configured."
+
+      - name: Provision isolated staging Queues
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 6c03b978ed9a59adc3f61c715bdad45c
+        run: node scripts/ensure-naughtyfamily-staging-queues.mjs
 
       - name: Apply pending migrations to staging D1 only
         uses: cloudflare/wrangler-action@v4
