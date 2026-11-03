@@ -18,6 +18,7 @@ const sourceFiles = [
   "src/lib/faction-performance/collector.ts",
   "src/lib/faction-performance/weekly.ts",
   "src/lib/faction-performance/leaderboard.ts",
+  "src/lib/faction-performance/private-live.ts",
   "src/lib/torn/types.ts",
   "src/worker/index.ts",
   "src/worker/snapshot-provenance.ts",
@@ -67,6 +68,7 @@ try {
     rankWeeklyMembers,
   } = require(join(temp, "lib/faction-performance/weekly.js"))
   const { filterAndSortWeeklyMembers } = require(join(temp, "lib/faction-performance/leaderboard.js"))
+  const { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } = require(join(temp, "lib/faction-performance/private-live.js"))
   const {
     buildPersonalStatsPath,
     categoriesForMissingPersonalStats,
@@ -433,6 +435,34 @@ try {
     })
     assert.deepEqual(filtered.map(member => member.userId), ["302"])
     assert.deepEqual(filterAndSortWeeklyMembers(members, { status: "complete" }).map(member => member.userId), ["301"])
+  })
+
+  await test("private live parsers whitelist owner bars, cooldowns and optional detailed networth", () => {
+    const bars = parsePrivateLiveBars({ bars: {
+      energy: { current: 125, maximum: 150 },
+      nerve: { current: 40, maximum: 60 },
+      happy: { current: 5000, maximum: 5000 },
+      life: { current: 2500, maximum: 3000 },
+      unrelated: { secret: "must not persist" },
+    } })
+    assert.deepEqual(bars.energy, { current: 125, maximum: 150 })
+    assert.equal(bars.life.current, 2500)
+    assert.equal(Object.keys(bars).length, 4)
+    assert.throws(() => parsePrivateLiveBars({ bars: { unrelated: { current: 12, maximum: 20 } } }))
+
+    const cooldowns = parsePrivateLiveCooldowns({ cooldowns: { drug: 1800, booster: 0, medical: 60, unrelated: 999 } })
+    assert.deepEqual(cooldowns, { drug: 1800, booster: 0, medical: 60 })
+    assert.throws(() => parsePrivateLiveCooldowns({ cooldowns: { unrelated: 999 } }))
+
+    const networth = parsePrivateLiveNetworth({ networth: {
+      total: 123456789, bank: 50000000, wallet: 1234, timestamp: 1791000000,
+      private_future_field: "must not persist",
+    } })
+    assert.equal(networth.total, 123456789)
+    assert.equal(networth.bank, 50000000)
+    assert.equal(networth.wallet, 1234)
+    assert.equal(Object.prototype.hasOwnProperty.call(networth, "private_future_field"), false)
+    assert.throws(() => parsePrivateLiveNetworth({ networth: { wallet: 100 } }))
   })
 
   await test("official stock lock-in timestamp accepts only fresh source data from the scheduled reporting day", () => {
