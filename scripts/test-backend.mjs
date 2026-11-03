@@ -1889,7 +1889,7 @@ try {
       "weekly boundary recovery must remain inside the authenticated administrator handler")
     assert.match(workerSource, /week_start_at AS weekStartAt, week_end_at AS weekEndAt/)
     assert.match(workerSource, /ageMs > DAY \* 1000/, "a missing boundary can only be reconstructed during the first 24 hours")
-    assert.match(workerSource, /ageMs > 8 \\* DAY \* 1000/, "existing frozen runs have a bounded eight-day recovery window")
+    assert.match(workerSource, /ageMs > 8 \* DAY \* 1000/, "existing frozen runs have a bounded eight-day recovery window")
     assert.match(workerSource, /weekly report references this Sunday boundary/i)
     assert.match(workerSource, /status = 'queued', next_index = 0/)
     assert.match(workerSource, /WHERE run_id = \? AND status = \? AND updated_at = \?/, "recovery must use an optimistic status/timestamp claim")
