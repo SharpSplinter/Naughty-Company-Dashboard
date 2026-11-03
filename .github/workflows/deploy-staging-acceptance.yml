@@ -1,0 +1,156 @@
+name: Deploy Naughty Family acceptance staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_target:
+        description: Confirm the isolated staging Pages project and API Worker
+        required: true
+        type: choice
+        options:
+          - naughtyfamily-staging
+  push:
+    branches: [portal-rebuild]
+    paths:
+      - ".github/workflows/deploy-staging-acceptance.yml"
+      - "wrangler.acceptance.toml"
+      - "src/worker/**"
+      - "src/lib/**"
+      - "src/components/**"
+      - "migrations/auth/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.ts"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: naughty-family-real-key-acceptance-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy-staging:
+    if: github.ref == 'refs/heads/portal-rebuild' && (github.event_name == 'push' || inputs.confirm_target == 'naughtyfamily-staging')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out the reviewed PR branch
+        uses: actions/checkout@v7
+        with:
+          ref: portal-rebuild
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run repository quality gates
+        run: |
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Verify every deployment target is isolated staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'name = "naughtyfamily-api-staging"' wrangler.acceptance.toml
+          grep -F 'database_name = "naughty-company-api-staging"' wrangler.acceptance.toml
+          grep -F 'database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"' wrangler.acceptance.toml
+          grep -F 'ALLOWED_ORIGIN = "https://naughtyfamily-staging.pages.dev"' wrangler.acceptance.toml
+          ! grep -F 'bbbe128a-c5cc-46ec-b8ef-93860183e795' wrangler.acceptance.toml
+          ! grep -Eq '^\\[triggers\\]|^\\[\\[queues\\.(producers|consumers)\\]\\]' wrangler.acceptance.toml
+          grep -F 'database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"' wrangler.staging.toml
+          echo "Confirmed: acceptance Worker and migration target use staging D1 only; no cron or Queue bindings are configured."
+
+      - name: Apply pending migrations to staging D1 only
+        uses: cloudflare/wrangler-action@v4
+        with:
+          wranglerVersion: "4.156.2"
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: d1 migrations apply naughty-company-api-staging --remote --config wrangler.acceptance.toml
+
+      - name: Verify staging migration ledger
+        uses: cloudflare/wrangler-action@v4
+        with:
+          wranglerVersion: "4.156.2"
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: d1 migrations list naughty-company-api-staging --remote --config wrangler.acceptance.toml
+
+      - name: Deploy isolated staging API Worker
+        uses: cloudflare/wrangler-action@v4
+        with:
+          wranglerVersion: "4.156.2"
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: deploy --config wrangler.acceptance.toml
+
+      - name: Verify staging API health, encryption readiness, and browser CORS
+        env:
+          STAGING_API_URL: https://naughtyfamily-api-staging.kboone801.workers.dev
+          STAGING_PAGES_ORIGIN: https://naughtyfamily-staging.pages.dev
+        run: |
+          node --input-type=module <<'NODE'
+          const base = process.env.STAGING_API_URL;
+          const origin = process.env.STAGING_PAGES_ORIGIN;
+          let health = null;
+          for (let attempt = 1; attempt <= 8; attempt++) {
+            const response = await fetch(`${base}/health`, {
+              headers: { accept: "application/json", origin },
+              signal: AbortSignal.timeout(10000),
+            }).catch(() => null);
+            if (response?.ok) {
+              health = { response, body: await response.json().catch(() => null) };
+              break;
+            }
+            if (attempt < 8) await new Promise(resolve => setTimeout(resolve, 3000));
+          }
+          if (!health) throw new Error("Staging Worker health endpoint did not become ready.");
+          const allowOrigin = health.response.headers.get("access-control-allow-origin");
+          console.log(`STAGING /health -> ${health.response.status}; database=${health.body?.database}; keyEncryption=${health.body?.keyEncryption}; cors=${allowOrigin === origin}`);
+          if (health.body?.ok !== true || health.body?.database !== "ok" || health.body?.keyEncryption !== "ok" || allowOrigin !== origin) {
+            throw new Error("Staging is not safe for member credentials. Verify staging D1, CORS and a unique KEY_ENCRYPTION_SECRET on naughtyfamily-api-staging.");
+          }
+          const preflight = await fetch(`${base}/api/auth/session`, {
+            method: "OPTIONS",
+            headers: { origin, "access-control-request-method": "GET", "access-control-request-headers": "authorization" },
+          });
+          const preflightOrigin = preflight.headers.get("access-control-allow-origin");
+          console.log(`STAGING CORS preflight -> ${preflight.status}; originAllowed=${preflightOrigin === origin}`);
+          if (preflight.status !== 204 || preflightOrigin !== origin) throw new Error("Staging browser CORS preflight failed.");
+          NODE
+
+      - name: Build Pages bundle for staging API
+        env:
+          VITE_API_BASE_URL: https://naughtyfamily-api-staging.kboone801.workers.dev
+        run: npm run build
+
+      - name: Deploy to the isolated naughtyfamily-staging Pages project
+        uses: cloudflare/wrangler-action@v4
+        with:
+          wranglerVersion: "4.156.2"
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: pages deploy dist --project-name naughtyfamily-staging --branch main
+
+      - name: Verify the staging Pages origin
+        env:
+          STAGING_PAGES_URL: https://naughtyfamily-staging.pages.dev
+        run: |
+          node --input-type=module <<'NODE'
+          const url = process.env.STAGING_PAGES_URL;
+          const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+          const html = await response.text();
+          console.log(`STAGING PAGES -> ${response.status}; rootMount=${html.includes('id="root"')}; correctApiBase=${html.includes('naughtyfamily-api-staging.kboone801.workers.dev')}`);
+          if (!response.ok || !html.includes('id="root"') || !html.includes('naughtyfamily-api-staging.kboone801.workers.dev')) {
+            throw new Error("Staging Pages deployment did not serve the expected portal build and API base.");
+          }
+          NODE
