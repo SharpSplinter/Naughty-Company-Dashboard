@@ -1879,7 +1879,7 @@ try {
     assert.doesNotMatch(appSource, /Unlock administration|\/api\/auth\/admin\/elevate|adminPassword|adminUsername/)
     const adminPanelSource = readFileSync(join(root, "src/components/floor/admin-panel.tsx"), "utf8")
     const adminHandlerStart = workerSource.indexOf("async function handleAdminRequest")
-    const adminHandlerEnd = workerSource.indexOf("\\nasync function ", adminHandlerStart + 30)
+    const adminHandlerEnd = workerSource.indexOf("\nasync function ", adminHandlerStart + 30)
     const weeklyDiagnosticsStart = workerSource.indexOf('if (url.pathname === "/api/admin/faction/weekly-boundaries"')
     const weeklyRecoveryStart = workerSource.indexOf('if (url.pathname === "/api/admin/faction/weekly-boundaries/recover"')
     const adminGate = workerSource.indexOf("if (session.is_admin !== 1)", adminHandlerStart)
@@ -1888,14 +1888,14 @@ try {
     assert.ok(weeklyRecoveryStart > weeklyDiagnosticsStart && weeklyRecoveryStart < adminHandlerEnd,
       "weekly boundary recovery must remain inside the authenticated administrator handler")
     assert.match(workerSource, /week_start_at AS weekStartAt, week_end_at AS weekEndAt/)
-    assert.match(workerSource, /ageMs > DAY \\* 1000/, "a missing boundary can only be reconstructed during the first 24 hours")
-    assert.match(workerSource, /ageMs > 8 \\* DAY \\* 1000/, "existing frozen runs have a bounded eight-day recovery window")
+    assert.match(workerSource, /ageMs > DAY \* 1000/, "a missing boundary can only be reconstructed during the first 24 hours")
+    assert.match(workerSource, /ageMs > 8 \\* DAY \* 1000/, "existing frozen runs have a bounded eight-day recovery window")
     assert.match(workerSource, /weekly report references this Sunday boundary/i)
     assert.match(workerSource, /status = 'queued', next_index = 0/)
-    assert.match(workerSource, /WHERE run_id = \\? AND status = \\? AND updated_at = \\?/, "recovery must use an optimistic status/timestamp claim")
+    assert.match(workerSource, /WHERE run_id = \? AND status = \? AND updated_at = \?/, "recovery must use an optimistic status/timestamp claim")
     assert.match(workerSource, /faction\\.weekly_boundary\\.recovered/)
     assert.match(adminPanelSource, /weekly-boundaries/)
-    assert.match(adminPanelSource, /!actionsArmed \\|\\| !boundary\\.recoverable/,
+    assert.match(adminPanelSource, /!actionsArmed \|\| !boundary\.recoverable/,
       "recovery controls must stay disabled until admin actions are explicitly enabled")
   })
 
