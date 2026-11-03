@@ -465,6 +465,181 @@ try {
     assert.throws(() => parsePrivateLiveNetworth({ networth: { wallet: 100 } }))
   })
 
+  await test("private live owner key requires consent, validates its owner, encrypts storage, and deletes its current snapshot on disconnect", async () => {
+    const originalFetch = globalThis.fetch
+    const token = "synthetic-private-live-session-token"
+    const tokenDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
+    const tokenHash = Array.from(new Uint8Array(tokenDigest), byte => byte.toString(16).padStart(2, "0")).join("")
+    const apiKey = "synthetic-owner-private-live-key-abcdef"
+    const keySecret = "private-live-test-encryption-secret-0123456789-abcdefghijklmnopqrstuvwxyz"
+    const player = {
+      player_id: "77", player_name: "Private Live Owner", faction_id: "8317",
+      faction_verified_at: new Date().toISOString(), membership_check_attempted_at: null,
+      membership_check_status: null, is_admin: 0,
+    }
+    const sessions = new Map([[tokenHash, { player_id: "77", expires_at: Math.floor(Date.now() / 1000) + 3600 }]])
+    const state = { key: null, snapshot: null, writes: [] }
+    const db = {
+      prepare(sql) {
+        const normalized = sql.toLowerCase().replace(/\\s+/g, " ").trim()
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            if (normalized.includes("from sessions s join players p")) {
+              const session = sessions.get(String(values[0]))
+              if (!session || session.expires_at <= Number(values[1])) return null
+              return { ...player }
+            }
+            if (normalized.startsWith("select disabled_at from dashboard_member_status")) return { disabled_at: null }
+            if (normalized.startsWith("select value_json from admin_settings")) return null
+            if (normalized.startsWith("select last_four, include_networth")) return state.key
+            if (normalized.startsWith("select captured_at, bars_json, cooldowns_json")) return state.snapshot
+            return null
+          },
+          async all() { return { results: [] } },
+          async run() {
+            state.writes.push({ sql: normalized, values: [...values] })
+            if (normalized.startsWith("insert into member_private_live_keys")) {
+              state.key = {
+                last_four: values[4], include_networth: values[5], share_with_faction: 1,
+                consent_version: values[6], consented_at: values[7], last_validated_at: values[8],
+                last_attempt_at: values[9], last_collected_at: values[10], last_error: null,
+                updated_at: values[12],
+              }
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("insert into faction_member_private_live_snapshots")) {
+              state.snapshot = {
+                captured_at: values[2], bars_json: values[3], cooldowns_json: values[4],
+                networth_json: values[5], source_timestamps_json: values[6],
+              }
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("update member_private_live_keys set last_attempt_at")) {
+              const claimBefore = String(values[3])
+              const claimedAt = state.key?.last_attempt_at
+              return { success: true, meta: { changes: !claimedAt || claimedAt <= claimBefore ? 1 : 0 } }
+            }
+            if (normalized.startsWith("delete from faction_member_private_live_snapshots")) {
+              state.snapshot = null
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("delete from member_private_live_keys")) {
+              state.key = null
+              return { success: true, meta: { changes: 1 } }
+            }
+            return { success: true, meta: { changes: 1 } }
+          },
+        }
+      },
+    }
+    let keyOwnerId = "88"
+    const calls = []
+    globalThis.fetch = async input => {
+      const url = new URL(String(input))
+      calls.push(url.pathname)
+      if (url.pathname === "/v2/key/info") {
+        return new Response(JSON.stringify({ info: { user: { id: Number(keyOwnerId) } } }))
+      }
+      if (url.pathname === "/v2/user/bars") {
+        return new Response(JSON.stringify({ bars: {
+          energy: { current: 90, maximum: 100 }, nerve: { current: 30, maximum: 60 },
+          happy: { current: 4000, maximum: 5000 }, life: { current: 800, maximum: 1000 },
+        } }))
+      }
+      if (url.pathname === "/v2/user/cooldowns") {
+        return new Response(JSON.stringify({ cooldowns: { drug: 120, booster: 0, medical: 60 } }))
+      }
+      if (url.pathname === "/v2/user/networth") {
+        return new Response(JSON.stringify({ networth: { total: 123456, wallet: 1234 }, timestamp: 1791000000 }))
+      }
+      throw new Error("Unexpected private live Torn request: " + url.pathname)
+    }
+    const env = {
+      DB: db,
+      KEY_ENCRYPTION_SECRET: keySecret,
+      ALLOWED_ORIGIN: "https://naughty-company-dashboard.pages.dev",
+    }
+    const request = (method, body) => worker.fetch(new Request("https://worker.test/api/me/private-live/key", {
+      method,
+      headers: {
+        Origin: env.ALLOWED_ORIGIN,
+        Authorization: "Bearer " + token,
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }), env, { waitUntil() {} })
+
+    try {
+      const missingConsent = await request("POST", { apiKey, shareWithFaction: true, consentVersion: "faction-private-live-v1" })
+      assert.equal(missingConsent.status, 400)
+      assert.equal(calls.length, 0, "consent is checked before contacting Torn")
+
+      const wrongOwner = await request("POST", {
+        apiKey, consent: true, shareWithFaction: true, consentVersion: "faction-private-live-v1",
+      })
+      assert.equal(wrongOwner.status, 403)
+      assert.equal(state.writes.length, 0, "a key owned by another player must never be stored")
+
+      keyOwnerId = "77"
+      const connected = await request("POST", {
+        apiKey, consent: true, shareWithFaction: true,
+        consentVersion: "faction-private-live-v1", includeNetworth: false,
+      })
+      assert.equal(connected.status, 200)
+      const connectedBody = await connected.json()
+      assert.equal(connectedBody.connected, true)
+      assert.equal(connectedBody.includeNetworth, false)
+      assert.deepEqual(calls, ["/v2/key/info", "/v2/user/bars", "/v2/user/cooldowns"],
+        "networth must not be requested unless separately opted in")
+      assert.ok(state.key && state.snapshot)
+      assert.equal(state.key.include_networth, 0)
+      assert.equal(JSON.parse(state.snapshot.bars_json).energy.current, 90)
+      assert.equal(JSON.parse(state.snapshot.cooldowns_json).drug, 120)
+      assert.equal(state.snapshot.networth_json, null)
+      assert.ok(state.writes.every(write => !write.values.includes(apiKey)), "plaintext key must never be bound to D1")
+
+      const insertKey = state.writes.find(write => write.sql.startsWith("insert into member_private_live_keys"))
+      assert.ok(insertKey)
+      assert.notEqual(insertKey.values[2], apiKey, "stored key value must be ciphertext")
+      const rawKey = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(keySecret))
+      const encryptionKey = await crypto.subtle.importKey("raw", rawKey, { name: "AES-GCM" }, false, ["decrypt"])
+      const decoded = await crypto.subtle.decrypt({
+        name: "AES-GCM",
+        iv: Uint8Array.from(Buffer.from(String(insertKey.values[3]), "base64")),
+      }, encryptionKey, Uint8Array.from(Buffer.from(String(insertKey.values[2]), "base64")))
+      assert.equal(new TextDecoder().decode(decoded), apiKey, "ciphertext must decrypt with the configured Worker encryption secret")
+
+      const status = await worker.fetch(new Request("https://worker.test/api/me/private-live/key", {
+        headers: { Origin: env.ALLOWED_ORIGIN, Authorization: "Bearer " + token },
+      }), env, { waitUntil() {} })
+      assert.equal(status.status, 200)
+      const statusBody = await status.json()
+      assert.equal(statusBody.connected, true)
+      assert.equal(statusBody.snapshot.bars.energy.current, 90)
+      assert.equal(JSON.stringify(statusBody).includes(apiKey), false)
+
+      // Replace with an explicit detailed-networth opt-in. This is the only
+      // operation above that is permitted to call /user/networth.
+      const networthConnection = await request("POST", {
+        apiKey, consent: true, shareWithFaction: true,
+        consentVersion: "faction-private-live-v1", includeNetworth: true,
+      })
+      assert.equal(networthConnection.status, 200)
+      assert.ok(calls.includes("/v2/user/networth"))
+      assert.equal(state.key.include_networth, 1)
+      assert.equal(JSON.parse(state.snapshot.networth_json).total, 123456)
+
+      const disconnected = await request("DELETE")
+      assert.equal(disconnected.status, 200)
+      assert.equal(state.key, null)
+      assert.equal(state.snapshot, null)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   await test("official stock lock-in timestamp accepts only fresh source data from the scheduled reporting day", () => {
     const scheduledAt = Date.parse("2026-10-21T18:10:00.000Z");
     const schedule = { cron: "10 18 * * *", scheduledTime: scheduledAt };
