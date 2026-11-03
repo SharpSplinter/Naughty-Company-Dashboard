@@ -149,8 +149,19 @@ jobs:
           const url = process.env.STAGING_PAGES_URL;
           const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
           const html = await response.text();
-          console.log(`STAGING PAGES -> ${response.status}; rootMount=${html.includes('id="root"')}; correctApiBase=${html.includes('naughtyfamily-api-staging.kboone801.workers.dev')}`);
-          if (!response.ok || !html.includes('id="root"') || !html.includes('naughtyfamily-api-staging.kboone801.workers.dev')) {
-            throw new Error("Staging Pages deployment did not serve the expected portal build and API base.");
+          const assetPaths = [...html.matchAll(/(?:src|href)=["']([^"']+\\.js(?:\\?[^"']*)?)["']/g)].map(match => match[1]);
+          if (!response.ok || !html.includes('id="root"') || assetPaths.length === 0) {
+            throw new Error("Staging Pages did not serve the portal shell and JavaScript assets.");
+          }
+          const assets = await Promise.all(assetPaths.map(async assetPath => {
+            const assetUrl = new URL(assetPath, url).toString();
+            const assetResponse = await fetch(assetUrl, { signal: AbortSignal.timeout(15000) });
+            if (!assetResponse.ok) throw new Error(`Staging asset failed: ${assetResponse.status} ${assetPath}`);
+            return await assetResponse.text();
+          }));
+          const correctApiBase = assets.some(asset => asset.includes("naughtyfamily-api-staging.kboone801.workers.dev"));
+          console.log(`STAGING PAGES -> ${response.status}; rootMount=true; jsAssets=${assetPaths.length}; correctApiBaseInBundle=${correctApiBase}`);
+          if (!correctApiBase) {
+            throw new Error("Staging JavaScript assets do not embed the isolated acceptance API Worker URL.");
           }
           NODE
