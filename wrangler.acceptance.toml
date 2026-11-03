@@ -13,6 +13,6 @@ enabled = true
 
 [[d1_databases]]
 binding = "DB"
-database_name = "naughty-company-api-staging"
-database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"
+database_name = "naughtyfamily-acceptance-staging"
+database_id = "02cca699-1232-495f-8a0a-de525058b92a"
 migrations_dir = "migrations/auth"
