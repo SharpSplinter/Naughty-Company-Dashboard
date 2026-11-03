@@ -1,19 +1,20 @@
 name: Deploy Cloudflare Worker
 
 on:
+  # Production migrations and Worker deployment are deliberately manual.
+  # A merge to main must never be an implicit production cutover.
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - "src/worker/**"
-      - "src/lib/**"
-      - "migrations/auth/**"
-      - "wrangler.toml"
-      - "package.json"
-      - "package-lock.json"
-      - "scripts/test-backend.mjs"
-      - ".github/workflows/worker-deploy.yml"
+    inputs:
+      confirm_target:
+        description: Confirm the production API Worker and D1 target
+        required: true
+        type: choice
+        options:
+          - naughty-company-api
+      backup_reference:
+        description: Reference to the verified encrypted pre-deployment D1 export stored outside this repository
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -24,35 +25,87 @@ concurrency:
 
 jobs:
   deploy-worker:
-    # workflow_dispatch can target any branch. Production changes must only run from main.
-    if: github.ref == 'refs/heads/main'
+    # Production changes only run from main and require a named target plus an operator-supplied backup reference.
+    if: github.ref == 'refs/heads/main' && inputs.confirm_target == 'naughty-company-api' && inputs.backup_reference != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
+
       - name: Install locked dependencies
         run: npm ci
-      - name: Verify Worker and shared code
+
+      - name: Require production backup evidence and verify target configuration
+        env:
+          CONFIRM_TARGET: ${{ inputs.confirm_target }}
+          BACKUP_REFERENCE: ${{ inputs.backup_reference }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$CONFIRM_TARGET" = "naughty-company-api"
+          test -n "$BACKUP_REFERENCE"
+          grep -F 'name = "naughty-company-api"' wrangler.toml
+          grep -F 'database_name = "naughty-company-dashboard"' wrangler.toml
+          grep -F 'database_id = "bbbe128a-c5cc-46ec-b8ef-93860183e795"' wrangler.toml
+          ! grep -F 'naughtyfamily-acceptance-staging' wrangler.toml
+          ! grep -F '02cca699-1232-495f-8a0a-de525058b92a' wrangler.toml
+          echo "Production target verified. An external pre-deployment backup reference was supplied; the workflow does not create or validate that backup." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run repository quality gates
         run: |
           npm run typecheck
           npm test
-      - name: Apply pending D1 migrations
+          npm run build
+
+      - name: Review pending production D1 migrations
+        uses: cloudflare/wrangler-action@v4
+        with:
+          wranglerVersion: "4.156.2"
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: d1 migrations list naughty-company-dashboard --remote --config wrangler.toml
+
+      - name: Apply pending production D1 migrations
         uses: cloudflare/wrangler-action@v4
         with:
           wranglerVersion: "4.156.2"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 6c03b978ed9a59adc3f61c715bdad45c
           command: d1 migrations apply naughty-company-dashboard --remote --config wrangler.toml
-      - name: Deploy Worker to Cloudflare
+
+      - name: Verify applied production migration ledger
+        uses: cloudflare/wrangler-action@v4
+        with:
+          wranglerVersion: "4.156.2"
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 6c03b978ed9a59adc3f61c715bdad45c
+          command: d1 migrations list naughty-company-dashboard --remote --config wrangler.toml
+
+      - name: Deploy Worker to Cloudflare production
         uses: cloudflare/wrangler-action@v4
         with:
           wranglerVersion: "4.156.2"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 6c03b978ed9a59adc3f61c715bdad45c
           command: deploy --config wrangler.toml
+
+      - name: Verify production Worker health and encryption readiness
+        env:
+          PRODUCTION_API_URL: https://naughty-company-api.kboone801.workers.dev
+        run: |
+          node --input-type=module <<'NODE'
+          const base = process.env.PRODUCTION_API_URL;
+          const response = await fetch(`${base}/health`, { signal: AbortSignal.timeout(15000) });
+          const body = await response.json().catch(() => null);
+          console.log(`Production health -> ${response.status}; database=${body?.database}; keyEncryption=${body?.keyEncryption}`);
+          if (!response.ok || body?.ok !== true || body?.database !== "ok" || body?.keyEncryption !== "ok") {
+            throw new Error("Production Worker health or key-encryption readiness check failed.");
+          }
+          NODE
