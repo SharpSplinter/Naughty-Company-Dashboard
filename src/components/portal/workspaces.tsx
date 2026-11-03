@@ -1635,22 +1635,21 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
         <section className="halloween-panel">
           <div className="halloween-status historical"><i /> FACTION ARCHIVE · {eventYear}</div>
           <h2>Historical event records</h2>
-          <p>Historical log collection uses each member's own Full Access API key. Custom Access keys are not supported for this collector. Collected event history is shared with all authenticated Naughty Souls members.</p>
-          <div className="historical-key-notice"><strong>Your own key. Your own records. Shared faction history.</strong><span>Connect your own Full Access key once. It is encrypted at rest, associated with your Torn player ID, and used only for your historical event-log collection. Members can browse the shared faction archive without connecting a key. If you leave Naughty Souls, your saved historical key and contributed Halloween records are purged.</span></div>
+          <p>Historical log collection reuses your single portal API key. Full Access or Custom Access with User → Log is supported. Collected event history is shared with authenticated Naughty Souls members only after you opt in.</p>
+          <div className="historical-key-notice"><strong>Your own key. Your own records. Shared faction history.</strong><span>Your sign-in key is already encrypted and associated with your Torn player ID. Enable historical collection below to authorize its use for your own event logs. Other members can browse the shared faction archive without connecting a key. If you leave Naughty Souls, your saved key and contributed Halloween records are purged.</span></div>
           <section className="historical-key-card">
-            <div className="historical-key-heading"><div><small>YOUR HISTORICAL COLLECTION KEY</small><strong>{historicalKeyStatus?.connected ? "Connected · •••• " + (historicalKeyStatus.key?.lastFour || "••••") : "Not connected"}</strong></div><span className={historicalKeyStatus?.connected ? "key-status connected" : "key-status"}><i /> {historicalKeyStatus?.connected ? "FULL ACCESS VERIFIED" : "KEY REQUIRED TO CONTRIBUTE"}</span></div>
-            {historicalKeyStatus?.connected ? <div className="historical-key-connected"><p>Your Full Access key is saved securely and will be reused for your collection. Last validation: {historicalKeyStatus.key?.lastValidatedAt ? new Date(historicalKeyStatus.key.lastValidatedAt).toLocaleString() : "Not available"}.</p><button type="button" disabled={historicalKeyBusy} onClick={removeHistoricalKey}>Disconnect key</button></div> : <form className="historical-key-form" onSubmit={saveHistoricalKey}>
-              <label htmlFor="halloween-full-access-key">Your Full Access API key</label>
-              <input id="halloween-full-access-key" type="password" autoComplete="off" value={historicalKey} onChange={event => setHistoricalKey(event.target.value)} placeholder="Paste your own Full Access Torn API key" disabled={historicalKeyBusy} />
+            <div className="historical-key-heading"><div><small>YOUR HISTORICAL COLLECTION KEY</small><strong>{historicalKeyStatus?.connected ? "Enabled · •••• " + (historicalKeyStatus.key?.lastFour || "••••") : "Not connected"}</strong></div><span className={historicalKeyStatus?.connected ? "key-status connected" : "key-status"}><i /> {historicalKeyStatus?.connected ? (historicalKeyStatus.key?.accessLevel || "PORTAL KEY") + " VERIFIED" : "OPT-IN REQUIRED"}</span></div>
+            {historicalKeyStatus?.connected ? <div className="historical-key-connected"><p>Your saved portal key will be reused for historical collection. Last validation: {historicalKeyStatus.key?.lastValidatedAt ? new Date(historicalKeyStatus.key.lastValidatedAt).toLocaleString() : "Not available"}.</p><button type="button" disabled={historicalKeyBusy} onClick={removeHistoricalKey}>Disable historical collection</button></div> : <form className="historical-key-form" onSubmit={saveHistoricalKey}>
+              <p>Your saved portal API key will be used. No second API key is required.</p>
               <div className="historical-tos"><strong>Historical Halloween data use</strong><table><tbody>
                 <tr><th>Data Storage</th><td>Persistent, until account deletion or faction change. Disconnecting the key does not erase records already contributed.</td></tr>
                 <tr><th>Data Sharing</th><td>All authenticated Naughty Souls faction members.</td></tr>
                 <tr><th>Purpose of Use</th><td>Halloween event analytics, personal event history, and faction-wide leaderboard/archive.</td></tr>
                 <tr><th>Key Storage & Sharing</th><td>Stored remotely encrypted; used only by this service's historical collection workflows. The raw key is not shared with faction members.</td></tr>
-                <tr><th>Key Access Level</th><td>Full Access only, with user log access. Custom Access keys are not accepted.</td></tr>
+                <tr><th>Key Access Level</th><td>Full Access, or Custom Access with the User → Log selection. Category restrictions must include the event records you want to contribute.</td></tr>
               </tbody></table></div>
-              <label className="historical-consent"><input type="checkbox" checked={historicalConsent} onChange={event => setHistoricalConsent(event.target.checked)} disabled={historicalKeyBusy} /><span>I have reviewed the data-use terms and agree to encrypted storage of my Full Access key and sharing my collected Halloween event records with authenticated Naughty Souls faction members.</span></label>
-              <button className="historical-connect-button" type="submit" disabled={historicalKeyBusy || !historicalConsent || !historicalKey.trim()}>{historicalKeyBusy ? "Validating key…" : "Validate & save Full Access key"}</button>
+              <label className="historical-consent"><input type="checkbox" checked={historicalConsent} onChange={event => setHistoricalConsent(event.target.checked)} disabled={historicalKeyBusy} /><span>I have reviewed the data-use terms and consent to using my saved portal API key for historical log collection and sharing the collected Halloween event records with authenticated Naughty Souls faction members.</span></label>
+              <button className="historical-connect-button" type="submit" disabled={historicalKeyBusy || !historicalConsent}>{historicalKeyBusy ? "Enabling…" : "Enable historical collection with portal key"}</button>
             </form>}
             {historicalKeyError && <p className="historical-key-error" role="alert">{historicalKeyError}</p>}
             {historicalKeyMessage && <p className="historical-key-message" role="status">{historicalKeyMessage}</p>}
@@ -1877,18 +1876,15 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
         </article>
         <article className="settings-card settings-card-wide">
           <div className="settings-card-icon">▦</div><small>COMPANY WORKSPACE</small><h2>Company API connections</h2>
-          <p>Add your own director or company-specific key. Each key is checked against its company profile, stored encrypted, and kept separate from faction sign-in.</p>
+          <p>Your saved portal API key is also used for your own director/company connection when it has the required Company selections. You do not need to submit a second key.</p>
           <div className="settings-connection good"><i /> {connectedCompanies.length} saved company key{connectedCompanies.length === 1 ? "" : "s"}</div>
           <form className="settings-inline-form" onSubmit={addCompanyKey}>
-            <label htmlFor="settings-company-key">Add a company API key</label>
-            <input id="settings-company-key" type="password" autoComplete="off" spellCheck={false} value={companyKey} onChange={event => setCompanyKey(event.target.value)} placeholder="Paste your own company-access key" disabled={companyBusy} />
-            <button type="submit" disabled={companyBusy || !companyKey.trim()}>{companyBusy ? "Validating…" : "Validate & add company"}</button>
+            <button type="submit" disabled={companyBusy}>{companyBusy ? "Connecting…" : "Connect my company using portal key"}</button>
           </form>
           <div className="settings-company-list">
             {connectedCompanies.length ? connectedCompanies.map(company => (
               <div className="settings-company-row" key={company.company_id}>
-                <div><strong>{company.company_name || "Company #" + company.company_id}</strong><small>{company.company_type || "Company"} · ID {company.company_id}{company.key_last_four ? " · Key •••• " + company.key_last_four : ""}</small></div>
-                <button type="button" disabled={companyBusy} onClick={() => void removeCompanyKey(company)}>{companyBusy ? "Working…" : "Remove key"}</button>
+                <div><strong>{company.company_name || "Company #" + company.company_id}</strong><small>{company.company_type || "Company"} · ID {company.company_id}{company.key_last_four ? " · Portal key •••• " + company.key_last_four : ""}</small></div>
               </div>
             )) : <p className="settings-form-hint">No separate company API keys are saved yet.</p>}
           </div>
@@ -1896,7 +1892,7 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
         </article>
         <article className="settings-card settings-card-wide settings-private-live-card">
           <div className="settings-card-icon">◉</div><small>FACTION LIVE MEMBER STATUS</small><h2>Private live Torn connection</h2>
-          <p>Connect a separate key that can read only your own bars and cooldowns. Your key is checked against your signed-in Torn ID before it is encrypted. The key itself is never shared; only your latest live snapshot is shared with authenticated Naughty Souls members.</p>
+          <p>Use your saved portal API key to read your own bars and cooldowns. Its owner is verified against your signed-in Torn ID. The key itself is never shared; only your latest live snapshot is shared with authenticated Naughty Souls members.</p>
           <span className={privateLiveStatus?.connected ? "settings-connection good" : "settings-connection"}><i /> {privateLiveStatus?.connected ? "Connected securely · •••• " + (privateLiveStatus.key?.lastFour || "••••") : privateLiveStatus ? "Not connected" : "Checking connection…"}</span>
           {privateLiveStatus?.connected && <div className="settings-private-live-meta">
             <span>Last snapshot <strong>{privateLiveStatus.snapshot?.capturedAt ? new Date(privateLiveStatus.snapshot.capturedAt).toLocaleString() : "Not available"}</strong></span>
@@ -1913,12 +1909,11 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
             </tbody></table>
           </div>
           <form className="settings-inline-form" onSubmit={connectPrivateLiveKey}>
-            <label htmlFor="settings-private-live-key">{privateLiveStatus?.connected ? "Replace private live key" : "Connect your private live key"}</label>
-            <input id="settings-private-live-key" type="password" autoComplete="off" spellCheck={false} value={privateLiveKey} onChange={event => setPrivateLiveKey(event.target.value)} placeholder="Paste your own Torn key with bars and cooldowns access" disabled={privateLiveBusy} />
-            <label className="settings-private-live-check"><input type="checkbox" checked={privateLiveIncludeNetworth} onChange={event => setPrivateLiveIncludeNetworth(event.target.checked)} disabled={privateLiveBusy} /><span>For the key you are connecting or replacing, also share my detailed networth breakdown with the faction. This is optional and is not requested unless checked. Changing this setting requires validating and saving the key again.</span></label>
+            <p>Your saved portal API key will be used for this connection. No second key is required.</p>
+            <label className="settings-private-live-check"><input type="checkbox" checked={privateLiveIncludeNetworth} onChange={event => setPrivateLiveIncludeNetworth(event.target.checked)} disabled={privateLiveBusy} /><span>Also share my detailed networth breakdown with the faction. This is optional and is not requested unless checked.</span></label>
             <label className="settings-private-live-check"><input type="checkbox" checked={privateLiveConsent} onChange={event => setPrivateLiveConsent(event.target.checked)} disabled={privateLiveBusy} /><span>I consent to encrypted storage of my own key and sharing my latest bars/cooldowns with authenticated Naughty Souls members. I understand disconnecting deletes the key and current shared snapshot. I have reviewed the data-use terms above.</span></label>
-            <button type="submit" disabled={privateLiveBusy || !privateLiveKey.trim() || !privateLiveConsent}>{privateLiveBusy ? "Validating key…" : privateLiveStatus?.connected ? "Validate & replace private live key" : "Validate & connect private live key"}</button>
-            <span className="settings-form-hint">These sharing selections apply when you validate and connect or replace the key below; changing the options alone does not modify an existing connection. The Worker checks the key owner and requested endpoints with Torn. A custom or limited key is accepted only when the required selections are actually available. Connect and refresh attempts share a 30-second server-side request limit.</span>
+            <button type="submit" disabled={privateLiveBusy || !privateLiveConsent}>{privateLiveBusy ? "Connecting…" : privateLiveStatus?.connected ? "Reconnect using portal key" : "Connect using portal key"}</button>
+            <span className="settings-form-hint">These sharing choices apply when you connect or reconnect using your saved portal key. The Worker verifies the key owner and requests only the selected private endpoints. Custom Access keys must include Bars and Cooldowns; detailed Networth is requested only when separately enabled. Connect and refresh attempts share a 30-second server-side request limit.</span>
           </form>
           {privateLiveStatus?.connected && <div className="settings-private-live-actions">
             <button type="button" disabled={privateLiveBusy} onClick={() => void refreshPrivateLive()}>{privateLiveBusy ? "Working…" : "Refresh my live data ↻"}</button>
@@ -1927,7 +1922,7 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
         </article>
         <article className="settings-card">
           <div className="settings-card-icon">♧</div><small>HALLOWEEN ARCHIVE</small><h2>Historical collection key</h2>
-          <p>Historical log collection requires your own Full Access key with user log access. This key is separate from your faction login key.</p>
+          <p>Historical collection reuses your saved portal key, if it includes User → Log access and you opt in.</p>
           <span className="settings-connection"><i /> Managed in Halloween workspace</span>
           <button type="button" onClick={() => props.onNavigate("/halloween")}>Open Halloween settings →</button>
         </article>
