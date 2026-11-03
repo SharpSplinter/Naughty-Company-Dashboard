@@ -3695,6 +3695,298 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
   }
   if (url.pathname === "/api/me/alerts" && request.method === "GET") {
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 50) || 50))
+  if (url.pathname === "/api/admin/faction/weekly-boundaries" && request.method === "GET") {
+    const boundaryLimit = Math.min(26, Math.max(1, Number(url.searchParams.get("limit") || 12) || 12))
+    const currentSundayMs = utcSundayStart(Date.now())
+    const boundaryTimes = Array.from({ length: boundaryLimit }, (_, index) =>
+      new Date(currentSundayMs - index * WEEK_MS).toISOString())
+    const reportWeekStarts = Array.from(new Set([
+      ...boundaryTimes,
+      ...boundaryTimes.map((value) => new Date(Date.parse(value) - WEEK_MS).toISOString()),
+    ]))
+    const boundaryPlaceholders = boundaryTimes.map(() => "?").join(", ")
+    const reportPlaceholders = reportWeekStarts.map(() => "?").join(", ")
+    const [registryRows, reportRows, membershipRows] = await Promise.all([
+      db.prepare(
+        \`SELECT boundary_at AS boundaryAt, stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId, created_at AS createdAt
+         FROM faction_weekly_boundary_runs
+         WHERE faction_id = ? AND boundary_at IN (\${boundaryPlaceholders})\`
+      ).bind(NAUGHTY_SOULS_FACTION_ID, ...boundaryTimes).all<Record<string, unknown>>(),
+      db.prepare(
+        \`SELECT week_start_at AS weekStartAt, week_end_at AS weekEndAt, report_status AS status,
+                member_count AS memberCount, complete_member_count AS completeMemberCount, finalized_at AS finalizedAt
+         FROM faction_weekly_reports
+         WHERE faction_id = ? AND week_start_at IN (\${reportPlaceholders})\`
+      ).bind(NAUGHTY_SOULS_FACTION_ID, ...reportWeekStarts).all<Record<string, unknown>>(),
+      db.prepare(
+        "SELECT user_id AS userId, estimated_joined_at AS estimatedJoinedAt, first_seen_at AS firstSeenAt, left_observed_at AS leftObservedAt FROM faction_membership_intervals WHERE faction_id = ?"
+      ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
+    ])
+    const registryByBoundary = new Map((registryRows.results ?? []).map((row) => [String(row.boundaryAt), row]))
+    const reportByWeek = new Map((reportRows.results ?? []).map((row) => [String(row.weekStartAt), row]))
+    const runIds = Array.from(new Set((registryRows.results ?? []).flatMap((row) =>
+      [String(row.statsRunId ?? ""), String(row.gymEnergyRunId ?? "")].filter(Boolean)))
+    const runPlaceholders = runIds.map(() => "?").join(", ")
+    const runRows = runIds.length ? await db.prepare(
+      \`SELECT r.run_id AS runId, r.collection_kind AS collectionKind, r.status,
+              r.scheduled_at AS scheduledAt, r.started_at AS startedAt, r.completed_at AS completedAt,
+              r.last_enqueued_at AS lastEnqueuedAt, r.last_error AS lastError, r.updated_at AS updatedAt,
+              r.target_user_ids_json AS targetUserIdsJson, r.next_index AS nextIndex,
+              (SELECT COUNT(*) FROM faction_member_stat_snapshots s WHERE s.run_id = r.run_id) AS capturedStatMembers,
+              (SELECT COUNT(*) FROM faction_member_stat_snapshots s WHERE s.run_id = r.run_id AND s.collection_status = 'complete') AS completeStatMembers,
+              (SELECT MIN(s.captured_at) FROM faction_member_stat_snapshots s WHERE s.run_id = r.run_id) AS firstStatCapturedAt,
+              (SELECT MAX(s.captured_at) FROM faction_member_stat_snapshots s WHERE s.run_id = r.run_id) AS lastStatCapturedAt,
+              (SELECT COUNT(*) FROM faction_gym_energy_snapshots g WHERE g.run_id = r.run_id) AS capturedGymMembers,
+              (SELECT COUNT(*) FROM faction_gym_energy_snapshots g WHERE g.run_id = r.run_id AND g.collection_status = 'complete') AS completeGymMembers,
+              (SELECT MIN(g.captured_at) FROM faction_gym_energy_snapshots g WHERE g.run_id = r.run_id) AS firstGymCapturedAt,
+              (SELECT MAX(g.captured_at) FROM faction_gym_energy_snapshots g WHERE g.run_id = r.run_id) AS lastGymCapturedAt
+       FROM faction_performance_collection_runs r WHERE r.run_id IN (\${runPlaceholders})\`
+    ).bind(...runIds).all<Record<string, unknown>>() : { results: [] as Record<string, unknown>[] }
+    const runsById = new Map((runRows.results ?? []).map((row) => [String(row.runId), row]))
+    const nowMs = Date.now()
+    const now = new Date(nowMs).toISOString()
+    const diagnosticRun = (runId: unknown, expectedKind: "personalstats" | "gym_energy") => {
+      const row = typeof runId === "string" ? runsById.get(runId) : undefined
+      if (!row || row.collectionKind !== expectedKind) return null
+      const status = String(row.status ?? "unknown")
+      const scheduledAt = row.scheduledAt == null ? null : String(row.scheduledAt)
+      const lastEnqueuedAt = row.lastEnqueuedAt == null ? null : String(row.lastEnqueuedAt)
+      const updatedAt = row.updatedAt == null ? null : String(row.updatedAt)
+      const activityAt = lastEnqueuedAt ?? updatedAt ?? (row.startedAt == null ? null : String(row.startedAt)) ?? scheduledAt
+      const ageMs = activityAt ? nowMs - Date.parse(activityAt) : Number.POSITIVE_INFINITY
+      const staleAfterMs = status === "running" ? 10 * 60 * 1000 : 4 * 60 * 1000
+      const stale = (status === "queued" || status === "running") && Number.isFinite(ageMs) && ageMs > staleAfterMs
+      let targetMemberCount = 0
+      try {
+        const targets = row.targetUserIdsJson ? JSON.parse(String(row.targetUserIdsJson)) as unknown : []
+        targetMemberCount = Array.isArray(targets) ? targets.length : 0
+      } catch { targetMemberCount = 0 }
+      const statsCollection = expectedKind === "personalstats"
+      const capturedMemberCount = Number(statsCollection ? row.capturedStatMembers ?? 0 : row.capturedGymMembers ?? 0)
+      const completeMemberCount = Number(statsCollection ? row.completeStatMembers ?? 0 : row.completeGymMembers ?? 0)
+      const firstCapturedAt = (statsCollection ? row.firstStatCapturedAt : row.firstGymCapturedAt) == null
+        ? null : String(statsCollection ? row.firstStatCapturedAt : row.firstGymCapturedAt)
+      const lastCapturedAt = (statsCollection ? row.lastStatCapturedAt : row.lastGymCapturedAt) == null
+        ? null : String(statsCollection ? row.lastStatCapturedAt : row.lastGymCapturedAt)
+      const timingDeviationSeconds = firstCapturedAt && scheduledAt
+        ? Math.round((Date.parse(firstCapturedAt) - Date.parse(scheduledAt)) / 1000)
+        : null
+      return {
+        runId: String(row.runId),
+        status,
+        scheduledAt,
+        startedAt: row.startedAt == null ? null : String(row.startedAt),
+        completedAt: row.completedAt == null ? null : String(row.completedAt),
+        lastEnqueuedAt,
+        updatedAt,
+        lastError: row.lastError == null ? null : String(row.lastError),
+        targetMemberCount,
+        capturedMemberCount,
+        completeMemberCount,
+        firstCapturedAt,
+        lastCapturedAt,
+        timingDeviationSeconds,
+        late: timingDeviationSeconds !== null && timingDeviationSeconds > 300,
+        stale,
+        nextIndex: Number(row.nextIndex ?? 0),
+      }
+    }
+    const boundaries = boundaryTimes.map((boundaryAt) => {
+      const registry = registryByBoundary.get(boundaryAt)
+      const boundaryMs = Date.parse(boundaryAt)
+      const knownMemberCount = (membershipRows.results ?? []).filter((row) => {
+        const joinedAt = Date.parse(String(row.estimatedJoinedAt ?? row.firstSeenAt ?? ""))
+        const leftAt = row.leftObservedAt == null ? Number.POSITIVE_INFINITY : Date.parse(String(row.leftObservedAt))
+        return Number.isFinite(joinedAt) && joinedAt <= boundaryMs && leftAt > boundaryMs
+      }).length
+      const stats = registry ? diagnosticRun(registry.statsRunId, "personalstats") : null
+      const gymEnergy = registry ? diagnosticRun(registry.gymEnergyRunId, "gym_energy") : null
+      const endingWeekStartAt = new Date(boundaryMs - WEEK_MS).toISOString()
+      const endingWeekReport = reportByWeek.get(endingWeekStartAt) ?? null
+      const startingWeekReport = reportByWeek.get(boundaryAt) ?? null
+      const locked = Boolean(endingWeekReport || startingWeekReport)
+      const ageMs = nowMs - boundaryMs
+      const withinExistingRunRecoveryWindow = ageMs >= 0 && ageMs <= 8 * DAY * 1000
+      const withinMissingBoundaryRecoveryWindow = ageMs >= 0 && ageMs <= DAY * 1000
+      const recoveryCollections: string[] = []
+      let status: string
+      let recoveryReason: string | null = null
+      if (!registry) {
+        status = "missing"
+        if (locked) recoveryReason = "A finalized report references this boundary; historical data is immutable."
+        else if (!withinMissingBoundaryRecoveryWindow) recoveryReason = "A missing Sunday capture can only be created within 24 hours; later collection cannot reconstruct the original counters."
+        else if (knownMemberCount === 0) recoveryReason = "No known membership intervals cover this Sunday, so a safe cohort cannot be reconstructed."
+        else recoveryReason = "The Sunday boundary is missing and its known member cohort can still be captured late."
+      } else if (!stats || !gymEnergy) {
+        status = "broken_registry"
+        recoveryReason = "The boundary registry references a missing or mismatched collection run; automatic repair is disabled."
+      } else {
+        const runs = [stats, gymEnergy]
+        const recoverableRun = (run: NonNullable<typeof stats>) =>
+          run.status === "failed" || run.status === "partial" || run.stale
+        if (locked) {
+          status = String(endingWeekReport?.status ?? startingWeekReport?.status ?? "locked") === "complete" ? "locked" : "report_finalized"
+          recoveryReason = "A finalized weekly report references this boundary; recovery would make source captures disagree with the immutable report."
+        } else if (!withinExistingRunRecoveryWindow) {
+          status = "expired"
+          recoveryReason = "This boundary is older than the eight-day recovery window. Replaying it would produce misleading historical deltas."
+        } else {
+          if (recoverableRun(stats)) recoveryCollections.push("personalstats")
+          if (recoverableRun(gymEnergy)) recoveryCollections.push("gym_energy")
+          if (recoveryCollections.length) {
+            status = runs.some((run) => run.stale) ? "stale" : runs.some((run) => run.status === "failed") ? "failed" : "partial"
+            recoveryReason = "Only failed, partial, or stale captures can be retried; the frozen Sunday cohort and actual capture timestamps are retained."
+          } else if (stats.status === "completed" && gymEnergy.status === "completed") {
+            status = "complete"
+            recoveryReason = "Both Sunday captures completed successfully."
+          } else {
+            status = "collecting"
+            recoveryReason = "One or both Sunday captures are still within their normal queue retry window."
+          }
+        }
+      }
+      const recoveryEligible = !locked && (
+        (!registry && withinMissingBoundaryRecoveryWindow && knownMemberCount > 0) ||
+        (Boolean(registry && stats && gymEnergy) && withinExistingRunRecoveryWindow && recoveryCollections.length > 0)
+      )
+      return {
+        boundaryAt,
+        boundaryExists: Boolean(registry),
+        knownMemberCount,
+        status,
+        stats,
+        gymEnergy,
+        endingWeekReport: endingWeekReport ? {
+          weekStartAt: String(endingWeekReport.weekStartAt),
+          weekEndAt: String(endingWeekReport.weekEndAt),
+          status: String(endingWeekReport.status),
+          finalizedAt: String(endingWeekReport.finalizedAt),
+        } : null,
+        startingWeekReport: startingWeekReport ? {
+          weekStartAt: String(startingWeekReport.weekStartAt),
+          weekEndAt: String(startingWeekReport.weekEndAt),
+          status: String(startingWeekReport.status),
+          finalizedAt: String(startingWeekReport.finalizedAt),
+        } : null,
+        recoverable: recoveryEligible,
+        recoveryCollections,
+        recoveryReason,
+      }
+    })
+    return jsonResponse({ generatedAt: now, windowStartAt: boundaryTimes[boundaryTimes.length - 1], boundaries }, 200, origin)
+  }
+  if (url.pathname === "/api/admin/faction/weekly-boundaries/recover" && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    const boundaryAt = isRecord(body) && typeof body.boundaryAt === "string" ? body.boundaryAt : ""
+    const requestedRaw = isRecord(body) ? body.collections : undefined
+    const requestedCollections = requestedRaw === undefined ? ["personalstats", "gym_energy"] :
+      Array.isArray(requestedRaw) ? requestedRaw : null
+    if (!boundaryAt || requestedCollections === null || requestedCollections.length === 0 ||
+        requestedCollections.some((kind) => kind !== "personalstats" && kind !== "gym_energy")) {
+      return jsonResponse({ error: "Provide a Sunday boundary and one or both supported collection kinds." }, 400, origin)
+    }
+    const boundaryMs = Date.parse(boundaryAt)
+    if (!Number.isFinite(boundaryMs) || new Date(utcSundayStart(boundaryMs)).toISOString() !== boundaryAt) {
+      return jsonResponse({ error: "Select a Sunday 00:00 UTC boundary." }, 400, origin)
+    }
+    const currentSundayMs = utcSundayStart(Date.now())
+    if (boundaryMs > currentSundayMs) return jsonResponse({ error: "Future Sunday boundaries cannot be recovered." }, 400, origin)
+    if (!env.GLOBAL_RANKINGS_QUEUE || !env.TORN_FACTION_API_KEY?.trim()) {
+      return jsonResponse({ error: "Faction collection queue or dedicated faction API key is not configured." }, 503, origin)
+    }
+    const relatedWeekStarts = [
+      new Date(boundaryMs - WEEK_MS).toISOString(),
+      boundaryAt,
+    ]
+    const reportPlaceholders = relatedWeekStarts.map(() => "?").join(", ")
+    const finalized = await db.prepare(
+      \`SELECT week_start_at AS weekStartAt, report_status AS status FROM faction_weekly_reports
+       WHERE faction_id = ? AND week_start_at IN (\${reportPlaceholders}) LIMIT 2\`
+    ).bind(NAUGHTY_SOULS_FACTION_ID, ...relatedWeekStarts).all<Record<string, unknown>>()
+    if ((finalized.results ?? []).length) {
+      await writeAdminAudit(env, session, "faction.weekly_boundary.recovery_blocked", "faction_weekly_boundary", boundaryAt, "denied",
+        "Blocked recovery because a finalized weekly report references this Sunday boundary.", { relatedReports: (finalized.results ?? []).map((row) => ({ weekStartAt: row.weekStartAt, status: row.status })) })
+      return jsonResponse({ error: "A finalized weekly report references this boundary. Its source captures and member results are immutable." }, 409, origin)
+    }
+    const ageMs = Date.now() - boundaryMs
+    const registry = await db.prepare(
+      "SELECT stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId FROM faction_weekly_boundary_runs WHERE faction_id = ? AND boundary_at = ?"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, boundaryAt).first<{ statsRunId: string; gymEnergyRunId: string }>()
+    if (!registry) {
+      if (ageMs < 0 || ageMs > DAY * 1000) {
+        return jsonResponse({ error: "A missing Sunday capture can only be created within 24 hours. The original historical counter values cannot be reconstructed later." }, 409, origin)
+      }
+      const enqueued = await enqueueFactionWeeklyBoundaryRun(env, boundaryMs)
+      if (!enqueued) {
+        return jsonResponse({ error: "No known membership cohort covers this Sunday, or the boundary could not be queued. No capture was created." }, 409, origin)
+      }
+      const created = await db.prepare(
+        "SELECT stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId FROM faction_weekly_boundary_runs WHERE faction_id = ? AND boundary_at = ?"
+      ).bind(NAUGHTY_SOULS_FACTION_ID, boundaryAt).first<{ statsRunId: string; gymEnergyRunId: string }>()
+      if (!created) return jsonResponse({ error: "The Sunday boundary could not be verified after queueing." }, 503, origin)
+      const createdKinds = ["personalstats", "gym_energy"]
+      await writeAdminAudit(env, session, "faction.weekly_boundary.created", "faction_weekly_boundary", boundaryAt, "succeeded",
+        "Created and queued a missing Sunday boundary for its known membership cohort.", { collections: createdKinds })
+      return jsonResponse({ boundaryAt, created: true, queuedCollections: createdKinds, runIds: { personalstats: created.statsRunId, gym_energy: created.gymEnergyRunId } }, 200, origin)
+    }
+    if (ageMs < 0 || ageMs > 8 * DAY * 1000) {
+      return jsonResponse({ error: "Existing Sunday captures can only be retried within eight days. Replaying older counters would produce misleading historical deltas." }, 409, origin)
+    }
+    const selected = new Set(requestedCollections as string[])
+    const runRows = await db.prepare(
+      "SELECT run_id AS runId, collection_kind AS collectionKind, status, last_enqueued_at AS lastEnqueuedAt, started_at AS startedAt, scheduled_at AS scheduledAt, updated_at AS updatedAt FROM faction_performance_collection_runs WHERE run_id IN (?, ?) AND faction_id = ?"
+    ).bind(registry.statsRunId, registry.gymEnergyRunId, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
+    const runsByKind = new Map((runRows.results ?? []).map((row) => [String(row.collectionKind), row]))
+    const now = new Date().toISOString()
+    const queued: Array<{ collection: string; runId: string }> = []
+    const skipped: Array<{ collection: string; reason: string }> = []
+    for (const collection of ["personalstats", "gym_energy"]) {
+      if (!selected.has(collection)) continue
+      const run = runsByKind.get(collection)
+      if (!run || String(run.runId) !== String(collection === "personalstats" ? registry.statsRunId : registry.gymEnergyRunId)) {
+        skipped.push({ collection, reason: "The registry run is missing or has the wrong collection kind." })
+        continue
+      }
+      const status = String(run.status)
+      const activityAt = run.lastEnqueuedAt ?? run.updatedAt ?? run.startedAt ?? run.scheduledAt
+      const ageSinceActivity = activityAt ? Date.now() - Date.parse(String(activityAt)) : Number.POSITIVE_INFINITY
+      const staleAfter = status === "running" ? 10 * 60 * 1000 : 4 * 60 * 1000
+      const stale = (status === "queued" || status === "running") && Number.isFinite(ageSinceActivity) && ageSinceActivity > staleAfter
+      if (status === "completed") {
+        skipped.push({ collection, reason: "The capture already completed." })
+        continue
+      }
+      if (!(status === "failed" || status === "partial" || stale)) {
+        skipped.push({ collection, reason: "The collection is still within its normal retry window." })
+        continue
+      }
+      const reset = await db.prepare(
+        "UPDATE faction_performance_collection_runs SET status = 'queued', next_index = 0, started_at = NULL, completed_at = NULL, last_enqueued_at = NULL, last_error = NULL, updated_at = ? WHERE run_id = ? AND status = ? AND updated_at = ?"
+      ).bind(now, run.runId, status, run.updatedAt).run()
+      if (Number(reset.meta?.changes ?? 0) !== 1) {
+        skipped.push({ collection, reason: "The run changed concurrently; reload diagnostics before retrying." })
+        continue
+      }
+      try {
+        await env.GLOBAL_RANKINGS_QUEUE.send({ kind: FACTION_PERFORMANCE_QUEUE_KIND, runId: String(run.runId) })
+        const enqueuedAt = new Date().toISOString()
+        await db.prepare(
+          "UPDATE faction_performance_collection_runs SET last_enqueued_at = ?, updated_at = ? WHERE run_id = ? AND status = 'queued'"
+        ).bind(enqueuedAt, enqueuedAt, run.runId).run()
+        queued.push({ collection, runId: String(run.runId) })
+      } catch {
+        await writeAdminAudit(env, session, "faction.weekly_boundary.recovery_failed", "faction_weekly_boundary", boundaryAt, "failed",
+          "A collection run was reset but its queue message could not be delivered.", { collection, runId: run.runId })
+        return jsonResponse({ error: "The run was reset but the queue message could not be delivered. Reload diagnostics and retry after the queue-dispatch window." }, 503, origin)
+      }
+    }
+    if (!queued.length) {
+      return jsonResponse({ error: skipped.map((item) => item.collection + ": " + item.reason).join(" ") || "No selected collection needed recovery.", skipped }, 409, origin)
+    }
+    await writeAdminAudit(env, session, "faction.weekly_boundary.recovered", "faction_weekly_boundary", boundaryAt, "succeeded",
+      "Requeued incomplete Sunday boundary captures without changing any finalized report.", { queued, skipped })
+    return jsonResponse({ boundaryAt, created: false, queued, skipped }, 200, origin)
+  }
     const hasCursor = url.searchParams.has("after")
     const after = url.searchParams.get("after") ?? ""
     const afterEventId = url.searchParams.get("afterEventId") ?? ""
