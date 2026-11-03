@@ -295,7 +295,24 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId) {
     if (!payload.members.every((member) => member.stats && member.gymEnergy)) {
       throw new Error("Faction performance API did not join each member's stat and gym-energy samples.")
     }
-    console.log("PASS authenticated faction performance API returned joined roster, stats, and gym-energy data.")
+    if (!payload.members.every((member) =>
+      typeof member.lastActionStatus === "string" &&
+      typeof member.lastActionTimestamp === "number" &&
+      typeof member.reviveSetting === "string" &&
+      typeof member.isRevivable === "boolean" &&
+      typeof member.statusDescription === "string" &&
+      typeof member.statusState === "string"
+    )) {
+      throw new Error("Faction performance API did not return the public last-action, status and both separate revive fields.")
+    }
+    if (payload.members.some((member) => member.reviveSetting === undefined || member.isRevivable === undefined)) {
+      throw new Error("The target's configured revive setting and key-owner revivability must remain separate API fields.")
+    }
+    const fixtureMember = payload.members[0]
+    if (fixtureMember.reviveSetting !== "Friends & faction" || fixtureMember.isRevivable !== false) {
+      throw new Error("The configured revive setting must not be inferred from the owner-specific can-revive field.")
+    }
+    console.log("PASS authenticated faction performance API returned roster activity, status, and distinct member revive-setting / key-revivability values.")
 
     const weeklyResponse = await fetch(`${WORKER_URL}/api/faction/weekly-rankings?metric=xantaken`, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },

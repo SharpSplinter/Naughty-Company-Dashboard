@@ -195,7 +195,7 @@ type FactionWeeklyRankingMetric = FactionWeeklyMetric | "gymEnergy"
 
 type FactionWeeklyMember = {
   userId: string
-  name: string
+  name: string | null
   position: string | null
   level: number | null
   participation: "full_week" | "partial_week" | "unknown"
@@ -256,14 +256,15 @@ const factionWeeklyMetricOptions: Array<{ value: FactionWeeklyRankingMetric; lab
 ]
 
 export function FactionWorkspacePlaceholder(props: FactionWorkspaceProps) {
-  const [tab, setTab] = useState<"weekly" | "directory">("weekly")
+  const [tab, setTab] = useState<"weekly" | "live" | "directory">("weekly")
   return (
     <div className="faction-workspace-switcher">
       <nav className="faction-workspace-tabs" aria-label="Faction dashboard sections">
         <button type="button" className={tab === "weekly" ? "active" : ""} onClick={() => setTab("weekly")}>Weekly rankings</button>
+        <button type="button" className={tab === "live" ? "active" : ""} onClick={() => setTab("live")}>Live member status</button>
         <button type="button" className={tab === "directory" ? "active" : ""} onClick={() => setTab("directory")}>Company directory</button>
       </nav>
-      {tab === "weekly" ? <FactionWeeklyRankings {...props} /> : <FactionCompanyDirectory {...props} />}
+      {tab === "weekly" ? <FactionWeeklyRankings {...props} /> : tab === "live" ? <FactionLiveStatus {...props} /> : <FactionCompanyDirectory {...props} />}
     </div>
   )
 }
@@ -395,6 +396,237 @@ function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }
         ) : <div className="historical-empty"><strong>{payload?.members.length ? "No members match that search." : "Weekly baseline is being prepared."}</strong><span>{payload?.members.length ? "Try another name or Torn ID." : "The five-minute scheduler creates a dedicated Sunday snapshot. Until the baseline and a later sample are available, weekly values remain unknown."}</span></div>}
       </section>
       <footer className="module-footer"><span>FACTION WEEKLY RANKINGS</span><span>Signed in as {playerName} · Public faction-key snapshots only</span></footer>
+    </main>
+  )
+}
+
+type FactionLiveMember = {
+  userId: string
+  name: string
+  position: string | null
+  level: number | null
+  daysInFaction: number | null
+  rosterCapturedAt: string
+  lastActionStatus: string | null
+  lastActionTimestamp: number | null
+  lastActionRelative: string | null
+  statusDescription: string | null
+  statusDetails: string | null
+  statusState: string | null
+  statusUntil: string | null
+  statusColor: string | null
+  isRevivable: boolean | null
+  reviveSetting: string | null
+  isOnWall: boolean | null
+  isInOc: boolean | null
+  hasEarlyDischarge: boolean | null
+}
+
+type FactionLivePayload = {
+  generatedAt: string
+  roster: { runId: string; capturedAt: string; scheduledAt: string; memberCount: number } | null
+  collection: Array<{ collectionKind: string; lastSuccessAt: string | null; lastError: string | null }>
+  members: FactionLiveMember[]
+}
+
+type FactionLiveFilter = "all" | "online" | "idle" | "offline" | "inactive24" | "inactive72" | "hospital" | "wall" | "oc" | "revivable" | "reviveEveryone" | "reviveFriendsFaction" | "reviveNoOne" | "reviveUnknown" | "unknown"
+
+function liveLastActionMs(member: FactionLiveMember): number | null {
+  return typeof member.lastActionTimestamp === "number" && Number.isFinite(member.lastActionTimestamp)
+    ? member.lastActionTimestamp * 1000
+    : null
+}
+
+function liveActivityState(member: FactionLiveMember): "online" | "idle" | "offline" | "unknown" {
+  const value = (member.lastActionStatus || "").trim().toLowerCase()
+  if (value.includes("online")) return "online"
+  if (value.includes("idle")) return "idle"
+  if (value.includes("offline")) return "offline"
+  return "unknown"
+}
+
+function liveIsHospitalized(member: FactionLiveMember): boolean {
+  return [member.statusDescription, member.statusDetails, member.statusState]
+    .some(value => String(value || "").toLowerCase().includes("hospital"))
+}
+
+function liveDurationLabel(timestampMs: number | null, nowMs: number): string {
+  if (timestampMs === null) return "Unknown"
+  const seconds = Math.max(0, Math.floor((nowMs - timestampMs) / 1000))
+  if (seconds < 60) return "Under a minute"
+  if (seconds < 3600) return Math.floor(seconds / 60) + "m"
+  const hours = Math.floor(seconds / 3600)
+  if (hours < 48) return hours + "h"
+  const days = Math.floor(hours / 24)
+  return days + "d " + hours % 24 + "h"
+}
+
+function liveRelativeTime(timestampMs: number | null, nowMs: number): string {
+  if (timestampMs === null) return "No last-action timestamp"
+  const seconds = Math.round((timestampMs - nowMs) / 1000)
+  const absolute = Math.abs(seconds)
+  const [value, unit] = absolute < 3600
+    ? [Math.round(seconds / 60), "minute"]
+    : absolute < 86400
+      ? [Math.round(seconds / 3600), "hour"]
+      : [Math.round(seconds / 86400), "day"]
+  const relativeValue = typeof value === "number" ? value : Number(value)
+  return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(relativeValue, unit as Intl.RelativeTimeFormatUnit)
+}
+
+function liveStatusUntil(value: string | null, nowMs: number): string | null {
+  if (!value) return null
+  const raw = value.trim()
+  if (!raw) return null
+  const numeric = /^\d+$/.test(raw) ? Number(raw) : null
+  const timestamp = numeric === null ? Date.parse(raw) : numeric < 100000000000 ? numeric * 1000 : numeric
+  if (!Number.isFinite(timestamp)) return null
+  const date = new Date(timestamp)
+  if (timestamp <= nowMs) return "Timer elapsed"
+  return "Until " + new Intl.DateTimeFormat(undefined, {
+    timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(date) + " UTC"
+}
+
+function FactionLiveStatus({ playerName, onNavigate, apiBase, sessionToken }: FactionWorkspaceProps) {
+  const [payload, setPayload] = useState<FactionLivePayload | null>(null)
+  const [filter, setFilter] = useState<FactionLiveFilter>("all")
+  const [search, setSearch] = useState("")
+  const [busy, setBusy] = useState(true)
+  const [error, setError] = useState("")
+
+  const load = async () => {
+    setBusy(true)
+    setError("")
+    try {
+      const response = await fetch(apiBase + "/api/faction/performance", {
+        headers: { Authorization: "Bearer " + sessionToken },
+      })
+      const result = await response.json() as { error?: string } & Partial<FactionLivePayload>
+      if (!response.ok) throw new Error(result.error || "Could not load the latest faction roster.")
+      if (!result.roster || !Array.isArray(result.members)) throw new Error("The latest faction roster is not available yet.")
+      setPayload(result as FactionLivePayload)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not load live member status.")
+      setPayload(null)
+    } finally { setBusy(false) }
+  }
+
+  useEffect(() => { void load() }, [apiBase, sessionToken])
+
+  const nowMs = Date.now()
+  const allMembers = payload?.members || []
+  const countInactive = (thresholdHours: number, upperHours?: number) => allMembers.filter(member => {
+    const lastAction = liveLastActionMs(member)
+    if (lastAction === null) return false
+    const hours = Math.max(0, (nowMs - lastAction) / 3600000)
+    return hours >= thresholdHours && (upperHours === undefined || hours < upperHours)
+  }).length
+  const onlineCount = allMembers.filter(member => liveActivityState(member) === "online").length
+  const idleCount = allMembers.filter(member => liveActivityState(member) === "idle").length
+  const offlineCount = allMembers.filter(member => liveActivityState(member) === "offline").length
+  const unknownCount = allMembers.filter(member => liveActivityState(member) === "unknown").length
+  const hospitalCount = allMembers.filter(liveIsHospitalized).length
+  const wallCount = allMembers.filter(member => member.isOnWall === true).length
+  const ocCount = allMembers.filter(member => member.isInOc === true).length
+  const revivableCount = allMembers.filter(member => member.isRevivable === true).length
+
+  const matchesFilter = (member: FactionLiveMember): boolean => {
+    const state = liveActivityState(member)
+    const actionMs = liveLastActionMs(member)
+    const hours = actionMs === null ? null : Math.max(0, (nowMs - actionMs) / 3600000)
+    switch (filter) {
+      case "online": return state === "online"
+      case "idle": return state === "idle"
+      case "offline": return state === "offline"
+      case "inactive24": return hours !== null && hours >= 24
+      case "inactive72": return hours !== null && hours >= 72
+      case "hospital": return liveIsHospitalized(member)
+      case "wall": return member.isOnWall === true
+      case "oc": return member.isInOc === true
+      case "revivable": return member.isRevivable === true
+      case "reviveEveryone": return member.reviveSetting === "Everyone"
+      case "reviveFriendsFaction": return member.reviveSetting === "Friends & faction"
+      case "reviveNoOne": return member.reviveSetting === "No one"
+      case "reviveUnknown": return !member.reviveSetting || member.reviveSetting === "Unknown"
+      case "unknown": return state === "unknown" || actionMs === null
+      default: return true
+    }
+  }
+  const filtered = allMembers.filter(member => {
+    const term = search.trim().toLowerCase()
+    const searchMatch = !term || [member.name, member.userId, member.position].some(value => String(value ?? "").toLowerCase().includes(term))
+    return searchMatch && matchesFilter(member)
+  }).sort((a, b) => {
+    const aTime = liveLastActionMs(a)
+    const bTime = liveLastActionMs(b)
+    if (aTime === null && bTime === null) return (a.name || "").localeCompare(b.name || "")
+    if (aTime === null) return 1
+    if (bTime === null) return -1
+    return aTime - bTime
+  })
+
+  const formatRosterCapture = (value: string) => new Intl.DateTimeFormat(undefined, {
+    timeZone: "UTC", weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(new Date(value)) + " UTC"
+  const rosterAgeMinutes = payload?.roster?.capturedAt
+    ? Math.max(0, Math.floor((nowMs - Date.parse(payload.roster.capturedAt)) / 60000))
+    : null
+  const rosterStale = rosterAgeMinutes !== null && rosterAgeMinutes > 15
+  const statusCollection = payload?.collection.find(item => item.collectionKind === "roster")
+
+  return (
+    <main className="module-page faction-module faction-live-module">
+      <header className="module-topbar"><a className="portal-brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("/") }}><span className="portal-brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>FACTION WORKSPACE</small></span></a><button type="button" onClick={() => onNavigate("/")}>← Return to portal</button></header>
+      <section className="module-heading"><div className="portal-eyebrow"><span /> NAUGHTY SOULS · MEMBER ACTIVITY</div><h1>Live <em>Member Status</em></h1><p>Public faction roster activity, hospital state, wall/OC flags and revive information. The configured revive setting and the API key's current revivability are shown separately.</p></section>
+      {error && <p className="settings-feedback error" role="alert">{error}</p>}
+      <section className={"faction-live-freshness " + (rosterStale ? "stale" : "")}>
+        <span>Roster snapshot: <strong>{payload?.roster ? formatRosterCapture(payload.roster.capturedAt) : "—"}</strong></span>
+        <span>Age: <strong>{rosterAgeMinutes === null ? "—" : rosterAgeMinutes + " min"}</strong></span>
+        <span>Collector: <strong>{statusCollection?.lastError ? "Last run reported an error" : "Last successful collection " + (statusCollection?.lastSuccessAt ? formatRosterCapture(statusCollection.lastSuccessAt) : "not available")}</strong></span>
+        <button type="button" onClick={() => void load()} disabled={busy}>{busy ? "Refreshing…" : "Refresh ↻"}</button>
+      </section>
+      {rosterStale && <p className="faction-live-warning" role="status">The most recent completed roster is more than 15 minutes old. Activity and hospital details may be stale.</p>}
+      <section className="faction-live-summary">
+        <article><small>ROSTER MEMBERS</small><strong>{payload?.roster?.memberCount ?? "—"}</strong><span>Last completed roster</span></article>
+        <article><small>ONLINE</small><strong>{payload ? onlineCount : "—"}</strong><span>Latest Torn action status</span></article>
+        <article><small>IDLE</small><strong>{payload ? idleCount : "—"}</strong><span>Latest Torn action status</span></article>
+        <article><small>INACTIVE 24H+</small><strong>{payload ? countInactive(24) : "—"}</strong><span>Based on Unix last-action time</span></article>
+        <article><small>INACTIVE 72H+</small><strong>{payload ? countInactive(72) : "—"}</strong><span>Based on Unix last-action time</span></article>
+        <article><small>HOSPITAL</small><strong>{payload ? hospitalCount : "—"}</strong><span>Current public status snapshot</span></article>
+        <article><small>ON WALL</small><strong>{payload ? wallCount : "—"}</strong><span>Public faction roster flag</span></article>
+        <article><small>IN OC</small><strong>{payload ? ocCount : "—"}</strong><span>Public faction roster flag</span></article>
+        <article><small>KEY REVIVABLE</small><strong>{payload ? revivableCount : "—"}</strong><span>{payload ? unknownCount + " unknown · " + offlineCount + " offline" : "Owner-specific API field"}</span></article>
+      </section>
+      <section className="halloween-panel faction-live-panel">
+        <div className="faction-directory-heading">
+          <div><div className="halloween-status"><i /> LATEST PUBLIC FACTION ROSTER</div><h2>Member activity</h2><p>Sorted by oldest known last action first, with unknown timestamps kept at the bottom. A missing timestamp is not treated as inactivity.</p></div>
+          <div className="faction-live-search"><input aria-label="Search faction members" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search member, position, or Torn ID…" /><select aria-label="Filter live member status" value={filter} onChange={event => setFilter(event.target.value as FactionLiveFilter)}><option value="all">All members</option><option value="online">Online</option><option value="idle">Idle</option><option value="offline">Offline</option><option value="inactive24">Inactive 24h+</option><option value="inactive72">Inactive 72h+</option><option value="hospital">Hospital</option><option value="wall">On wall</option><option value="oc">In OC</option><option value="revivable">Key revivable (owner-specific)</option><option value="reviveEveryone">Revive setting: Everyone</option><option value="reviveFriendsFaction">Revive setting: Friends &amp; faction</option><option value="reviveNoOne">Revive setting: No one</option><option value="reviveUnknown">Revive setting: Unknown</option><option value="unknown">Unknown activity</option></select></div>
+        </div>
+        {busy && !payload ? <p className="historical-key-muted">Loading the latest roster snapshot…</p> : filtered.length ? (
+          <div className="historical-leaderboard faction-live-table-wrap">
+            <table><thead><tr><th>MEMBER</th><th>ACTIVITY</th><th>LAST ACTION</th><th>INACTIVITY</th><th>STATUS / TIMER</th><th>REVIVE SETTING</th><th>KEY REVIVABLE</th><th>FLAGS</th></tr></thead><tbody>
+              {filtered.map(member => {
+                const actionMs = liveLastActionMs(member)
+                const hospitalized = liveIsHospitalized(member)
+                const state = liveActivityState(member)
+                const timer = liveStatusUntil(member.statusUntil, nowMs)
+                return <tr key={member.userId} className={hospitalized ? "faction-live-hospital-row" : ""}>
+                  <td><strong>{member.name}</strong><small>#{member.userId} · {member.position || "No position"} · Lv {member.level ?? "—"}</small></td>
+                  <td><span className={"faction-live-pill " + state}>{state === "unknown" ? "Unknown" : state}</span></td>
+                  <td>{liveRelativeTime(actionMs, nowMs)}<small>{actionMs === null ? "Timestamp unavailable" : new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(actionMs)) + " UTC"}</small></td>
+                  <td>{liveDurationLabel(actionMs, nowMs)}</td>
+                  <td><strong>{member.statusDescription || member.statusState || "Unknown"}</strong>{member.statusDetails && <small>{member.statusDetails}</small>}{hospitalized && timer && <small>{timer}</small>}</td>
+                  <td>{member.reviveSetting || "Unknown"}</td>
+                  <td><span className={"faction-live-pill " + (member.isRevivable === true ? "yes" : member.isRevivable === false ? "no" : "unknown")}>{member.isRevivable === true ? "Yes" : member.isRevivable === false ? "No" : "Unknown"}</span></td>
+                  <td className="faction-live-flags">{member.isOnWall === true && <span>Wall</span>}{member.isInOc === true && <span>OC</span>}{member.hasEarlyDischarge === true && <span>Early discharge</span>}{member.isOnWall !== true && member.isInOc !== true && member.hasEarlyDischarge !== true ? "—" : ""}</td>
+                </tr>
+              })}
+            </tbody></table>
+          </div>
+        ) : <div className="historical-empty"><strong>{allMembers.length ? "No members match that filter." : "No completed faction roster is available."}</strong><span>{allMembers.length ? "Change the activity filter or search term." : "The scheduled roster collector will populate this view when its first full run succeeds."}</span></div>}
+      </section>
+      <footer className="module-footer"><span>LIVE FACTION MEMBER STATUS</span><span>Signed in as {playerName} · Public faction roster fields only</span></footer>
     </main>
   )
 }

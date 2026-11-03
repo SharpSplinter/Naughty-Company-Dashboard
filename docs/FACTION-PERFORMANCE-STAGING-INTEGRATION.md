@@ -46,7 +46,7 @@ The driver `scripts/run-faction-performance-staging-integration.mjs` verifies:
 - Public personalstats collection processes six members over the five-member queue page boundary and persists all 18 counters.
 - Gym-energy collection persists all six synthetic contributors.
 - All three successful collection types advance `last_success_at`.
-- The authenticated faction performance API returns the completed roster with joined stats and gym-energy samples.
+- The authenticated faction performance API returns the completed roster with joined stats and gym-energy samples, public last-action fields, and the target's configured revive setting separate from key-owner-specific revivability.
 - The authenticated weekly-rankings API uses synthetic Sunday-boundary baseline runs and later samples to verify separate Xanax/LSD deltas, negative networth movement, starting/current networth values, gym-energy delta/ranking, actual capture timestamps and selected-metric rank ordering.
 - A permanent per-member Torn API error creates a failed sample with NULL metrics and does not advance `last_success_at`.
 - A synthetic Torn 429 is retried by Cloudflare Queues, reaches the dedicated DLQ, and records a terminal failed run without advancing `last_success_at`.
