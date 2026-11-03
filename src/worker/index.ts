@@ -6153,9 +6153,8 @@ export default {
       try {
         const refreshBody: unknown = await request.json().catch(() => null)
         const requestedId = isRecord(refreshBody) && (typeof refreshBody.companyId === "string" || typeof refreshBody.companyId === "number") ? String(refreshBody.companyId) : ""
-        let apiKey = requestedId ? await savedCompanyApiKey(env, session.player_id, requestedId) : null
-        if (!apiKey && !requestedId) apiKey = await savedCompanyKey(env, session.player_id)
-        if (!apiKey) return jsonResponse({ error: requestedId ? "No saved API key for that company. Add its authorized company key first." : "No saved company API key is available. Add an authorized company key first." }, 409, origin)
+        const apiKey = await savedKey(env, session.player_id)
+        if (!apiKey) return jsonResponse({ error: "Your saved portal API key is missing. Sign in again with your own Torn key." }, 409, origin)
         const client = new TornApiClient({ apiKey })
         const { profile, employees, stock } = await client.getCompanySelections()
         const companyId = companyIdFromPayload(profile)
