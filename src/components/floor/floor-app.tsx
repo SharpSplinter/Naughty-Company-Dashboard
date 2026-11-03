@@ -84,7 +84,6 @@ export function FloorApp() {
   const [selectedCompany, setSelectedCompany] = useState(companyNames[0] ?? "")
   const [apiKey, setApiKey] = useState("")
   const [companyKeySaved, setCompanyKeySaved] = useState(false)
-  const [needsSecondaryKey, setNeedsSecondaryKey] = useState(false)
   const [isDirector, setIsDirector] = useState(false)
   const [result, setResult] = useState<ApiResult | null>(null)
   const [error, setError] = useState("")
@@ -705,25 +704,6 @@ export function FloorApp() {
   }
 
 
-  async function deleteSavedCompanyKey(company: SavedCompany) {
-    if (!sessionToken || !company.has_api_key || companyKeyActionBusy) return
-    const name = company.company_name || `Company #${company.company_id}`
-    if (!window.confirm(`Remove the saved API key for ${name}? Its saved company history will be retained.`)) return
-    setCompanyKeyActionBusy(company.company_id)
-    setError("")
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/company-key?companyId=${encodeURIComponent(company.company_id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${sessionToken}` } })
-      const payload = await response.json() as { error?: string; companyKeySaved?: boolean }
-      if (!response.ok) throw new Error(payload.error || "Could not remove this company key.")
-      setSavedCompanies((current) => current.map((item) => item.company_id === company.company_id ? { ...item, has_api_key: false, key_last_four: null, key_updated_at: null } : item))
-      setCompanyKeySaved(payload.companyKeySaved ?? false)
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not remove this company key.")
-    } finally {
-      setCompanyKeyActionBusy("")
-    }
-  }
-
   async function deleteSavedKey() {
     if (!sessionToken || !window.confirm("Permanently delete your saved login and company keys? Your player profile and saved company data will remain.")) return
     setError("")
@@ -878,31 +858,27 @@ export function FloorApp() {
   async function connectCompany(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (demoMode) { setError("Live Torn connections are disabled in the demo workspace. Exit demo to connect real data."); return }
+    if (!sessionToken) { setError("Sign in with your portal API key first."); return }
     setError("")
-    if (!sessionToken && !apiKey.trim()) { setError("Sign in with your Torn API key to create your player workspace."); return }
     setLoading(true)
     try {
-      let token = sessionToken
-      let targetCompanyId = selectedCompanyId
-      if (!secondaryCompanyKey.trim() && targetCompanyId) {
-        await loadSavedCompany(targetCompanyId)
-        return
-      }
-      if (secondaryCompanyKey.trim()) {
-        if (!token) throw new Error("Sign in with your primary Torn API key first.")
-        const keyResponse = await fetch(`${API_BASE}/api/auth/company-key`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ apiKey: secondaryCompanyKey.trim() }) })
-        const keyPayload = await keyResponse.json() as { error?: string; saved?: boolean; companyId?: string | number }
-        if (!keyResponse.ok) throw new Error(keyPayload.error || "Could not save the authorized company key.")
-        targetCompanyId = String(keyPayload.companyId ?? "")
-        setCompanyKeySaved(true)
-        setNeedsSecondaryKey(false)
-        setSecondaryCompanyKey("")
-      }
-      if (!token) throw new Error("Sign in with a Torn API key first.")
-      if (!secondaryCompanyKey.trim() && !targetCompanyId) throw new Error("No saved company data is available yet. Add the authorized company key to initialize the company, or wait for the scheduled 18:10 UTC data refresh.")
-      const response = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${token}` }, body: targetCompanyId ? JSON.stringify({ companyId: targetCompanyId }) : "{}" })
+      const keyResponse = await fetch(`${API_BASE}/api/auth/company-key`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({}),
+      })
+      const keyPayload = await keyResponse.json() as { error?: string; saved?: boolean; companyId?: string | number }
+      if (!keyResponse.ok) throw new Error(keyPayload.error || "Your portal API key could not connect a company.")
+      const targetCompanyId = String(keyPayload.companyId ?? "")
+      if (!/^\\d+$/.test(targetCompanyId)) throw new Error("Torn did not return a valid company ID for your portal key.")
+      setCompanyKeySaved(true)
+      const response = await fetch(`${API_BASE}/api/company/refresh`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({ companyId: targetCompanyId }),
+      })
       const payload = await response.json() as { error?: string; profile?: unknown; employees?: unknown; stock?: unknown; incomeHistory?: IncomeSnapshot[] }
-      if (!response.ok) throw new Error(payload.error || "The API request failed. Check the key and its company-data permissions.")
+      if (!response.ok) throw new Error(payload.error || "The API request failed. Check your portal key's company selections and company permissions.")
       const normalized = runEngine(payload.profile, payload.employees, catalog)
       if (!normalized) throw new Error("Torn returned an unexpected company profile. The response was not added to your saved workspace.")
       setResult({ profile: payload.profile, employees: payload.employees, stock: payload.stock, incomeHistory: payload.incomeHistory, model: normalized })
@@ -910,7 +886,7 @@ export function FloorApp() {
       setSelectedCompanyId(String(normalized.company.id))
       setShowCompanySelector(false)
       setActiveView("overview")
-      const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${token}` } })
+      const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${sessionToken}` } })
       if (listResponse.ok) { const list = await listResponse.json() as { companies: SavedCompany[] }; setSavedCompanies(list.companies || []) }
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not connect to the Torn API.") }
     finally { setLoading(false) }
