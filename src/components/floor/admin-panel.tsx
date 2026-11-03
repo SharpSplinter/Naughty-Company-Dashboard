@@ -562,8 +562,8 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
         {weeklyBoundariesLoading && !weeklyBoundaries.length ? <div className="empty-state">Loading Sunday boundary records…</div> : (
           <div className="table-scroll"><table className="admin-table"><thead><tr><th>SUNDAY · UTC</th><th>STATS RUN</th><th>GYM ENERGY RUN</th><th>MEMBERS KNOWN</th><th>WEEKLY REPORTS</th><th>RECOVERY</th></tr></thead><tbody>
             {weeklyBoundaries.map((boundary) => {
-              const runLabel = (run: AdminWeeklyRunDiagnostic | null) => !run ? "No run" : run.status + " · " + run.capturedMemberCount + "/" + Math.max(run.targetMemberCount, run.capturedMemberCount) + " captured"
-              const captureLabel = (run: AdminWeeklyRunDiagnostic | null) => !run?.firstCapturedAt ? "No sample captured" : prettyDate(run.firstCapturedAt) + (run.timingDeviationSeconds === null ? "" : " · " + (run.timingDeviationSeconds >= 0 ? "+" : "") + Math.round(run.timingDeviationSeconds / 60) + "m")
+              const runLabel = (run: AdminWeeklyRunDiagnostic | null) => !run ? "No run" : run.status + " · " + run.capturedMemberCount + "/" + Math.max(run.targetMemberCount, run.capturedMemberCount) + " captured · " + run.completeMemberCount + " complete"
+              const captureLabel = (run: AdminWeeklyRunDiagnostic | null) => !run?.firstCapturedAt ? "No sample captured" : "First " + prettyDate(run.firstCapturedAt) + (run.lastCapturedAt && run.lastCapturedAt !== run.firstCapturedAt ? " · last " + prettyDate(run.lastCapturedAt) : "") + (run.timingDeviationSeconds === null ? "" : " · " + (run.timingDeviationSeconds >= 0 ? "+" : "") + Math.round(run.timingDeviationSeconds / 60) + "m")
               const reportLabel = [boundary.endingWeekReport, boundary.startingWeekReport].filter(Boolean).map((report) => report!.status + " · " + report!.weekStartAt.slice(0, 10)).join(" / ")
               return <tr key={boundary.boundaryAt}>
                 <td><strong>{prettyDate(boundary.boundaryAt)}</strong><small>{boundary.status.replaceAll("_", " ")}</small></td>
