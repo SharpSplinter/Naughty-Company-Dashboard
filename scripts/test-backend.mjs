@@ -478,7 +478,7 @@ try {
       membership_check_status: null, is_admin: 0,
     }
     const sessions = new Map([[tokenHash, { player_id: "77", expires_at: Math.floor(Date.now() / 1000) + 3600 }]])
-    const state = { key: null, snapshot: null, writes: [] }
+    const state = { key: null, snapshot: null, throttleAt: null, writes: [] }
     const db = {
       prepare(sql) {
         const normalized = sql.toLowerCase().replace(/\s+/g, " ").trim()
@@ -500,6 +500,12 @@ try {
           async all() { return { results: [] } },
           async run() {
             state.writes.push({ sql: normalized, values: [...values] })
+            if (normalized.startsWith("insert into member_private_live_api_throttles")) {
+              const retryBefore = String(values[2])
+              const changes = !state.throttleAt || state.throttleAt <= retryBefore
+              if (changes) state.throttleAt = String(values[1])
+              return { success: true, meta: { changes: changes ? 1 : 0 } }
+            }
             if (normalized.startsWith("insert into member_private_live_keys")) {
               state.key = {
                 last_four: values[4], include_networth: values[5], share_with_faction: 1,
@@ -580,9 +586,12 @@ try {
         apiKey, consent: true, shareWithFaction: true, consentVersion: "faction-private-live-v1",
       })
       assert.equal(wrongOwner.status, 403)
-      assert.equal(state.writes.length, 0, "a key owned by another player must never be stored")
+      assert.equal(state.key, null, "a key owned by another player must never be stored")
+      assert.equal(state.snapshot, null, "a key owned by another player must never create a faction snapshot")
 
       keyOwnerId = "77"
+      // The failed owner verification consumed a request-budget slot.
+      state.throttleAt = new Date(Date.now() - 31000).toISOString()
       const connected = await request("POST", {
         apiKey, consent: true, shareWithFaction: true,
         consentVersion: "faction-private-live-v1", includeNetworth: false,
@@ -599,6 +608,14 @@ try {
       assert.equal(JSON.parse(state.snapshot.cooldowns_json).drug, 120)
       assert.equal(state.snapshot.networth_json, null)
       assert.ok(state.writes.every(write => !write.values.includes(apiKey)), "plaintext key must never be bound to D1")
+
+      const requestsBeforeThrottle = calls.length
+      const rateLimited = await request("POST", {
+        apiKey, consent: true, shareWithFaction: true,
+        consentVersion: "faction-private-live-v1", includeNetworth: false,
+      })
+      assert.equal(rateLimited.status, 429, "repeat private live connect attempts must share the member request budget")
+      assert.equal(calls.length, requestsBeforeThrottle, "a rejected request must not contact Torn")
 
       const insertKey = state.writes.find(write => write.sql.startsWith("insert into member_private_live_keys"))
       assert.ok(insertKey)
@@ -620,8 +637,9 @@ try {
       assert.equal(statusBody.snapshot.bars.energy.current, 90)
       assert.equal(JSON.stringify(statusBody).includes(apiKey), false)
 
-      // Replace with an explicit detailed-networth opt-in. This is the only
-      // operation above that is permitted to call /user/networth.
+      // Replace with an explicit detailed-networth opt-in after the
+      // server-enforced 30-second per-member request window has elapsed.
+      state.throttleAt = new Date(Date.now() - 31000).toISOString()
       const networthConnection = await request("POST", {
         apiKey, consent: true, shareWithFaction: true,
         consentVersion: "faction-private-live-v1", includeNetworth: true,
