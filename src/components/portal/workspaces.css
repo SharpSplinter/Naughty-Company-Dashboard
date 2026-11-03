@@ -416,3 +416,40 @@
 .faction-weekly-history-panel .historical-leaderboard table{min-width:920px}
 .faction-weekly-history-panel td small{display:block;margin-top:3px;color:#8ba0a1;font-size:7px}
 @media(max-width:720px){.faction-weekly-history-controls{grid-template-columns:1fr}.faction-weekly-history-controls button{justify-self:start}.faction-weekly-history-meta{gap:10px 14px}}
+
+/* Tested weekly leaderboard sorting, filtering, and member detail panel. */
+
+.faction-weekly-sort-button{display:inline-flex;align-items:center;gap:4px;border:0;background:transparent;color:inherit;padding:2px 0;font:inherit;font-weight:800;letter-spacing:inherit;text-align:left;white-space:nowrap;cursor:pointer}
+.faction-weekly-sort-button:hover,.faction-weekly-sort-button:focus-visible{color:#d9f5e6;text-decoration:underline;text-underline-offset:3px}
+.faction-weekly-sort-button span{color:#79bba3;font-size:10px}
+.faction-weekly-filter-controls{display:flex;align-items:end;flex-wrap:wrap;gap:10px 14px;padding:12px 14px;margin:4px 0 12px;border:1px solid #30464a;border-radius:8px;background:#101c23}
+.faction-weekly-filter-controls>label{display:flex;flex-direction:column;gap:5px;color:#92aaa6;font-size:8px;font-weight:700;letter-spacing:.1em;text-transform:uppercase}
+.faction-weekly-filter-controls select{min-width:145px;border:1px solid #40585a;border-radius:6px;background:#0d191f;color:#e0eee7;padding:8px 9px;font-size:9px}
+.faction-weekly-filter-controls .faction-weekly-anomaly-toggle{flex-direction:row;align-items:center;gap:7px;min-height:31px;letter-spacing:0;text-transform:none;font-size:9px}
+.faction-weekly-anomaly-toggle input{accent-color:#65b99a;width:14px;height:14px}
+.faction-weekly-filter-controls>button{border:1px solid #40585a;border-radius:6px;background:#1a2c33;color:#c7dbd5;padding:8px 10px;font-size:9px;font-weight:700;cursor:pointer}
+.faction-weekly-result-count{margin-left:auto;padding:7px 0;color:#8ca5a6;font-size:8px;white-space:nowrap}
+.faction-weekly-member-link{display:block;border:0;background:transparent;padding:0;color:#bfe7d4;font:inherit;font-weight:800;text-align:left;cursor:pointer}
+.faction-weekly-member-link:hover,.faction-weekly-member-link:focus-visible{color:#fff;text-decoration:underline;text-underline-offset:3px}
+.faction-weekly-member-detail{margin-top:14px;padding:16px;border:1px solid #3b6559;border-radius:10px;background:linear-gradient(135deg,#142a2a,#111e27)}
+.faction-weekly-member-detail-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+.faction-weekly-member-detail-heading small{color:#8bc9b0;font-size:8px;font-weight:800;letter-spacing:.14em}
+.faction-weekly-member-detail-heading h3{margin:5px 0 4px;color:#ecf6ef;font:600 19px 'Space Grotesk',sans-serif}
+.faction-weekly-member-detail-heading span{color:#91a9a7;font-size:9px}
+.faction-weekly-member-detail-heading>button{border:1px solid #49645f;border-radius:6px;background:#172b30;color:#cce1d9;padding:7px 10px;font-size:9px;cursor:pointer}
+.faction-weekly-member-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:14px 0}
+.faction-weekly-member-meta article{min-width:0;padding:10px;border:1px solid #2e4949;border-radius:7px;background:#101e25}
+.faction-weekly-member-meta small,.faction-weekly-member-meta strong{display:block}
+.faction-weekly-member-meta small{color:#80a49b;font-size:7px;font-weight:800;letter-spacing:.1em}
+.faction-weekly-member-meta strong{margin-top:5px;color:#d8e8e0;font-size:10px;overflow-wrap:anywhere}
+.faction-weekly-member-capture,.faction-weekly-profile-comparison{display:flex;flex-wrap:wrap;gap:8px 18px;padding:10px 0;color:#91aaa7;font-size:8px}
+.faction-weekly-member-capture strong,.faction-weekly-profile-comparison strong{color:#d0e2da;font-weight:700}
+.faction-weekly-member-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}
+.faction-weekly-member-metrics article{padding:10px;border:1px solid #2d4549;border-radius:7px;background:#101d24}
+.faction-weekly-member-metrics small,.faction-weekly-member-metrics strong{display:block}
+.faction-weekly-member-metrics small{color:#819e99;font-size:7px;font-weight:700;letter-spacing:.06em}
+.faction-weekly-member-metrics strong{margin-top:5px;color:#e3f1e9;font:600 13px 'Space Grotesk',sans-serif}
+.faction-weekly-profile-anomaly{margin:10px 0 0;color:#edc28b;font-size:9px}
+.faction-weekly-profile-note{margin:10px 0 0;color:#8ba2a4;font-size:8px;line-height:1.6}
+@media(max-width:760px){.faction-weekly-filter-controls{align-items:stretch}.faction-weekly-filter-controls>label:not(.faction-weekly-anomaly-toggle){flex:1;min-width:130px}.faction-weekly-filter-controls select{width:100%;min-width:0}.faction-weekly-result-count{margin-left:0}.faction-weekly-member-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.faction-weekly-member-meta{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:480px){.faction-weekly-member-detail{padding:12px}.faction-weekly-member-detail-heading{flex-direction:column}.faction-weekly-member-metrics{grid-template-columns:1fr 1fr}}
