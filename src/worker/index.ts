@@ -1663,6 +1663,10 @@ async function removeDepartedFactionAccess(env: WorkerEnv, playerId: string): Pr
   await db.prepare("UPDATE administrators SET revoked_by = 'system', revoked_at = ? WHERE player_id = ? AND revoked_at IS NULL")
     .bind(new Date().toISOString(), playerId).run()
   await purgeHalloweenMemberData(env, playerId)
+  // Private owner-key data is live-only and is removed immediately on a
+  // confirmed faction departure. It is never retained as faction history.
+  await db.prepare("DELETE FROM faction_member_private_live_snapshots WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM member_private_live_keys WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM sessions WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM api_keys WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM faction_member_cache WHERE player_id = ?").bind(playerId).run()
@@ -5656,7 +5660,7 @@ export default {
       }
       const db = requireDb(env)
       try {
-        const [collectionRows, rosterHeader, rosterRows, statRows, gymRows] = await Promise.all([
+        const [collectionRows, rosterHeader, rosterRows, statRows, gymRows, privateLiveRows] = await Promise.all([
           db.prepare(
             "SELECT collection_kind AS collectionKind, last_success_at AS lastSuccessAt, last_run_id AS lastRunId, last_error AS lastError, updated_at AS updatedAt FROM faction_performance_collection_state WHERE faction_id = ? ORDER BY collection_kind",
           ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
@@ -5672,9 +5676,13 @@ export default {
           db.prepare(
             "SELECT g.user_id AS userId, g.captured_at AS gymEnergyCapturedAt, g.gym_energy_total AS gymEnergyTotal, g.in_faction AS gymEnergyInFaction, g.collection_status AS gymEnergyCollectionStatus FROM faction_gym_energy_snapshots g WHERE g.faction_id = ? AND NOT EXISTS (SELECT 1 FROM faction_gym_energy_snapshots newer WHERE newer.faction_id = g.faction_id AND newer.user_id = g.user_id AND (newer.captured_at > g.captured_at OR (newer.captured_at = g.captured_at AND newer.snapshot_id > g.snapshot_id)))",
           ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT s.player_id AS userId, s.captured_at AS privateCapturedAt, s.bars_json AS barsJson, s.cooldowns_json AS cooldownsJson, s.networth_json AS networthJson, k.include_networth AS includeNetworth, k.last_error AS lastError FROM faction_member_private_live_snapshots s JOIN member_private_live_keys k ON k.player_id = s.player_id AND k.faction_id = s.faction_id AND k.share_with_faction = 1 LEFT JOIN dashboard_member_status st ON st.player_id = s.player_id WHERE s.faction_id = ? AND st.disabled_at IS NULL",
+          ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
         ])
         const statsByUser = new Map((statRows.results ?? []).map((row) => [String(row.userId), row]))
         const gymByUser = new Map((gymRows.results ?? []).map((row) => [String(row.userId), row]))
+        const privateLiveByUser = new Map((privateLiveRows.results ?? []).map((row) => [String(row.userId), row]))
         const members = (rosterRows.results ?? []).map((roster) => {
           const userId = String(roster.userId)
           let missingMetrics: unknown = []
@@ -5690,6 +5698,16 @@ export default {
             hasEarlyDischarge: roster.hasEarlyDischarge == null ? null : roster.hasEarlyDischarge === 1,
             stats: stats ? { ...stats, missingMetrics } : null,
             gymEnergy: gymByUser.get(userId) ?? null,
+            privateLive: (() => {
+              const live = privateLiveByUser.get(userId)
+              if (!live) return null
+              return {
+                capturedAt: String(live.privateCapturedAt ?? ""),
+                bars: parseStoredJson(live.barsJson),
+                cooldowns: parseStoredJson(live.cooldownsJson),
+                networth: Number(live.includeNetworth) === 1 ? parseStoredJson(live.networthJson) : null,
+              }
+            })(),
           }
         })
         const collection = (collectionRows.results ?? []).map((row) => ({
