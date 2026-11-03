@@ -5238,7 +5238,7 @@ export default {
         const portalKey = await savedKey(env, session.player_id)
         const isSecondary = Boolean(submittedKey && submittedKey !== portalKey)
         const apiKey = submittedKey || portalKey || ""
-        if (!apiKey || apiKey.length > 256 || /\\s/.test(apiKey)) {
+        if (!apiKey || apiKey.length > 256 || /\s/.test(apiKey)) {
           return jsonResponse({ error: submittedKey ? "Enter a valid company API key." : "Your saved portal API key is missing. Sign in again with your Torn key." }, 409, origin)
         }
         if (isSecondary) await validatePrivateLiveKeyOwner(env, apiKey, session.player_id)
@@ -5265,19 +5265,23 @@ export default {
       const companyKey = await savedCompanyApiKey(env, session.player_id, companyId)
       if (!companyKey) return jsonResponse({ error: "No saved API key exists for this company." }, 404, origin)
       const loginKey = await savedKey(env, session.player_id)
-      if (loginKey && loginKey === companyKey) return jsonResponse({ error: "This company connection uses your login key. Replace your login key first if you want to disconnect this company." }, 409, origin)
-      const otherCompany = await db.prepare("SELECT company_id FROM company_api_keys WHERE player_id = ? AND company_id != ? LIMIT 1").bind(session.player_id, companyId).first<{ company_id: string }>()
-      if (!otherCompany && loginKey) {
+      if (loginKey && loginKey === companyKey) return jsonResponse({ error: "This company connection is your primary portal key, not a secondary key." }, 409, origin)
+      if (loginKey) {
         try {
           const loginCompany = await validateCompanyKey(loginKey)
-          if (String(loginCompany.companyId) === companyId) return jsonResponse({ error: "Your saved login key also connects to this company. Replace your login key first if you want to disconnect it." }, 409, origin)
-        } catch { /* A login key without company access cannot recreate this connection. */ }
+          if (String(loginCompany.companyId) === companyId) {
+            // Removing the secondary credential should fall back to the primary
+            // portal key if it can read this same company.
+            await saveCompanyApiKey(env, session.player_id, Number(companyId), loginKey, loginCompany.profile)
+            return jsonResponse({ deleted: true, companyId, companyDataRetained: true, companyKeySaved: true, portalKeyStillProvidesAccess: true }, 200, origin)
+          }
+        } catch { /* The primary portal key cannot access this company; remove only the selected secondary key. */ }
       }
       const legacyKey = await savedCompanyKey(env, session.player_id)
       if (legacyKey === companyKey) await db.prepare("DELETE FROM company_keys WHERE player_id = ?").bind(session.player_id).run()
       await db.prepare("DELETE FROM company_api_keys WHERE player_id = ? AND company_id = ?").bind(session.player_id, companyId).run()
       const keyMeta = await companyKeyMeta(env, session.player_id)
-      return jsonResponse({ deleted: true, companyId, companyDataRetained: true, companyKeySaved: keyMeta.saved }, 200, origin)
+      return jsonResponse({ deleted: true, companyId, companyDataRetained: true, companyKeySaved: keyMeta.saved, portalKeyStillProvidesAccess: false }, 200, origin)
     }
     if (url.pathname === "/api/auth/key" && request.method === "DELETE") {
       const session = await authenticate(request, env)
