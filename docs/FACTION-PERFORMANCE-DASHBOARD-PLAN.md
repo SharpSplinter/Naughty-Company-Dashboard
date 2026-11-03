@@ -327,7 +327,7 @@ Display:
 
 Networth change is informational and must not be included in the default activity-ranking score.
 
-The optional detailed breakdown is collected only from the member's own /user/networth call, using their voluntarily connected Limited-or-higher key and explicit opt-in. Do not request another member's private networth breakdown.
+The optional detailed breakdown is collected only from the member's own /user/networth call, using their canonical sign-in key and explicit opt-in. Do not request another member's private networth breakdown.
 
 ## 10. Live Member Status
 
@@ -345,14 +345,14 @@ Create a dedicated Live Member Status tab with columns:
 | Hospital timer | status.until when available |
 | Can I revive? | is_revivable, specific to key owner |
 | Revive setting | revive_setting, separate target preference |
-| Energy | current / maximum from member's own connected key |
+| Energy | current / maximum from member's own canonical portal key after private-live sharing opt-in |
 | Drug cooldown | Remaining value from own key |
 | Booster cooldown | Remaining value from own key |
 | Medical cooldown | Remaining value from own key |
 | Networth | Public total; detailed breakdown only with consent |
 | Last refreshed | Per-value freshness |
 
-Filters for revive and inactivity must be independent. Unknown fields remain Unknown. A member without an opted-in personal key shows Not Connected for private live fields.
+Filters for revive and inactivity must be independent. Unknown fields remain Unknown. A member without an opted-in portal-key private-live connection shows Not Connected for private live fields.
 
 ## 11. Weekly Rankings — default landing tab
 
@@ -613,7 +613,7 @@ Do not let a generic member purge delete weekly history. Define a reviewed reten
 
 - Missing values are unknown, not zero.
 - API failures do not erase valid history.
-- Missing personal key does not stop public faction data collection.
+- Missing member portal key does not stop public faction data collection.
 - Midweek joiners are partial-week participants with a first-seen baseline.
 - Midweek leavers keep history and use their final in-faction snapshot.
 - Counter decreases are anomaly/reset cases, never silent negative usage.
@@ -818,8 +818,8 @@ Still to implement or validate:
 - Category current-response nested paths are not confused with historical stat names.
 - Historical requests require timestamp, are capped at 10 stat names per request, and handle omitted stats as unknown.
 - Historical per-stat timestamps are retained as last-updated timestamps, not falsely treated as exact requested-time samples.
-- bars and cooldowns are called only using the member's own opted-in key.
-- Detailed networth is called only using the member's own authorized key.
+- bars and cooldowns are called only using the member's own canonical portal key after explicit private-live sharing opt-in.
+- Detailed networth is called only using the member's own canonical portal key after separate networth opt-in and Torn permission validation.
 - Missing/invalid keys do not stop public-stat collection.
 - API response failure does not erase prior data.
 - Rate-limit/backoff prevents repeated invalid or throttled calls.
@@ -842,7 +842,7 @@ The project is not complete until all of the following are implemented and teste
 10. Last action and online status are displayed.
 11. 24H+ and 72H+ inactivity flags are displayed accurately.
 12. Hospital status and remaining time are shown where the API supplies them.
-13. Members can voluntarily connect personal keys for live energy/cooldown information.
+13. Members can voluntarily opt in to live energy/cooldown sharing using the same portal key they use to sign in.
 14. Unknown/unavailable/disconnected/stale information is represented correctly.
 15. Completed weekly rankings remain historically available.
 16. Members joining/leaving midweek are handled accurately.
