@@ -66,14 +66,14 @@ jobs:
           grep -F 'database_id = "02cca699-1232-495f-8a0a-de525058b92a"' wrangler.acceptance.toml
           grep -F 'ALLOWED_ORIGIN = "https://naughtyfamily-staging.pages.dev"' wrangler.acceptance.toml
           ! grep -F 'bbbe128a-c5cc-46ec-b8ef-93860183e795' wrangler.acceptance.toml
-          grep -F 'crons = ["10 18 * * *", "10 0 * * *", "*/5 * * * *"]' wrangler.acceptance.toml
           grep -F 'binding = "GLOBAL_RANKINGS_QUEUE"' wrangler.acceptance.toml
           grep -F 'queue = "ncd-naughtyfamily-staging-collection"' wrangler.acceptance.toml
           grep -F 'dead_letter_queue = "ncd-naughtyfamily-staging-dlq"' wrangler.acceptance.toml
           ! grep -F 'ncd-global-rankings-refresh' wrangler.acceptance.toml
           ! grep -F 'ncd-faction-performance-integration' wrangler.acceptance.toml
           grep -F 'database_id = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"' wrangler.staging.toml
-          echo "Confirmed: acceptance Worker uses isolated staging D1, staging-only Queues and bounded collection schedules; production targets are excluded."
+          ! grep -F '[triggers]' wrangler.acceptance.toml
+          echo "Confirmed: acceptance Worker uses isolated staging D1 and staging-only Queues; cron triggers are omitted to respect the account Free-plan quota, and production targets are excluded."
 
       - name: Provision isolated staging Queues
         env:
