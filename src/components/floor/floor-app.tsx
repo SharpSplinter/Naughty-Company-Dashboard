@@ -779,7 +779,7 @@ export function FloorApp() {
         body: JSON.stringify({ apiKey: apiKey.trim() }),
       })
       const payload = await response.json() as { error?: string; token?: string; isAdmin?: boolean; player?: { id: string; name: string }; key?: { saved: boolean } }
-      if (!response.ok) throw new Error(payload.error || "Sign-in failed. Check that your Torn key is valid and has limited permissions.")
+      if (!response.ok) throw new Error(payload.error || "Sign-in failed. Check that your Torn custom key or Full Access key is valid and includes User profile and faction access.")
       if (!payload.token) throw new Error("The sign-in service did not return a session. Please try again.")
       localStorage.setItem("ncd_session", payload.token)
       setSessionToken(payload.token)
@@ -907,7 +907,7 @@ export function FloorApp() {
           <input id="login-api-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your Torn API key" required />
           <p className="login-hint">Your key is sent securely to the dashboard API for validation. It is never stored in this browser's local storage.</p>
           <p className="login-hint">This is your one portal key for sign-in, company data, private live status and optional Halloween collection. Features are enabled only when your key has the required Torn selections and you grant their separate data-sharing consent.</p>
-          <p className="login-hint"><a href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Naughty%20Family%20Portal&user=profile,faction,job,bars,cooldowns,networth,halloween,log&company=profile,employees,stock&key=info" target="_blank" rel="noreferrer">Create the recommended Naughty Family Portal custom key ↗</a></p>
+          <p className="login-hint"><a href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Naughty%20Family%20Portal&user=profile,faction,job,personalstats,bars,cooldowns,networth,halloween,log&faction=members,stats,contributors&company=profile,employees,stock,companies&torn=companies&key=info" target="_blank" rel="noreferrer">Create the recommended Naughty Family Portal custom key ↗</a></p>
           {error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}
           <button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Verifying key…</> : <>Sign in securely <span>→</span></>}</button>
         </form>
