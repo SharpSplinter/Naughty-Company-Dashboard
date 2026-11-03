@@ -1823,14 +1823,14 @@ async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Pro
       .bind("Historical collection is disabled for this event year.", new Date().toISOString(), jobId).run()
     return
   }
-  const keyRow = await db.prepare("SELECT ciphertext, iv FROM halloween_historical_keys WHERE player_id = ?")
-    .bind(job.player_id).first<{ ciphertext: string; iv: string }>()
-  if (!keyRow) {
+  const keyRow = await db.prepare("SELECT player_id FROM halloween_historical_keys WHERE player_id = ?")
+    .bind(job.player_id).first<{ player_id: string }>()
+  const apiKey = keyRow ? await savedKey(env, job.player_id) : null
+  if (!apiKey) {
     await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
-      .bind("The member's Full Access key is no longer connected.", new Date().toISOString(), jobId).run()
+      .bind("The member's portal API key is no longer connected. Sign in with a key that includes user log access.", new Date().toISOString(), jobId).run()
     return
   }
-  const apiKey = await decryptKey(env, keyRow.ciphertext, keyRow.iv)
   await throttleHalloweenRequest(env, job.player_id)
   const factionId = await verifyFactionMembershipWithKey(apiKey)
   if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
@@ -4820,12 +4820,12 @@ export default {
       if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) return jsonResponse({ error: "Private live connections are available only to current Naughty Souls members." }, 403, origin)
       try {
         const body: unknown = await request.json().catch(() => null)
-        const apiKey = isRecord(body) && typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+        const apiKey = await savedKey(env, session.player_id) ?? ""
         const consent = isRecord(body) && body.consent === true
         const shareWithFaction = isRecord(body) && body.shareWithFaction === true
         const consentVersion = isRecord(body) && typeof body.consentVersion === "string" ? body.consentVersion : ""
         let includeNetworth = isRecord(body) && body.includeNetworth === true
-        if (!apiKey || apiKey.length > 256 || /\s/.test(apiKey)) return jsonResponse({ error: "Enter a valid Torn API key." }, 400, origin)
+        if (!apiKey) return jsonResponse({ error: "Sign in with your single Naughty Family Portal Torn API key before enabling private live data." }, 409, origin)
         if (!consent || !shareWithFaction || consentVersion !== "faction-private-live-v1") {
           return jsonResponse({ error: "Review and accept the private live data-sharing terms before connecting your key." }, 400, origin)
         }
@@ -4882,9 +4882,11 @@ export default {
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) return jsonResponse({ error: "Private live connections are available only to current Naughty Souls members." }, 403, origin)
       const db = requireDb(env)
-      const key = await db.prepare("SELECT ciphertext, iv, include_networth FROM member_private_live_keys WHERE player_id = ? AND faction_id = ? AND share_with_faction = 1")
-        .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID).first<{ ciphertext: string; iv: string; include_networth: number }>()
-      if (!key) return jsonResponse({ error: "Connect your own private live Torn key before refreshing." }, 404, origin)
+      const key = await db.prepare("SELECT include_networth FROM member_private_live_keys WHERE player_id = ? AND faction_id = ? AND share_with_faction = 1")
+        .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID).first<{ include_networth: number }>()
+      if (!key) return jsonResponse({ error: "Enable private live sharing with your saved portal key before refreshing." }, 404, origin)
+      const apiKey = await savedKey(env, session.player_id)
+      if (!apiKey) return jsonResponse({ error: "Your saved portal API key is missing. Sign in again with your Torn key." }, 409, origin)
       const now = new Date().toISOString()
       if (!await claimPrivateLiveRequest(env, session.player_id)) {
         return jsonResponse({ error: "A private live Torn request was made recently. Please wait 30 seconds before refreshing again." }, 429, origin, { "retry-after": "30" })
@@ -4892,7 +4894,6 @@ export default {
       await db.prepare("UPDATE member_private_live_keys SET last_attempt_at = ?, last_error = NULL, updated_at = ? WHERE player_id = ?")
         .bind(now, now, session.player_id).run()
       try {
-        const apiKey = await decryptKey(env, key.ciphertext, key.iv)
         const live = await fetchPrivateLiveBase(env, apiKey)
         let includeNetworth = Number(key.include_networth) === 1
         let networth: ReturnType<typeof parsePrivateLiveNetworth> | null = null
@@ -5175,7 +5176,8 @@ export default {
       if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
       const db = requireDb(env)
       const key = await db.prepare("SELECT player_id FROM halloween_historical_keys WHERE player_id = ?").bind(session.player_id).first<{ player_id: string }>()
-      if (!key) return jsonResponse({ error: "Connect your own Full Access key before collecting historical Halloween logs." }, 409, origin)
+      const portalKey = await savedKey(env, session.player_id)
+      if (!key || !portalKey) return jsonResponse({ error: "Enable Halloween historical collection with your saved portal API key before collecting logs." }, 409, origin)
       const event = await db.prepare("SELECT start_at AS startAt, end_at AS endAt, historical_collection_enabled AS enabled FROM halloween_event_windows WHERE event_year = ?")
         .bind(yearValue).first<{ startAt: string; endAt: string; enabled: number }>()
       if (!event || event.enabled !== 1) return jsonResponse({ error: "Historical collection is not enabled for that event year." }, 409, origin)
@@ -5206,11 +5208,10 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       try {
-        const body: unknown = await request.json().catch(() => null)
-        const apiKey = isRecord(body) && typeof body.apiKey === "string" ? body.apiKey.trim() : ""
-        if (!apiKey) return jsonResponse({ error: "A secondary company API key is required." }, 400, origin)
+        const apiKey = await savedKey(env, session.player_id)
+        if (!apiKey) return jsonResponse({ error: "Your saved portal API key is missing. Sign in again with your Torn key." }, 409, origin)
         const validated = await validateCompanyKey(apiKey)
-        await saveCompanyApiKey(env, session.player_id, validated.companyId, apiKey, validated.profile)
+        await persistCompanyConnection(env, session.player_id, apiKey, validated, false)
         const root = isRecord(validated.profile) && isRecord(validated.profile.company) ? validated.profile.company : isRecord(validated.profile) && isRecord(validated.profile.profile) ? validated.profile.profile : {}
         const type = isRecord(root.type) ? root.type : {}
         return jsonResponse({ saved: true, companyId: validated.companyId, companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}`, companyType: typeof type.name === "string" ? type.name : null }, 200, origin)
