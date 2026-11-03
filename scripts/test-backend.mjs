@@ -662,7 +662,7 @@ try {
     assert.doesNotMatch(floorSource, /currentStockQuantity - previousStockSnapshot\.stockQuantity/)
   })
 
-  await test("faction performance read API is faction-authenticated and exposes only public collection fields", () => {
+  await test("faction performance read API is faction-authenticated and exposes only public fields plus explicitly opted-in private live snapshots", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const routeStart = workerSource.indexOf('if (url.pathname === "/api/faction/performance" && request.method === "GET")')
     const routeEnd = workerSource.indexOf('if (url.pathname === "/api/faction/shared-company-data"', routeStart)
@@ -686,7 +686,12 @@ try {
     assert.match(route, /statsCapturedAt/)
     assert.match(route, /gymEnergyCapturedAt/)
     assert.match(route, /private, max-age=30/)
-    assert.doesNotMatch(route, /api_keys|encrypted_api_key|cooldowns|bars/)
+    assert.match(route, /faction_member_private_live_snapshots/)
+    assert.match(route, /k\.share_with_faction = 1/, "private live values require the member's explicit sharing consent")
+    assert.match(route, /st\.disabled_at IS NULL/, "disabled members' private live values must not be shared")
+    assert.match(route, /privateLiveByUser/)
+    assert.doesNotMatch(route, /api_keys|encrypted_api_key|SELECT ciphertext|SELECT \\* FROM member_private_live_keys/,
+      "faction performance must never return encrypted credentials")
   })
 
   await test("faction performance migration preserves historical data independently of player rows", () => {
