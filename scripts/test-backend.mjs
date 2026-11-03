@@ -3315,6 +3315,10 @@ try {
               return { disabled_at: disabled.get(String(values[0])) ?? null }
             }
             if (normalized.startsWith("select ciphertext, iv from api_keys")) return apiKeys.get(String(values[0])) ?? null
+            if (normalized.startsWith("select player_id from halloween_historical_keys")) {
+              const row = halloweenTables.halloween_historical_keys.get(String(values[0]))
+              return row ? { player_id: String(values[0]) } : null
+            }
             if (normalized.startsWith("select ciphertext, iv from halloween_historical_keys")) {
               const row = halloweenTables.halloween_historical_keys.get(String(values[0]))
               return row?.ciphertext && row?.iv ? row : null
