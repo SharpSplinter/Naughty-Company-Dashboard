@@ -336,14 +336,23 @@ async function fetchPrivateLiveSelection(apiKey: string, selection: "bars" | "co
     const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
     if (!response.ok || error) {
       const code = typeof error?.code === "number" ? error.code : undefined
-      const status = code === 2 ? 401 : code === 5 ? 429 : code === 7 ? 403 : code === 16 ? 403 : code === 18 ? 401 : response.status >= 500 ? 502 : 502
+      const status = code === 2 || code === 18 ? 401
+        : code === 5 || code === 14 ? 429
+        : code === 7 || code === 10 || code === 13 || code === 16 ? 403
+        : code === 9 || code === 17 ? 503
+        : code === 3 || code === 4 || code === 6 ? 400
+        : response.status >= 500 ? 502 : 502
       const message = code === 2 ? "The private live Torn API key is invalid."
+        : code === 3 || code === 4 ? "Torn rejected the requested private live selection. Check the selection and try again."
         : code === 5 ? "Torn rate limit reached. Wait before refreshing your private live data."
-        : code === 7 || code === 16 ? "This key does not have permission for the requested private Torn selection."
+        : code === 7 ? "Torn denied this owner-only data selection for the submitted request."
+        : code === 10 ? "The key owner is in federal jail. Your saved key and last successful snapshot were retained."
+        : code === 13 ? "Torn temporarily disabled this key because its owner has been inactive. Your last successful snapshot was retained."
+        : code === 14 ? "Torn's daily API read limit has been reached. Your key and last successful snapshot were retained."
+        : code === 16 ? "This key does not have permission for the requested private Torn selection."
         : code === 18 ? "This Torn API key has been paused by its owner."
-        : code === 10 ? "The Torn API key owner is in federal jail and the key cannot be used."
-        : code === 13 ? "Torn has temporarily disabled this key because its owner has been inactive."
         : code === 9 ? "Torn's API is temporarily unavailable. Try again shortly."
+        : code === 17 ? "Torn reported a temporary backend error. Your last successful snapshot was retained."
         : "Torn could not provide the requested private live data."
       throw new TornApiClientError(message, { status, code })
     }
@@ -406,7 +415,11 @@ function privateLiveSafeError(error: unknown): { status: number; message: string
 }
 
 function privateLiveKeyMustBeRevoked(error: unknown): boolean {
-  return error instanceof TornApiClientError && [2, 7, 10, 13, 16, 18].includes(Number(error.code))
+  // Permanently invalid keys, owner-paused keys, or keys that have lost the
+  // required private selections are disconnected. Temporary owner states
+  // (federal jail/inactivity), rate limits and API outages retain the key and
+  // the last known snapshot until the member explicitly retries.
+  return error instanceof TornApiClientError && [2, 16, 18].includes(Number(error.code))
 }
 
 function safeStoredJson(value: unknown): unknown {
@@ -4803,11 +4816,19 @@ export default {
         const live = await fetchPrivateLiveBase(apiKey)
         let networth: ReturnType<typeof parsePrivateLiveNetworth> | null = null
         let networthSourceTimestamp: number | null = null
+        let networthWarning: string | null = null
         if (includeNetworth) {
-          const networthPayload = await fetchPrivateLiveSelection(apiKey, "networth")
-          networth = parsePrivateLiveNetworth(networthPayload)
-          if (isRecord(networthPayload) && typeof networthPayload.timestamp === "number" && Number.isFinite(networthPayload.timestamp)) {
-            networthSourceTimestamp = networthPayload.timestamp
+          try {
+            const networthPayload = await fetchPrivateLiveSelection(apiKey, "networth")
+            networth = parsePrivateLiveNetworth(networthPayload)
+            if (isRecord(networthPayload) && typeof networthPayload.timestamp === "number" && Number.isFinite(networthPayload.timestamp)) {
+              networthSourceTimestamp = networthPayload.timestamp
+            }
+          } catch (error) {
+            if (error instanceof TornApiClientError && error.code === 16) {
+              includeNetworth = false
+              networthWarning = "Torn did not grant this key access to detailed networth. Bars and cooldowns were connected; optional networth was left off."
+            } else throw error
           }
         }
 
@@ -4824,6 +4845,7 @@ export default {
           lastFour: apiKey.slice(-4),
           includeNetworth,
           shareWithFaction: true,
+          warning: networthWarning,
           consentedAt: now,
           capturedAt: now,
         }, 200, origin)
@@ -5677,7 +5699,7 @@ export default {
             "SELECT g.user_id AS userId, g.captured_at AS gymEnergyCapturedAt, g.gym_energy_total AS gymEnergyTotal, g.in_faction AS gymEnergyInFaction, g.collection_status AS gymEnergyCollectionStatus FROM faction_gym_energy_snapshots g WHERE g.faction_id = ? AND NOT EXISTS (SELECT 1 FROM faction_gym_energy_snapshots newer WHERE newer.faction_id = g.faction_id AND newer.user_id = g.user_id AND (newer.captured_at > g.captured_at OR (newer.captured_at = g.captured_at AND newer.snapshot_id > g.snapshot_id)))",
           ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
           db.prepare(
-            "SELECT s.player_id AS userId, s.captured_at AS privateCapturedAt, s.bars_json AS barsJson, s.cooldowns_json AS cooldownsJson, s.networth_json AS networthJson, k.include_networth AS includeNetworth, k.last_error AS lastError FROM faction_member_private_live_snapshots s JOIN member_private_live_keys k ON k.player_id = s.player_id AND k.faction_id = s.faction_id AND k.share_with_faction = 1 LEFT JOIN dashboard_member_status st ON st.player_id = s.player_id WHERE s.faction_id = ? AND st.disabled_at IS NULL",
+            "SELECT s.player_id AS userId, s.captured_at AS privateCapturedAt, s.bars_json AS barsJson, s.cooldowns_json AS cooldownsJson, s.networth_json AS networthJson, s.source_timestamps_json AS sourceTimestampsJson, k.include_networth AS includeNetworth, k.last_error AS lastError FROM faction_member_private_live_snapshots s JOIN member_private_live_keys k ON k.player_id = s.player_id AND k.faction_id = s.faction_id AND k.share_with_faction = 1 LEFT JOIN dashboard_member_status st ON st.player_id = s.player_id WHERE s.faction_id = ? AND st.disabled_at IS NULL",
           ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
         ])
         const statsByUser = new Map((statRows.results ?? []).map((row) => [String(row.userId), row]))
@@ -5706,6 +5728,7 @@ export default {
                 bars: parseStoredJson(live.barsJson),
                 cooldowns: parseStoredJson(live.cooldownsJson),
                 networth: Number(live.includeNetworth) === 1 ? parseStoredJson(live.networthJson) : null,
+                sourceTimestamps: parseStoredJson(live.sourceTimestampsJson),
               }
             })(),
           }
