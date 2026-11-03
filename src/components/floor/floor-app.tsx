@@ -204,7 +204,7 @@ export function FloorApp() {
         setKeySaved(session.key.saved)
         setIsDirector(false)
         setCompanyKeySaved(false)
-        setNeedsSecondaryKey(true)
+
         const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${token}` } })
         if (!listResponse.ok) return
         const list = await listResponse.json() as { companies: SavedCompany[] }
@@ -713,7 +713,7 @@ export function FloorApp() {
       if (!response.ok) throw new Error(payload.error || "Could not delete the saved key.")
       setKeySaved(false)
       setCompanyKeySaved(false)
-      setNeedsSecondaryKey(true)
+
       setIsDirector(false)
       setApiKey("")
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not delete the saved key.") }
@@ -750,7 +750,7 @@ export function FloorApp() {
     setKeySaved(false)
     setIsDirector(true)
     setCompanyKeySaved(true)
-    setNeedsSecondaryKey(false)
+
     setResult(demo.result)
     setSavedCompanies([demo.company])
     setSelectedCompanyId(demo.company.company_id)
@@ -770,7 +770,7 @@ export function FloorApp() {
     event.preventDefault()
     setDemoMode(false)
     setError("")
-    if (!apiKey.trim()) { setError("Enter your limited-access Torn API key to continue."); return }
+    if (!apiKey.trim()) { setError("Enter your Naughty Family Portal Torn API key to continue."); return }
     setLoading(true)
     try {
       const response = await fetch(`${API_BASE}/api/auth/sign-in`, {
@@ -789,9 +789,9 @@ export function FloorApp() {
       setKeySaved(payload.key?.saved ?? true)
       setIsDirector(false)
       setCompanyKeySaved(false)
-      setNeedsSecondaryKey(true)
+
       setApiKey("")
-      setSecondaryCompanyKey("")
+
       const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
       if (listResponse.ok) {
         const list = await listResponse.json() as { companies: SavedCompany[] }
@@ -825,9 +825,9 @@ export function FloorApp() {
     setShowCompanySelector(false)
     setKeySaved(false)
     setCompanyKeySaved(false)
-    setNeedsSecondaryKey(false)
+
     setIsDirector(false)
-    setSecondaryCompanyKey("")
+
     setSavedCompanies([])
     setResult(null)
     setRankingCompanies([])
