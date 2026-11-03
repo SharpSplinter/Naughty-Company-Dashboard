@@ -4042,7 +4042,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
     const registryByBoundary = new Map((registryRows.results ?? []).map((row) => [String(row.boundaryAt), row]))
     const reportByWeek = new Map((reportRows.results ?? []).map((row) => [String(row.weekStartAt), row]))
     const runIds = Array.from(new Set((registryRows.results ?? []).flatMap((row) =>
-      [String(row.statsRunId ?? ""), String(row.gymEnergyRunId ?? "")].filter(Boolean)))
+      [String(row.statsRunId ?? ""), String(row.gymEnergyRunId ?? "")].filter(Boolean))))
     const runPlaceholders = runIds.map(() => "?").join(", ")
     const runRows = runIds.length ? await db.prepare(
       `SELECT r.run_id AS runId, r.collection_kind AS collectionKind, r.status,
