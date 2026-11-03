@@ -9,6 +9,8 @@ type SavedCompanySummary = {
   key_last_four?: string | null
   key_updated_at?: string | null
   has_api_key?: boolean
+  uses_portal_key?: boolean
+  can_remove_key?: boolean
 }
 
 type HalloweenMemberEventWindow = {
@@ -1709,6 +1711,7 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
   const [loginKey, setLoginKey] = useState("")
   const [loginBusy, setLoginBusy] = useState(false)
   const [companyBusy, setCompanyBusy] = useState(false)
+  const [secondaryCompanyKey, setSecondaryCompanyKey] = useState("")
   const [sessionBusy, setSessionBusy] = useState(false)
   const [accountError, setAccountError] = useState("")
   const [accountNotice, setAccountNotice] = useState("")
@@ -1838,6 +1841,42 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
     finally { setCompanyBusy(false) }
   }
 
+  const addSecondaryCompanyKey = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!secondaryCompanyKey.trim() || companyBusy) return
+    setCompanyBusy(true); setAccountError(""); setAccountNotice("")
+    try {
+      const response = await fetch(props.apiBase + "/api/auth/company-key", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + props.sessionToken, "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: secondaryCompanyKey.trim() }),
+      })
+      const payload = await response.json() as { error?: string; companyId?: string | number; companyName?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not validate this secondary company key.")
+      setSecondaryCompanyKey("")
+      await refreshCompanies()
+      setAccountNotice((payload.companyName || "Company #" + payload.companyId) + " was added using a secondary company key.")
+    } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not add the secondary company key.") }
+    finally { setCompanyBusy(false) }
+  }
+
+  const removeCompanyKey = async (company: SavedCompanySummary) => {
+    if (!company.can_remove_key || companyBusy) return
+    if (!window.confirm("Remove the secondary API key for " + (company.company_name || "Company #" + company.company_id) + "? Saved company records and history will remain.")) return
+    setCompanyBusy(true); setAccountError(""); setAccountNotice("")
+    try {
+      const response = await fetch(props.apiBase + "/api/auth/company-key?companyId=" + encodeURIComponent(company.company_id), {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + props.sessionToken },
+      })
+      const payload = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not remove the secondary company key.")
+      await refreshCompanies()
+      setAccountNotice("The secondary company key was removed. Saved company records and history were retained.")
+    } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not remove the secondary company key.") }
+    finally { setCompanyBusy(false) }
+  }
+
   const signOutEverywhere = async () => {
     if (sessionBusy) return
     if (!window.confirm("Sign out this account on every device? This will end your current session too.")) return
@@ -1876,17 +1915,24 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
         </article>
         <article className="settings-card settings-card-wide">
           <div className="settings-card-icon">▦</div><small>COMPANY WORKSPACE</small><h2>Company API connections</h2>
-          <p>Your saved portal API key is also used for your own director/company connection when it has the required Company selections. You do not need to submit a second key.</p>
-          <div className="settings-connection good"><i /> {connectedCompanies.length} company connection{connectedCompanies.length === 1 ? "" : "s"} using portal key</div>
+          <p>Your primary portal key is tried first for your company. When you own multiple companies or need different access, add a secondary key for each additional company. Secondary keys are encrypted, checked against your Torn account owner ID, and used only for the matching company.</p>
+          <div className="settings-connection good"><i /> {connectedCompanies.length} company connection{connectedCompanies.length === 1 ? "" : "s"} saved</div>
           <form className="settings-inline-form" onSubmit={addCompanyKey}>
-            <button type="submit" disabled={companyBusy}>{companyBusy ? "Connecting…" : "Connect my company using portal key"}</button>
+            <button type="submit" disabled={companyBusy}>{companyBusy ? "Connecting…" : "Connect company using portal key"}</button>
+          </form>
+          <form className="settings-inline-form" onSubmit={addSecondaryCompanyKey}>
+            <label htmlFor="settings-secondary-company-key">Add a secondary company API key</label>
+            <input id="settings-secondary-company-key" type="password" autoComplete="off" spellCheck={false} value={secondaryCompanyKey} onChange={event => setSecondaryCompanyKey(event.target.value)} placeholder="Paste a key for another company you own" disabled={companyBusy} />
+            <button type="submit" disabled={companyBusy || !secondaryCompanyKey.trim()}>{companyBusy ? "Validating…" : "Validate & add secondary key"}</button>
+            <span className="settings-form-hint">Use one secondary key per additional company. The key must belong to Torn ID {props.playerId} and return that company's profile.</span>
           </form>
           <div className="settings-company-list">
             {connectedCompanies.length ? connectedCompanies.map(company => (
               <div className="settings-company-row" key={company.company_id}>
-                <div><strong>{company.company_name || "Company #" + company.company_id}</strong><small>{company.company_type || "Company"} · ID {company.company_id}{company.key_last_four ? " · Portal key •••• " + company.key_last_four : ""}</small></div>
+                <div><strong>{company.company_name || "Company #" + company.company_id}</strong><small>{company.company_type || "Company"} · ID {company.company_id} · {company.uses_portal_key ? "Portal key" : "Secondary key"}{company.key_last_four ? " •••• " + company.key_last_four : ""}</small></div>
+                {company.can_remove_key && <button type="button" disabled={companyBusy} onClick={() => void removeCompanyKey(company)}>{companyBusy ? "Working…" : "Remove secondary key"}</button>}
               </div>
-            )) : <p className="settings-form-hint">No separate company API keys are saved yet.</p>}
+            )) : <p className="settings-form-hint">No company connections are saved yet. Connect your primary company or add a secondary company key.</p>}
           </div>
           <button type="button" className="settings-link-button" onClick={() => props.onNavigate("/company")}>Open Company Dashboard →</button>
         </article>
