@@ -6156,11 +6156,29 @@ export default {
     if (url.pathname === "/api/me/companies" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
-      const rows = await requireDb(env).prepare("SELECT company_id, company_name, company_type, fetched_at FROM companies WHERE player_id = ? ORDER BY fetched_at DESC").bind(session.player_id).all<Record<string, unknown>>()
-      const keys = await requireDb(env).prepare("SELECT company_id, company_name, company_type, last_four, updated_at FROM company_api_keys WHERE player_id = ? ORDER BY updated_at DESC").bind(session.player_id).all<Record<string, unknown>>()
+      const db = requireDb(env)
+      const rows = await db.prepare("SELECT company_id, company_name, company_type, fetched_at FROM companies WHERE player_id = ? ORDER BY fetched_at DESC").bind(session.player_id).all<Record<string, unknown>>()
+      const keys = await db.prepare("SELECT company_id, company_name, company_type, last_four, updated_at FROM company_api_keys WHERE player_id = ? ORDER BY updated_at DESC").bind(session.player_id).all<Record<string, unknown>>()
+      const portalKey = await savedKey(env, session.player_id)
       const merged = new Map<string, Record<string, unknown>>()
       for (const row of rows.results ?? []) merged.set(String(row.company_id), row)
-      for (const row of keys.results ?? []) { const id = String(row.company_id); const current = merged.get(id); merged.set(id, { company_id: id, company_name: current?.company_name ?? row.company_name, company_type: current?.company_type ?? row.company_type, fetched_at: current?.fetched_at ?? row.updated_at, has_api_key: true, key_last_four: row.last_four, key_updated_at: row.updated_at }) }
+      for (const row of keys.results ?? []) {
+        const id = String(row.company_id)
+        const current = merged.get(id)
+        const companyKey = await savedCompanyApiKey(env, session.player_id, id)
+        const usesPortalKey = Boolean(portalKey && companyKey === portalKey)
+        merged.set(id, {
+          company_id: id,
+          company_name: current?.company_name ?? row.company_name,
+          company_type: current?.company_type ?? row.company_type,
+          fetched_at: current?.fetched_at ?? row.updated_at,
+          has_api_key: true,
+          key_last_four: row.last_four,
+          key_updated_at: row.updated_at,
+          uses_portal_key: usesPortalKey,
+          can_remove_key: !usesPortalKey,
+        })
+      }
       return jsonResponse({ companies: Array.from(merged.values()).sort((a, b) => String(b.fetched_at ?? "").localeCompare(String(a.fetched_at ?? ""))) }, 200, origin)
     }
     const savedMatch = url.pathname.match(/^\/api\/me\/companies\/(\d+)$/)
@@ -6188,8 +6206,11 @@ export default {
       try {
         const refreshBody: unknown = await request.json().catch(() => null)
         const requestedId = isRecord(refreshBody) && (typeof refreshBody.companyId === "string" || typeof refreshBody.companyId === "number") ? String(refreshBody.companyId) : ""
-        const apiKey = await savedKey(env, session.player_id)
-        if (!apiKey) return jsonResponse({ error: "Your saved portal API key is missing. Sign in again with your own Torn key." }, 409, origin)
+        const companySpecificKey = requestedId
+          ? await savedCompanyApiKey(env, session.player_id, requestedId)
+          : null
+        const apiKey = companySpecificKey || await savedKey(env, session.player_id)
+        if (!apiKey) return jsonResponse({ error: requestedId ? "No portal or secondary company key is available for this company. Add a company-specific key in Account Settings." : "Your saved portal API key is missing. Sign in again with your own Torn key." }, 409, origin)
         const client = new TornApiClient({ apiKey })
         const { profile, employees, stock } = await client.getCompanySelections()
         const companyId = companyIdFromPayload(profile)
