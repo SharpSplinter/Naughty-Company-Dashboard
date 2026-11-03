@@ -494,6 +494,9 @@ try {
             if (normalized.startsWith("select disabled_at from dashboard_member_status")) return { disabled_at: null }
             if (normalized.startsWith("select value_json from admin_settings")) return null
             if (normalized.startsWith("select last_four, include_networth")) return state.key
+            if (normalized.startsWith("select ciphertext, iv, include_networth from member_private_live_keys")) {
+              return state.key ? { ciphertext: state.key.ciphertext, iv: state.key.iv, include_networth: state.key.include_networth } : null
+            }
             if (normalized.startsWith("select captured_at, bars_json, cooldowns_json")) return state.snapshot
             return null
           },
@@ -508,7 +511,8 @@ try {
             }
             if (normalized.startsWith("insert into member_private_live_keys")) {
               state.key = {
-                last_four: values[4], include_networth: values[5], share_with_faction: 1,
+                ciphertext: values[2], iv: values[3], last_four: values[4],
+                include_networth: values[5], share_with_faction: 1,
                 consent_version: values[6], consented_at: values[7], last_validated_at: values[8],
                 last_attempt_at: values[9], last_collected_at: values[10], last_error: null,
                 updated_at: values[12],
@@ -523,9 +527,12 @@ try {
               return { success: true, meta: { changes: 1 } }
             }
             if (normalized.startsWith("update member_private_live_keys set last_attempt_at")) {
-              const claimBefore = String(values[3])
-              const claimedAt = state.key?.last_attempt_at
-              return { success: true, meta: { changes: !claimedAt || claimedAt <= claimBefore ? 1 : 0 } }
+              if (state.key) state.key.last_attempt_at = values[0]
+              return { success: true, meta: { changes: state.key ? 1 : 0 } }
+            }
+            if (normalized.startsWith("update member_private_live_keys set last_error")) {
+              if (state.key) { state.key.last_error = values[0]; state.key.updated_at = values[1] }
+              return { success: true, meta: { changes: state.key ? 1 : 0 } }
             }
             if (normalized.startsWith("delete from faction_member_private_live_snapshots")) {
               state.snapshot = null
@@ -541,6 +548,7 @@ try {
       },
     }
     let keyOwnerId = "88"
+    let upstreamErrorCode = null
     const calls = []
     globalThis.fetch = async input => {
       const url = new URL(String(input))
@@ -549,6 +557,9 @@ try {
         return new Response(JSON.stringify({ info: { user: { id: Number(keyOwnerId) } } }))
       }
       if (url.pathname === "/v2/user/bars") {
+        if (upstreamErrorCode !== null) {
+          return new Response(JSON.stringify({ error: { code: upstreamErrorCode, error: "Synthetic upstream owner state." } }))
+        }
         return new Response(JSON.stringify({ bars: {
           energy: { current: 90, maximum: 100 }, nerve: { current: 30, maximum: 60 },
           happy: { current: 4000, maximum: 5000 }, life: { current: 800, maximum: 1000 },
@@ -567,7 +578,7 @@ try {
       KEY_ENCRYPTION_SECRET: keySecret,
       ALLOWED_ORIGIN: "https://naughty-company-dashboard.pages.dev",
     }
-    const request = (method, body) => worker.fetch(new Request("https://worker.test/api/me/private-live/key", {
+    const request = (method, body, pathname = "/api/me/private-live/key") => worker.fetch(new Request("https://worker.test" + pathname, {
       method,
       headers: {
         Origin: env.ALLOWED_ORIGIN,
@@ -639,9 +650,21 @@ try {
       assert.equal(statusBody.snapshot.bars.energy.current, 90)
       assert.equal(JSON.stringify(statusBody).includes(apiKey), false)
 
+      // A temporary owner-state restriction must retain the key and the
+      // last successful snapshot so the member can retry when Torn restores access.
+      const lastGoodSnapshot = JSON.stringify(state.snapshot)
+      state.throttleAt = new Date(Date.now() - 31000).toISOString()
+      upstreamErrorCode = 10
+      const temporaryFailure = await request("POST", undefined, "/api/me/private-live/refresh")
+      assert.equal(temporaryFailure.status, 403)
+      assert.ok(state.key, "temporary federal-jail state must not delete the saved owner key")
+      assert.equal(JSON.stringify(state.snapshot), lastGoodSnapshot, "temporary owner state must preserve the last successful snapshot")
+      assert.match(String(state.key.last_error), /federal jail/i)
+
       // Replace with an explicit detailed-networth opt-in after the
       // server-enforced 30-second per-member request window has elapsed.
       state.throttleAt = new Date(Date.now() - 31000).toISOString()
+      upstreamErrorCode = null
       const networthConnection = await request("POST", {
         apiKey, consent: true, shareWithFaction: true,
         consentVersion: "faction-private-live-v1", includeNetworth: true,
