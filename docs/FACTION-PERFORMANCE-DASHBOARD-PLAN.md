@@ -39,7 +39,7 @@ Inspected the current PR branch and repository configuration.
 
 The current portal already provides the shared workspace foundation, faction authentication, Company operations, Halloween collection/archive/live intelligence, a faction director/member workspace, account credential controls and administrator-role management.
 
-The PR branch includes migrations through 0021. Migration 0019 adds the public faction-performance collection runs, membership intervals, roster snapshots, 18-counter personalstats snapshots and gym-energy snapshots. Migration 0020 adds an idempotent Sunday-boundary run registry for the weekly baseline captures. Migration 0021 adds immutable completed-week report and member-result tables, with database triggers protecting finalized rows from updates and deletes. The branch now includes the Sunday UTC boundary scheduler, a weekly delta/ranking API, a default Weekly Rankings workspace tab, and an initial public-roster Live Member Status tab. It does **not yet** persist immutable completed-week result rows or provide historical week comparisons, multi-period Faction Activity timelines or voluntary private member-key connections. Those remain later phases.
+The PR branch contains migrations through 0022. Migration 0019 adds public faction-performance collection runs, membership intervals, roster snapshots, 18-counter public personalstats snapshots and gym-energy snapshots. Migration 0020 adds the idempotent Sunday-boundary run registry; 0021 adds immutable completed-week reports/member results with database-level update/delete protection; and 0022 adds faction-wide stats snapshots. The Worker now includes scheduled public collection, Sunday UTC boundary capture/finalization, active-week rankings, immutable weekly history/comparisons, faction totals, public Live Member Status, a bounded snapshot-to-snapshot Faction Activity feed, and administrator-only boundary diagnostics plus audited recovery. Staging acceptance Run 20 passed against the dedicated non-production D1 database and fixture Workers. Remaining roadmap work includes member-consented private owner-key bars/cooldowns/detailed networth, richer member drilldowns and filters, a longer activity timeline, operational request-budget reporting, and production readiness/cutover.
 
 The current application is defined in package.json and wrangler.toml. Preserve the existing React/Vite + Worker + D1 + Queue architecture unless an evidenced technical limitation requires a proposal and discussion first.
 
@@ -663,11 +663,11 @@ Do not use color as the only status signal; include readable text and accessible
 - [x] Exercise the public-member `/user/{id}/personalstats?cat=popular` route against two current faction members; both returned all 18 required counters.
 - [ ] Complete the collection request-budget estimate and scheduler strategy with the faction roster size.
 - [x] Decide and document historical retention separation before weekly data migrations.
-- [ ] Define the operational Sunday-boundary scheduler and late/missed capture policy in executable design/tests.
+- [x] Define and exercise the Sunday-boundary scheduler, actual-capture timing/late labels, missed/failed-run diagnostics and audited recovery policy in the staging integration acceptance.
 
 ### Phase 1 — Faction roster and public-data ingestion
 
-**Implemented on the PR branch; not deployed or run against production D1 yet.**
+**Implemented on the PR branch and statefully validated against isolated non-production D1/Queues; not deployed to production.**
 
 Live API contract checks and client entry points:
 
@@ -687,14 +687,14 @@ Live API contract checks and client entry points:
 
 Still to implement or validate:
 
-- [ ] Apply migration 0019 to a non-production D1 database and exercise the full queue pipeline against it.
-- [ ] Validate restart/retry behavior and membership join/leave transitions with a stateful D1 integration test, not only parser/static regression coverage.
-- [ ] Add leadership/admin diagnostics for run failures, partial samples, retry exhaustion and last successful capture.
+- [x] Apply migration 0019 and subsequent faction-performance migrations to isolated non-production D1; verify the remote migration ledger.
+- [x] Exercise the real Worker queue handler, D1 writes, resume across the five-member page boundary, membership join/leave retention, complete-only freshness advancement, weekly finalizer, immutable report triggers, authenticated faction APIs, boundary recovery/audit lock, retry and DLQ behavior. See [staging integration Run 20](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/41565717801).
+- [ ] Add broader leadership/admin diagnostics for ordinary roster, public-stat and gym-energy collection runs, including partial samples and last successful capture.
 - [ ] Run a controlled live collection against the configured Worker secret after deployment, then confirm row counts and captured timestamps. No deployment or production migration has been performed in this work session.
 
 ### Phase 2 — Weekly calculation engine
 
-**Active-week and immutable closed-week reporting implemented on the PR branch. Historical comparisons are now available; recovery tooling remains outstanding.**
+**Active-week and immutable closed-week reporting, 26-week history/comparison, admin diagnostics and audited boundary recovery are implemented on the PR branch. Stateful staging acceptance passed in [Run 20](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/41565717801).**
 
 - [x] Add a unique Sunday 00:00 UTC boundary registry and idempotently enqueue dedicated personalstats and gym-energy baseline runs through the existing serialized collection queue.
 - [x] Preserve scheduled boundary time separately from each actual API response capture time; expose first-capture timestamps and timing deviation, and label captures more than five minutes late.
