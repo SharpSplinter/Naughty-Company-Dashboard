@@ -8,3 +8,4 @@ Run 8: validate public Live Member Status UI, inactivity filters, hospital/statu
 Run 9: fix staging weekly Sunday boundary upsert collision and rerun Live Member Status assertions; 2026-11-03T00:42Z
 Run 10: validate public faction activity snapshot comparisons and activity feed UI/API; 2026-11-03T01:05Z
 Run 11: validate immutable closed-week reports, leaver retention and historical rank comparisons in staging D1; 2026-11-03T02:10Z
+Run 12: rerun immutable weekly history acceptance after queue-test assertion correction; staging-only; 2026-11-03T02:20Z
