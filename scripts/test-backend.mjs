@@ -478,7 +478,13 @@ try {
       membership_check_status: null, is_admin: 0,
     }
     const sessions = new Map([[tokenHash, { player_id: "77", expires_at: Math.floor(Date.now() / 1000) + 3600 }]])
-    const state = { key: null, snapshot: null, throttleAt: null, writes: [] }
+    const primaryKeyDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(keySecret))
+    const primaryKeyCrypto = await crypto.subtle.importKey("raw", primaryKeyDigest, { name: "AES-GCM" }, false, ["encrypt"])
+    const primaryKeyIv = crypto.getRandomValues(new Uint8Array(12))
+    const primaryKeyCiphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: primaryKeyIv }, primaryKeyCrypto, new TextEncoder().encode(apiKey))
+    const state = { key: null, snapshot: null, throttleAt: null, writes: [], primaryKey: {
+      ciphertext: Buffer.from(primaryKeyCiphertext).toString("base64"), iv: Buffer.from(primaryKeyIv).toString("base64"),
+    } }
     const db = {
       prepare(sql) {
         const normalized = sql.toLowerCase().replace(/\s+/g, " ").trim()
@@ -492,8 +498,10 @@ try {
               return { ...player }
             }
             if (normalized.startsWith("select disabled_at from dashboard_member_status")) return { disabled_at: null }
+            if (normalized.startsWith("select ciphertext, iv from api_keys")) return state.primaryKey
             if (normalized.startsWith("select value_json from admin_settings")) return null
             if (normalized.startsWith("select last_four, include_networth")) return state.key
+            if (normalized.startsWith("select include_networth from member_private_live_keys")) return state.key ? { include_networth: state.key.include_networth } : null
             if (normalized.startsWith("select ciphertext, iv, include_networth from member_private_live_keys")) {
               return state.key ? { ciphertext: state.key.ciphertext, iv: state.key.iv, include_networth: state.key.include_networth } : null
             }
@@ -589,12 +597,12 @@ try {
     }), env, { waitUntil() {} })
 
     try {
-      const missingConsent = await request("POST", { apiKey, shareWithFaction: true, consentVersion: "faction-private-live-v1" })
+      const missingConsent = await request("POST", { shareWithFaction: true, consentVersion: "faction-private-live-v1" })
       assert.equal(missingConsent.status, 400)
       assert.equal(calls.length, 0, "consent is checked before contacting Torn")
 
       const wrongOwner = await request("POST", {
-        apiKey, consent: true, shareWithFaction: true, consentVersion: "faction-private-live-v1",
+        consent: true, shareWithFaction: true, consentVersion: "faction-private-live-v1",
       })
       assert.equal(wrongOwner.status, 403)
       assert.equal(state.key, null, "a key owned by another player must never be stored")
@@ -606,7 +614,7 @@ try {
       calls.length = 0
       state.throttleAt = new Date(Date.now() - 31000).toISOString()
       const connected = await request("POST", {
-        apiKey, consent: true, shareWithFaction: true,
+        consent: true, shareWithFaction: true,
         consentVersion: "faction-private-live-v1", includeNetworth: false,
       })
       assert.equal(connected.status, 200)
@@ -624,7 +632,7 @@ try {
 
       const requestsBeforeThrottle = calls.length
       const rateLimited = await request("POST", {
-        apiKey, consent: true, shareWithFaction: true,
+        consent: true, shareWithFaction: true,
         consentVersion: "faction-private-live-v1", includeNetworth: false,
       })
       assert.equal(rateLimited.status, 429, "repeat private live connect attempts must share the member request budget")
@@ -666,7 +674,7 @@ try {
       state.throttleAt = new Date(Date.now() - 31000).toISOString()
       upstreamErrorCode = null
       const networthConnection = await request("POST", {
-        apiKey, consent: true, shareWithFaction: true,
+        consent: true, shareWithFaction: true,
         consentVersion: "faction-private-live-v1", includeNetworth: true,
       })
       assert.equal(networthConnection.status, 200)
