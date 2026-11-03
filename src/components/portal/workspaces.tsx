@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { filterAndSortWeeklyMembers, type WeeklyLeaderboardDirection, type WeeklyLeaderboardParticipationFilter, type WeeklyLeaderboardSortKey, type WeeklyLeaderboardStatusFilter } from "../../lib/faction-performance/leaderboard"
 
 type SavedCompanySummary = {
   company_id: string
@@ -206,7 +207,7 @@ type FactionWeeklyRankingMetric = FactionWeeklyMetric | "gymEnergy"
 
 type FactionWeeklyMember = {
   userId: string
-  name: string | null
+  name: string
   position: string | null
   level: number | null
   participation: "full_week" | "partial_week" | "unknown"
@@ -220,6 +221,12 @@ type FactionWeeklyMember = {
   rank: number | null
   baselineCapturedAt: string | null
   endingCapturedAt: string | null
+  baselineSnapshotId: number | string | null
+  endingSnapshotId: number | string | null
+  endingIsBoundary: boolean
+  gymEnergyBaselineCapturedAt: string | null
+  gymEnergyEndingCapturedAt: string | null
+  gymEnergyEndingIsBoundary: boolean
 }
 
 type FactionWeeklyHistoryOption = {
@@ -499,6 +506,17 @@ function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }
   const [historyPayload, setHistoryPayload] = useState<FactionWeeklyHistoryPayload | null>(null)
   const [historyBusy, setHistoryBusy] = useState(false)
   const [historyError, setHistoryError] = useState("")
+  const [statusFilter, setStatusFilter] = useState<WeeklyLeaderboardStatusFilter>("all")
+  const [participationFilter, setParticipationFilter] = useState<WeeklyLeaderboardParticipationFilter>("all")
+  const [anomaliesOnly, setAnomaliesOnly] = useState(false)
+  const [sortBy, setSortBy] = useState<WeeklyLeaderboardSortKey>("rank")
+  const [sortDirection, setSortDirection] = useState<WeeklyLeaderboardDirection>("asc")
+  const [selectedMember, setSelectedMember] = useState<{
+    member: FactionWeeklyMember | FactionWeeklyHistoryMember
+    weekStartAt: string
+    weekEndAt: string
+    archived: boolean
+  } | null>(null)
 
   const load = async () => {
     setBusy(true)
@@ -556,9 +574,15 @@ function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }
   useEffect(() => { void load() }, [apiBase, sessionToken, metric])
   useEffect(() => { void loadHistoryWeeks() }, [apiBase, sessionToken])
 
-  const filtered = (payload?.members || []).filter(member =>
-    !search.trim() || [member.name, member.userId, member.position].some(value => String(value ?? "").toLowerCase().includes(search.trim().toLowerCase())),
-  )
+  const filtered = filterAndSortWeeklyMembers(payload?.members || [], {
+    search,
+    status: statusFilter,
+    participation: participationFilter,
+    anomaliesOnly,
+    sortBy,
+    direction: sortDirection,
+    selectedMetric: metric,
+  })
   const formatNumber = (value: number | null, selected: FactionWeeklyRankingMetric = metric) => {
     if (value === null || !Number.isFinite(value)) return "—"
     if (selected === "networth") return (value < 0 ? "−$" : "$") + Math.round(Math.abs(value)).toLocaleString()
@@ -594,6 +618,20 @@ function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }
   }
   const metricsStatus = payload?.boundary.statsStatus || "not_scheduled"
   const gymStatus = payload?.boundary.gymEnergyStatus || "not_scheduled"
+  const setSort = (key: WeeklyLeaderboardSortKey) => {
+    if (sortBy === key) setSortDirection(current => current === "asc" ? "desc" : "asc")
+    else {
+      setSortBy(key)
+      setSortDirection(key === "rank" || key === "name" || key === "position" ? "asc" : "desc")
+    }
+  }
+  const sortHeader = (label: string, key: WeeklyLeaderboardSortKey) => (
+    <th aria-sort={sortBy === key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>
+      <button type="button" className="faction-weekly-sort-button" onClick={() => setSort(key)} aria-label={"Sort by " + label}>
+        {label}<span aria-hidden="true">{sortBy === key ? (sortDirection === "asc" ? " ↑" : " ↓") : " ↕"}</span>
+      </button>
+    </th>
+  )
 
   return (
     <main className="module-page faction-module faction-weekly-module">
@@ -626,12 +664,23 @@ function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }
       </section>
       <section className="halloween-panel faction-weekly-ranking-panel">
         <div className="faction-directory-heading"><div><div className="halloween-status"><i /> LIVE WEEKLY LEADERBOARD</div><h2>{factionWeeklyMetricOptions.find(option => option.value === metric)?.label || "Weekly activity"}</h2><p>Sorted by weekly change, not lifetime totals. Members without a valid baseline or ending sample remain unranked.</p></div><input aria-label="Search faction members" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search member or Torn ID…" /></div>
+        <div className="faction-weekly-filter-controls">
+          <label>Data status<select value={statusFilter} onChange={event => setStatusFilter(event.target.value as WeeklyLeaderboardStatusFilter)}>
+            <option value="all">All data states</option><option value="complete">Complete</option><option value="partial">Partial</option><option value="incomplete">Incomplete</option><option value="waiting_for_baseline">Waiting for baseline</option><option value="waiting_for_update">Waiting for update</option><option value="anomaly">Counter anomaly</option>
+          </select></label>
+          <label>Participation<select value={participationFilter} onChange={event => setParticipationFilter(event.target.value as WeeklyLeaderboardParticipationFilter)}>
+            <option value="all">All participation</option><option value="full_week">Full week</option><option value="partial_week">Partial week</option><option value="unknown">Unknown</option>
+          </select></label>
+          <label className="faction-weekly-anomaly-toggle"><input type="checkbox" checked={anomaliesOnly} onChange={event => setAnomaliesOnly(event.target.checked)} /><span>Only members with counter anomalies</span></label>
+          <button type="button" onClick={() => { setSearch(""); setStatusFilter("all"); setParticipationFilter("all"); setAnomaliesOnly(false) }}>Clear filters</button>
+          <span className="faction-weekly-result-count">{filtered.length} of {payload?.members.length ?? 0} members</span>
+        </div>
         {busy && !payload ? <p className="historical-key-muted">Loading weekly snapshots…</p> : filtered.length ? (
           <div className="historical-leaderboard">
-            <table><thead><tr><th>RANK</th><th>MEMBER</th><th>POSITION</th><th>SELECTED METRIC</th><th>XANAX</th><th>LSD</th><th>ALCOHOL</th><th>BOOSTERS</th><th>ENERGY DRINKS</th><th>REFILLS</th><th>GYM ENERGY</th><th>STARTING NETWORTH</th><th>CURRENT NETWORTH</th><th>NETWORTH CHANGE</th><th>DATA</th></tr></thead><tbody>
+            <table><thead><tr>{sortHeader("RANK", "rank")}{sortHeader("MEMBER", "name")}{sortHeader("POSITION", "position")}{sortHeader("SELECTED METRIC", "selectedMetric")}{sortHeader("XANAX", "xantaken")}{sortHeader("LSD", "lsdtaken")}{sortHeader("ALCOHOL", "alcoholused")}{sortHeader("BOOSTERS", "boostersused")}{sortHeader("ENERGY DRINKS", "energydrinkused")}{sortHeader("REFILLS", "refills")}{sortHeader("GYM ENERGY", "gymEnergy")}{sortHeader("STARTING NETWORTH", "startingNetworth")}{sortHeader("CURRENT NETWORTH", "endingNetworth")}{sortHeader("NETWORTH CHANGE", "networth")}{sortHeader("DATA", "completeness")}</tr></thead><tbody>
               {filtered.map(member => <tr key={member.userId}>
                 <td>{member.rank === null ? "—" : "#" + member.rank}</td>
-                <td><strong>{member.name}</strong><small>#{member.userId}</small></td>
+                <td><button type="button" className="faction-weekly-member-link" onClick={() => setSelectedMember({ member, weekStartAt: payload?.week.startAt || "", weekEndAt: payload?.week.endAt || "", archived: false })} aria-expanded={selectedMember?.member.userId === member.userId}>{member.name}</button><small>#{member.userId}</small></td>
                 <td>{member.position || "—"}</td>
                 <td><strong>{formatNumber(metricValue(member, metric), metric)}</strong></td>
                 <td>{formatNumber(member.metrics.xantaken)}</td>
@@ -656,6 +705,39 @@ function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }
           </div>
         ) : <div className="historical-empty"><strong>{payload?.members.length ? "No members match that search." : "Weekly baseline is being prepared."}</strong><span>{payload?.members.length ? "Try another name or Torn ID." : "The five-minute scheduler creates a dedicated Sunday snapshot. Until the baseline and a later sample are available, weekly values remain unknown."}</span></div>}
       </section>
+      {selectedMember && (() => {
+        const member = selectedMember.member
+        const archivedComparison = "comparison" in member ? member.comparison : null
+        return (
+          <section className="faction-weekly-member-detail" aria-label={"Weekly profile for " + member.name}>
+            <div className="faction-weekly-member-detail-heading">
+              <div><small>{selectedMember.archived ? "ARCHIVED WEEKLY PROFILE" : "CURRENT WEEKLY PROFILE"}</small><h3>{member.name}</h3><span>#{member.userId} · {member.position || "Position unavailable"} · Level {member.level ?? "—"}</span></div>
+              <button type="button" onClick={() => setSelectedMember(null)}>Close profile ×</button>
+            </div>
+            <div className="faction-weekly-member-meta">
+              <article><small>REPORTING WINDOW</small><strong>{formatUtc(selectedMember.weekStartAt)} – {formatUtc(selectedMember.weekEndAt)}</strong></article>
+              <article><small>DATA STATUS</small><strong>{statusLabel(member.status)}</strong></article>
+              <article><small>PARTICIPATION</small><strong>{member.participation.replace(/_/g, " ")}</strong></article>
+              <article><small>KNOWN COUNTERS</small><strong>{member.knownMetricCount} / 18</strong></article>
+              <article><small>STARTING NETWORTH</small><strong>{formatNumber(member.startingNetworth, "networth")}</strong></article>
+              <article><small>ENDING NETWORTH</small><strong>{formatNumber(member.endingNetworth, "networth")}</strong></article>
+            </div>
+            <div className="faction-weekly-member-capture">
+              <span>Stats baseline: <strong>{member.baselineCapturedAt ? formatUtc(member.baselineCapturedAt) : "Unavailable"}</strong></span>
+              <span>Stats ending sample: <strong>{member.endingCapturedAt ? formatUtc(member.endingCapturedAt) : "Unavailable"}</strong></span>
+              <span>Gym baseline: <strong>{member.gymEnergyBaselineCapturedAt ? formatUtc(member.gymEnergyBaselineCapturedAt) : "Unavailable"}</strong></span>
+              <span>Gym ending sample: <strong>{member.gymEnergyEndingCapturedAt ? formatUtc(member.gymEnergyEndingCapturedAt) : "Unavailable"}</strong></span>
+              <span>Ending source: <strong>{member.endingIsBoundary ? "Sunday boundary capture" : "Latest in-week capture"}</strong></span>
+            </div>
+            {member.anomalyMetrics.length > 0 && <p className="faction-weekly-profile-anomaly">Counter decreases flagged: {member.anomalyMetrics.join(", ")}. These values are excluded from positive-use rankings.</p>}
+            <div className="faction-weekly-member-metrics">
+              {factionWeeklyMetricOptions.map(option => <article key={option.value}><small>{option.label} · WEEKLY</small><strong>{formatNumber(metricValue(member, option.value), option.value)}</strong></article>)}
+            </div>
+            {archivedComparison && <div className="faction-weekly-profile-comparison"><span>Previous period value: <strong>{formatNumber(archivedComparison.previousValue)}</strong></span><span>Week-over-week change: <strong>{formatNumber(archivedComparison.weeklyChange)}</strong></span><span>Previous rank: <strong>{archivedComparison.previousRank === null ? "—" : "#" + archivedComparison.previousRank}</strong></span><span>Rank movement: <strong>{archivedComparison.rankMovement === null ? "—" : archivedComparison.rankMovement > 0 ? "↑ " + archivedComparison.rankMovement : archivedComparison.rankMovement < 0 ? "↓ " + Math.abs(archivedComparison.rankMovement) : "No change"}</strong></span></div>}
+            <p className="faction-weekly-profile-note">These are weekly changes derived from public faction snapshots, not lifetime counter totals. Missing data remains unavailable rather than zero. No private bars or cooldown data is included.</p>
+          </section>
+        )
+      })()}
       <section className="halloween-panel faction-weekly-history-panel">
         <div className="faction-directory-heading">
           <div>
@@ -708,7 +790,7 @@ function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }
                         const movement = member.comparison.rankMovement
                         return <tr key={member.userId}>
                           <td>{member.rank === null ? "—" : "#" + member.rank}</td>
-                          <td><strong>{member.name}</strong><small>#{member.userId}</small></td>
+                          <td><button type="button" className="faction-weekly-member-link" onClick={() => setSelectedMember({ member, weekStartAt: historyPayload.report.weekStartAt, weekEndAt: historyPayload.report.weekEndAt, archived: true })} aria-expanded={selectedMember?.member.userId === member.userId}>{member.name}</button><small>#{member.userId}</small></td>
                           <td>{formatNumber(value, metric)}</td>
                           <td>{formatNumber(member.comparison.previousValue, metric)}</td>
                           <td>{formatNumber(member.comparison.weeklyChange, metric)}</td>
