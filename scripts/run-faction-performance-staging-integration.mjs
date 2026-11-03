@@ -695,6 +695,13 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
       throw new Error("Historical reports did not preserve negative networth movement and ending-boundary provenance.")
     }
     console.log("PASS weekly history API lists immutable reports and compares member deltas/rank movement across two completed Sundays.")
+    const nonAdminDiagnostics = await fetch(WORKER_URL + "/api/admin/faction/weekly-boundaries?limit=3", {
+      headers: { Authorization: "Bearer " + token, Accept: "application/json" },
+      signal: AbortSignal.timeout(30000),
+    })
+    if (nonAdminDiagnostics.status !== 403) {
+      throw new Error("A regular faction member must not access administrator weekly-boundary diagnostics.")
+    }
     await d1Query(
       "INSERT INTO administrators (player_id, granted_by, granted_at, revoked_by, revoked_at) VALUES (?, ?, ?, NULL, NULL)",
       [playerId, playerId, new Date().toISOString()],
@@ -748,6 +755,13 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
     }
     if (recoveredRun?.status !== "completed") {
       throw new Error("Recovered Sunday stats run ended as " + (recoveredRun?.status ?? "missing") + " instead of completed.")
+    }
+    const recoveryAudit = await d1Query(
+      "SELECT action, outcome, target_id FROM admin_audit_log WHERE actor_player_id = ? AND action = ? AND target_id = ? ORDER BY id DESC LIMIT 1",
+      [playerId, "faction.weekly_boundary.recovered", weeklyFixture.weekStartAt],
+    )
+    if (recoveryAudit.length !== 1 || recoveryAudit[0].outcome !== "succeeded") {
+      throw new Error("The Sunday recovery action was not written to the administrative audit log.")
     }
     const lockedRecoveryResponse = await fetch(WORKER_URL + "/api/admin/faction/weekly-boundaries/recover", {
       method: "POST",
