@@ -256,15 +256,16 @@ const factionWeeklyMetricOptions: Array<{ value: FactionWeeklyRankingMetric; lab
 ]
 
 export function FactionWorkspacePlaceholder(props: FactionWorkspaceProps) {
-  const [tab, setTab] = useState<"weekly" | "live" | "directory">("weekly")
+  const [tab, setTab] = useState<"weekly" | "live" | "activity" | "directory">("weekly")
   return (
     <div className="faction-workspace-switcher">
       <nav className="faction-workspace-tabs" aria-label="Faction dashboard sections">
         <button type="button" className={tab === "weekly" ? "active" : ""} onClick={() => setTab("weekly")}>Weekly rankings</button>
         <button type="button" className={tab === "live" ? "active" : ""} onClick={() => setTab("live")}>Live member status</button>
+        <button type="button" className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}>Faction activity</button>
         <button type="button" className={tab === "directory" ? "active" : ""} onClick={() => setTab("directory")}>Company directory</button>
       </nav>
-      {tab === "weekly" ? <FactionWeeklyRankings {...props} /> : tab === "live" ? <FactionLiveStatus {...props} /> : <FactionCompanyDirectory {...props} />}
+      {tab === "weekly" ? <FactionWeeklyRankings {...props} /> : tab === "live" ? <FactionLiveStatus {...props} /> : tab === "activity" ? <FactionActivityFeed {...props} /> : <FactionCompanyDirectory {...props} />}
     </div>
   )
 }
@@ -627,6 +628,143 @@ function FactionLiveStatus({ playerName, onNavigate, apiBase, sessionToken }: Fa
         ) : <div className="historical-empty"><strong>{allMembers.length ? "No members match that filter." : "No completed faction roster is available."}</strong><span>{allMembers.length ? "Change the activity filter or search term." : "The scheduled roster collector will populate this view when its first full run succeeds."}</span></div>}
       </section>
       <footer className="module-footer"><span>LIVE FACTION MEMBER STATUS</span><span>Signed in as {playerName} · Public faction roster fields only</span></footer>
+    </main>
+  )
+}
+
+type FactionActivityEvent = {
+  id: string
+  eventType: "member_added" | "member_removed" | "activity_changed" | "status_changed" | "wall_changed" | "oc_changed" | "early_discharge_changed" | "revive_setting_changed" | "position_changed"
+  occurredAt: string
+  userId: string
+  memberName: string
+  detail: string
+  previousValue: string | null
+  currentValue: string | null
+}
+
+type FactionActivityPayload = {
+  generatedAt: string
+  comparisonStatus: "compared" | "waiting_for_roster" | "waiting_for_previous_roster"
+  latestRoster: { runId: string; capturedAt: string; scheduledAt: string; memberCount: number } | null
+  previousRoster: { runId: string; capturedAt: string; scheduledAt: string; memberCount: number } | null
+  eventCount: number
+  eventCounts: Record<string, number>
+  events: FactionActivityEvent[]
+}
+
+type FactionActivityFilter = "all" | "membership" | "status" | "flags" | "settings" | "position"
+
+const factionActivityLabels: Record<FactionActivityEvent["eventType"], string> = {
+  member_added: "Member added",
+  member_removed: "Member removed",
+  activity_changed: "Activity status",
+  status_changed: "Member status",
+  wall_changed: "Wall status",
+  oc_changed: "OC status",
+  early_discharge_changed: "Early discharge",
+  revive_setting_changed: "Revive setting",
+  position_changed: "Position changed",
+}
+
+function factionActivityCategory(type: FactionActivityEvent["eventType"]): Exclude<FactionActivityFilter, "all"> {
+  if (type === "member_added" || type === "member_removed") return "membership"
+  if (type === "activity_changed" || type === "status_changed") return "status"
+  if (type === "wall_changed" || type === "oc_changed" || type === "early_discharge_changed") return "flags"
+  if (type === "revive_setting_changed") return "settings"
+  return "position"
+}
+
+function FactionActivityFeed({ playerName, onNavigate, apiBase, sessionToken }: FactionWorkspaceProps) {
+  const [payload, setPayload] = useState<FactionActivityPayload | null>(null)
+  const [filter, setFilter] = useState<FactionActivityFilter>("all")
+  const [search, setSearch] = useState("")
+  const [busy, setBusy] = useState(true)
+  const [error, setError] = useState("")
+
+  const load = async () => {
+    setBusy(true)
+    setError("")
+    try {
+      const response = await fetch(apiBase + "/api/faction/activity", {
+        headers: { Authorization: "Bearer " + sessionToken },
+      })
+      const result = await response.json() as { error?: string } & Partial<FactionActivityPayload>
+      if (!response.ok) throw new Error(result.error || "Could not load faction activity.")
+      if (!Array.isArray(result.events) || !result.comparisonStatus) throw new Error("The faction activity response is incomplete.")
+      setPayload(result as FactionActivityPayload)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not load faction activity.")
+      setPayload(null)
+    } finally { setBusy(false) }
+  }
+
+  useEffect(() => { void load() }, [apiBase, sessionToken])
+
+  const formatAt = (value: string) => {
+    const date = new Date(value)
+    if (!Number.isFinite(date.getTime())) return "Unknown time"
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(date) + " UTC"
+  }
+  const events = (payload?.events || []).filter(event => {
+    const term = search.trim().toLowerCase()
+    const matchesSearch = !term || [event.memberName, event.userId, event.detail, event.previousValue, event.currentValue]
+      .some(value => String(value ?? "").toLowerCase().includes(term))
+    return matchesSearch && (filter === "all" || factionActivityCategory(event.eventType) === filter)
+  })
+  const comparisonLabel = payload?.comparisonStatus === "compared"
+    ? "Two completed roster snapshots compared"
+    : payload?.comparisonStatus === "waiting_for_previous_roster"
+      ? "Waiting for a second completed roster"
+      : "Waiting for the first completed roster"
+  const typeCount = (type: FactionActivityEvent["eventType"]) => payload?.eventCounts[type] || 0
+
+  return (
+    <main className="module-page faction-module faction-activity-module">
+      <header className="module-topbar"><a className="portal-brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("/") }}><span className="portal-brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>FACTION WORKSPACE</small></span></a><button type="button" onClick={() => onNavigate("/")}>← Return to portal</button></header>
+      <section className="module-heading"><div className="portal-eyebrow"><span /> NAUGHTY SOULS · ROSTER CHANGES</div><h1>Faction <em>Activity</em></h1><p>Changes observed between the two latest completed public faction rosters. This feed reports what the collector observed, not an inferred minute-by-minute audit trail.</p></section>
+      {error && <p className="settings-feedback error" role="alert">{error}</p>}
+      <section className="faction-activity-freshness">
+        <div><small>LATEST COMPLETED ROSTER</small><strong>{payload?.latestRoster ? formatAt(payload.latestRoster.capturedAt) : "—"}</strong></div>
+        <div><small>PREVIOUS COMPLETED ROSTER</small><strong>{payload?.previousRoster ? formatAt(payload.previousRoster.capturedAt) : "—"}</strong></div>
+        <div><small>COMPARISON</small><strong>{comparisonLabel}</strong></div>
+        <div><small>OBSERVED CHANGES</small><strong>{payload?.eventCount ?? "—"}</strong></div>
+        <button type="button" onClick={() => void load()} disabled={busy}>{busy ? "Refreshing…" : "Refresh ↻"}</button>
+      </section>
+      <section className="faction-activity-summary">
+        <article><small>MEMBERS ADDED</small><strong>{typeCount("member_added")}</strong></article>
+        <article><small>DEPARTURES OBSERVED</small><strong>{typeCount("member_removed")}</strong></article>
+        <article><small>ACTIVITY / STATUS CHANGES</small><strong>{typeCount("activity_changed") + typeCount("status_changed")}</strong></article>
+        <article><small>WALL / OC CHANGES</small><strong>{typeCount("wall_changed") + typeCount("oc_changed")}</strong></article>
+        <article><small>REVIVE-SETTING CHANGES</small><strong>{typeCount("revive_setting_changed")}</strong></article>
+      </section>
+      <section className="halloween-panel faction-activity-panel">
+        <div className="faction-directory-heading">
+          <div><div className="halloween-status"><i /> SNAPSHOT-TO-SNAPSHOT CHANGES</div><h2>Recent faction activity</h2><p>Membership and public roster changes only. Up to 100 most recent events per comparison.</p></div>
+          <div className="faction-activity-controls">
+            <input aria-label="Search faction activity" placeholder="Search member or change…" value={search} onChange={event => setSearch(event.target.value)} />
+            <select aria-label="Filter faction activity" value={filter} onChange={event => setFilter(event.target.value as FactionActivityFilter)}>
+              <option value="all">All changes</option><option value="membership">Membership</option><option value="status">Activity &amp; status</option><option value="flags">Wall / OC flags</option><option value="settings">Revive settings</option><option value="position">Position</option>
+            </select>
+          </div>
+        </div>
+        {busy && !payload ? <p className="historical-key-muted">Comparing completed roster snapshots…</p> : events.length ? (
+          <ol className="faction-activity-list">
+            {events.map(event => <li key={event.id} className={"faction-activity-event " + event.eventType}>
+              <div className="faction-activity-event-marker" aria-hidden="true" />
+              <div className="faction-activity-event-main">
+                <div className="faction-activity-event-top"><span>{factionActivityLabels[event.eventType]}</span><time dateTime={event.occurredAt}>{formatAt(event.occurredAt)}</time></div>
+                <strong>{event.memberName}</strong><small>#{event.userId}</small>
+                <p>{event.detail}</p>
+                {(event.previousValue !== null || event.currentValue !== null) && <div className="faction-activity-transition"><span>{event.previousValue ?? "Unknown"}</span><b>→</b><span>{event.currentValue ?? "Unknown"}</span></div>}
+              </div>
+            </li>)}
+          </ol>
+        ) : <div className="historical-empty"><strong>{payload?.comparisonStatus === "compared" ? (payload.events.length ? "No changes match this filter." : "No changes observed between these rosters.") : "Activity comparison is preparing."}</strong><span>{payload?.comparisonStatus === "compared" ? "The feed only includes changes visible between completed roster snapshots." : "A second completed roster is required before snapshot-to-snapshot changes can be reported."}</span></div>}
+      </section>
+      <footer className="module-footer"><span>FACTION ACTIVITY FEED</span><span>Signed in as {playerName} · Public roster history only</span></footer>
     </main>
   )
 }

@@ -4472,6 +4472,190 @@ export default {
       await db.prepare("INSERT INTO company_sharing_recipients (owner_player_id, recipient_player_id, share_financial_data, share_employee_data, share_trend_data, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(owner_player_id, recipient_player_id) DO UPDATE SET share_financial_data = excluded.share_financial_data, share_employee_data = excluded.share_employee_data, share_trend_data = excluded.share_trend_data, updated_at = excluded.updated_at").bind(session.player_id, recipientId, Number(permissions.shareFinancialData), Number(permissions.shareEmployeeData), Number(permissions.shareTrendData), now).run()
       return jsonResponse({ recipient: { playerId: recipientId, ...permissions }, updatedAt: now }, 200, origin)
     }
+    if (url.pathname === "/api/faction/activity" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) {
+        return jsonResponse({ error: "Faction activity is available only to current Naughty Souls members." }, 403, origin)
+      }
+      const db = requireDb(env)
+      try {
+        type RosterRun = { runId: string; capturedAt: string; scheduledAt: string; memberCount: number }
+        type ActivityRosterRow = {
+          userId: string
+          name: string | null
+          position: string | null
+          level: number | null
+          lastActionStatus: string | null
+          statusDescription: string | null
+          statusDetails: string | null
+          statusState: string | null
+          statusUntil: string | null
+          reviveSetting: string | null
+          isOnWall: number | null
+          isInOc: number | null
+          hasEarlyDischarge: number | null
+        }
+        type MembershipChange = {
+          userId: string
+          memberName: string | null
+          firstSeenAt: string
+          leftObservedAt: string | null
+        }
+        type ActivityEvent = {
+          id: string
+          eventType: string
+          occurredAt: string
+          userId: string
+          memberName: string
+          detail: string
+          previousValue: string | null
+          currentValue: string | null
+        }
+
+        const rosterRuns = await db.prepare(
+          "SELECT s.run_id AS runId, s.captured_at AS capturedAt, s.scheduled_at AS scheduledAt, s.member_count AS memberCount FROM faction_roster_snapshots s JOIN faction_performance_collection_runs c ON c.run_id = s.run_id AND c.status = 'completed' WHERE s.faction_id = ? ORDER BY s.captured_at DESC, s.run_id DESC LIMIT 2"
+        ).bind(NAUGHTY_SOULS_FACTION_ID).all<RosterRun>()
+        const runs = rosterRuns.results ?? []
+        const latest = runs[0] ?? null
+        const previous = runs[1] ?? null
+        if (!latest) {
+          return jsonResponse({
+            factionId: NAUGHTY_SOULS_FACTION_ID,
+            generatedAt: new Date().toISOString(),
+            comparisonStatus: "waiting_for_roster",
+            latestCapturedAt: null,
+            previousCapturedAt: null,
+            events: [],
+            eventCount: 0,
+          }, 200, origin, { "cache-control": "private, max-age=30" })
+        }
+
+        const [latestRows, previousRows, intervalRows] = await Promise.all([
+          db.prepare(
+            "SELECT user_id AS userId, name, position, level, last_action_status AS lastActionStatus, status_description AS statusDescription, status_details AS statusDetails, status_state AS statusState, status_until AS statusUntil, revive_setting AS reviveSetting, is_on_wall AS isOnWall, is_in_oc AS isInOc, has_early_discharge AS hasEarlyDischarge FROM faction_member_roster_snapshots WHERE run_id = ? ORDER BY name COLLATE NOCASE, user_id"
+          ).bind(latest.runId).all<ActivityRosterRow>(),
+          previous ? db.prepare(
+            "SELECT user_id AS userId, name, position, level, last_action_status AS lastActionStatus, status_description AS statusDescription, status_details AS statusDetails, status_state AS statusState, status_until AS statusUntil, revive_setting AS reviveSetting, is_on_wall AS isOnWall, is_in_oc AS isInOc, has_early_discharge AS hasEarlyDischarge FROM faction_member_roster_snapshots WHERE run_id = ? ORDER BY name COLLATE NOCASE, user_id"
+          ).bind(previous.runId).all<ActivityRosterRow>() : Promise.resolve({ results: [] as ActivityRosterRow[] }),
+          previous ? db.prepare(
+            "SELECT user_id AS userId, member_name AS memberName, first_seen_at AS firstSeenAt, left_observed_at AS leftObservedAt FROM faction_membership_intervals WHERE faction_id = ? AND ((first_seen_at > ? AND first_seen_at <= ?) OR (left_observed_at > ? AND left_observed_at <= ?)) ORDER BY COALESCE(left_observed_at, first_seen_at) DESC, user_id"
+          ).bind(NAUGHTY_SOULS_FACTION_ID, previous.capturedAt, latest.capturedAt, previous.capturedAt, latest.capturedAt).all<MembershipChange>() : Promise.resolve({ results: [] as MembershipChange[] }),
+        ])
+
+        const events: ActivityEvent[] = []
+        const pushEvent = (
+          eventType: string,
+          occurredAt: string,
+          userId: string,
+          memberName: string | null,
+          detail: string,
+          previousValue: string | null = null,
+          currentValue: string | null = null,
+        ) => {
+          if (!occurredAt) return
+          events.push({
+            id: [eventType, userId, occurredAt].join(":"),
+            eventType,
+            occurredAt,
+            userId,
+            memberName: memberName || "Unknown member",
+            detail,
+            previousValue,
+            currentValue,
+          })
+        }
+        const normalizeBoolean = (value: unknown): string => value === 1 || value === true || value === "1"
+          ? "Yes"
+          : value === 0 || value === false || value === "0"
+            ? "No"
+            : "Unknown"
+        const displayValue = (value: unknown): string => value == null || String(value).trim() === ""
+          ? "Unknown"
+          : String(value)
+        const newByUser = new Map((latestRows.results ?? []).map(row => [String(row.userId), row]))
+        const oldByUser = new Map((previousRows.results ?? []).map(row => [String(row.userId), row]))
+
+        for (const interval of intervalRows.results ?? []) {
+          if (interval.firstSeenAt > previous!.capturedAt && interval.firstSeenAt <= latest.capturedAt) {
+            pushEvent("member_added", interval.firstSeenAt, String(interval.userId), interval.memberName,
+              "First observed in a completed faction roster.")
+          }
+          if (interval.leftObservedAt && interval.leftObservedAt > previous!.capturedAt && interval.leftObservedAt <= latest.capturedAt) {
+            pushEvent("member_removed", interval.leftObservedAt, String(interval.userId), interval.memberName,
+              "Departure observed by the faction roster collector.")
+          }
+        }
+
+        if (previous) {
+          for (const [userId, current] of newByUser) {
+            const old = oldByUser.get(userId)
+            if (!old) continue
+            const memberName = current.name || old.name
+            const oldActivity = displayValue(old.lastActionStatus)
+            const newActivity = displayValue(current.lastActionStatus)
+            if (oldActivity !== newActivity) {
+              pushEvent("activity_changed", latest.capturedAt, userId, memberName,
+                "Public last-action state changed.", oldActivity, newActivity)
+            }
+            const statusSummary = (row: ActivityRosterRow) =>
+              [row.statusDescription, row.statusState, row.statusDetails]
+                .map(value => value?.trim() || "")
+                .filter(Boolean)
+                .join(" · ") || "Unknown"
+            const oldStatus = statusSummary(old)
+            const newStatus = statusSummary(current)
+            if (oldStatus !== newStatus || displayValue(old.statusUntil) !== displayValue(current.statusUntil)) {
+              const oldTimer = displayValue(old.statusUntil)
+              const newTimer = displayValue(current.statusUntil)
+              const oldLabel = oldTimer === "Unknown" ? oldStatus : oldStatus + " · " + oldTimer
+              const newLabel = newTimer === "Unknown" ? newStatus : newStatus + " · " + newTimer
+              pushEvent("status_changed", latest.capturedAt, userId, memberName,
+                "Public member status or timer changed.", oldLabel, newLabel)
+            }
+            const flagChanges: Array<[string, string, unknown, unknown]> = [
+              ["wall_changed", "Wall status", old.isOnWall, current.isOnWall],
+              ["oc_changed", "Organized crime status", old.isInOc, current.isInOc],
+              ["early_discharge_changed", "Early-discharge status", old.hasEarlyDischarge, current.hasEarlyDischarge],
+            ]
+            for (const [eventType, label, from, to] of flagChanges) {
+              if (normalizeBoolean(from) !== normalizeBoolean(to)) {
+                pushEvent(eventType, latest.capturedAt, userId, memberName, label + " changed.",
+                  normalizeBoolean(from), normalizeBoolean(to))
+              }
+            }
+            const oldRevive = displayValue(old.reviveSetting)
+            const newRevive = displayValue(current.reviveSetting)
+            if (oldRevive !== newRevive) {
+              pushEvent("revive_setting_changed", latest.capturedAt, userId, memberName,
+                "Configured faction revive setting changed.", oldRevive, newRevive)
+            }
+            const oldPosition = displayValue(old.position)
+            const newPosition = displayValue(current.position)
+            if (oldPosition !== newPosition) {
+              pushEvent("position_changed", latest.capturedAt, userId, memberName,
+                "Faction position changed.", oldPosition, newPosition)
+            }
+          }
+        }
+
+        const orderedEvents = events.sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt) || a.id.localeCompare(b.id)).slice(0, 100)
+        const eventCounts = Object.fromEntries(Array.from(new Set(orderedEvents.map(event => event.eventType)))
+          .map(eventType => [eventType, orderedEvents.filter(event => event.eventType === eventType).length]))
+        return jsonResponse({
+          factionId: NAUGHTY_SOULS_FACTION_ID,
+          generatedAt: new Date().toISOString(),
+          comparisonStatus: previous ? "compared" : "waiting_for_previous_roster",
+          latestRoster: latest,
+          previousRoster: previous,
+          eventCount: orderedEvents.length,
+          eventCounts,
+          events: orderedEvents,
+        }, 200, origin, { "cache-control": "private, max-age=30" })
+      } catch {
+        return jsonResponse({ error: "Faction activity history is unavailable. Verify the completed roster snapshots and faction membership intervals." }, 503, origin)
+      }
+    }
     if (url.pathname === "/api/faction/weekly-rankings" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)

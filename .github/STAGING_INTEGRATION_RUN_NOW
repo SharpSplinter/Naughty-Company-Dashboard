@@ -6,3 +6,4 @@ Run 6: validate Sunday boundary calculations, weekly rankings API, gym-energy ra
 Run 7: fix weekly gym-energy anomaly type and rerun full validation; 2026-11-03T00:25Z
 Run 8: validate public Live Member Status UI, inactivity filters, hospital/status and separate revive fields; 2026-11-03T00:32Z
 Run 9: fix staging weekly Sunday boundary upsert collision and rerun Live Member Status assertions; 2026-11-03T00:42Z
+Run 10: validate public faction activity snapshot comparisons and activity feed UI/API; 2026-11-03T01:05Z

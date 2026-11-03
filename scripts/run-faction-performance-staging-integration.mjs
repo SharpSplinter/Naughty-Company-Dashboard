@@ -318,6 +318,31 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId) {
     }
     console.log("PASS authenticated faction performance API returned roster activity, status, and distinct member revive-setting / key-revivability values.")
 
+    const activityResponse = await fetch(`${WORKER_URL}/api/faction/activity`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(30000),
+    })
+    const activity = await activityResponse.json().catch(() => null)
+    if (!activityResponse.ok || !activity || !Array.isArray(activity.events) ||
+        !["compared", "waiting_for_previous_roster"].includes(activity.comparisonStatus) ||
+        activity.latestRoster?.runId !== rosterRunId) {
+      throw new Error(`Faction activity API returned HTTP ${activityResponse.status} or omitted its completed roster comparison.`)
+    }
+    const allowedActivityTypes = new Set([
+      "member_added", "member_removed", "activity_changed", "status_changed",
+      "wall_changed", "oc_changed", "early_discharge_changed", "revive_setting_changed", "position_changed",
+    ])
+    if (activity.events.some((event) =>
+      !allowedActivityTypes.has(event.eventType) ||
+      typeof event.userId !== "string" ||
+      typeof event.memberName !== "string" ||
+      typeof event.occurredAt !== "string" ||
+      typeof event.detail !== "string"
+    )) {
+      throw new Error("Faction activity API returned an invalid or unsupported roster-change event.")
+    }
+    console.log("PASS authenticated faction activity API compared completed roster snapshots and returned only typed public membership/status/flag events.")
+
     const weeklyResponse = await fetch(`${WORKER_URL}/api/faction/weekly-rankings?metric=xantaken`, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       signal: AbortSignal.timeout(30000),

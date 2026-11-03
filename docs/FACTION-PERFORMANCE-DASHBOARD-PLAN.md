@@ -39,7 +39,7 @@ Inspected the current PR branch and repository configuration.
 
 The current portal already provides the shared workspace foundation, faction authentication, Company operations, Halloween collection/archive/live intelligence, a faction director/member workspace, account credential controls and administrator-role management.
 
-The PR branch includes migrations through 0020. Migration 0019 adds the public faction-performance collection runs, membership intervals, roster snapshots, 18-counter personalstats snapshots and gym-energy snapshots. Migration 0020 adds an idempotent Sunday-boundary run registry for the weekly baseline captures. The branch now includes the Sunday UTC boundary scheduler, a weekly delta/ranking API, a default Weekly Rankings workspace tab, and an initial public-roster Live Member Status tab. It does **not yet** persist immutable completed-week result rows or provide historical week comparisons, historical Faction Activity timelines or voluntary private member-key connections. Those remain later phases.
+The PR branch includes migrations through 0020. Migration 0019 adds the public faction-performance collection runs, membership intervals, roster snapshots, 18-counter personalstats snapshots and gym-energy snapshots. Migration 0020 adds an idempotent Sunday-boundary run registry for the weekly baseline captures. The branch now includes the Sunday UTC boundary scheduler, a weekly delta/ranking API, a default Weekly Rankings workspace tab, and an initial public-roster Live Member Status tab. It does **not yet** persist immutable completed-week result rows or provide historical week comparisons, multi-period Faction Activity timelines or voluntary private member-key connections. Those remain later phases.
 
 The current application is defined in package.json and wrangler.toml. Preserve the existing React/Vite + Worker + D1 + Queue architecture unless an evidenced technical limitation requires a proposal and discussion first.
 
@@ -732,8 +732,8 @@ Still to implement or validate:
 - [x] Keep the target's configured `revive_setting` separate from owner/key-specific `is_revivable`.
 - [x] Display wall, OC and early-discharge flags.
 - [x] Add roster capture time, collection freshness warning, search and status filters.
-- [ ] Add historical activity trend and member-specific inactivity timeline.
-- [ ] Add an activity feed showing changes between completed roster snapshots.
+- [x] Add an authenticated, bounded activity feed comparing the two latest completed public roster snapshots. It reports membership interval first-seen/departure observations plus changes in activity state, member status/timer, wall/OC/early-discharge flags, configured revive setting and position.
+- [ ] Persist a longer historical activity timeline and add member-specific inactivity trends.
 
 ### Phase 5 — Voluntary private live connections
 - Consent and disclosure.
