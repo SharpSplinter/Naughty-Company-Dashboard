@@ -325,7 +325,7 @@ async function savedKey(env: WorkerEnv, playerId: string): Promise<string | null
 }
 
 /** Remove feature registrations tied to an older portal credential while retaining user data/history. */
-async function invalidateMemberKeyDependents(env: WorkerEnv, playerId: string): Promise<void> {
+async function invalidateMemberKeyDependents(env: WorkerEnv, playerId: string, previousPortalKey?: string | null): Promise<void> {
   const db = requireDb(env)
   const now = new Date().toISOString()
   await db.prepare("DELETE FROM faction_member_private_live_snapshots WHERE player_id = ?").bind(playerId).run()
@@ -333,8 +333,24 @@ async function invalidateMemberKeyDependents(env: WorkerEnv, playerId: string): 
   await db.prepare("DELETE FROM halloween_historical_keys WHERE player_id = ?").bind(playerId).run()
   await db.prepare("UPDATE halloween_collection_jobs SET status = 'cancelled', last_error = ?, updated_at = ? WHERE player_id = ? AND status IN ('queued', 'running')")
     .bind("The member's portal API key changed or was removed. Re-enable historical collection with the current key.", now, playerId).run()
-  await db.prepare("DELETE FROM company_keys WHERE player_id = ?").bind(playerId).run()
-  await db.prepare("DELETE FROM company_api_keys WHERE player_id = ?").bind(playerId).run()
+
+  // Secondary company keys are independent member-owned credentials. Remove
+  // only per-company/legacy copies that contain the old primary portal key.
+  if (previousPortalKey) {
+    const legacyCompanyKey = await savedCompanyKey(env, playerId).catch(() => null)
+    if (legacyCompanyKey === previousPortalKey) {
+      await db.prepare("DELETE FROM company_keys WHERE player_id = ?").bind(playerId).run()
+    }
+    const companyKeys = await db.prepare("SELECT company_id, ciphertext, iv FROM company_api_keys WHERE player_id = ?")
+      .bind(playerId).all<{ company_id: string; ciphertext: string; iv: string }>()
+    for (const row of companyKeys.results ?? []) {
+      const storedKey = await decryptKey(env, row.ciphertext, row.iv).catch(() => null)
+      if (storedKey === previousPortalKey) {
+        await db.prepare("DELETE FROM company_api_keys WHERE player_id = ? AND company_id = ?")
+          .bind(playerId, String(row.company_id)).run()
+      }
+    }
+  }
 }
 
 async function claimPrivateLiveRequest(env: WorkerEnv, playerId: string, nowMs = Date.now()): Promise<boolean> {
@@ -4760,7 +4776,7 @@ export default {
         }
 
         const priorKey = await savedKey(env, player.id).catch(() => null)
-        if (priorKey && priorKey !== apiKey) await invalidateMemberKeyDependents(env, player.id)
+        if (priorKey && priorKey !== apiKey) await invalidateMemberKeyDependents(env, player.id, priorKey)
         await saveKey(env, player.id, apiKey)
         const token = randomToken()
         const expiresAt = Math.floor(Date.now() / 1000) + 30 * DAY
@@ -4795,7 +4811,7 @@ export default {
         const player = await validateTornKey(apiKey)
         if (player.id !== session.player_id) return jsonResponse({ error: "That key belongs to a different Torn player. Sign out and sign in as that player to switch accounts." }, 403, origin)
         const priorKey = await savedKey(env, player.id).catch(() => null)
-        if (priorKey && priorKey !== apiKey) await invalidateMemberKeyDependents(env, player.id)
+        if (priorKey && priorKey !== apiKey) await invalidateMemberKeyDependents(env, player.id, priorKey)
         await saveKey(env, player.id, apiKey)
         return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), updatedAt: new Date().toISOString(), dependentConnectionsReset: priorKey !== null && priorKey !== apiKey }, 200, origin)
       } catch (error) { return tornError(error, origin) }
@@ -5286,7 +5302,8 @@ export default {
     if (url.pathname === "/api/auth/key" && request.method === "DELETE") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
-      await invalidateMemberKeyDependents(env, session.player_id)
+      await const previousPortalKey = await savedKey(env, session.player_id).catch(() => null)
+      await invalidateMemberKeyDependents(env, session.player_id, previousPortalKey)
       await requireDb(env).prepare("DELETE FROM api_keys WHERE player_id = ?").bind(session.player_id).run()
       return jsonResponse({ deleted: true, companyDataRetained: true, featureConnectionsReset: true }, 200, origin)
     }
