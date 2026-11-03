@@ -2816,6 +2816,114 @@ try {
     assert.equal(writes.some((write) => /DELETE FROM (companies|company_snapshots|company_financials)/i.test(write.sql)), false)
   })
 
+  await test("secondary company keys may belong to a different Torn player when they return a company profile", async () => {
+    const originalFetch = globalThis.fetch
+    const token = "secondary-company-key-session-token"
+    const tokenDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
+    const tokenHash = Array.from(new Uint8Array(tokenDigest), byte => byte.toString(16).padStart(2, "0")).join("")
+    const portalPlayerId = "777"
+    const secondaryKey = "synthetic-company-key-owned-by-another-player"
+    const portalKey = "synthetic-primary-portal-key"
+    const secret = "company-secondary-test-encryption-secret-0123456789"
+    const keyDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret))
+    const cryptoKey = await crypto.subtle.importKey("raw", keyDigest, { name: "AES-GCM" }, false, ["encrypt"])
+    const iv = crypto.getRandomValues(new Uint8Array(12))
+    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, cryptoKey, new TextEncoder().encode(portalKey))
+    const encryptedPortalKey = {
+      ciphertext: Buffer.from(ciphertext).toString("base64"),
+      iv: Buffer.from(iv).toString("base64"),
+    }
+    const writes = []
+    const db = {
+      prepare(sql) {
+        const normalized = sql.toLowerCase().replace(/\s+/g, " ").trim()
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            if (normalized.includes("from sessions s join players p")) {
+              assert.equal(values[0], tokenHash)
+              return {
+                player_id: portalPlayerId,
+                player_name: "Portal Owner",
+                faction_id: "8317",
+                faction_verified_at: new Date().toISOString(),
+                membership_check_attempted_at: null,
+                membership_check_status: null,
+                is_admin: 0,
+              }
+            }
+            if (normalized.startsWith("select disabled_at from dashboard_member_status")) return { disabled_at: null }
+            if (normalized.startsWith("select ciphertext, iv from api_keys where player_id = ?")) {
+              assert.deepEqual(values, [portalPlayerId])
+              return encryptedPortalKey
+            }
+            return null
+          },
+          async all() { return { results: [] } },
+          async run() {
+            writes.push({ sql: normalized, values: [...values] })
+            return { success: true, meta: { changes: 1 } }
+          },
+        }
+      },
+    }
+    const calls = []
+    globalThis.fetch = async (input, init = {}) => {
+      const url = new URL(String(input))
+      const authorization = new Headers(init.headers).get("Authorization")
+      calls.push({ path: url.pathname, authorization })
+      if (url.pathname === "/v2/key/info") {
+        return new Response(JSON.stringify({ info: { user: { id: 888 } } }), { status: 200 })
+      }
+      if (url.pathname === "/v2/company") {
+        assert.equal(authorization, "ApiKey " + secondaryKey)
+        return new Response(JSON.stringify({
+          profile: { id: 123, name: "Additional Company", type: { name: "Oil Rig" } },
+          employees: { employees: [] },
+          stock: { stock: [] },
+          timestamp: 1791000000,
+        }), { status: 200 })
+      }
+      throw new Error("Unexpected Torn API request in secondary-company test: " + url.pathname)
+    }
+
+    try {
+      const response = await worker.fetch(new Request("https://worker.test/api/auth/company-key", {
+        method: "POST",
+        headers: {
+          Origin: "https://naughty-company-dashboard.pages.dev",
+          Authorization: "Bearer " + token,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ apiKey: secondaryKey }),
+      }), {
+        DB: db,
+        KEY_ENCRYPTION_SECRET: secret,
+        ALLOWED_ORIGIN: "https://naughty-company-dashboard.pages.dev",
+      }, { waitUntil() {} })
+
+      assert.equal(response.status, 200)
+      assert.deepEqual(await response.json(), {
+        saved: true,
+        secondary: true,
+        companyId: 123,
+        companyName: "Additional Company",
+        companyType: "Oil Rig",
+        lastFour: secondaryKey.slice(-4),
+      })
+      assert.deepEqual(calls.map(call => call.path), ["/v2/company"], "the company key must be validated against its company profile")
+      assert.ok(calls.every(call => call.authorization === "ApiKey " + secondaryKey))
+      const savedCompanyKey = writes.find(write => write.sql.startsWith("insert into company_api_keys"))
+      assert.ok(savedCompanyKey, "the validated key must be stored in the per-company key table")
+      assert.equal(savedCompanyKey.values[0], portalPlayerId, "the connection remains owned by the authenticated portal account")
+      assert.equal(savedCompanyKey.values[1], "123", "the key is associated with the company returned by Torn")
+      assert.equal(savedCompanyKey.values[4], secondaryKey.slice(-4))
+      assert.equal(writes.some(write => write.sql.startsWith("insert into company_keys")), false, "secondary keys must not replace the primary portal/company key")
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
   await test("company connection settings reuse the portal key and allow optional secondary company keys", () => {
     const source = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
     const settings = readFileSync(join(root, "src/components/portal/workspaces.tsx"), "utf8")
@@ -2827,7 +2935,7 @@ try {
     assert.match(settings, /removeCompanyKey/)
     assert.match(settings, /can_remove_key/)
     assert.match(settings, /uses_portal_key/)
-    assert.match(readFileSync(join(root, "src/worker/index.ts"), "utf8"), /if \(isSecondary\) await validatePrivateLiveKeyOwner\(env, apiKey, session\.player_id\)/)
+    assert.doesNotMatch(readFileSync(join(root, "src/worker/index.ts"), "utf8"), /if \(isSecondary\) await validatePrivateLiveKeyOwner\(env, apiKey, session\.player_id\)/, "secondary company keys may belong to a different Torn player")
   })
 
   await test("historical company trends are owner-scoped, ordered, and summarize period changes", async () => {
