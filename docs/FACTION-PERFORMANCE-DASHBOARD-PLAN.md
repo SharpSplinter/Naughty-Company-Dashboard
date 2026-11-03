@@ -758,7 +758,8 @@ Still to implement or validate:
 - [x] Allow the owner to disconnect and delete both the encrypted key and current faction-shared snapshot. Confirmed faction departure uses the same deletion path. Permanently invalid, owner-paused or required-selection-revoked keys are disconnected; temporary jail/inactivity/API outages and rate limits retain the key and last successful snapshot.
 - [x] Add Account Settings disclosure and consent controls, owner refresh/disconnect controls, and an opt-in Live Member Status display for shared values with capture age and separate networth source time.
 - [x] Add parser allowlist tests, Worker-level synthetic tests for wrong owner/consent/encrypted storage/networth opt-in/request throttle/disconnect, and a dedicated consent/security contract test.
-- [ ] Apply migration 0023 to isolated staging D1 and verify the remote migration ledger; extend stateful staging integration to exercise the private-live routes and revocation with fixture-backed Torn responses.
+- [x] Apply migration 0023 to isolated staging D1, verify the remote migration ledger and smoke-check all three private-live tables. Staging [Run 21](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/41569343997) passed; no production D1 or Worker was contacted.
+- [ ] Extend stateful staging integration to exercise private-live connect/refresh/revocation routes and the Torn fixture Service Binding with a synthetic authenticated member.
 - [ ] Run volunteer real-key acceptance with custom/minimum-permission keys to verify the actual Torn response and access requirements for bars, cooldowns and optional detailed networth.
 - [ ] Add private-live freshness/error visibility to administrator diagnostics and complete the API request-budget review before considering any scheduled refresh.
 
