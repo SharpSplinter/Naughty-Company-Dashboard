@@ -744,23 +744,23 @@ Still to implement or validate:
 - [x] Add an authenticated, bounded activity feed comparing the two latest completed public roster snapshots. It reports membership interval first-seen/departure observations plus changes in activity state, member status/timer, wall/OC/early-discharge flags, configured revive setting and position.
 - [ ] Persist a longer historical activity timeline and add member-specific inactivity trends.
 
-### Phase 5 — Voluntary private live connections
+### Phase 5 — Unified member API key and voluntary private live sharing
 
-**First implementation is on the PR branch. Synthetic Worker tests cover ownership, consent, encryption, selection minimization, opt-in networth, request throttling and revocation. Isolated staging-D1 migration/acceptance and real-member key verification remain outstanding.**
+**The portal now has one member-owned Torn API key. Members enter it only at sign-in; company, private-live and Halloween features reuse the encrypted canonical `api_keys` credential. Separate per-feature data-sharing consent remains required. Synthetic Worker tests cover key ownership, consent, encryption, selection minimization, opt-in networth, request throttling and revocation. Staging-D1 acceptance passed; real-member permission acceptance remains outstanding.**
 
-- [x] Add migration 0023 with a separate encrypted owner-key registry, current private-live snapshots, and a per-member API request-throttle table. These tables are separate from the faction login key and the Halloween Full Access/log credential.
-- [x] Require an authenticated current Naughty Souls session, explicit versioned data-sharing consent, and explicit selection of faction sharing. Validate the submitted key's Torn owner ID against the signed-in player before fetching bars, cooldowns or networth.
+- [x] Add migration 0023 with private-live consent/feature metadata, latest-only snapshots and a per-member API request-throttle table. The canonical member Torn credential remains the single encrypted `api_keys` record; the feature registry does not require a second member key submission.
+- [x] Require an authenticated current Naughty Souls session, explicit versioned data-sharing consent, and explicit selection of faction sharing. Reuse the canonical sign-in key and validate its Torn owner ID against the signed-in player before fetching bars, cooldowns or networth.
 - [x] Request only the owner's /user/bars and /user/cooldowns selections. Parse and persist an allowlist of four bars and three cooldowns; unknown or missing values remain unknown. Do not retain arbitrary response fields.
 - [x] Make detailed /user/networth a separate opt-in. If Torn denies only that optional selection, keep the bars/cooldowns connection and leave detailed networth off. Preserve Torn's networth source timestamp and show it separately from the Worker capture time.
-- [x] Encrypt the owner key at rest with the existing AES-GCM Worker secret. Never return ciphertext or plaintext key material from the API. The faction performance API joins only the latest snapshot for members with explicit sharing enabled and excludes disabled accounts.
+- [x] Keep the canonical portal key encrypted at rest with the existing AES-GCM Worker secret. Feature metadata cannot return ciphertext or plaintext key material. The faction performance API joins only the latest snapshot for members with explicit sharing enabled and excludes disabled accounts.
 - [x] Keep the latest snapshot only; no historical private bars/cooldowns archive is created. An owner can refresh through Account Settings; there is no background private-live collector in this phase.
 - [x] Enforce one shared 30-second per-member D1 throttle across connect and refresh attempts, including failed key validation, to constrain Torn request volume.
-- [x] Allow the owner to disconnect and delete both the encrypted key and current faction-shared snapshot. Confirmed faction departure uses the same deletion path. Permanently invalid, owner-paused or required-selection-revoked keys are disconnected; temporary jail/inactivity/API outages and rate limits retain the key and last successful snapshot.
-- [x] Add Account Settings disclosure and consent controls, owner refresh/disconnect controls, and an opt-in Live Member Status display for shared values with capture age and separate networth source time.
+- [x] Allow the owner to disable private-live sharing and delete the current faction-shared snapshot. The canonical portal key remains available to other enabled portal features. Replacing or deleting the portal key invalidates private-live/Halloween opt-in metadata and company-key copies tied to the old credential. Confirmed faction departure removes the canonical credential and private live data. Temporary jail/inactivity/API outages and rate limits retain the last successful snapshot.
+- [x] Add Account Settings disclosure and consent controls, owner refresh/disable controls, and an opt-in Live Member Status display for shared values with capture age and separate networth source time. No separate key-entry form is used.
 - [x] Add parser allowlist tests, Worker-level synthetic tests for wrong owner/consent/encrypted storage/networth opt-in/request throttle/disconnect, and a dedicated consent/security contract test.
 - [x] Apply migration 0023 to isolated staging D1, verify the remote migration ledger and smoke-check all three private-live tables. Staging [Run 21](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/41569343997) passed; no production D1 or Worker was contacted.
 - [x] Extend stateful staging integration to exercise private-live connect/refresh/revocation routes and the Torn fixture Service Binding with a synthetic authenticated member. [Run 22](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/41570310084) passed missing-consent and wrong-owner rejection, encrypted key persistence/decryption, authenticated snapshot read, shared connect/refresh throttle, bars/cooldowns collection, explicit detailed-networth opt-in/source timestamp, disconnect deletion, cleanup, and the full public faction D1/Queue regression. The run confirmed no production D1 or Worker was contacted.
-- [ ] Run volunteer real-key acceptance with custom/minimum-permission keys to verify the actual Torn response and access requirements for bars, cooldowns and optional detailed networth.
+- [ ] Run volunteer real-key acceptance with the recommended unified Custom Access key (and a Full Access fallback) to verify Torn's actual permission behavior for sign-in, company selections, bars, cooldowns, optional detailed networth, Halloween summaries and historical logs.
 - [ ] Add private-live freshness/error visibility to administrator diagnostics and complete the API request-budget review before considering any scheduled refresh.
 
 
@@ -874,9 +874,13 @@ The project is not complete until all of the following are implemented and teste
 | Revive flags | is_revivable is owner-specific; revive_setting is member preference |
 | Current revive enum | Everyone, Friends & faction, No one, Unknown |
 | Friends only | Not in current schema; do not hardcode unless future API returns it |
-| Live bars/cooldowns | Owner-only / member key and consent required |
+| Member API credential | One owner-verified encrypted `api_keys` credential is entered at sign-in and reused by member-facing features wherever its selections permit; no separate company/private-live/Halloween keys are requested |
+| Service-owned public company key | `TORN_API_KEY_CUSTOM` is used only for public global-company catalogue/ranking requests; it is not a member credential |
+| Faction collection key | `TORN_FACTION_API_KEY` remains dedicated to scheduled public faction collection and is never substituted for a member key |
+| Live bars/cooldowns | Owner-only / canonical member portal key and explicit faction-sharing consent required |
 | Bars/cooldown access | Current Swagger documents Minimal access key |
-| Detailed networth | Current /user/networth is owner-only and requires Limited access |
+| Detailed networth | Current /user/networth is owner-only and requires Limited access; separately opt-in, using the same canonical member key |
+| Halloween historical logs | Uses the same canonical member key when Torn reports Full Access or a Custom Access key with User → Log permission; historical data sharing remains separately consented |
 | Public networth | Use public personalstats total |
 | Rate limits | Official docs: up to 100 calls/minute per player across keys; limits may change; design conservatively |
 | Service cache | Identical requests may be cached for up to 30 seconds |
