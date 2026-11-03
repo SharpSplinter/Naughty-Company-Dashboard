@@ -487,7 +487,7 @@ function FactionStatsOverview({ onNavigate, apiBase, sessionToken }: FactionWork
   )
 }
 
-function FactionWeeklyRankings({
+function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }: FactionWorkspaceProps) {
   const [payload, setPayload] = useState<FactionWeeklyPayload | null>(null)
   const [metric, setMetric] = useState<FactionWeeklyRankingMetric>("xantaken")
   const [search, setSearch] = useState("")

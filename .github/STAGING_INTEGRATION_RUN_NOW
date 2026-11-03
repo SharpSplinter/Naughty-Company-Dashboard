@@ -11,3 +11,4 @@ Run 11: validate immutable closed-week reports, leaver retention and historical 
 Run 12: rerun immutable weekly history acceptance after queue-test assertion correction; staging-only; 2026-11-03T02:20Z
 Run 13: validate the isolated /faction/stats snapshot collector, authenticated totals API, and faction totals dashboard tab.
 Run 14: rerun corrected faction totals worker and UI integration after parser/queue source fixes.
+Run 15: validate corrected Faction totals component declaration and full staging checks.
