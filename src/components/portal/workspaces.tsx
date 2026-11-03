@@ -837,6 +837,7 @@ type FactionLiveMember = {
     bars: Record<"energy" | "nerve" | "happy" | "life", { current: number | null; maximum: number | null }>
     cooldowns: { drug: number | null; booster: number | null; medical: number | null }
     networth: Record<string, number> | null
+    sourceTimestamps: { capturedAt?: string; networthSourceTimestamp?: number | null } | null
   } | null
 }
 
@@ -853,6 +854,15 @@ function formatPrivateLiveBar(value: { current: number | null; maximum: number |
   if (!value || value.current === null && value.maximum === null) return "Unknown"
   return (value.current === null ? "—" : Math.round(value.current).toLocaleString()) +
     " / " + (value.maximum === null ? "—" : Math.round(value.maximum).toLocaleString())
+}
+
+function formatPrivateLiveSourceTime(timestampSeconds: number | null | undefined): string {
+  if (timestampSeconds === null || timestampSeconds === undefined || !Number.isFinite(timestampSeconds)) return "Source time unavailable"
+  const date = new Date(timestampSeconds * 1000)
+  if (!Number.isFinite(date.getTime())) return "Source time unavailable"
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone: "UTC", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(date) + " UTC"
 }
 
 function formatPrivateLiveCooldown(seconds: number | null | undefined): string {
@@ -1070,7 +1080,7 @@ function FactionLiveStatus({ playerName, onNavigate, apiBase, sessionToken }: Fa
                       <span>Booster <strong>{formatPrivateLiveCooldown(member.privateLive.cooldowns?.booster)}</strong></span>
                       <span>Medical <strong>{formatPrivateLiveCooldown(member.privateLive.cooldowns?.medical)}</strong></span>
                     </div>
-                    {member.privateLive.networth && <small>Detailed networth: <strong>{member.privateLive.networth.total === undefined ? "—" : "$" + Math.round(member.privateLive.networth.total).toLocaleString()}</strong></small>}
+                    {member.privateLive.networth && <small>Detailed networth: <strong>{member.privateLive.networth.total === undefined ? "—" : "$" + Math.round(member.privateLive.networth.total).toLocaleString()}</strong> · {formatPrivateLiveSourceTime(member.privateLive.sourceTimestamps?.networthSourceTimestamp)}</small>}
                   </> : <span className="faction-live-private-unavailable">Not connected or not shared</span>}</td>
                 </tr>
               })}
@@ -1744,12 +1754,12 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
           consentVersion: "faction-private-live-v1",
         }),
       })
-      const payload = await response.json() as { error?: string; lastFour?: string; includeNetworth?: boolean }
+      const payload = await response.json() as { error?: string; lastFour?: string; includeNetworth?: boolean; warning?: string | null }
       if (!response.ok) throw new Error(payload.error || "Could not connect your private live Torn key.")
       setPrivateLiveKey("")
       setPrivateLiveConsent(false)
       await loadPrivateLiveStatus()
-      setAccountNotice("Your owner-verified private live key was encrypted and its latest snapshot shared with Naughty Souls members.")
+      setAccountNotice(payload.warning || "Your owner-verified private live key was encrypted and its latest snapshot shared with Naughty Souls members.")
     } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not connect your private live Torn key.") }
     finally { setPrivateLiveBusy(false) }
   }
