@@ -506,7 +506,7 @@ async function enqueueFactionStatsCollection(env: WorkerEnv, scheduledTime: numb
   const enqueuedAt = new Date().toISOString()
   await db.prepare(
     "UPDATE faction_stats_collection_runs SET last_enqueued_at = ?, updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
-  ).bind(enqueuedAt, enqueuedAt, run.runId).run()
+  ).bind(enqueuedAt, enqueuedAt, String(run.runId)).run()
   return true
 }
 
