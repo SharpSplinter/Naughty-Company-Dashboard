@@ -4952,11 +4952,11 @@ export default {
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       try {
         const body: unknown = await request.json().catch(() => null)
-        const apiKey = isRecord(body) && typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+        const apiKey = await savedKey(env, session.player_id) ?? ""
         const consent = isRecord(body) && body.consent === true
         const consentVersion = isRecord(body) && typeof body.consentVersion === "string" ? body.consentVersion : ""
-        if (!apiKey) return jsonResponse({ error: "A Full Access Torn API key is required." }, 400, origin)
-        if (!consent || consentVersion !== "halloween-history-v1") return jsonResponse({ error: "Please review and accept the historical Halloween data-sharing terms before saving this key." }, 400, origin)
+        if (!apiKey) return jsonResponse({ error: "Sign in with your single Naughty Family Portal Torn API key before enabling historical collection." }, 409, origin)
+        if (!consent || consentVersion !== "halloween-history-v1") return jsonResponse({ error: "Please review and accept the historical Halloween data-sharing terms before enabling collection." }, 400, origin)
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 12000)
         let payload: unknown
@@ -4978,13 +4978,16 @@ export default {
         const access = isRecord(root?.access) ? root.access : null
         const selections = isRecord(root?.selections) ? root.selections : null
         const userSelections = Array.isArray(selections?.user) ? selections.user : []
-        if (String(keyOwner ?? "") !== session.player_id) return jsonResponse({ error: "That key belongs to a different Torn player. Use a key created on your own account." }, 403, origin)
-        if (access?.type !== "Full Access" || !userSelections.includes("log")) return jsonResponse({ error: "Historical Halloween log collection requires your own Full Access key with user log access. Custom Access keys are not accepted." }, 400, origin)
+        if (String(keyOwner ?? "") !== session.player_id) return jsonResponse({ error: "Your saved portal key does not belong to this Torn account. Sign in again with your own key." }, 403, origin)
+        const accessType = typeof access?.type === "string" ? access.type : ""
+        const supportsCustomLog = (accessType === "Custom Access" || accessType === "Custom") && userSelections.includes("log")
+        if (accessType !== "Full Access" && !supportsCustomLog) return jsonResponse({ error: "Halloween historical collection needs either Full Access or a Custom Access key with the User → Log selection." }, 400, origin)
+        if (!userSelections.includes("log")) return jsonResponse({ error: "Your saved portal key is missing the User → Log selection required for historical Halloween collection." }, 400, origin)
         const encrypted = await encryptKey(env, apiKey)
         const now = new Date().toISOString()
-        await requireDb(env).prepare("INSERT INTO halloween_historical_keys (player_id, ciphertext, iv, last_four, access_level, consent_version, consented_at, last_validated_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'Full Access', ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, access_level = 'Full Access', consent_version = excluded.consent_version, consented_at = excluded.consented_at, last_validated_at = excluded.last_validated_at, updated_at = excluded.updated_at")
-          .bind(session.player_id, encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), "halloween-history-v1", now, now, now, now).run()
-        return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), accessLevel: "Full Access", consentedAt: now, lastValidatedAt: now }, 200, origin)
+        await requireDb(env).prepare("INSERT INTO halloween_historical_keys (player_id, ciphertext, iv, last_four, access_level, consent_version, consented_at, last_validated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, access_level = excluded.access_level, consent_version = excluded.consent_version, consented_at = excluded.consented_at, last_validated_at = excluded.last_validated_at, updated_at = excluded.updated_at")
+          .bind(session.player_id, encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), accessType, "halloween-history-v1", now, now, now, now).run()
+        return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), accessLevel: accessType, consentedAt: now, lastValidatedAt: now }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
     if (url.pathname === "/api/me/halloween/key" && request.method === "DELETE") {
