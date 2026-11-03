@@ -2821,7 +2821,7 @@ try {
     assert.match(source, /Your single saved portal key is reused for company data/)
     assert.match(source, /Your portal API key could not connect a company/)
     assert.match(source, /\/api\/auth\/company-key/)
-    assert.doesNotMatch(source, /deleteSavedCompanyKey|secondaryCompanyKey|company-key/)
+    assert.doesNotMatch(source, /deleteSavedCompanyKey|secondaryCompanyKey|settings-company-key|company-key-input/)
   })
 
   await test("historical company trends are owner-scoped, ordered, and summarize period changes", async () => {
