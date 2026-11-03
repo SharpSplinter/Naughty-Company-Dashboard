@@ -1387,7 +1387,6 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [eventWindowBusy, setEventWindowBusy] = useState(false)
   const [eventWindowError, setEventWindowError] = useState("")
   const [eventWindowNotice, setEventWindowNotice] = useState("")
-  const [historicalKey, setHistoricalKey] = useState("")
   const [historicalConsent, setHistoricalConsent] = useState(false)
   const [historicalKeyStatus, setHistoricalKeyStatus] = useState<{ connected: boolean; key: { lastFour: string; accessLevel: string; consentedAt: string; lastValidatedAt: string } | null } | null>(null)
   const [historicalKeyBusy, setHistoricalKeyBusy] = useState(false)
@@ -1494,20 +1493,20 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
 
   const saveHistoricalKey = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!historicalConsent || !historicalKey.trim() || historicalKeyBusy) return
+    if (!historicalConsent || historicalKeyBusy) return
     setHistoricalKeyBusy(true); setHistoricalKeyError(""); setHistoricalKeyMessage("")
     try {
       const response = await fetch(apiBase + "/api/me/halloween/key", {
         method: "POST",
         headers: { Authorization: "Bearer " + sessionToken, "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: historicalKey.trim(), consent: true, consentVersion: "halloween-history-v1" }),
+        body: JSON.stringify({ consent: true, consentVersion: "halloween-history-v1" }),
       })
       const payload = await response.json() as { error?: string; saved?: boolean }
-      if (!response.ok) throw new Error(payload.error || "Could not save your Full Access key.")
-      setHistoricalKey(""); setHistoricalConsent(false)
-      setHistoricalKeyMessage("Your Full Access key is validated and stored encrypted on your account.")
+      if (!response.ok) throw new Error(payload.error || "Could not enable historical collection with your portal key.")
+      setHistoricalConsent(false)
+      setHistoricalKeyMessage("Historical collection is enabled using your saved portal API key.")
       await Promise.all([loadHistoricalKeyStatus(), loadArchive()])
-    } catch (caught) { setHistoricalKeyError(caught instanceof Error ? caught.message : "Could not save your Full Access key.") }
+    } catch (caught) { setHistoricalKeyError(caught instanceof Error ? caught.message : "Could not enable historical collection with your portal key.") }
     finally { setHistoricalKeyBusy(false) }
   }
 
@@ -1709,13 +1708,11 @@ type AccountSettingsProps = WorkspaceProps & {
 
 export function AccountSettingsWorkspace(props: AccountSettingsProps) {
   const [loginKey, setLoginKey] = useState("")
-  const [companyKey, setCompanyKey] = useState("")
   const [loginBusy, setLoginBusy] = useState(false)
   const [companyBusy, setCompanyBusy] = useState(false)
   const [sessionBusy, setSessionBusy] = useState(false)
   const [accountError, setAccountError] = useState("")
   const [accountNotice, setAccountNotice] = useState("")
-  const [privateLiveKey, setPrivateLiveKey] = useState("")
   const [privateLiveStatus, setPrivateLiveStatus] = useState<PrivateLiveConnectionStatus | null>(null)
   const [privateLiveConsent, setPrivateLiveConsent] = useState(false)
   const [privateLiveIncludeNetworth, setPrivateLiveIncludeNetworth] = useState(false)
@@ -1740,14 +1737,13 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
 
   const connectPrivateLiveKey = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!privateLiveKey.trim() || !privateLiveConsent || privateLiveBusy) return
+    if (!privateLiveConsent || privateLiveBusy) return
     setPrivateLiveBusy(true); setAccountError(""); setAccountNotice("")
     try {
       const response = await fetch(props.apiBase + "/api/me/private-live/key", {
         method: "POST",
         headers: { Authorization: "Bearer " + props.sessionToken, "Content-Type": "application/json" },
         body: JSON.stringify({
-          apiKey: privateLiveKey.trim(),
           consent: true,
           shareWithFaction: true,
           includeNetworth: privateLiveIncludeNetworth,
@@ -1756,10 +1752,9 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
       })
       const payload = await response.json() as { error?: string; lastFour?: string; includeNetworth?: boolean; warning?: string | null }
       if (!response.ok) throw new Error(payload.error || "Could not connect your private live Torn key.")
-      setPrivateLiveKey("")
       setPrivateLiveConsent(false)
       await loadPrivateLiveStatus()
-      setAccountNotice(payload.warning || "Your owner-verified private live key was encrypted and its latest snapshot shared with Naughty Souls members.")
+      setAccountNotice(payload.warning || "Your saved portal key was owner-verified and used to share your latest snapshot with Naughty Souls members.")
     } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not connect your private live Torn key.") }
     finally { setPrivateLiveBusy(false) }
   }
@@ -1828,38 +1823,19 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
 
   const addCompanyKey = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!companyKey.trim() || companyBusy) return
+    if (companyBusy) return
     setCompanyBusy(true); setAccountError(""); setAccountNotice("")
     try {
       const response = await fetch(props.apiBase + "/api/auth/company-key", {
         method: "POST",
         headers: { Authorization: "Bearer " + props.sessionToken, "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: companyKey.trim() }),
+        body: JSON.stringify({}),
       })
       const payload = await response.json() as { error?: string; companyId?: string | number; companyName?: string }
       if (!response.ok) throw new Error(payload.error || "Could not validate this company API key.")
-      setCompanyKey("")
       await refreshCompanies()
       setAccountNotice((payload.companyName || "Company connection") + " was validated and saved to your account.")
     } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not add this company API key.") }
-    finally { setCompanyBusy(false) }
-  }
-
-  const removeCompanyKey = async (company: SavedCompanySummary) => {
-    if (!company.has_api_key || companyBusy) return
-    const name = company.company_name || "Company #" + company.company_id
-    if (!window.confirm("Remove the saved API key for " + name + "? Its company data and historical records will be retained.")) return
-    setCompanyBusy(true); setAccountError(""); setAccountNotice("")
-    try {
-      const response = await fetch(props.apiBase + "/api/auth/company-key?companyId=" + encodeURIComponent(company.company_id), {
-        method: "DELETE",
-        headers: { Authorization: "Bearer " + props.sessionToken },
-      })
-      const payload = await response.json() as { error?: string }
-      if (!response.ok) throw new Error(payload.error || "Could not remove this company API key.")
-      await refreshCompanies()
-      setAccountNotice("The saved key for " + name + " was removed. Company history was retained.")
-    } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not remove this company API key.") }
     finally { setCompanyBusy(false) }
   }
 
