@@ -52,14 +52,15 @@ function valueFor(
     case "endingNetworth": return member.endingNetworth
     case "networth": return member.metrics.networth
     case "completeness": return member.knownMetricCount
+    default: return null
   }
 }
 
 /** Filter and sort a weekly leaderboard without ever promoting unknown values over known values. */
-export function filterAndSortWeeklyMembers(
-  members: WeeklyLeaderboardMember[],
+export function filterAndSortWeeklyMembers<T extends WeeklyLeaderboardMember>(
+  members: T[],
   options: WeeklyLeaderboardOptions = {},
-): WeeklyLeaderboardMember[] {
+): T[] {
   const search = options.search?.trim().toLocaleLowerCase() ?? ""
   const status = options.status ?? "all"
   const participation = options.participation ?? "all"
