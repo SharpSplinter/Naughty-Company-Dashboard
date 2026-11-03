@@ -306,7 +306,6 @@ export function FactionWorkspacePlaceholder(props: FactionWorkspaceProps) {
   )
 }
 
-function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }: FactionWorkspaceProps) {
 const factionStatsLabels: Record<string, string> = {
   "medicalitemsused": "Medical items used",
   "criminaloffences": "Criminal offences",
@@ -488,7 +487,7 @@ function FactionStatsOverview({ onNavigate, apiBase, sessionToken }: FactionWork
   )
 }
 
-
+function FactionWeeklyRankings({
   const [payload, setPayload] = useState<FactionWeeklyPayload | null>(null)
   const [metric, setMetric] = useState<FactionWeeklyRankingMetric>("xantaken")
   const [search, setSearch] = useState("")

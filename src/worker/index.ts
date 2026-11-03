@@ -1955,7 +1955,6 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
       if (body.kind === FACTION_STATS_QUEUE_KIND && runId) {
         await markFactionStatsRunFailed(env, runId, new Error("Faction stats collection exhausted its queue retries."))
       } else if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
-        await markFactionPerformanceRunFailed      if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
         await markFactionPerformanceRunFailed(env, runId, new Error("Faction performance collection exhausted its queue retries."))
       } else if (body.kind === "faction-weekly-finalize") {
         console.error("Weekly report finalization exhausted its queue retries.")
@@ -1992,8 +1991,6 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
       continue
     }
     if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
-      try {
-        await runFactionPerformanceCollection    if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
       try {
         await runFactionPerformanceCollection(env, runId)
         message.ack()
