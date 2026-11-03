@@ -41,7 +41,7 @@ assert.ok(worker.includes("st.disabled_at IS NULL"), "disabled accounts must not
 assert.ok(workspace.includes("faction-private-live-v1"))
 assert.ok(workspace.includes("shareWithFaction: true"))
 assert.ok(workspace.includes("I consent to encrypted storage of my own key"))
-assert.ok(workspace.includes("Also share my detailed networth breakdown"))
+assert.ok(workspace.includes("For the key you are connecting or replacing, also share my detailed networth breakdown"))
 assert.ok(workspace.includes("Disconnect & delete snapshot"))
 assert.ok(workspace.includes("Your API key is not shared."))
 assert.ok(workspace.includes("Only the latest bars, cooldowns and optionally networth snapshot are retained"))
