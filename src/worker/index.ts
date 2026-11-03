@@ -4,6 +4,7 @@ import {
   parseFactionGymEnergyResponse,
   parseFactionPublicStatsResponse,
   parseFactionRosterResponse,
+  parseFactionStatsResponse,
 } from "../lib/faction-performance/collector"
 import {
   calculateWeeklyMemberResult,
@@ -335,10 +336,14 @@ type FactionPerformanceRunRow = {
 
 const FACTION_PERFORMANCE_PAGE_SIZE = 5
 const FACTION_PERFORMANCE_QUEUE_KIND = "faction-performance-collection"
+const FACTION_STATS_QUEUE_KIND = "faction-stats-collection"
 
 function factionCollectionSafeError(error: unknown): { summary: string; tornCode: number | null } {
-  if (error instanceof Error && error.message === "Faction performance collection exhausted its queue retries.") {
-    return { summary: "Faction performance collection exhausted its queue retries.", tornCode: null }
+  if (error instanceof Error && (
+    error.message === "Faction performance collection exhausted its queue retries." ||
+    error.message === "Faction stats collection exhausted its queue retries."
+  )) {
+    return { summary: error.message, tornCode: null }
   }
   if (error instanceof TornApiClientError) {
     return {
@@ -403,6 +408,26 @@ async function markFactionPerformanceRunFailed(env: WorkerEnv, runId: string, er
   }
 }
 
+
+async function markFactionStatsRunFailed(env: WorkerEnv, runId: string, error: unknown): Promise<void> {
+  if (!env.DB) return
+  const safe = factionCollectionSafeError(error)
+  const now = new Date().toISOString()
+  const db = requireDb(env)
+  const run = await db.prepare(
+    "SELECT faction_id AS factionId, status FROM faction_stats_collection_runs WHERE run_id = ?"
+  ).bind(runId).first<{ factionId: string; status: string }>()
+  if (!run || ["completed", "failed"].includes(run.status)) return
+  const failRun = db.prepare(
+    "UPDATE faction_stats_collection_runs SET status = 'failed', completed_at = ?, last_error = ?, updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'failed')"
+  ).bind(now, safe.summary, now, runId)
+  const failState = db.prepare(
+    "INSERT INTO faction_stats_collection_state (faction_id, last_success_at, last_run_id, last_error, updated_at) VALUES (?, NULL, ?, ?, ?) ON CONFLICT(faction_id) DO UPDATE SET last_run_id = excluded.last_run_id, last_error = excluded.last_error, updated_at = excluded.updated_at"
+  ).bind(run.factionId, runId, safe.summary, now)
+  if (db.batch) await db.batch([failRun, failState])
+  else { await failRun.run(); await failState.run() }
+}
+
 async function enqueueOneFactionPerformanceRun(
   env: WorkerEnv,
   scheduledTime: number,
@@ -452,6 +477,71 @@ async function enqueueOneFactionPerformanceRun(
   return true
 }
 
+
+async function enqueueFactionStatsCollection(env: WorkerEnv, scheduledTime: number): Promise<boolean> {
+  if (!env.DB || !env.GLOBAL_RANKINGS_QUEUE || !env.TORN_FACTION_API_KEY?.trim()) return false
+  const db = requireDb(env)
+  const intervalMs = 15 * 60 * 1000
+  const bucketStart = Math.floor(scheduledTime / intervalMs) * intervalMs
+  const scheduledAt = new Date(bucketStart).toISOString()
+  const collectionKey = `${NAUGHTY_SOULS_FACTION_ID}:faction_stats:${bucketStart}`
+  let run = await db.prepare(
+    "SELECT run_id AS runId, status, last_enqueued_at AS lastEnqueuedAt FROM faction_stats_collection_runs WHERE collection_key = ?"
+  ).bind(collectionKey).first<{ runId: string; status: string; lastEnqueuedAt: string | null }>()
+  if (!run) {
+    const now = new Date().toISOString()
+    const runId = crypto.randomUUID()
+    await db.prepare(
+      "INSERT OR IGNORE INTO faction_stats_collection_runs (run_id, collection_key, faction_id, status, scheduled_at, created_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)"
+    ).bind(runId, collectionKey, NAUGHTY_SOULS_FACTION_ID, scheduledAt, now, now).run()
+    run = await db.prepare(
+      "SELECT run_id AS runId, status, last_enqueued_at AS lastEnqueuedAt FROM faction_stats_collection_runs WHERE collection_key = ?"
+    ).bind(collectionKey).first<{ runId: string; status: string; lastEnqueuedAt: string | null }>()
+  }
+  if (!run || ["completed", "failed"].includes(run.status)) return false
+  const lastEnqueuedMs = run.lastEnqueuedAt ? Date.parse(run.lastEnqueuedAt) : Number.NEGATIVE_INFINITY
+  const staleAfterMs = run.status === "running" ? 10 * 60 * 1000 : 4 * 60 * 1000
+  if (Number.isFinite(lastEnqueuedMs) && scheduledTime - lastEnqueuedMs < staleAfterMs) return false
+  await env.GLOBAL_RANKINGS_QUEUE.send({ kind: FACTION_STATS_QUEUE_KIND, runId: run.runId })
+  const enqueuedAt = new Date().toISOString()
+  await db.prepare(
+    "UPDATE faction_stats_collection_runs SET last_enqueued_at = ?, updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
+  ).bind(enqueuedAt, enqueuedAt, run.runId).run()
+  return true
+}
+
+async function runFactionStatsCollection(env: WorkerEnv, runId: string): Promise<void> {
+  const db = requireDb(env)
+  const run = await db.prepare(
+    "SELECT run_id AS runId, faction_id AS factionId, status, scheduled_at AS scheduledAt FROM faction_stats_collection_runs WHERE run_id = ?"
+  ).bind(runId).first<{ runId: string; factionId: string; status: string; scheduledAt: string }>()
+  if (!run || ["completed", "failed"].includes(run.status)) return
+  const apiKey = env.TORN_FACTION_API_KEY?.trim()
+  if (!apiKey) throw new Error("Faction collector secret is not configured.")
+  const startedAt = new Date().toISOString()
+  await db.prepare(
+    "UPDATE faction_stats_collection_runs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
+  ).bind(startedAt, startedAt, runId).run()
+  const client = new TornApiClient({
+    apiKey,
+    baseUrl: env.TORN_API_BASE_URL,
+    fetcher: env.TORN_API_FIXTURE?.fetch.bind(env.TORN_API_FIXTURE),
+  })
+  const parsed = parseFactionStatsResponse(await client.getFactionStats())
+  const capturedAt = new Date().toISOString()
+  const snapshot = db.prepare(
+    "INSERT INTO faction_stats_snapshots (run_id, faction_id, captured_at, scheduled_at, collection_status, stats_json, missing_stat_names_json, unexpected_stat_names_json, returned_stat_count, response_version) VALUES (?, ?, ?, ?, 'complete', ?, ?, ?, ?, 'torn-v2') ON CONFLICT(run_id) DO UPDATE SET captured_at = excluded.captured_at, scheduled_at = excluded.scheduled_at, collection_status = excluded.collection_status, stats_json = excluded.stats_json, missing_stat_names_json = excluded.missing_stat_names_json, unexpected_stat_names_json = excluded.unexpected_stat_names_json, returned_stat_count = excluded.returned_stat_count"
+  ).bind(runId, run.factionId, capturedAt, run.scheduledAt, asJson(parsed.stats), asJson(parsed.missingStatNames), asJson(parsed.unexpectedStatNames), parsed.stats.length)
+  const finishRun = db.prepare(
+    "UPDATE faction_stats_collection_runs SET status = 'completed', completed_at = ?, last_error = NULL, updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'failed')"
+  ).bind(capturedAt, capturedAt, runId)
+  const updateState = db.prepare(
+    "INSERT INTO faction_stats_collection_state (faction_id, last_success_at, last_run_id, last_error, updated_at) VALUES (?, ?, ?, NULL, ?) ON CONFLICT(faction_id) DO UPDATE SET last_success_at = excluded.last_success_at, last_run_id = excluded.last_run_id, last_error = NULL, updated_at = excluded.updated_at"
+  ).bind(run.factionId, capturedAt, runId, capturedAt)
+  if (!db.batch) throw new Error("D1 transactional batch support is required to save faction-wide stats.")
+  await db.batch([snapshot, finishRun, updateState])
+}
+
 async function enqueueFactionPerformanceCollections(env: WorkerEnv, scheduledTime: number): Promise<number> {
   // Dedicated Cloudflare Worker secret. Never substitute a member login key.
   if (!env.DB || !env.GLOBAL_RANKINGS_QUEUE || !env.TORN_FACTION_API_KEY?.trim()) return 0
@@ -461,6 +551,7 @@ async function enqueueFactionPerformanceCollections(env: WorkerEnv, scheduledTim
   if (fiveMinuteBucket % 3 === 0) {
     if (await enqueueOneFactionPerformanceRun(env, scheduledTime, "personalstats", 15 * 60 * 1000)) enqueued += 1
     if (await enqueueOneFactionPerformanceRun(env, scheduledTime, "gym_energy", 15 * 60 * 1000)) enqueued += 1
+    if (await enqueueFactionStatsCollection(env, scheduledTime)) enqueued += 1
   }
   return enqueued
 }
@@ -1861,7 +1952,10 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
       const runId = typeof body.runId === "string" ? body.runId : ""
       const halloweenJobId = typeof body.jobId === "string" ? body.jobId : ""
       const liveSnapshotJobId = typeof body.jobId === "string" ? body.jobId : ""
-      if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
+      if (body.kind === FACTION_STATS_QUEUE_KIND && runId) {
+        await markFactionStatsRunFailed(env, runId, new Error("Faction stats collection exhausted its queue retries."))
+      } else if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
+        await markFactionPerformanceRunFailed      if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
         await markFactionPerformanceRunFailed(env, runId, new Error("Faction performance collection exhausted its queue retries."))
       } else if (body.kind === "faction-weekly-finalize") {
         console.error("Weekly report finalization exhausted its queue retries.")
@@ -1885,7 +1979,21 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
     const runId = typeof body.runId === "string" ? body.runId : ""
     const halloweenJobId = typeof body.jobId === "string" ? body.jobId : ""
     const liveSnapshotJobId = typeof body.jobId === "string" ? body.jobId : ""
+    if (body.kind === FACTION_STATS_QUEUE_KIND && runId) {
+      try {
+        await runFactionStatsCollection(env, runId)
+        message.ack()
+      } catch (error) {
+        const safe = factionCollectionSafeError(error)
+        console.error("Faction stats collection attempt failed", { runId, summary: safe.summary, tornCode: safe.tornCode })
+        const attempts = Math.max(1, Number(message.attempts ?? 1))
+        message.retry({ delaySeconds: Math.min(60, attempts * 10) })
+      }
+      continue
+    }
     if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
+      try {
+        await runFactionPerformanceCollection    if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
       try {
         await runFactionPerformanceCollection(env, runId)
         message.ack()
@@ -5071,6 +5179,49 @@ export default {
       } catch {
         return jsonResponse({
           error: "Faction performance storage is not initialized or is temporarily unavailable. Apply migration 0019 and verify the collection worker.",
+        }, 503, origin)
+      }
+    }
+
+    if (url.pathname === "/api/faction/stats" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) {
+        return jsonResponse({ error: "Faction stats are available only to current Naughty Souls members." }, 403, origin)
+      }
+      const db = requireDb(env)
+      try {
+        const [snapshot, state] = await Promise.all([
+          db.prepare(
+            "SELECT run_id AS runId, captured_at AS capturedAt, scheduled_at AS scheduledAt, collection_status AS status, stats_json AS statsJson, missing_stat_names_json AS missingStatNamesJson, unexpected_stat_names_json AS unexpectedStatNamesJson, returned_stat_count AS returnedStatCount FROM faction_stats_snapshots WHERE faction_id = ? ORDER BY captured_at DESC, snapshot_id DESC LIMIT 1"
+          ).bind(NAUGHTY_SOULS_FACTION_ID).first<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT last_success_at AS lastSuccessAt, last_run_id AS lastRunId, last_error AS lastError, updated_at AS updatedAt FROM faction_stats_collection_state WHERE faction_id = ?"
+          ).bind(NAUGHTY_SOULS_FACTION_ID).first<Record<string, unknown>>(),
+        ])
+        return jsonResponse({
+          factionId: NAUGHTY_SOULS_FACTION_ID,
+          generatedAt: new Date().toISOString(),
+          snapshot: snapshot ? {
+            runId: String(snapshot.runId),
+            capturedAt: String(snapshot.capturedAt),
+            scheduledAt: String(snapshot.scheduledAt),
+            status: String(snapshot.status),
+            returnedStatCount: Number(snapshot.returnedStatCount),
+          } : null,
+          stats: snapshot ? parseStoredJson(snapshot.statsJson) ?? [] : [],
+          missingStatNames: snapshot ? parseStoredJson(snapshot.missingStatNamesJson) ?? [] : [],
+          unexpectedStatNames: snapshot ? parseStoredJson(snapshot.unexpectedStatNamesJson) ?? [] : [],
+          collection: state ? {
+            lastSuccessAt: state.lastSuccessAt == null ? null : String(state.lastSuccessAt),
+            lastRunId: state.lastRunId == null ? null : String(state.lastRunId),
+            lastError: state.lastError == null ? null : String(state.lastError),
+            updatedAt: String(state.updatedAt ?? ""),
+          } : null,
+        }, 200, origin, { "cache-control": "private, max-age=30" })
+      } catch {
+        return jsonResponse({
+          error: "Faction stats storage is not initialized or is temporarily unavailable. Apply migration 0022 and verify the faction stats collector.",
         }, 503, origin)
       }
     }

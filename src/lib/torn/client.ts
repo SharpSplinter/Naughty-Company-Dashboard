@@ -110,6 +110,10 @@ export class TornApiClient {
     return this.request<Record<string, unknown>>("/faction/members?striptags=true")
   }
 
+  async getFactionStats(): Promise<unknown> {
+    return this.request<unknown>("/faction/stats")
+  }
+
   async getFactionGymEnergyContributors(): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>("/faction/contributors?stat=gymenergy")
   }

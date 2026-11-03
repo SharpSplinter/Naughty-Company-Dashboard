@@ -7,6 +7,98 @@ import {
 export type FactionReviveSetting = "Everyone" | "Friends & faction" | "No one" | "Unknown"
 export type FactionOnlineStatus = "Online" | "Idle" | "Offline" | null
 
+export const FACTION_STAT_NAMES = [
+  "medicalitemsused",
+  "criminaloffences",
+  "organisedcrimerespect",
+  "organisedcrimemoney",
+  "organisedcrimesuccess",
+  "organisedcrimefail",
+  "attackswon",
+  "attackslost",
+  "attackschain",
+  "attacksleave",
+  "attacksmug",
+  "attackshosp",
+  "bestchain",
+  "busts",
+  "revives",
+  "jails",
+  "hosps",
+  "medicalitemrecovery",
+  "medicalcooldownused",
+  "gymtrains",
+  "gymstrength",
+  "gymspeed",
+  "gymenergy",
+  "gymdefense",
+  "gymdexterity",
+  "candyused",
+  "alcoholused",
+  "energydrinkused",
+  "drugsused",
+  "drugoverdoses",
+  "rehabs",
+  "caymaninterest",
+  "traveltimes",
+  "traveltime",
+  "hunting",
+  "attacksdamagehits",
+  "attacksdamage",
+  "hosptimegiven",
+  "hosptimereceived",
+  "attacksdamaging",
+  "attacksrunaway",
+  "highestterritories",
+  "territoryrespect",
+  "membersamount",
+] as const
+
+export type FactionStatName = (typeof FACTION_STAT_NAMES)[number]
+export type FactionStat = { name: FactionStatName; value: number }
+export type FactionStatsResponse = { stats: FactionStat[] }
+export type ParsedFactionStatsResponse = {
+  stats: FactionStat[]
+  missingStatNames: FactionStatName[]
+  unexpectedStatNames: string[]
+}
+
+/** Validates Torn's faction-wide /faction/stats totals and reports schema drift. */
+export function parseFactionStatsResponse(payload: unknown): ParsedFactionStatsResponse {
+  if (!isRecord(payload) || !Array.isArray(payload.stats)) {
+    throw new Error("Torn faction stats response is missing its stats array.")
+  }
+  const allowedNames = new Set<string>(FACTION_STAT_NAMES)
+  const seen = new Set<string>()
+  const unexpected = new Set<string>()
+  const stats: FactionStat[] = []
+  for (const raw of payload.stats) {
+    if (!isRecord(raw) || typeof raw.name !== "string") {
+      throw new Error("Torn faction stats response contains an invalid stat entry.")
+    }
+    const name = raw.name.trim()
+    if (!/^[a-z][a-z0-9]*$/.test(name)) {
+      throw new Error("Torn faction stats response contains an invalid stat name.")
+    }
+    if (!allowedNames.has(name)) {
+      unexpected.add(name)
+      continue
+    }
+    if (seen.has(name)) throw new Error("Torn faction stats response contains a duplicate stat name.")
+    if (typeof raw.value !== "number" || !Number.isFinite(raw.value)) {
+      throw new Error("Torn faction stats response contains a non-numeric stat value.")
+    }
+    seen.add(name)
+    stats.push({ name: name as FactionStatName, value: raw.value })
+  }
+  return {
+    stats,
+    missingStatNames: FACTION_STAT_NAMES.filter((name) => !seen.has(name)),
+    unexpectedStatNames: Array.from(unexpected).sort(),
+  }
+}
+
+
 export type FactionRosterMember = {
   userId: string
   name: string | null
