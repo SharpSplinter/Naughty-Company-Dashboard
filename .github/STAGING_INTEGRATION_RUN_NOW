@@ -16,3 +16,4 @@ Run 16: rerun full staging acceptance after harness syntax correction.
 Run 17: rerun staging acceptance with isolated, non-overlapping historical membership fixtures.
 Run 18: validate administrator-only Sunday boundary diagnostics, audited frozen-cohort recovery, and immutable-report recovery lock in isolated staging D1; no production access.
 Run 19: rerun admin-only Sunday boundary recovery staging acceptance after TypeScript collection-run binding fix.
+Run 20: rerun admin weekly-boundary recovery acceptance after second D1 run-ID binding type fix.
