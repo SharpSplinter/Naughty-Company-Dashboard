@@ -2816,12 +2816,18 @@ try {
     assert.equal(writes.some((write) => /DELETE FROM (companies|company_snapshots|company_financials)/i.test(write.sql)), false)
   })
 
-  await test("company connection settings reuse the single saved portal key", () => {
+  await test("company connection settings reuse the portal key and allow optional secondary company keys", () => {
     const source = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
+    const settings = readFileSync(join(root, "src/components/portal/workspaces.tsx"), "utf8")
     assert.match(source, /Your single saved portal key is reused for company data/)
     assert.match(source, /Your portal API key could not connect a company/)
     assert.match(source, /\/api\/auth\/company-key/)
-    assert.doesNotMatch(source, /deleteSavedCompanyKey|secondaryCompanyKey|settings-company-key|company-key-input/)
+    assert.match(settings, /settings-secondary-company-key/)
+    assert.match(settings, /Validate & add secondary key/)
+    assert.match(settings, /removeCompanyKey/)
+    assert.match(settings, /can_remove_key/)
+    assert.match(settings, /uses_portal_key/)
+    assert.match(readFileSync(join(root, "src/worker/index.ts"), "utf8"), /if \(isSecondary\) await validatePrivateLiveKeyOwner\(env, apiKey, session\.player_id\)/)
   })
 
   await test("historical company trends are owner-scoped, ordered, and summarize period changes", async () => {
