@@ -55,6 +55,7 @@ try {
     parseFactionRosterResponse,
     parseFactionGymEnergyResponse,
     parseFactionPublicStatsResponse,
+    parseFactionStatsResponse,
     countCompletePublicMetrics,
   } = require(join(temp, "lib/faction-performance/collector.js"))
   const {
@@ -88,6 +89,37 @@ try {
     passed += 1
     console.log("PASS", name)
   }
+
+  await test("faction-wide stats parser validates the enum and reports missing/future fields explicitly", () => {
+    const parsed = parseFactionStatsResponse({ stats: [
+      { name: "medicalitemsused", value: 1167570 },
+      { name: "organisedcrimemoney", value: 369055040000 },
+      { name: "membersamount", value: 6 },
+      { name: "futurestat", value: 11 },
+    ] })
+    assert.equal(parsed.stats.find(stat => stat.name === "organisedcrimemoney")?.value, 369055040000)
+    assert.ok(parsed.missingStatNames.includes("gymdexterity"))
+    assert.deepEqual(parsed.unexpectedStatNames, ["futurestat"])
+    assert.throws(() => parseFactionStatsResponse({ stats: [{ name: "medicalitemsused", value: "11" }] }))
+    assert.throws(() => parseFactionStatsResponse({ stats: [{ name: "medicalitemsused", value: 1 }, { name: "medicalitemsused", value: 2 }] }))
+  })
+
+  await test("Torn faction-wide totals use the authenticated /faction/stats v2 endpoint", async () => {
+    let requestedUrl = ""
+    const client = new TornApiClient({
+      apiKey: "synthetic-faction-stats-key",
+      fetcher: async (input, init) => {
+        requestedUrl = String(input)
+        assert.equal(new Headers(init?.headers).get("Authorization"), "ApiKey synthetic-faction-stats-key")
+        return new Response(JSON.stringify({ stats: [{ name: "attackswon", value: 19 }] }), {
+          status: 200, headers: { "content-type": "application/json" },
+        })
+      },
+    })
+    const payload = await client.getFactionStats()
+    assert.equal(requestedUrl, "https://api.torn.com/v2/faction/stats")
+    assert.equal(payload.stats[0].value, 19)
+  })
 
   await test("weekly windows start Sunday 00:00 UTC and remain exactly 168 hours across DST changes", () => {
     const regular = utcSundayWindow(Date.parse("2026-11-02T18:00:00.000Z"))

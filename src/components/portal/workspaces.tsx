@@ -187,6 +187,17 @@ type FactionMemberSummary = {
 }
 
 type FactionWorkspaceProps = Pick<WorkspaceProps, "playerName" | "onNavigate"> & { apiBase: string; sessionToken: string }
+
+type FactionStatsPayload = {
+  factionId: string
+  generatedAt: string
+  snapshot: { runId: string; capturedAt: string; scheduledAt: string; status: string; returnedStatCount: number } | null
+  stats: Array<{ name: string; value: number }>
+  missingStatNames: string[]
+  unexpectedStatNames: string[]
+  collection: { lastSuccessAt: string | null; lastRunId: string | null; lastError: string | null; updatedAt: string } | null
+}
+
 type FactionWeeklyMetric =
   | "xantaken" | "lsdtaken" | "drugsused" | "overdosed" | "alcoholused" | "boostersused"
   | "energydrinkused" | "refills" | "statenhancersused" | "networth" | "cantaken"
@@ -280,21 +291,204 @@ const factionWeeklyMetricOptions: Array<{ value: FactionWeeklyRankingMetric; lab
 ]
 
 export function FactionWorkspacePlaceholder(props: FactionWorkspaceProps) {
-  const [tab, setTab] = useState<"weekly" | "live" | "activity" | "directory">("weekly")
+  const [tab, setTab] = useState<"weekly" | "live" | "activity" | "stats" | "directory">("weekly")
   return (
     <div className="faction-workspace-switcher">
       <nav className="faction-workspace-tabs" aria-label="Faction dashboard sections">
         <button type="button" className={tab === "weekly" ? "active" : ""} onClick={() => setTab("weekly")}>Weekly rankings</button>
         <button type="button" className={tab === "live" ? "active" : ""} onClick={() => setTab("live")}>Live member status</button>
         <button type="button" className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}>Faction activity</button>
+        <button type="button" className={tab === "stats" ? "active" : ""} onClick={() => setTab("stats")}>Faction totals</button>
         <button type="button" className={tab === "directory" ? "active" : ""} onClick={() => setTab("directory")}>Company directory</button>
       </nav>
-      {tab === "weekly" ? <FactionWeeklyRankings {...props} /> : tab === "live" ? <FactionLiveStatus {...props} /> : tab === "activity" ? <FactionActivityFeed {...props} /> : <FactionCompanyDirectory {...props} />}
+      {tab === "weekly" ? <FactionWeeklyRankings {...props} /> : tab === "live" ? <FactionLiveStatus {...props} /> : tab === "activity" ? <FactionActivityFeed {...props} /> : tab === "stats" ? <FactionStatsOverview {...props} /> : <FactionCompanyDirectory {...props} />}
     </div>
   )
 }
 
 function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }: FactionWorkspaceProps) {
+const factionStatsLabels: Record<string, string> = {
+  "medicalitemsused": "Medical items used",
+  "criminaloffences": "Criminal offences",
+  "organisedcrimerespect": "Organised crime respect",
+  "organisedcrimemoney": "Organised crime money",
+  "organisedcrimesuccess": "Organised crimes succeeded",
+  "organisedcrimefail": "Organised crimes failed",
+  "attackswon": "Attacks won",
+  "attackslost": "Attacks lost",
+  "attackschain": "Attacks in chains",
+  "attacksleave": "Attacks left",
+  "attacksmug": "Attacks mugged",
+  "attackshosp": "Attacks hospitalized",
+  "bestchain": "Best chain",
+  "busts": "Busts",
+  "revives": "Revives",
+  "jails": "Times jailed",
+  "hosps": "Times hospitalized",
+  "medicalitemrecovery": "Medical item recovery",
+  "medicalcooldownused": "Medical cooldown used",
+  "gymtrains": "Gym trains",
+  "gymstrength": "Strength gained",
+  "gymspeed": "Speed gained",
+  "gymenergy": "Gym energy",
+  "gymdefense": "Defense gained",
+  "gymdexterity": "Dexterity gained",
+  "candyused": "Candy used",
+  "alcoholused": "Alcohol consumed",
+  "energydrinkused": "Energy drinks used",
+  "drugsused": "Drugs used",
+  "drugoverdoses": "Drug overdoses",
+  "rehabs": "Rehabs",
+  "caymaninterest": "Cayman interest",
+  "traveltimes": "Travel trips",
+  "traveltime": "Time spent travelling",
+  "hunting": "Hunting",
+  "attacksdamagehits": "Attack damage hits",
+  "attacksdamage": "Attack damage",
+  "hosptimegiven": "Hospital time given",
+  "hosptimereceived": "Hospital time received",
+  "attacksdamaging": "Damaging attacks",
+  "attacksrunaway": "Attacks escaped",
+  "highestterritories": "Highest territories held",
+  "territoryrespect": "Territory respect",
+  "membersamount": "Faction members"
+}
+const factionStatsGroups = [
+  {
+    "title": "Combat & territory",
+    "names": [
+      "attackswon",
+      "attackslost",
+      "attackschain",
+      "attacksleave",
+      "attacksmug",
+      "attackshosp",
+      "bestchain",
+      "attacksdamagehits",
+      "attacksdamage",
+      "attacksdamaging",
+      "attacksrunaway",
+      "highestterritories",
+      "territoryrespect"
+    ]
+  },
+  {
+    "title": "Crime & medical",
+    "names": [
+      "criminaloffences",
+      "organisedcrimerespect",
+      "organisedcrimemoney",
+      "organisedcrimesuccess",
+      "organisedcrimefail",
+      "busts",
+      "jails",
+      "hosps",
+      "revives",
+      "medicalitemsused",
+      "medicalitemrecovery",
+      "medicalcooldownused",
+      "rehabs",
+      "drugoverdoses"
+    ]
+  },
+  {
+    "title": "Training & consumables",
+    "names": [
+      "gymtrains",
+      "gymstrength",
+      "gymspeed",
+      "gymdefense",
+      "gymdexterity",
+      "gymenergy",
+      "candyused",
+      "alcoholused",
+      "energydrinkused",
+      "drugsused"
+    ]
+  },
+  {
+    "title": "Travel & other",
+    "names": [
+      "caymaninterest",
+      "traveltimes",
+      "traveltime",
+      "hunting",
+      "hosptimegiven",
+      "hosptimereceived",
+      "membersamount"
+    ]
+  }
+]
+
+function FactionStatsOverview({ onNavigate, apiBase, sessionToken }: FactionWorkspaceProps) {
+  const [payload, setPayload] = useState<FactionStatsPayload | null>(null)
+  const [busy, setBusy] = useState(true)
+  const [error, setError] = useState("")
+
+  const load = async () => {
+    setBusy(true)
+    setError("")
+    try {
+      const response = await fetch(apiBase + "/api/faction/stats", {
+        headers: { Authorization: "Bearer " + sessionToken },
+      })
+      const result = await response.json() as { error?: string } & Partial<FactionStatsPayload>
+      if (!response.ok) throw new Error(result.error || "Could not load faction-wide totals.")
+      if (!Array.isArray(result.stats) || !Array.isArray(result.missingStatNames) || !Array.isArray(result.unexpectedStatNames)) {
+        throw new Error("The faction stats response is incomplete.")
+      }
+      setPayload(result as FactionStatsPayload)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not load faction-wide totals.")
+      setPayload(null)
+    } finally { setBusy(false) }
+  }
+
+  useEffect(() => { void load() }, [apiBase, sessionToken])
+
+  const values = new Map((payload?.stats ?? []).map(stat => [stat.name, stat.value]))
+  const number = (value: number | undefined) => value === undefined
+    ? "—"
+    : new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value)
+  const capturedAt = payload?.snapshot?.capturedAt
+    ? new Intl.DateTimeFormat(undefined, { timeZone: "UTC", dateStyle: "medium", timeStyle: "short" }).format(new Date(payload.snapshot.capturedAt)) + " UTC"
+    : "Awaiting first successful capture"
+
+  return (
+    <main className="module-page faction-module faction-stats-module">
+      <header className="module-topbar"><a className="portal-brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("/") }}><span className="portal-brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>FACTION WORKSPACE</small></span></a><button type="button" onClick={() => onNavigate("/")}>← Return to portal</button></header>
+      <section className="module-heading"><div className="portal-eyebrow"><span /> NAUGHTY SOULS · FACTION INTELLIGENCE</div><h1>Faction <em>Lifetime Totals</em></h1><p>Faction-wide counters returned by Torn's /faction/stats endpoint. These aggregate totals are separate from individual members' personal statistics and weekly rankings.</p></section>
+      {error && <p className="settings-feedback error" role="alert">{error}</p>}
+      <section className="faction-stats-toolbar">
+        <div><small>FACTION STATS SNAPSHOT</small><strong>{capturedAt}</strong><span>{payload?.snapshot ? payload.snapshot.returnedStatCount + " recognized counters captured" : "No saved snapshot yet"}{payload?.missingStatNames.length ? " · " + payload.missingStatNames.length + " fields not returned" : ""}</span></div>
+        <button type="button" onClick={() => void load()} disabled={busy}>{busy ? "Refreshing…" : "Refresh ↻"}</button>
+      </section>
+      {busy && !payload ? <p className="historical-key-muted">Loading the latest faction-wide totals…</p> : payload?.snapshot ? (
+        <>
+          {factionStatsGroups.map(group => (
+            <section className="halloween-panel faction-stats-group" key={group.title}>
+              <div className="faction-directory-heading"><div><div className="halloween-status"><i /> FACTION AGGREGATES</div><h2>{group.title}</h2><p>Latest successful capture. A dash means Torn did not return that field.</p></div></div>
+              <div className="faction-stats-grid">
+                {group.names.map(name => <article key={name}><small>{factionStatsLabels[name] || name}</small><strong>{number(values.get(name))}</strong><span>{name}</span></article>)}
+              </div>
+            </section>
+          ))}
+          {(payload.missingStatNames.length > 0 || payload.unexpectedStatNames.length > 0) && (
+            <section className="historical-empty faction-stats-schema-note">
+              <strong>API field coverage</strong>
+              <span>{payload.missingStatNames.length ? "Not included in this capture: " + payload.missingStatNames.join(", ") + ". " : ""}{payload.unexpectedStatNames.length ? "New, unrecognized Torn fields: " + payload.unexpectedStatNames.join(", ") + "." : ""}</span>
+            </section>
+          )}
+        </>
+      ) : (
+        <section className="historical-empty"><strong>No faction totals have been captured yet.</strong><span>The scheduled faction collector saves a timestamped snapshot every 15 minutes. Totals will appear after its first successful run.</span></section>
+      )}
+      <footer className="module-footer"><span>NAUGHTY FAMILY · FACTION TOTALS</span><span>{payload?.generatedAt ? "Read " + new Date(payload.generatedAt).toLocaleTimeString() : "Collection status unavailable"}</span></footer>
+    </main>
+  )
+}
+
+
   const [payload, setPayload] = useState<FactionWeeklyPayload | null>(null)
   const [metric, setMetric] = useState<FactionWeeklyRankingMetric>("xantaken")
   const [search, setSearch] = useState("")

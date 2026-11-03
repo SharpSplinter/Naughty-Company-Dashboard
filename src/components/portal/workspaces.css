@@ -279,6 +279,25 @@
 .faction-workspace-tabs{max-width:1140px;margin:18px auto 0;display:flex;gap:8px;border-bottom:1px solid #ffffff1b}
 .faction-workspace-tabs button{padding:11px 15px;border:0;border-bottom:2px solid transparent;background:transparent;color:#8da1ad;font-size:10px;font-weight:700;letter-spacing:.04em}
 .faction-workspace-tabs button.active{border-bottom-color:#77d9c0;color:#bdebdc}
+
+.faction-stats-toolbar{max-width:1140px;margin:18px auto 13px;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 16px;border:1px solid #35534e;border-radius:10px;background:linear-gradient(115deg,#152b29,#121f29)}
+.faction-stats-toolbar>div small,.faction-stats-toolbar>div strong,.faction-stats-toolbar>div span{display:block}
+.faction-stats-toolbar small{font-size:8px;color:#85c4b3;font-weight:700;letter-spacing:.15em}
+.faction-stats-toolbar strong{font:600 13px 'Space Grotesk',sans-serif;color:#e1f0e8;margin-top:6px}
+.faction-stats-toolbar span{font-size:9px;color:#a2b8ad;margin-top:5px}
+.faction-stats-toolbar button{border:1px solid #4b8b75;border-radius:7px;background:#1e5948;color:#dffff0;padding:10px 12px;font-size:9px;font-weight:700}
+.faction-stats-toolbar button:disabled{opacity:.55;cursor:not-allowed}
+.faction-stats-group{margin-top:13px}
+.faction-stats-group .faction-directory-heading{margin-bottom:12px}
+.faction-stats-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.faction-stats-grid article{min-width:0;padding:13px 14px;border:1px solid #30454b;border-radius:9px;background:linear-gradient(145deg,#172a30,#111d26)}
+.faction-stats-grid small,.faction-stats-grid strong,.faction-stats-grid span{display:block}
+.faction-stats-grid small{font-size:8px;line-height:1.4;letter-spacing:.08em;color:#83a39f;font-weight:700}
+.faction-stats-grid strong{font:600 18px 'Space Grotesk',sans-serif;color:#e4f2e9;margin:8px 0 5px;overflow-wrap:anywhere}
+.faction-stats-grid span{font-size:8px;color:#718890;overflow-wrap:anywhere}
+.faction-stats-schema-note{max-width:1140px;margin:13px auto;border:1px solid #5a5740;border-radius:9px;background:#282719}
+@media(max-width:760px){.faction-stats-toolbar{align-items:stretch;flex-direction:column}.faction-stats-toolbar button{align-self:flex-start}.faction-stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:520px){.faction-stats-grid{grid-template-columns:1fr}.faction-workspace-tabs{overflow-x:auto}.faction-workspace-tabs button{flex:0 0 auto}}
 .faction-weekly-toolbar{max-width:1140px;margin:18px auto 12px;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 17px;border:1px solid #35534e;border-radius:10px;background:linear-gradient(115deg,#152b29,#121f29)}
 .faction-weekly-toolbar>div:first-child small,.faction-weekly-toolbar>div:first-child strong,.faction-weekly-toolbar>div:first-child span{display:block}
 .faction-weekly-toolbar>div:first-child small{font-size:8px;color:#85c4b3;font-weight:700;letter-spacing:.15em}
