@@ -4,7 +4,7 @@ main = "src/worker/index.ts"
 compatibility_date = "2026-10-08"
 workers_dev = true
 
-# Isolated real-key acceptance Worker. No production D1, routes, cron jobs or Queues.
+# Isolated real-key acceptance Worker. D1, Queues and scheduled collectors are staging-only.
 [vars]
 ALLOWED_ORIGIN = "https://naughtyfamily-staging.pages.dev"
 
@@ -16,3 +16,26 @@ binding = "DB"
 database_name = "naughtyfamily-acceptance-staging"
 database_id = "02cca699-1232-495f-8a0a-de525058b92a"
 migrations_dir = "migrations/auth"
+
+[triggers]
+# Match production collector cadence while keeping every resource isolated to staging.
+crons = ["10 18 * * *", "10 0 * * *", "*/5 * * * *"]
+
+[[queues.producers]]
+binding = "GLOBAL_RANKINGS_QUEUE"
+queue = "ncd-naughtyfamily-staging-collection"
+
+[[queues.consumers]]
+queue = "ncd-naughtyfamily-staging-collection"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 4
+max_concurrency = 1
+dead_letter_queue = "ncd-naughtyfamily-staging-dlq"
+
+[[queues.consumers]]
+queue = "ncd-naughtyfamily-staging-dlq"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 1
+max_concurrency = 1
