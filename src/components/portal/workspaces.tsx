@@ -1677,6 +1677,19 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     </main>
   )
 }
+type PrivateLiveConnectionStatus = {
+  connected: boolean
+  key: {
+    lastFour: string
+    includeNetworth: boolean
+    shareWithFaction: boolean
+    consentedAt: string | null
+    lastCollectedAt: string | null
+    lastError: string | null
+  } | null
+  snapshot: { capturedAt: string } | null
+}
+
 type AccountSettingsProps = WorkspaceProps & {
   apiBase: string
   sessionToken: string
@@ -1692,6 +1705,88 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
   const [sessionBusy, setSessionBusy] = useState(false)
   const [accountError, setAccountError] = useState("")
   const [accountNotice, setAccountNotice] = useState("")
+  const [privateLiveKey, setPrivateLiveKey] = useState("")
+  const [privateLiveStatus, setPrivateLiveStatus] = useState<PrivateLiveConnectionStatus | null>(null)
+  const [privateLiveConsent, setPrivateLiveConsent] = useState(false)
+  const [privateLiveIncludeNetworth, setPrivateLiveIncludeNetworth] = useState(false)
+  const [privateLiveBusy, setPrivateLiveBusy] = useState(false)
+
+  const loadPrivateLiveStatus = async () => {
+    const response = await fetch(props.apiBase + "/api/me/private-live/key", {
+      headers: { Authorization: "Bearer " + props.sessionToken },
+    })
+    const payload = await response.json() as { error?: string } & Partial<PrivateLiveConnectionStatus>
+    if (!response.ok) throw new Error(payload.error || "Could not load your private live connection status.")
+    setPrivateLiveStatus(payload as PrivateLiveConnectionStatus)
+    if (payload.key) setPrivateLiveIncludeNetworth(payload.key.includeNetworth)
+    return payload as PrivateLiveConnectionStatus
+  }
+
+  useEffect(() => {
+    void loadPrivateLiveStatus().catch(caught => {
+      setAccountError(caught instanceof Error ? caught.message : "Could not load your private live connection status.")
+    })
+  }, [props.apiBase, props.sessionToken])
+
+  const connectPrivateLiveKey = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!privateLiveKey.trim() || !privateLiveConsent || privateLiveBusy) return
+    setPrivateLiveBusy(true); setAccountError(""); setAccountNotice("")
+    try {
+      const response = await fetch(props.apiBase + "/api/me/private-live/key", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + props.sessionToken, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: privateLiveKey.trim(),
+          consent: true,
+          shareWithFaction: true,
+          includeNetworth: privateLiveIncludeNetworth,
+          consentVersion: "faction-private-live-v1",
+        }),
+      })
+      const payload = await response.json() as { error?: string; lastFour?: string; includeNetworth?: boolean }
+      if (!response.ok) throw new Error(payload.error || "Could not connect your private live Torn key.")
+      setPrivateLiveKey("")
+      setPrivateLiveConsent(false)
+      await loadPrivateLiveStatus()
+      setAccountNotice("Your owner-verified private live key was encrypted and its latest snapshot shared with Naughty Souls members.")
+    } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not connect your private live Torn key.") }
+    finally { setPrivateLiveBusy(false) }
+  }
+
+  const refreshPrivateLive = async () => {
+    if (privateLiveBusy || !privateLiveStatus?.connected) return
+    setPrivateLiveBusy(true); setAccountError(""); setAccountNotice("")
+    try {
+      const response = await fetch(props.apiBase + "/api/me/private-live/refresh", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + props.sessionToken },
+      })
+      const payload = await response.json() as { error?: string; warning?: string | null }
+      if (!response.ok) throw new Error(payload.error || "Could not refresh private live data.")
+      await loadPrivateLiveStatus()
+      setAccountNotice(payload.warning || "Your latest bars and cooldowns were refreshed.")
+    } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not refresh private live data.") }
+    finally { setPrivateLiveBusy(false) }
+  }
+
+  const disconnectPrivateLive = async () => {
+    if (privateLiveBusy || !privateLiveStatus?.connected) return
+    if (!window.confirm("Disconnect your private live Torn key? This deletes the encrypted key and removes your current faction-shared bars, cooldowns and optional networth snapshot.")) return
+    setPrivateLiveBusy(true); setAccountError(""); setAccountNotice("")
+    try {
+      const response = await fetch(props.apiBase + "/api/me/private-live/key", {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + props.sessionToken },
+      })
+      const payload = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not disconnect your private live key.")
+      await loadPrivateLiveStatus()
+      setPrivateLiveIncludeNetworth(false)
+      setAccountNotice("Your private live key and current faction-shared snapshot were deleted.")
+    } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not disconnect your private live key.") }
+    finally { setPrivateLiveBusy(false) }
+  }
 
   const refreshCompanies = async () => {
     const response = await fetch(props.apiBase + "/api/me/companies", { headers: { Authorization: "Bearer " + props.sessionToken } })
@@ -1812,6 +1907,37 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
             )) : <p className="settings-form-hint">No separate company API keys are saved yet.</p>}
           </div>
           <button type="button" className="settings-link-button" onClick={() => props.onNavigate("/company")}>Open Company Dashboard →</button>
+        </article>
+        <article className="settings-card settings-card-wide settings-private-live-card">
+          <div className="settings-card-icon">◉</div><small>FACTION LIVE MEMBER STATUS</small><h2>Private live Torn connection</h2>
+          <p>Connect a separate key that can read only your own bars and cooldowns. Your key is checked against your signed-in Torn ID before it is encrypted. The key itself is never shared; only your latest live snapshot is shared with authenticated Naughty Souls members.</p>
+          <span className={privateLiveStatus?.connected ? "settings-connection good" : "settings-connection"}><i /> {privateLiveStatus?.connected ? "Connected securely · •••• " + (privateLiveStatus.key?.lastFour || "••••") : privateLiveStatus ? "Not connected" : "Checking connection…"}</span>
+          {privateLiveStatus?.connected && <div className="settings-private-live-meta">
+            <span>Last snapshot <strong>{privateLiveStatus.snapshot?.capturedAt ? new Date(privateLiveStatus.snapshot.capturedAt).toLocaleString() : "Not available"}</strong></span>
+            <span>Optional networth <strong>{privateLiveStatus.key?.includeNetworth ? "Enabled" : "Off"}</strong></span>
+            {privateLiveStatus.key?.lastError && <span className="settings-private-live-warning">Last refresh issue: {privateLiveStatus.key.lastError}</span>}
+          </div>}
+          <div className="settings-private-live-disclosure">
+            <table><tbody>
+              <tr><th>Data storage</th><td>Only the latest bars, cooldowns and optionally networth snapshot are retained while connected. No historical live-data archive is created.</td></tr>
+              <tr><th>Data sharing</th><td>Latest snapshot is visible to authenticated current Naughty Souls faction members. Your API key is not shared.</td></tr>
+              <tr><th>Purpose</th><td>Faction live-status display and member coordination. Optional detailed networth is a separate opt-in.</td></tr>
+              <tr><th>Key storage & sharing</th><td>Encrypted at rest; used by the API Worker only to request data belonging to your own Torn account.</td></tr>
+              <tr><th>Key access level</th><td>The key must successfully return your own bars and cooldowns. Only those selections are requested. Detailed networth is requested only when you separately enable it and Torn confirms access.</td></tr>
+            </tbody></table>
+          </div>
+          <form className="settings-inline-form" onSubmit={connectPrivateLiveKey}>
+            <label htmlFor="settings-private-live-key">{privateLiveStatus?.connected ? "Replace private live key" : "Connect your private live key"}</label>
+            <input id="settings-private-live-key" type="password" autoComplete="off" spellCheck={false} value={privateLiveKey} onChange={event => setPrivateLiveKey(event.target.value)} placeholder="Paste your own Torn key with bars and cooldowns access" disabled={privateLiveBusy} />
+            <label className="settings-private-live-check"><input type="checkbox" checked={privateLiveIncludeNetworth} onChange={event => setPrivateLiveIncludeNetworth(event.target.checked)} disabled={privateLiveBusy} /><span>Also share my detailed networth breakdown with the faction. This is optional and is not requested unless checked.</span></label>
+            <label className="settings-private-live-check"><input type="checkbox" checked={privateLiveConsent} onChange={event => setPrivateLiveConsent(event.target.checked)} disabled={privateLiveBusy} /><span>I consent to encrypted storage of my own key and sharing my latest bars/cooldowns with authenticated Naughty Souls members. I understand disconnecting deletes the key and current shared snapshot. I have reviewed the data-use terms above.</span></label>
+            <button type="submit" disabled={privateLiveBusy || !privateLiveKey.trim() || !privateLiveConsent}>{privateLiveBusy ? "Validating key…" : privateLiveStatus?.connected ? "Validate & replace private live key" : "Validate & connect private live key"}</button>
+            <span className="settings-form-hint">The Worker checks the key owner and the requested endpoints with Torn. A custom or limited key is accepted only when the required selections are actually available. Refresh is limited to one request every 30 seconds.</span>
+          </form>
+          {privateLiveStatus?.connected && <div className="settings-private-live-actions">
+            <button type="button" disabled={privateLiveBusy} onClick={() => void refreshPrivateLive()}>{privateLiveBusy ? "Working…" : "Refresh my live data ↻"}</button>
+            <button type="button" disabled={privateLiveBusy} onClick={() => void disconnectPrivateLive()}>Disconnect & delete snapshot</button>
+          </div>}
         </article>
         <article className="settings-card">
           <div className="settings-card-icon">♧</div><small>HALLOWEEN ARCHIVE</small><h2>Historical collection key</h2>
