@@ -7,7 +7,8 @@ const [worker, migration, workspace] = await Promise.all([
   readFile(new URL("../src/components/portal/workspaces.tsx", import.meta.url), "utf8"),
 ])
 
-assert.ok(migration.includes("CREATE TABLE IF NOT EXISTS halloween_historical_keys"))
+assert.ok(migration.includes("CREATE TABLE halloween_historical_keys_new"))
+assert.ok(migration.includes("ALTER TABLE halloween_historical_keys_new RENAME TO halloween_historical_keys"))
 assert.ok(migration.includes("CHECK (access_level IN ('Full Access', 'Custom Access', 'Custom'))"))
 assert.ok(migration.includes("consent_version TEXT NOT NULL"))
 assert.ok(worker.includes('fetch("https://api.torn.com/v2/key/info"'))
