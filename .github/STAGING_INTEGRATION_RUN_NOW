@@ -14,3 +14,4 @@ Run 14: rerun corrected faction totals worker and UI integration after parser/qu
 Run 15: validate corrected Faction totals component declaration and full staging checks.
 Run 16: rerun full staging acceptance after harness syntax correction.
 Run 17: rerun staging acceptance with isolated, non-overlapping historical membership fixtures.
+Run 18: validate administrator-only Sunday boundary diagnostics, audited frozen-cohort recovery, and immutable-report recovery lock in isolated staging D1; no production access.
