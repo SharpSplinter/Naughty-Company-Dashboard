@@ -453,3 +453,30 @@
 .faction-weekly-profile-note{margin:10px 0 0;color:#8ba2a4;font-size:8px;line-height:1.6}
 @media(max-width:760px){.faction-weekly-filter-controls{align-items:stretch}.faction-weekly-filter-controls>label:not(.faction-weekly-anomaly-toggle){flex:1;min-width:130px}.faction-weekly-filter-controls select{width:100%;min-width:0}.faction-weekly-result-count{margin-left:0}.faction-weekly-member-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.faction-weekly-member-meta{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:480px){.faction-weekly-member-detail{padding:12px}.faction-weekly-member-detail-heading{flex-direction:column}.faction-weekly-member-metrics{grid-template-columns:1fr 1fr}}
+
+/* Consented member-owned live key disclosure and faction snapshot presentation. */
+
+.settings-private-live-meta{display:flex;flex-wrap:wrap;gap:8px 18px;margin:10px 0;padding:10px 12px;border:1px solid #344a4b;border-radius:7px;background:#101e24;color:#91aaa7;font-size:8px}
+.settings-private-live-meta span{display:flex;flex-direction:column;gap:4px}
+.settings-private-live-meta strong{color:#d8e8e0;font-size:9px}
+.settings-private-live-meta .settings-private-live-warning{color:#e9be88}
+.settings-private-live-disclosure{max-width:100%;margin:12px 0;overflow-x:auto;border:1px solid #31484b;border-radius:8px;background:#101d23}
+.settings-private-live-disclosure table{width:100%;border-collapse:collapse;min-width:490px}
+.settings-private-live-disclosure th,.settings-private-live-disclosure td{padding:9px 10px;border-bottom:1px solid #2b4146;text-align:left;vertical-align:top;font-size:8px;line-height:1.55}
+.settings-private-live-disclosure th{width:115px;color:#a7c5b8;font-weight:800;white-space:nowrap}
+.settings-private-live-disclosure td{color:#a0b4b2}
+.settings-private-live-disclosure tr:last-child th,.settings-private-live-disclosure tr:last-child td{border-bottom:0}
+.settings-private-live-check{display:flex!important;flex-direction:row!important;align-items:flex-start;gap:8px!important;margin:7px 0;color:#a8beb8!important;font-size:9px!important;line-height:1.5;letter-spacing:0!important;text-transform:none!important}
+.settings-private-live-check input{flex:0 0 auto;margin-top:2px;accent-color:#70b89d}
+.settings-private-live-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:12px}
+.settings-private-live-actions button{border:1px solid #426c60;border-radius:7px;background:#17352f;color:#d5eee2;padding:9px 12px;font-size:9px;font-weight:700;cursor:pointer}
+.settings-private-live-actions button+button{border-color:#574e43;background:#2a2925;color:#e8d5bc}
+.settings-private-live-actions button:disabled{opacity:.55;cursor:not-allowed}
+.faction-live-private-data{min-width:230px;line-height:1.45}
+.faction-live-private-data>small{display:block;margin:3px 0;color:#87a39e;font-size:7px}
+.faction-live-private-data>small strong{color:#c9e7d7}
+.faction-live-private-bars,.faction-live-private-cooldowns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 9px;margin:5px 0}
+.faction-live-private-bars span,.faction-live-private-cooldowns span{color:#8ea9a5;font-size:7px}
+.faction-live-private-bars strong,.faction-live-private-cooldowns strong{display:block;color:#c8e8d6;font-size:8px;font-weight:700}
+.faction-live-private-unavailable{color:#7d9496;font-size:8px}
+@media(max-width:600px){.settings-private-live-meta{flex-direction:column;gap:8px}.settings-private-live-actions{flex-direction:column;align-items:stretch}.faction-live-private-data{min-width:200px}}
