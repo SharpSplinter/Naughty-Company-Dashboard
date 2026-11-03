@@ -324,6 +324,19 @@ async function savedKey(env: WorkerEnv, playerId: string): Promise<string | null
   return row ? decryptKey(env, row.ciphertext, row.iv) : null
 }
 
+/** Remove feature registrations tied to an older portal credential while retaining user data/history. */
+async function invalidateMemberKeyDependents(env: WorkerEnv, playerId: string): Promise<void> {
+  const db = requireDb(env)
+  const now = new Date().toISOString()
+  await db.prepare("DELETE FROM faction_member_private_live_snapshots WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM member_private_live_keys WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_historical_keys WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("UPDATE halloween_collection_jobs SET status = 'cancelled', last_error = ?, updated_at = ? WHERE player_id = ? AND status IN ('queued', 'running')")
+    .bind("The member's portal API key changed or was removed. Re-enable historical collection with the current key.", now, playerId).run()
+  await db.prepare("DELETE FROM company_keys WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM company_api_keys WHERE player_id = ?").bind(playerId).run()
+}
+
 async function claimPrivateLiveRequest(env: WorkerEnv, playerId: string, nowMs = Date.now()): Promise<boolean> {
   const now = new Date(nowMs).toISOString()
   const retryBefore = new Date(nowMs - 30 * 1000).toISOString()
@@ -4741,6 +4754,8 @@ export default {
           return jsonResponse({ error: "The dashboard is in maintenance mode. Please try again later." }, 503, origin)
         }
 
+        const priorKey = await savedKey(env, player.id).catch(() => null)
+        if (priorKey && priorKey !== apiKey) await invalidateMemberKeyDependents(env, player.id)
         await saveKey(env, player.id, apiKey)
         const token = randomToken()
         const expiresAt = Math.floor(Date.now() / 1000) + 30 * DAY
@@ -4774,8 +4789,10 @@ export default {
         if (!apiKey) return jsonResponse({ error: "A Torn API key is required." }, 400, origin)
         const player = await validateTornKey(apiKey)
         if (player.id !== session.player_id) return jsonResponse({ error: "That key belongs to a different Torn player. Sign out and sign in as that player to switch accounts." }, 403, origin)
+        const priorKey = await savedKey(env, player.id).catch(() => null)
+        if (priorKey && priorKey !== apiKey) await invalidateMemberKeyDependents(env, player.id)
         await saveKey(env, player.id, apiKey)
-        return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), updatedAt: new Date().toISOString() }, 200, origin)
+        return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), updatedAt: new Date().toISOString(), dependentConnectionsReset: priorKey !== null && priorKey !== apiKey }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
 
@@ -5246,10 +5263,9 @@ export default {
     if (url.pathname === "/api/auth/key" && request.method === "DELETE") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      await invalidateMemberKeyDependents(env, session.player_id)
       await requireDb(env).prepare("DELETE FROM api_keys WHERE player_id = ?").bind(session.player_id).run()
-      await requireDb(env).prepare("DELETE FROM company_keys WHERE player_id = ?").bind(session.player_id).run()
-      await requireDb(env).prepare("DELETE FROM company_api_keys WHERE player_id = ?").bind(session.player_id).run()
-      return jsonResponse({ deleted: true, companyDataRetained: true }, 200, origin)
+      return jsonResponse({ deleted: true, companyDataRetained: true, featureConnectionsReset: true }, 200, origin)
     }
     if (url.pathname === "/api/auth/sign-out-all" && request.method === "POST") {
       const session = await authenticate(request, env)
