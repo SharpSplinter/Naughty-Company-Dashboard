@@ -473,7 +473,7 @@ async function enqueueOneFactionPerformanceRun(
   const enqueuedAt = new Date().toISOString()
   await db.prepare(
     "UPDATE faction_performance_collection_runs SET last_enqueued_at = ?, updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
-  ).bind(enqueuedAt, enqueuedAt, run.runId).run()
+  ).bind(enqueuedAt, enqueuedAt, String(run.runId)).run()
   return true
 }
 
@@ -3708,15 +3708,15 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
     const reportPlaceholders = reportWeekStarts.map(() => "?").join(", ")
     const [registryRows, reportRows, membershipRows] = await Promise.all([
       db.prepare(
-        \`SELECT boundary_at AS boundaryAt, stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId, created_at AS createdAt
+        `SELECT boundary_at AS boundaryAt, stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId, created_at AS createdAt
          FROM faction_weekly_boundary_runs
-         WHERE faction_id = ? AND boundary_at IN (\${boundaryPlaceholders})\`
+         WHERE faction_id = ? AND boundary_at IN (${boundaryPlaceholders})`
       ).bind(NAUGHTY_SOULS_FACTION_ID, ...boundaryTimes).all<Record<string, unknown>>(),
       db.prepare(
-        \`SELECT week_start_at AS weekStartAt, week_end_at AS weekEndAt, report_status AS status,
+        `SELECT week_start_at AS weekStartAt, week_end_at AS weekEndAt, report_status AS status,
                 member_count AS memberCount, complete_member_count AS completeMemberCount, finalized_at AS finalizedAt
          FROM faction_weekly_reports
-         WHERE faction_id = ? AND week_start_at IN (\${reportPlaceholders})\`
+         WHERE faction_id = ? AND week_start_at IN (${reportPlaceholders})`
       ).bind(NAUGHTY_SOULS_FACTION_ID, ...reportWeekStarts).all<Record<string, unknown>>(),
       db.prepare(
         "SELECT user_id AS userId, estimated_joined_at AS estimatedJoinedAt, first_seen_at AS firstSeenAt, left_observed_at AS leftObservedAt FROM faction_membership_intervals WHERE faction_id = ?"
@@ -3728,7 +3728,7 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
       [String(row.statsRunId ?? ""), String(row.gymEnergyRunId ?? "")].filter(Boolean)))
     const runPlaceholders = runIds.map(() => "?").join(", ")
     const runRows = runIds.length ? await db.prepare(
-      \`SELECT r.run_id AS runId, r.collection_kind AS collectionKind, r.status,
+      `SELECT r.run_id AS runId, r.collection_kind AS collectionKind, r.status,
               r.scheduled_at AS scheduledAt, r.started_at AS startedAt, r.completed_at AS completedAt,
               r.last_enqueued_at AS lastEnqueuedAt, r.last_error AS lastError, r.updated_at AS updatedAt,
               r.target_user_ids_json AS targetUserIdsJson, r.next_index AS nextIndex,
@@ -3740,7 +3740,7 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
               (SELECT COUNT(*) FROM faction_gym_energy_snapshots g WHERE g.run_id = r.run_id AND g.collection_status = 'complete') AS completeGymMembers,
               (SELECT MIN(g.captured_at) FROM faction_gym_energy_snapshots g WHERE g.run_id = r.run_id) AS firstGymCapturedAt,
               (SELECT MAX(g.captured_at) FROM faction_gym_energy_snapshots g WHERE g.run_id = r.run_id) AS lastGymCapturedAt
-       FROM faction_performance_collection_runs r WHERE r.run_id IN (\${runPlaceholders})\`
+       FROM faction_performance_collection_runs r WHERE r.run_id IN (${runPlaceholders})`
     ).bind(...runIds).all<Record<string, unknown>>() : { results: [] as Record<string, unknown>[] }
     const runsById = new Map((runRows.results ?? []).map((row) => [String(row.runId), row]))
     const nowMs = Date.now()
@@ -3900,8 +3900,8 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
     ]
     const reportPlaceholders = relatedWeekStarts.map(() => "?").join(", ")
     const finalized = await db.prepare(
-      \`SELECT week_start_at AS weekStartAt, report_status AS status FROM faction_weekly_reports
-       WHERE faction_id = ? AND week_start_at IN (\${reportPlaceholders}) LIMIT 2\`
+      `SELECT week_start_at AS weekStartAt, report_status AS status FROM faction_weekly_reports
+       WHERE faction_id = ? AND week_start_at IN (${reportPlaceholders}) LIMIT 2`
     ).bind(NAUGHTY_SOULS_FACTION_ID, ...relatedWeekStarts).all<Record<string, unknown>>()
     if ((finalized.results ?? []).length) {
       await writeAdminAudit(env, session, "faction.weekly_boundary.recovery_blocked", "faction_weekly_boundary", boundaryAt, "denied",
@@ -3962,7 +3962,7 @@ async function handleAutomationRequest(request: Request, env: WorkerEnv, origin:
       }
       const reset = await db.prepare(
         "UPDATE faction_performance_collection_runs SET status = 'queued', next_index = 0, started_at = NULL, completed_at = NULL, last_enqueued_at = NULL, last_error = NULL, updated_at = ? WHERE run_id = ? AND status = ? AND updated_at = ?"
-      ).bind(now, run.runId, status, run.updatedAt).run()
+      ).bind(now, String(run.runId), status, run.updatedAt == null ? "" : String(run.updatedAt)).run()
       if (Number(reset.meta?.changes ?? 0) !== 1) {
         skipped.push({ collection, reason: "The run changed concurrently; reload diagnostics before retrying." })
         continue
