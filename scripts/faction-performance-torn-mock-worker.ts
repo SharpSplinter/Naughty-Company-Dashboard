@@ -50,6 +50,18 @@ function gymEnergyContributors() {
   }
 }
 
+function factionStats() {
+  return {
+    stats: [
+      { name: "medicalitemsused", value: 11 },
+      { name: "attackswon", value: 23 },
+      { name: "organisedcrimemoney", value: 123456789 },
+      { name: "highestterritories", value: 17 },
+      { name: "membersamount", value: 6 },
+    ],
+  }
+}
+
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
@@ -64,6 +76,7 @@ export default {
     if (url.pathname === "/v2/faction/contributors" && url.searchParams.get("stat") === "gymenergy") {
       return json(gymEnergyContributors())
     }
+    if (url.pathname === "/v2/faction/stats") return json(factionStats())
     const personalStatsMatch = url.pathname.match(/^\/v2\/user\/([1-9]\d*)\/personalstats$/)
     if (personalStatsMatch && url.searchParams.get("cat") === "popular") {
       if (personalStatsMatch[1] === "980000007") {

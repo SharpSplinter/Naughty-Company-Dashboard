@@ -724,6 +724,7 @@ Still to implement or validate:
 - [x] Keep unavailable values as an em dash rather than zero, and keep Xanax/LSD separately ranked.
 - [ ] Add clickable member profiles, lifetime-counter context and per-metric freshness detail.
 - [x] Add completed-week selection and optional earlier-week comparison, including weekly-value movement and rank movement.
+- [x] Add faction-wide lifetime totals from `/faction/stats` with scheduled timestamped snapshots, freshness and missing/unrecognized field reporting in the Faction totals tab.
 - [ ] Add sortable columns, advanced filters, clickable member profiles and lifetime-counter context.
 
 ### Phase 4 — Live Member Status and faction activity

@@ -78,6 +78,16 @@ async function publish(runId, queueId) {
   )
 }
 
+async function publishFactionStats(runId, queueId) {
+  await cloudflareRequest(
+    `/accounts/${ACCOUNT_ID}/queues/${queueId}/messages`,
+    {
+      method: "POST",
+      body: JSON.stringify({ body: { kind: "faction-stats-collection", runId }, content_type: "json" }),
+    },
+  )
+}
+
 async function publishWeeklyFinalize(weekStartAt, queueId) {
   await cloudflareRequest(
     `/accounts/${ACCOUNT_ID}/queues/${queueId}/messages`,
@@ -127,7 +137,34 @@ async function createRun(kind, queueId, targetUserIds = null) {
   return runId
 }
 
-async function waitForRun(runId, label) {
+async function createFactionStatsRun(queueId) {
+  const runId = randomUUID()
+  const now = new Date().toISOString()
+  await d1Query(
+    "INSERT INTO faction_stats_collection_runs (run_id, collection_key, faction_id, status, scheduled_at, created_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)",
+    [runId, `integration:faction-stats:${runId}`, FACTION_ID, now, now, now],
+  )
+  await publishFactionStats(runId, queueId)
+  return runId
+}
+
+async function waitForFactionStatsRun(runId) {
+  const deadline = Date.now() + 3 * 60 * 1000
+  while (Date.now() < deadline) {
+    const rows = await d1Query(
+      "SELECT status, last_error FROM faction_stats_collection_runs WHERE run_id = ?",
+      [runId],
+    )
+    const row = rows[0]
+    if (!row) throw new Error("Faction stats integration run disappeared from staging D1.")
+    if (row.status === "completed") return row
+    if (row.status === "failed") throw new Error(`Faction stats collection failed: ${row.last_error ?? "no error summary"}`)
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+  }
+  throw new Error("Faction stats collection did not complete within three minutes.")
+}
+
+async function waitForRun(runId, label) {async function waitForRun(runId, label) {
   const deadline = Date.now() + 8 * 60 * 1000
   while (Date.now() < deadline) {
     const rows = await d1Query(
@@ -165,11 +202,11 @@ async function waitForFailedRun(runId, label) {
 
 async function assertMigrationReady() {
   const rows = await d1Query(
-    "SELECT name FROM d1_migrations WHERE name IN (?, ?, ?)",
-    ["0019_faction_performance_collection.sql", "0020_faction_weekly_boundaries.sql", "0021_faction_weekly_reports.sql"],
+    "SELECT name FROM d1_migrations WHERE name IN (?, ?, ?, ?)",
+    ["0019_faction_performance_collection.sql", "0020_faction_weekly_boundaries.sql", "0021_faction_weekly_reports.sql", "0022_faction_stats_snapshots.sql"],
   )
-  if (rows.length !== 3) {
-    throw new Error("Staging D1 is missing faction collection, weekly boundary or immutable weekly report migrations 0019/0021. Run the staging migration workflow first.")
+  if (rows.length !== 4) {
+    throw new Error("Staging D1 is missing a faction collection, weekly boundary, immutable report or faction stats migration (0019-0022). Run the staging migration workflow first.")
   }
   const expected = [
     "faction_performance_collection_runs",
@@ -182,6 +219,9 @@ async function assertMigrationReady() {
     "faction_weekly_boundary_runs",
     "faction_weekly_reports",
     "faction_weekly_member_results",
+    "faction_stats_collection_runs",
+    "faction_stats_collection_state",
+    "faction_stats_snapshots",
   ]
   const placeholders = expected.map(() => "?").join(", ")
   const tables = await d1Query(
@@ -456,7 +496,7 @@ async function seedClosedWeekFixtures(queueId) {
   return { weekAStart, weekBStart, ids, leaverId }
 }
 
-async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, historyFixture) {
+async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, historyFixture, factionStatsRunId) {
   const playerId = String(990000000000000 + randomInt(1, 999999))
   const token = `${randomUUID()}.${randomUUID()}`
   const tokenHash = createHash("sha256").update(token).digest("hex")
@@ -511,6 +551,20 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
       throw new Error("The configured revive setting must not be inferred from the owner-specific can-revive field.")
     }
     console.log("PASS authenticated faction performance API returned roster activity, status, and distinct member revive-setting / key-revivability values.")
+
+    const factionStatsResponse = await fetch(`${WORKER_URL}/api/faction/stats`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(30000),
+    })
+    const factionStats = await factionStatsResponse.json().catch(() => null)
+    const aggregate = factionStats?.stats?.find((stat) => stat.name === "organisedcrimemoney")
+    if (!factionStatsResponse.ok || !factionStats || factionStats.snapshot?.runId !== factionStatsRunId ||
+        !Array.isArray(factionStats.stats) || aggregate?.value !== 123456789 ||
+        !factionStats.missingStatNames.includes("caymaninterest") ||
+        factionStats.collection?.lastRunId !== factionStatsRunId) {
+      throw new Error(`Authenticated faction stats API returned HTTP ${factionStatsResponse.status} or omitted the aggregate snapshot, missing-field metadata or collection state.`)
+    }
+    console.log("PASS authenticated faction stats API returned faction-wide totals, capture time and missing-stat metadata.")
 
     const activityResponse = await fetch(`${WORKER_URL}/api/faction/activity`, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
@@ -633,6 +687,30 @@ async function main() {
   await assertMigrationReady()
   const queueId = await findQueue()
 
+  const factionStatsRunId = await createFactionStatsRun(queueId)
+  const factionStatsRun = await waitForFactionStatsRun(factionStatsRunId)
+  if (factionStatsRun.status !== "completed") throw new Error("The fixture faction stats collection did not complete.")
+  const factionStatsRows = await d1Query(
+    "SELECT stats_json, missing_stat_names_json, returned_stat_count, collection_status FROM faction_stats_snapshots WHERE run_id = ?",
+    [factionStatsRunId],
+  )
+  const savedFactionStats = factionStatsRows[0]
+  const savedStats = JSON.parse(savedFactionStats?.stats_json ?? "[]")
+  if (!savedFactionStats || savedFactionStats.collection_status !== "complete" ||
+      Number(savedFactionStats.returned_stat_count) !== 5 ||
+      savedStats.find((stat) => stat.name === "organisedcrimemoney")?.value !== 123456789 ||
+      !JSON.parse(savedFactionStats.missing_stat_names_json).includes("caymaninterest")) {
+    throw new Error("Faction-wide stats were not durably persisted with typed values and missing-field metadata.")
+  }
+  const factionStatsState = await d1Query(
+    "SELECT last_success_at, last_run_id FROM faction_stats_collection_state WHERE faction_id = ?",
+    [FACTION_ID],
+  )
+  if (!factionStatsState[0]?.last_success_at || factionStatsState[0].last_run_id !== factionStatsRunId) {
+    throw new Error("Faction stats collection state did not advance after the complete capture.")
+  }
+  console.log("PASS faction-wide /faction/stats collection persisted a timestamped aggregate snapshot and missing-field metadata.")
+
   const departedUserId = String(991000000000000 + randomInt(1, 999999))
   const departedIntervalId = randomUUID()
   const seedTime = new Date().toISOString()
@@ -722,7 +800,7 @@ async function main() {
 
   const weeklyFixture = await seedWeeklyFixtures()
   const historyFixture = await seedClosedWeekFixtures(queueId)
-  await assertApiRoute(rosterRunId, weeklyFixture, departedUserId, historyFixture)
+  await assertApiRoute(rosterRunId, weeklyFixture, departedUserId, historyFixture, factionStatsRunId)
 
   const successfulStatsState = await d1Query(
     "SELECT last_success_at FROM faction_performance_collection_state WHERE faction_id = ? AND collection_kind = 'personalstats'",

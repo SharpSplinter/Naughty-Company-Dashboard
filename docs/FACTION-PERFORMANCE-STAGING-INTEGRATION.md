@@ -41,11 +41,12 @@ The repository secret `CLOUDFLARE_API_TOKEN` must be authorized for D1 writes, W
 
 The driver `scripts/run-faction-performance-staging-integration.mjs` verifies:
 
-- Migrations 0019, 0020 and 0021 plus all collection, boundary and immutable report tables are present.
+- Migrations 0019, 0020, 0021 and 0022 plus all collection, boundary, immutable report and faction-wide stats tables are present.
 - Roster collection creates six synthetic membership intervals and marks a seeded departed interval as left without deleting it.
 - Public personalstats collection processes six members over the five-member queue page boundary and persists all 18 counters.
 - Gym-energy collection persists all six synthetic contributors.
 - All three successful collection types advance `last_success_at`.
+- The authenticated faction stats API returns the latest scheduled `/faction/stats` aggregate snapshot, actual capture timestamp, recognized totals, missing/unrecognized field metadata, and collection freshness state.
 - The authenticated faction performance API returns the completed roster with joined stats and gym-energy samples, public last-action fields, and the target's configured revive setting separate from key-owner-specific revivability.
 - The authenticated faction activity API compares the two latest completed roster snapshots and returns typed, bounded membership/status/activity/flag/revive-setting/position changes.
 - The authenticated weekly-rankings API uses synthetic Sunday-boundary baseline runs and later samples to verify separate Xanax/LSD deltas, negative networth movement, starting/current networth values, gym-energy delta/ranking, actual capture timestamps and selected-metric rank ordering.
@@ -54,6 +55,7 @@ The driver `scripts/run-faction-performance-staging-integration.mjs` verifies:
 - Immutable report triggers reject attempted member-result updates; the authenticated history API lists the completed reports and returns weekly value changes, prior rank and rank movement for comparisons.
 - A permanent per-member Torn API error creates a failed sample with NULL metrics and does not advance `last_success_at`.
 - A synthetic Torn 429 is retried by Cloudflare Queues, reaches the dedicated DLQ, and records a terminal failed run without advancing `last_success_at`.
+- Faction-wide stats collection uses a separate 15-minute idempotent run key and the same retry/DLQ lifecycle; missing enum names remain explicit and are never replaced with zero.
 
 All API responses are generated from the sanitized schema fixture or synthetic data. The configured test key is a fake fixture key, not a Torn credential. No `TORN_API_KEY` or `TORN_FACTION_API_KEY` repository secret is required.
 
