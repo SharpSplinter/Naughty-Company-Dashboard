@@ -481,7 +481,7 @@ try {
     const state = { key: null, snapshot: null, writes: [] }
     const db = {
       prepare(sql) {
-        const normalized = sql.toLowerCase().replace(/\\s+/g, " ").trim()
+        const normalized = sql.toLowerCase().replace(/\s+/g, " ").trim()
         let values = []
         return {
           bind(...args) { values = args; return this },
