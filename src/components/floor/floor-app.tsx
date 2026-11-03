@@ -705,7 +705,7 @@ export function FloorApp() {
 
 
   async function deleteSavedKey() {
-    if (!sessionToken || !window.confirm("Permanently delete your saved login and company keys? Your player profile and saved company data will remain.")) return
+    if (!sessionToken || !window.confirm("Delete your primary portal API key and feature opt-ins? Independent secondary company keys and saved company records will remain.")) return
     setError("")
     try {
       const response = await fetch(`${API_BASE}/api/auth/key`, { method: "DELETE", headers: { Authorization: `Bearer ${sessionToken}` } })
