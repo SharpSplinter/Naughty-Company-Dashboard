@@ -324,6 +324,15 @@ async function savedKey(env: WorkerEnv, playerId: string): Promise<string | null
   return row ? decryptKey(env, row.ciphertext, row.iv) : null
 }
 
+async function claimPrivateLiveRequest(env: WorkerEnv, playerId: string, nowMs = Date.now()): Promise<boolean> {
+  const now = new Date(nowMs).toISOString()
+  const retryBefore = new Date(nowMs - 30 * 1000).toISOString()
+  const result = await requireDb(env).prepare(
+    "INSERT INTO member_private_live_api_throttles (player_id, last_attempt_at) VALUES (?, ?) ON CONFLICT(player_id) DO UPDATE SET last_attempt_at = excluded.last_attempt_at WHERE member_private_live_api_throttles.last_attempt_at <= ?"
+  ).bind(playerId, now, retryBefore).run()
+  return Number(result.meta?.changes ?? 0) > 0
+}
+
 async function fetchPrivateLiveSelection(apiKey: string, selection: "bars" | "cooldowns" | "networth"): Promise<unknown> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 10000)
@@ -1680,6 +1689,7 @@ async function removeDepartedFactionAccess(env: WorkerEnv, playerId: string): Pr
   // confirmed faction departure. It is never retained as faction history.
   await db.prepare("DELETE FROM faction_member_private_live_snapshots WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM member_private_live_keys WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM member_private_live_api_throttles WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM sessions WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM api_keys WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM faction_member_cache WHERE player_id = ?").bind(playerId).run()
@@ -4809,6 +4819,9 @@ export default {
         if (!consent || !shareWithFaction || consentVersion !== "faction-private-live-v1") {
           return jsonResponse({ error: "Review and accept the private live data-sharing terms before connecting your key." }, 400, origin)
         }
+        if (!await claimPrivateLiveRequest(env, session.player_id)) {
+          return jsonResponse({ error: "A private live Torn request was made recently. Please wait 30 seconds before connecting or refreshing again." }, 429, origin, { "retry-after": "30" })
+        }
 
         // Never trust a player ID supplied in the request. The key must belong
         // to the already-authenticated session owner before any data is read.
@@ -4862,14 +4875,12 @@ export default {
       const key = await db.prepare("SELECT ciphertext, iv, include_networth FROM member_private_live_keys WHERE player_id = ? AND faction_id = ? AND share_with_faction = 1")
         .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID).first<{ ciphertext: string; iv: string; include_networth: number }>()
       if (!key) return jsonResponse({ error: "Connect your own private live Torn key before refreshing." }, 404, origin)
-      const nowMs = Date.now()
-      const now = new Date(nowMs).toISOString()
-      const claimBefore = new Date(nowMs - 30 * 1000).toISOString()
-      const claim = await db.prepare("UPDATE member_private_live_keys SET last_attempt_at = ?, last_error = NULL, updated_at = ? WHERE player_id = ? AND (last_attempt_at IS NULL OR last_attempt_at <= ?)")
-        .bind(now, now, session.player_id, claimBefore).run()
-      if (Number(claim.meta?.changes ?? 0) < 1) {
-        return jsonResponse({ error: "Private live data was refreshed recently. Please wait 30 seconds before trying again." }, 429, origin, { "retry-after": "30" })
+      const now = new Date().toISOString()
+      if (!await claimPrivateLiveRequest(env, session.player_id)) {
+        return jsonResponse({ error: "A private live Torn request was made recently. Please wait 30 seconds before refreshing again." }, 429, origin, { "retry-after": "30" })
       }
+      await db.prepare("UPDATE member_private_live_keys SET last_attempt_at = ?, last_error = NULL, updated_at = ? WHERE player_id = ?")
+        .bind(now, now, session.player_id).run()
       try {
         const apiKey = await decryptKey(env, key.ciphertext, key.iv)
         const live = await fetchPrivateLiveBase(apiKey)
