@@ -23,6 +23,13 @@ CREATE TABLE IF NOT EXISTS member_private_live_keys (
 CREATE INDEX IF NOT EXISTS member_private_live_keys_faction_idx
   ON member_private_live_keys(faction_id, share_with_faction, updated_at);
 
+-- Shared per-member request budget across connect and refresh attempts. Failed
+-- validation attempts count too, preventing repeated Torn calls via key replace.
+CREATE TABLE IF NOT EXISTS member_private_live_api_throttles (
+  player_id TEXT PRIMARY KEY REFERENCES players(player_id) ON DELETE CASCADE,
+  last_attempt_at TEXT NOT NULL
+);
+
 -- Keep only each member's latest live values, not a historical trail. Revoking
 -- the key removes this current faction-shared snapshot immediately.
 CREATE TABLE IF NOT EXISTS faction_member_private_live_snapshots (
