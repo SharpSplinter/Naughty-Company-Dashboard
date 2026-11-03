@@ -56,6 +56,9 @@ The driver `scripts/run-faction-performance-staging-integration.mjs` verifies:
 - A permanent per-member Torn API error creates a failed sample with NULL metrics and does not advance `last_success_at`.
 - A synthetic Torn 429 is retried by Cloudflare Queues, reaches the dedicated DLQ, and records a terminal failed run without advancing `last_success_at`.
 - Faction-wide stats collection uses a separate 15-minute idempotent run key and the same retry/DLQ lifecycle; missing enum names remain explicit and are never replaced with zero.
+- The authenticated admin weekly-boundary diagnostics endpoint reports recent Sunday registry/run state, retry age, frozen-cohort/capture counts, actual first/last capture times, timing deviation, and adjacent immutable-report references.
+- The admin recovery endpoint retries a synthetic failed Sunday personalstats run using the existing frozen cohort and queue run ID, verifies it completes, confirms the action is written to the admin audit log, and rejects recovery with HTTP 409 when either adjacent immutable weekly report references the boundary.
+- The integration creates a temporary administrator role for its temporary authenticated test player; deleting that test player removes the temporary role and session.
 
 All API responses are generated from the sanitized schema fixture or synthetic data. The configured test key is a fake fixture key, not a Torn credential. No `TORN_API_KEY` or `TORN_FACTION_API_KEY` repository secret is required.
 
