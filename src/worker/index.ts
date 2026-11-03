@@ -333,11 +333,20 @@ async function claimPrivateLiveRequest(env: WorkerEnv, playerId: string, nowMs =
   return Number(result.meta?.changes ?? 0) > 0
 }
 
-async function fetchPrivateLiveSelection(apiKey: string, selection: "bars" | "cooldowns" | "networth"): Promise<unknown> {
+function privateLiveFetcher(env: WorkerEnv): typeof fetch {
+  // Staging binds a sanitized synthetic Torn Worker. Production has no fixture
+  // binding and always uses the official Torn API origin.
+  return env.TORN_API_FIXTURE
+    ? env.TORN_API_FIXTURE.fetch.bind(env.TORN_API_FIXTURE) as typeof fetch
+    : fetch.bind(globalThis)
+}
+
+async function fetchPrivateLiveSelection(env: WorkerEnv, apiKey: string, selection: "bars" | "cooldowns" | "networth"): Promise<unknown> {
+  const fetcher = privateLiveFetcher(env)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 10000)
   try {
-    const response = await fetch("https://api.torn.com/v2/user/" + selection, {
+    const response = await fetcher("https://api.torn.com/v2/user/" + selection, {
       headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
       signal: controller.signal,
     })
@@ -375,11 +384,12 @@ async function fetchPrivateLiveSelection(apiKey: string, selection: "bars" | "co
   } finally { clearTimeout(timeout) }
 }
 
-async function validatePrivateLiveKeyOwner(apiKey: string, playerId: string): Promise<void> {
+async function validatePrivateLiveKeyOwner(env: WorkerEnv, apiKey: string, playerId: string): Promise<void> {
+  const fetcher = privateLiveFetcher(env)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 10000)
   try {
-    const response = await fetch("https://api.torn.com/v2/key/info", {
+    const response = await fetcher("https://api.torn.com/v2/key/info", {
       headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
       signal: controller.signal,
     })
@@ -404,10 +414,10 @@ async function validatePrivateLiveKeyOwner(apiKey: string, playerId: string): Pr
   } finally { clearTimeout(timeout) }
 }
 
-async function fetchPrivateLiveBase(apiKey: string): Promise<{ bars: ReturnType<typeof parsePrivateLiveBars>; cooldowns: ReturnType<typeof parsePrivateLiveCooldowns> }> {
+async function fetchPrivateLiveBase(env: WorkerEnv, apiKey: string): Promise<{ bars: ReturnType<typeof parsePrivateLiveBars>; cooldowns: ReturnType<typeof parsePrivateLiveCooldowns> }> {
   const [barsPayload, cooldownsPayload] = await Promise.all([
-    fetchPrivateLiveSelection(apiKey, "bars"),
-    fetchPrivateLiveSelection(apiKey, "cooldowns"),
+    fetchPrivateLiveSelection(env, apiKey, "bars"),
+    fetchPrivateLiveSelection(env, apiKey, "cooldowns"),
   ])
   return {
     bars: parsePrivateLiveBars(barsPayload),
@@ -4825,14 +4835,14 @@ export default {
 
         // Never trust a player ID supplied in the request. The key must belong
         // to the already-authenticated session owner before any data is read.
-        await validatePrivateLiveKeyOwner(apiKey, session.player_id)
-        const live = await fetchPrivateLiveBase(apiKey)
+        await validatePrivateLiveKeyOwner(env, apiKey, session.player_id)
+        const live = await fetchPrivateLiveBase(env, apiKey)
         let networth: ReturnType<typeof parsePrivateLiveNetworth> | null = null
         let networthSourceTimestamp: number | null = null
         let networthWarning: string | null = null
         if (includeNetworth) {
           try {
-            const networthPayload = await fetchPrivateLiveSelection(apiKey, "networth")
+            const networthPayload = await fetchPrivateLiveSelection(env, apiKey, "networth")
             networth = parsePrivateLiveNetworth(networthPayload)
             if (isRecord(networthPayload) && typeof networthPayload.timestamp === "number" && Number.isFinite(networthPayload.timestamp)) {
               networthSourceTimestamp = networthPayload.timestamp
@@ -4883,14 +4893,14 @@ export default {
         .bind(now, now, session.player_id).run()
       try {
         const apiKey = await decryptKey(env, key.ciphertext, key.iv)
-        const live = await fetchPrivateLiveBase(apiKey)
+        const live = await fetchPrivateLiveBase(env, apiKey)
         let includeNetworth = Number(key.include_networth) === 1
         let networth: ReturnType<typeof parsePrivateLiveNetworth> | null = null
         let networthSourceTimestamp: number | null = null
         let networthWarning: string | null = null
         if (includeNetworth) {
           try {
-            const networthPayload = await fetchPrivateLiveSelection(apiKey, "networth")
+            const networthPayload = await fetchPrivateLiveSelection(env, apiKey, "networth")
             networth = parsePrivateLiveNetworth(networthPayload)
             if (isRecord(networthPayload) && typeof networthPayload.timestamp === "number" && Number.isFinite(networthPayload.timestamp)) {
               networthSourceTimestamp = networthPayload.timestamp
