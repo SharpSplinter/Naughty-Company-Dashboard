@@ -4792,7 +4792,7 @@ export default {
         const shareWithFaction = isRecord(body) && body.shareWithFaction === true
         const consentVersion = isRecord(body) && typeof body.consentVersion === "string" ? body.consentVersion : ""
         const includeNetworth = isRecord(body) && body.includeNetworth === true
-        if (!apiKey || apiKey.length > 256 || /\\s/.test(apiKey)) return jsonResponse({ error: "Enter a valid Torn API key." }, 400, origin)
+        if (!apiKey || apiKey.length > 256 || /\s/.test(apiKey)) return jsonResponse({ error: "Enter a valid Torn API key." }, 400, origin)
         if (!consent || !shareWithFaction || consentVersion !== "faction-private-live-v1") {
           return jsonResponse({ error: "Review and accept the private live data-sharing terms before connecting your key." }, 400, origin)
         }
