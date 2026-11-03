@@ -4289,7 +4289,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
         const enqueuedAt = new Date().toISOString()
         await db.prepare(
           "UPDATE faction_performance_collection_runs SET last_enqueued_at = ?, updated_at = ? WHERE run_id = ? AND status = 'queued'"
-        ).bind(enqueuedAt, enqueuedAt, run.runId).run()
+        ).bind(enqueuedAt, enqueuedAt, String(run.runId)).run()
         queued.push({ collection, runId: String(run.runId) })
       } catch {
         await writeAdminAudit(env, session, "faction.weekly_boundary.recovery_failed", "faction_weekly_boundary", boundaryAt, "failed",
