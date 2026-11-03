@@ -1467,7 +1467,7 @@ async function getGlobalRankingApiKey(env: WorkerEnv, preferredKey?: string): Pr
   if (configured) return configured
   const row = await requireDb(env).prepare("SELECT player_id FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string }>()
   const key = row ? await savedKey(env, row.player_id) : null
-  if (!key) throw Object.assign(new Error("No TORN_API_KEY_CUSTOM or saved Torn API key is available to refresh the global company rankings cache."), { status: 503 })
+  if (!key) throw Object.assign(new Error("No saved Torn API key is available to refresh the global company rankings cache."), { status: 503 })
   return key
 }
 
