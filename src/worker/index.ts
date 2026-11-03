@@ -33,7 +33,7 @@ type D1Database = {
 type QueueProducer = { send(message: unknown): Promise<unknown> }
 type QueueMessage = { body: unknown; attempts?: number; ack(): void; retry(options?: { delaySeconds?: number }): void }
 type TornFixtureBinding = { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> }
-type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; TORN_FACTION_API_KEY?: string; TORN_API_BASE_URL?: string; TORN_API_FIXTURE?: TornFixtureBinding; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
+type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; TORN_FACTION_API_KEY?: string; TORN_API_KEY_CUSTOM?: string; TORN_API_BASE_URL?: string; TORN_API_FIXTURE?: TornFixtureBinding; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
 type Session = { player_id: string; player_name: string; is_admin: number; faction_id?: string | null; faction_verified_at?: string | null; membership_check_attempted_at?: string | null; membership_check_status?: string | null }
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }
@@ -1461,9 +1461,13 @@ async function fetchGlobalCompanyTypeCatalog(apiKey: string): Promise<GlobalComp
 
 async function getGlobalRankingApiKey(env: WorkerEnv, preferredKey?: string): Promise<string> {
   if (preferredKey) return preferredKey
+  // Use the dedicated service-owned Custom Access key for public global-company
+  // directory/ranking data. Never borrow an arbitrary member's login credential.
+  const configured = env.TORN_API_KEY_CUSTOM?.trim()
+  if (configured) return configured
   const row = await requireDb(env).prepare("SELECT player_id FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string }>()
   const key = row ? await savedKey(env, row.player_id) : null
-  if (!key) throw Object.assign(new Error("No saved Torn API key is available to refresh the global company rankings cache."), { status: 503 })
+  if (!key) throw Object.assign(new Error("No TORN_API_KEY_CUSTOM or saved Torn API key is available to refresh the global company rankings cache."), { status: 503 })
   return key
 }
 
