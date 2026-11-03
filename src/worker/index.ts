@@ -4742,6 +4742,156 @@ export default {
       } catch (error) { return tornError(error, origin) }
     }
 
+    if (url.pathname === "/api/me/private-live/key" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) return jsonResponse({ error: "Private live connections are available only to current Naughty Souls members." }, 403, origin)
+      const db = requireDb(env)
+      const [key, snapshot] = await Promise.all([
+        db.prepare("SELECT last_four, include_networth, share_with_faction, consent_version, consented_at, last_validated_at, last_attempt_at, last_collected_at, last_error, created_at, updated_at FROM member_private_live_keys WHERE player_id = ? AND faction_id = ?")
+          .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID).first<Record<string, unknown>>(),
+        db.prepare("SELECT captured_at, bars_json, cooldowns_json, networth_json, source_timestamps_json FROM faction_member_private_live_snapshots WHERE player_id = ? AND faction_id = ?")
+          .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID).first<Record<string, unknown>>(),
+      ])
+      return jsonResponse({
+        connected: Boolean(key),
+        key: key ? {
+          lastFour: String(key.last_four ?? ""),
+          includeNetworth: Number(key.include_networth) === 1,
+          shareWithFaction: Number(key.share_with_faction) === 1,
+          consentVersion: String(key.consent_version ?? ""),
+          consentedAt: key.consented_at ?? null,
+          lastValidatedAt: key.last_validated_at ?? null,
+          lastAttemptAt: key.last_attempt_at ?? null,
+          lastCollectedAt: key.last_collected_at ?? null,
+          lastError: key.last_error ?? null,
+          updatedAt: key.updated_at ?? null,
+        } : null,
+        snapshot: snapshot ? {
+          capturedAt: snapshot.captured_at,
+          bars: safeStoredJson(snapshot.bars_json),
+          cooldowns: safeStoredJson(snapshot.cooldowns_json),
+          networth: safeStoredJson(snapshot.networth_json),
+          sourceTimestamps: safeStoredJson(snapshot.source_timestamps_json),
+        } : null,
+      }, 200, origin)
+    }
+
+    if (url.pathname === "/api/me/private-live/key" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) return jsonResponse({ error: "Private live connections are available only to current Naughty Souls members." }, 403, origin)
+      try {
+        const body: unknown = await request.json().catch(() => null)
+        const apiKey = isRecord(body) && typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+        const consent = isRecord(body) && body.consent === true
+        const shareWithFaction = isRecord(body) && body.shareWithFaction === true
+        const consentVersion = isRecord(body) && typeof body.consentVersion === "string" ? body.consentVersion : ""
+        const includeNetworth = isRecord(body) && body.includeNetworth === true
+        if (!apiKey || apiKey.length > 256 || /\\s/.test(apiKey)) return jsonResponse({ error: "Enter a valid Torn API key." }, 400, origin)
+        if (!consent || !shareWithFaction || consentVersion !== "faction-private-live-v1") {
+          return jsonResponse({ error: "Review and accept the private live data-sharing terms before connecting your key." }, 400, origin)
+        }
+
+        // Never trust a player ID supplied in the request. The key must belong
+        // to the already-authenticated session owner before any data is read.
+        await validatePrivateLiveKeyOwner(apiKey, session.player_id)
+        const live = await fetchPrivateLiveBase(apiKey)
+        let networth: ReturnType<typeof parsePrivateLiveNetworth> | null = null
+        let networthSourceTimestamp: number | null = null
+        if (includeNetworth) {
+          const networthPayload = await fetchPrivateLiveSelection(apiKey, "networth")
+          networth = parsePrivateLiveNetworth(networthPayload)
+          if (isRecord(networthPayload) && typeof networthPayload.timestamp === "number" && Number.isFinite(networthPayload.timestamp)) {
+            networthSourceTimestamp = networthPayload.timestamp
+          }
+        }
+
+        const encrypted = await encryptKey(env, apiKey)
+        const now = new Date().toISOString()
+        const db = requireDb(env)
+        await db.prepare("INSERT INTO member_private_live_keys (player_id, faction_id, ciphertext, iv, last_four, include_networth, share_with_faction, consent_version, consented_at, last_validated_at, last_attempt_at, last_collected_at, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, NULL, ?, ?) ON CONFLICT(player_id) DO UPDATE SET faction_id = excluded.faction_id, ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, include_networth = excluded.include_networth, share_with_faction = 1, consent_version = excluded.consent_version, consented_at = excluded.consented_at, last_validated_at = excluded.last_validated_at, last_attempt_at = excluded.last_attempt_at, last_collected_at = excluded.last_collected_at, last_error = NULL, updated_at = excluded.updated_at")
+          .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID, encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), includeNetworth ? 1 : 0, "faction-private-live-v1", now, now, now, now, now, now).run()
+        await db.prepare("INSERT INTO faction_member_private_live_snapshots (player_id, faction_id, captured_at, bars_json, cooldowns_json, networth_json, source_timestamps_json) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET faction_id = excluded.faction_id, captured_at = excluded.captured_at, bars_json = excluded.bars_json, cooldowns_json = excluded.cooldowns_json, networth_json = excluded.networth_json, source_timestamps_json = excluded.source_timestamps_json")
+          .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID, now, asJson(live.bars), asJson(live.cooldowns), networth ? asJson(networth) : null, asJson({ capturedAt: now, networthSourceTimestamp })).run()
+        return jsonResponse({
+          saved: true,
+          connected: true,
+          lastFour: apiKey.slice(-4),
+          includeNetworth,
+          shareWithFaction: true,
+          consentedAt: now,
+          capturedAt: now,
+        }, 200, origin)
+      } catch (error) {
+        return tornError(error, origin)
+      }
+    }
+
+    if (url.pathname === "/api/me/private-live/refresh" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) return jsonResponse({ error: "Private live connections are available only to current Naughty Souls members." }, 403, origin)
+      const db = requireDb(env)
+      const key = await db.prepare("SELECT ciphertext, iv, include_networth FROM member_private_live_keys WHERE player_id = ? AND faction_id = ? AND share_with_faction = 1")
+        .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID).first<{ ciphertext: string; iv: string; include_networth: number }>()
+      if (!key) return jsonResponse({ error: "Connect your own private live Torn key before refreshing." }, 404, origin)
+      const nowMs = Date.now()
+      const now = new Date(nowMs).toISOString()
+      const claimBefore = new Date(nowMs - 30 * 1000).toISOString()
+      const claim = await db.prepare("UPDATE member_private_live_keys SET last_attempt_at = ?, last_error = NULL, updated_at = ? WHERE player_id = ? AND (last_attempt_at IS NULL OR last_attempt_at <= ?)")
+        .bind(now, now, session.player_id, claimBefore).run()
+      if (Number(claim.meta?.changes ?? 0) < 1) {
+        return jsonResponse({ error: "Private live data was refreshed recently. Please wait 30 seconds before trying again." }, 429, origin, { "retry-after": "30" })
+      }
+      try {
+        const apiKey = await decryptKey(env, key.ciphertext, key.iv)
+        const live = await fetchPrivateLiveBase(apiKey)
+        let includeNetworth = Number(key.include_networth) === 1
+        let networth: ReturnType<typeof parsePrivateLiveNetworth> | null = null
+        let networthSourceTimestamp: number | null = null
+        let networthWarning: string | null = null
+        if (includeNetworth) {
+          try {
+            const networthPayload = await fetchPrivateLiveSelection(apiKey, "networth")
+            networth = parsePrivateLiveNetworth(networthPayload)
+            if (isRecord(networthPayload) && typeof networthPayload.timestamp === "number" && Number.isFinite(networthPayload.timestamp)) {
+              networthSourceTimestamp = networthPayload.timestamp
+            }
+          } catch (error) {
+            if (error instanceof TornApiClientError && error.code === 16) {
+              includeNetworth = false
+              networthWarning = "The key no longer has networth access. Bars and cooldowns remain connected; optional detailed networth was switched off."
+            } else throw error
+          }
+        }
+        const capturedAt = new Date().toISOString()
+        await db.prepare("INSERT INTO faction_member_private_live_snapshots (player_id, faction_id, captured_at, bars_json, cooldowns_json, networth_json, source_timestamps_json) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET faction_id = excluded.faction_id, captured_at = excluded.captured_at, bars_json = excluded.bars_json, cooldowns_json = excluded.cooldowns_json, networth_json = excluded.networth_json, source_timestamps_json = excluded.source_timestamps_json")
+          .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID, capturedAt, asJson(live.bars), asJson(live.cooldowns), networth ? asJson(networth) : null, asJson({ capturedAt, networthSourceTimestamp })).run()
+        await db.prepare("UPDATE member_private_live_keys SET include_networth = ?, last_validated_at = ?, last_collected_at = ?, last_error = NULL, updated_at = ? WHERE player_id = ?")
+          .bind(includeNetworth ? 1 : 0, capturedAt, capturedAt, capturedAt, session.player_id).run()
+        return jsonResponse({ refreshed: true, capturedAt, includeNetworth, warning: networthWarning }, 200, origin)
+      } catch (error) {
+        const safe = privateLiveSafeError(error)
+        if (privateLiveKeyMustBeRevoked(error)) {
+          await db.prepare("DELETE FROM faction_member_private_live_snapshots WHERE player_id = ?").bind(session.player_id).run()
+          await db.prepare("DELETE FROM member_private_live_keys WHERE player_id = ?").bind(session.player_id).run()
+          return jsonResponse({ connected: false, error: safe.message + " The saved private live key was disconnected." }, safe.status, origin)
+        }
+        await db.prepare("UPDATE member_private_live_keys SET last_error = ?, updated_at = ? WHERE player_id = ?")
+          .bind(safe.message, new Date().toISOString(), session.player_id).run().catch(() => undefined)
+        return jsonResponse({ error: safe.message }, safe.status, origin)
+      }
+    }
+
+    if (url.pathname === "/api/me/private-live/key" && request.method === "DELETE") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      await requireDb(env).prepare("DELETE FROM faction_member_private_live_snapshots WHERE player_id = ?").bind(session.player_id).run()
+      await requireDb(env).prepare("DELETE FROM member_private_live_keys WHERE player_id = ?").bind(session.player_id).run()
+      return jsonResponse({ disconnected: true, factionSnapshotRemoved: true }, 200, origin)
+    }
+
     if (url.pathname === "/api/me/halloween/key" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
