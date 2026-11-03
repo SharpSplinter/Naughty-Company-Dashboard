@@ -15,7 +15,7 @@ All workspaces use the same authenticated member session. Sign-in is based on a 
 
 ## Faction performance roadmap
 
-The full product specification, verified API contract, data model, implementation phases and acceptance tests are maintained in [docs/FACTION-PERFORMANCE-DASHBOARD-PLAN.md](docs/FACTION-PERFORMANCE-DASHBOARD-PLAN.md). The branch now implements scheduled public roster/stat/gym-energy collection, Sunday UTC rankings, immutable completed-week reports and comparisons, faction-wide totals, public live member status, a bounded activity feed, and audited administrator-only Sunday-boundary recovery. Voluntary owner-key bars/cooldowns and detailed networth, longer activity trends, and richer member drilldowns remain planned work.
+The full product specification, verified API contract, data model, implementation phases and acceptance tests are maintained in [docs/FACTION-PERFORMANCE-DASHBOARD-PLAN.md](docs/FACTION-PERFORMANCE-DASHBOARD-PLAN.md). The branch implements scheduled public roster/stat/gym-energy collection, Sunday UTC rankings, immutable completed-week reports and comparisons, faction-wide totals, public live member status, a bounded activity feed, and audited administrator-only Sunday-boundary recovery. Weekly rankings include sortable columns, status/participation/anomaly filters and current/archived member drilldowns with metric deltas and capture provenance. Voluntary owner-key bars/cooldowns and detailed networth, longer activity trends, lifetime-counter context and finer per-metric freshness remain planned work.
 
 ## Local development
 
