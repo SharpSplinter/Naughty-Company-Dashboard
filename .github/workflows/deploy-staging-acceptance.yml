@@ -149,7 +149,7 @@ jobs:
           const url = process.env.STAGING_PAGES_URL;
           const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
           const html = await response.text();
-          const assetPaths = [...html.matchAll(/(?:src|href)=["']([^"']+\\.js(?:\\?[^"']*)?)["']/g)].map(match => match[1]);
+          const assetPaths = [...html.matchAll(/<script[^>]+src=["']([^"']+)["']/g)].map(match => match[1]).filter(assetPath => assetPath.includes(".js"));
           if (!response.ok || !html.includes('id="root"') || assetPaths.length === 0) {
             throw new Error("Staging Pages did not serve the portal shell and JavaScript assets.");
           }
