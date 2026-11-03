@@ -4743,8 +4743,9 @@ export default {
     if (insightsResponse) return insightsResponse
     if (url.pathname === "/health" && request.method === "GET") {
       const checkedAt = new Date().toISOString()
-      try { await requireDb(env).prepare("SELECT 1 AS ok").first<{ ok: number }>(); return jsonResponse({ ok: true, service: "naughty-company-api", database: "ok", checkedAt }, 200, origin) }
-      catch { return jsonResponse({ ok: false, service: "naughty-company-api", database: "error", checkedAt }, 503, origin) }
+      const keyEncryption = env.KEY_ENCRYPTION_SECRET && env.KEY_ENCRYPTION_SECRET.length >= 32 ? "ok" : "missing"
+      try { await requireDb(env).prepare("SELECT 1 AS ok").first<{ ok: number }>(); return jsonResponse({ ok: true, service: "naughty-company-api", database: "ok", keyEncryption, checkedAt }, 200, origin) }
+      catch { return jsonResponse({ ok: false, service: "naughty-company-api", database: "error", keyEncryption, checkedAt }, 503, origin) }
     }
     if (url.pathname === "/api/auth/sign-in" && request.method === "POST") {
       try {
