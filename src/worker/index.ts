@@ -5258,7 +5258,10 @@ export default {
         if (!apiKey || apiKey.length > 256 || /\s/.test(apiKey)) {
           return jsonResponse({ error: submittedKey ? "Enter a valid company API key." : "Your saved portal API key is missing. Sign in again with your Torn key." }, 409, origin)
         }
-        if (isSecondary) await validatePrivateLiveKeyOwner(env, apiKey, session.player_id)
+        // A secondary company key may belong to a different Torn player than
+        // the signed-in portal account. The company profile returned by Torn
+        // is the authority for this connection; persistence remains scoped to
+        // the authenticated portal player and the returned company ID.
         const validated = await validateCompanyKey(apiKey)
         await persistCompanyConnection(env, session.player_id, apiKey, validated, false, !isSecondary)
         const root = isRecord(validated.profile) && isRecord(validated.profile.company) ? validated.profile.company : isRecord(validated.profile) && isRecord(validated.profile.profile) ? validated.profile.profile : {}
