@@ -874,7 +874,7 @@ The project is not complete until all of the following are implemented and teste
 | Revive flags | is_revivable is owner-specific; revive_setting is member preference |
 | Current revive enum | Everyone, Friends & faction, No one, Unknown |
 | Friends only | Not in current schema; do not hardcode unless future API returns it |
-| Member API credential | One owner-verified encrypted `api_keys` credential is entered at sign-in and reused by member-facing features wherever its selections permit; no separate company/private-live/Halloween keys are requested |
+| Member API credential | One owner-verified encrypted `api_keys` credential is entered at sign-in and reused for identity, private-live and Halloween features. Company features use it by default, with optional encrypted secondary keys scoped to each additional owned company |
 | Service-owned public company key | `TORN_API_KEY_CUSTOM` is used only for public global-company catalogue/ranking requests; it is not a member credential |
 | Faction collection key | `TORN_FACTION_API_KEY` remains dedicated to scheduled public faction collection and is never substituted for a member key |
 | Live bars/cooldowns | Owner-only / canonical member portal key and explicit faction-sharing consent required |
