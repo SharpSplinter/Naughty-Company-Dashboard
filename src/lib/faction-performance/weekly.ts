@@ -180,7 +180,7 @@ export function calculateWeeklyMemberResult(input: {
   }))
 
   const metrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map((name) => [name, null])) as WeeklyMetricValues
-  const anomalyMetrics: WeeklyMetricName[] = []
+  const anomalyMetrics: WeeklyRankingMetric[] = []
   if (baseline && ending) {
     for (const name of WEEKLY_METRIC_NAMES) {
       const startValue = numeric(baseline[name])
