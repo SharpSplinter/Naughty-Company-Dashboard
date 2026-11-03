@@ -590,7 +590,9 @@ try {
       assert.equal(state.snapshot, null, "a key owned by another player must never create a faction snapshot")
 
       keyOwnerId = "77"
-      // The failed owner verification consumed a request-budget slot.
+      // The failed owner verification consumed a request-budget slot. Reset
+      // only the request trace, not the D1 throttle state, for the next case.
+      calls.length = 0
       state.throttleAt = new Date(Date.now() - 31000).toISOString()
       const connected = await request("POST", {
         apiKey, consent: true, shareWithFaction: true,
