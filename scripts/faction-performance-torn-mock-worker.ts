@@ -1,6 +1,8 @@
 import liveFixtures from "./fixtures/torn-personalstats-live-sanitized.json"
 
 const INTEGRATION_API_KEY = "synthetic-faction-performance-test-key"
+const PRIVATE_LIVE_API_KEY = "synthetic-private-live-staging-owner-key"
+const PRIVATE_LIVE_OWNER_ID = 980000009
 const MEMBER_IDS = [980000001, 980000002, 980000003, 980000004, 980000005, 980000006]
 
 function json(body: unknown, status = 200): Response {
@@ -66,8 +68,31 @@ export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
     if (request.method !== "GET") return json({ error: "Method not allowed." }, 405)
-    if (request.headers.get("Authorization") !== `ApiKey ${INTEGRATION_API_KEY}`) {
+    const privateLiveRoute = url.pathname === "/v2/key/info" ||
+      url.pathname === "/v2/user/bars" ||
+      url.pathname === "/v2/user/cooldowns" ||
+      url.pathname === "/v2/user/networth"
+    const expectedKey = privateLiveRoute ? PRIVATE_LIVE_API_KEY : INTEGRATION_API_KEY
+    if (request.headers.get("Authorization") !== `ApiKey ${expectedKey}`) {
       return json({ error: { code: 2, error: "Invalid integration fixture key." } }, 401)
+    }
+
+    if (url.pathname === "/v2/key/info") {
+      return json({ info: { user: { id: PRIVATE_LIVE_OWNER_ID }, access: { type: "Custom Access" } } })
+    }
+    if (url.pathname === "/v2/user/bars") {
+      return json({ bars: {
+        energy: { current: 91, maximum: 100 },
+        nerve: { current: 42, maximum: 60 },
+        happy: { current: 4500, maximum: 5000 },
+        life: { current: 875, maximum: 1000 },
+      } })
+    }
+    if (url.pathname === "/v2/user/cooldowns") {
+      return json({ cooldowns: { drug: 120, booster: 0, medical: 60 } })
+    }
+    if (url.pathname === "/v2/user/networth") {
+      return json({ networth: { total: 987654321, wallet: 12345, bank: 123456789 }, timestamp: 1793671200 })
     }
 
     if (url.pathname === "/v2/faction/members" && url.searchParams.get("striptags") === "true") {
