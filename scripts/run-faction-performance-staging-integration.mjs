@@ -1,4 +1,4 @@
-import { createHash, randomInt, randomUUID } from "node:crypto"
+import { createHash, randomInt, randomUUID, webcrypto } from "node:crypto"
 
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID ?? "6c03b978ed9a59adc3f61c715bdad45c"
 const DATABASE_ID = "1e37f1a5-daa3-41fb-8c1b-7a9c6e3d0405"
@@ -14,6 +14,11 @@ const MEMBER_IDS = [
   "980000005",
   "980000006",
 ]
+const PRIVATE_LIVE_OWNER_ID = "980000009"
+const PRIVATE_LIVE_OTHER_ID = "980000010"
+const PRIVATE_LIVE_API_KEY = "synthetic-private-live-staging-owner-key"
+const PRIVATE_LIVE_ENCRYPTION_SECRET = "synthetic-private-live-staging-encryption-key-2026-11-03"
+const PRIVATE_LIVE_ORIGIN = "https://naughty-company-dashboard.pages.dev"
 const METRIC_COLUMNS = [
   "xantaken", "lsdtaken", "drugsused", "overdosed", "alcoholused",
   "boostersused", "energydrinkused", "refills", "statenhancersused",
@@ -778,9 +783,172 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
   }
 }
 
+async function assertPrivateLiveRoutes() {
+  const now = new Date().toISOString()
+  const expiresAt = Math.floor(Date.now() / 1000) + 3600
+  const tokenFor = (playerId) => `synthetic-private-live-session-${playerId}-${randomUUID()}`
+  const ownerToken = tokenFor(PRIVATE_LIVE_OWNER_ID)
+  const otherToken = tokenFor(PRIVATE_LIVE_OTHER_ID)
+  const ownerTokenHash = createHash("sha256").update(ownerToken).digest("hex")
+  const otherTokenHash = createHash("sha256").update(otherToken).digest("hex")
+  const testIds = [PRIVATE_LIVE_OWNER_ID, PRIVATE_LIVE_OTHER_ID]
+
+  const call = async (playerToken, pathname, method, body) => {
+    const response = await fetch(`${WORKER_URL}${pathname}`, {
+      method,
+      headers: {
+        Origin: PRIVATE_LIVE_ORIGIN,
+        Authorization: `Bearer ${playerToken}`,
+        ...(body ? { "content-type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(20000),
+    })
+    const payload = await response.json().catch(() => null)
+    return { response, payload }
+  }
+
+  try {
+    for (const playerId of testIds) {
+      await d1Query(
+        "INSERT INTO players (player_id, player_name, created_at, updated_at, faction_id, faction_verified_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, faction_id = excluded.faction_id, faction_verified_at = excluded.faction_verified_at, updated_at = excluded.updated_at",
+        [playerId, `Private Live Integration ${playerId}`, now, now, FACTION_ID, now],
+      )
+    }
+    await d1Query(
+      "INSERT INTO sessions (token_hash, player_id, expires_at, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(token_hash) DO UPDATE SET expires_at = excluded.expires_at",
+      [ownerTokenHash, PRIVATE_LIVE_OWNER_ID, expiresAt, now],
+    )
+    await d1Query(
+      "INSERT INTO sessions (token_hash, player_id, expires_at, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(token_hash) DO UPDATE SET expires_at = excluded.expires_at",
+      [otherTokenHash, PRIVATE_LIVE_OTHER_ID, expiresAt, now],
+    )
+
+    const consentRequired = await call(ownerToken, "/api/me/private-live/key", "POST", {
+      apiKey: PRIVATE_LIVE_API_KEY, shareWithFaction: true, consentVersion: "faction-private-live-v1",
+    })
+    if (consentRequired.response.status !== 400) {
+      throw new Error("Private live route accepted a connection without explicit data-sharing consent.")
+    }
+    console.log("PASS staging private-live endpoint rejects missing consent before Torn selection calls.")
+
+    const wrongOwner = await call(otherToken, "/api/me/private-live/key", "POST", {
+      apiKey: PRIVATE_LIVE_API_KEY, consent: true, shareWithFaction: true,
+      consentVersion: "faction-private-live-v1", includeNetworth: false,
+    })
+    if (wrongOwner.response.status !== 403) {
+      throw new Error("Private live staging route accepted a Torn key belonging to a different member.")
+    }
+    const wrongOwnerRows = await d1Query(
+      "SELECT player_id FROM member_private_live_keys WHERE player_id = ? UNION ALL SELECT player_id FROM faction_member_private_live_snapshots WHERE player_id = ?",
+      [PRIVATE_LIVE_OTHER_ID, PRIVATE_LIVE_OTHER_ID],
+    )
+    if (wrongOwnerRows.length) throw new Error("A wrong-owner staging key created private credential or snapshot rows.")
+    console.log("PASS staging private-live endpoint rejects an owner-mismatched Torn key.")
+
+    const connected = await call(ownerToken, "/api/me/private-live/key", "POST", {
+      apiKey: PRIVATE_LIVE_API_KEY, consent: true, shareWithFaction: true,
+      consentVersion: "faction-private-live-v1", includeNetworth: false,
+    })
+    if (connected.response.status !== 200 || connected.payload?.connected !== true || connected.payload?.includeNetworth !== false) {
+      throw new Error("Private live staging connection did not persist the owner bars/cooldowns selection.")
+    }
+    const keyRows = await d1Query(
+      "SELECT ciphertext, iv, last_four, include_networth, consent_version FROM member_private_live_keys WHERE player_id = ?",
+      [PRIVATE_LIVE_OWNER_ID],
+    )
+    const keyRow = keyRows[0]
+    if (!keyRow || keyRow.last_four !== PRIVATE_LIVE_API_KEY.slice(-4) || Number(keyRow.include_networth) !== 0 ||
+        keyRow.consent_version !== "faction-private-live-v1" || keyRow.ciphertext === PRIVATE_LIVE_API_KEY) {
+      throw new Error("Private live staging did not store a separate encrypted owner credential.")
+    }
+    const digest = await webcrypto.subtle.digest("SHA-256", new TextEncoder().encode(PRIVATE_LIVE_ENCRYPTION_SECRET))
+    const aesKey = await webcrypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, ["decrypt"])
+    const plaintext = await webcrypto.subtle.decrypt(
+      { name: "AES-GCM", iv: Uint8Array.from(Buffer.from(String(keyRow.iv), "base64")) },
+      aesKey,
+      Uint8Array.from(Buffer.from(String(keyRow.ciphertext), "base64")),
+    )
+    if (new TextDecoder().decode(plaintext) !== PRIVATE_LIVE_API_KEY) {
+      throw new Error("Private live staging credential could not be decrypted using the integration-only Worker secret.")
+    }
+
+    const snapshots = await d1Query(
+      "SELECT bars_json, cooldowns_json, networth_json FROM faction_member_private_live_snapshots WHERE player_id = ?",
+      [PRIVATE_LIVE_OWNER_ID],
+    )
+    const snapshot = snapshots[0]
+    if (!snapshot || JSON.parse(snapshot.bars_json).energy.current !== 91 ||
+        JSON.parse(snapshot.cooldowns_json).drug !== 120 || snapshot.networth_json !== null) {
+      throw new Error("Staging private live snapshot did not store only allowed bars/cooldowns or requested networth unexpectedly.")
+    }
+
+    const status = await call(ownerToken, "/api/me/private-live/key", "GET")
+    if (status.response.status !== 200 || status.payload?.connected !== true ||
+        status.payload?.snapshot?.bars?.energy?.current !== 91 || status.payload?.snapshot?.networth !== null) {
+      throw new Error("Authenticated staging private live status did not return the member's own saved snapshot.")
+    }
+
+    const immediateRefresh = await call(ownerToken, "/api/me/private-live/refresh", "POST", {})
+    if (immediateRefresh.response.status !== 429) {
+      throw new Error("Staging private-live connect and refresh did not share the 30-second request budget.")
+    }
+    await d1Query(
+      "UPDATE member_private_live_api_throttles SET last_attempt_at = ? WHERE player_id = ?",
+      [new Date(Date.now() - 31000).toISOString(), PRIVATE_LIVE_OWNER_ID],
+    )
+    const refreshed = await call(ownerToken, "/api/me/private-live/refresh", "POST", {})
+    if (refreshed.response.status !== 200 || refreshed.payload?.refreshed !== true) {
+      throw new Error("Staging private-live owner refresh did not complete through the Torn Service Binding.")
+    }
+    console.log("PASS staging private-live connection, encrypted credential persistence, status read, refresh, and shared request throttling.")
+
+    await d1Query(
+      "UPDATE member_private_live_api_throttles SET last_attempt_at = ? WHERE player_id = ?",
+      [new Date(Date.now() - 31000).toISOString(), PRIVATE_LIVE_OWNER_ID],
+    )
+    const networthOptIn = await call(ownerToken, "/api/me/private-live/key", "POST", {
+      apiKey: PRIVATE_LIVE_API_KEY, consent: true, shareWithFaction: true,
+      consentVersion: "faction-private-live-v1", includeNetworth: true,
+    })
+    if (networthOptIn.response.status !== 200 || networthOptIn.payload?.includeNetworth !== true) {
+      throw new Error("Staging private live optional networth consent did not enable the owner selection.")
+    }
+    const networthRows = await d1Query(
+      "SELECT networth_json, source_timestamps_json FROM faction_member_private_live_snapshots WHERE player_id = ?",
+      [PRIVATE_LIVE_OWNER_ID],
+    )
+    if (!networthRows[0]?.networth_json || JSON.parse(networthRows[0].networth_json).total !== 987654321 ||
+        JSON.parse(networthRows[0].source_timestamps_json).networthSourceTimestamp !== 1793671200) {
+      throw new Error("Staging detailed networth was not stored with its Torn source timestamp after explicit opt-in.")
+    }
+    console.log("PASS staging private-live detailed networth is fetched and shared only after explicit opt-in.")
+
+    const disconnected = await call(ownerToken, "/api/me/private-live/key", "DELETE")
+    if (disconnected.response.status !== 200) throw new Error("Staging private-live disconnect endpoint failed.")
+    const remaining = await d1Query(
+      "SELECT (SELECT COUNT(*) FROM member_private_live_keys WHERE player_id = ?) AS keys, (SELECT COUNT(*) FROM faction_member_private_live_snapshots WHERE player_id = ?) AS snapshots",
+      [PRIVATE_LIVE_OWNER_ID, PRIVATE_LIVE_OWNER_ID],
+    )
+    if (Number(remaining[0]?.keys) !== 0 || Number(remaining[0]?.snapshots) !== 0) {
+      throw new Error("Staging private-live disconnect did not delete the encrypted key and current faction snapshot.")
+    }
+    console.log("PASS staging private-live disconnect removed the encrypted key and current faction snapshot.")
+  } finally {
+    for (const playerId of testIds) {
+      await d1Query("DELETE FROM faction_member_private_live_snapshots WHERE player_id = ?", [playerId]).catch(() => undefined)
+      await d1Query("DELETE FROM member_private_live_keys WHERE player_id = ?", [playerId]).catch(() => undefined)
+      await d1Query("DELETE FROM member_private_live_api_throttles WHERE player_id = ?", [playerId]).catch(() => undefined)
+      await d1Query("DELETE FROM sessions WHERE player_id = ?", [playerId]).catch(() => undefined)
+      await d1Query("DELETE FROM players WHERE player_id = ?", [playerId]).catch(() => undefined)
+    }
+  }
+}
+
 async function main() {
   await assertMigrationReady()
   const queueId = await findQueue()
+  await assertPrivateLiveRoutes()
 
   const factionStatsRunId = await createFactionStatsRun(queueId)
   const factionStatsRun = await waitForFactionStatsRun(factionStatsRunId)
