@@ -4062,7 +4062,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
     const runsById = new Map((runRows.results ?? []).map((row) => [String(row.runId), row]))
     const nowMs = Date.now()
     const now = new Date(nowMs).toISOString()
-    const diagnosticRun = (runId: unknown, expectedKind: "personalstats" | "gym_energy") => {
+    const diagnosticRun = (runId: unknown, expectedKind: "personalstats" | "gym_energy", cohortMemberCount = 0) => {
       const row = typeof runId === "string" ? runsById.get(runId) : undefined
       if (!row || row.collectionKind !== expectedKind) return null
       const status = String(row.status ?? "unknown")
@@ -4076,7 +4076,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
       let targetMemberCount = 0
       try {
         const targets = row.targetUserIdsJson ? JSON.parse(String(row.targetUserIdsJson)) as unknown : []
-        targetMemberCount = Array.isArray(targets) ? targets.length : 0
+        targetMemberCount = Array.isArray(targets) && targets.length ? targets.length : cohortMemberCount
       } catch { targetMemberCount = 0 }
       const statsCollection = expectedKind === "personalstats"
       const capturedMemberCount = Number(statsCollection ? row.capturedStatMembers ?? 0 : row.capturedGymMembers ?? 0)
@@ -4117,7 +4117,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
         return Number.isFinite(joinedAt) && joinedAt <= boundaryMs && leftAt > boundaryMs
       }).length
       const stats = registry ? diagnosticRun(registry.statsRunId, "personalstats") : null
-      const gymEnergy = registry ? diagnosticRun(registry.gymEnergyRunId, "gym_energy") : null
+      const gymEnergy = registry ? diagnosticRun(registry.gymEnergyRunId, "gym_energy", knownMemberCount) : null
       const endingWeekStartAt = new Date(boundaryMs - WEEK_MS).toISOString()
       const endingWeekReport = reportByWeek.get(endingWeekStartAt) ?? null
       const startingWeekReport = reportByWeek.get(boundaryAt) ?? null
