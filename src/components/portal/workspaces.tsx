@@ -832,6 +832,12 @@ type FactionLiveMember = {
   isOnWall: boolean | null
   isInOc: boolean | null
   hasEarlyDischarge: boolean | null
+  privateLive: {
+    capturedAt: string
+    bars: Record<"energy" | "nerve" | "happy" | "life", { current: number | null; maximum: number | null }>
+    cooldowns: { drug: number | null; booster: number | null; medical: number | null }
+    networth: Record<string, number> | null
+  } | null
 }
 
 type FactionLivePayload = {
@@ -842,6 +848,25 @@ type FactionLivePayload = {
 }
 
 type FactionLiveFilter = "all" | "online" | "idle" | "offline" | "inactive24" | "inactive72" | "hospital" | "wall" | "oc" | "revivable" | "reviveEveryone" | "reviveFriendsFaction" | "reviveNoOne" | "reviveUnknown" | "unknown"
+
+function formatPrivateLiveBar(value: { current: number | null; maximum: number | null } | undefined): string {
+  if (!value || value.current === null && value.maximum === null) return "Unknown"
+  return (value.current === null ? "—" : Math.round(value.current).toLocaleString()) +
+    " / " + (value.maximum === null ? "—" : Math.round(value.maximum).toLocaleString())
+}
+
+function formatPrivateLiveCooldown(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return "Unknown"
+  if (seconds <= 0) return "Ready"
+  const total = Math.ceil(seconds)
+  const days = Math.floor(total / 86400)
+  const hours = Math.floor((total % 86400) / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  if (days) return days + "d " + hours + "h"
+  if (hours) return hours + "h " + minutes + "m"
+  if (minutes) return minutes + "m"
+  return total + "s"
+}
 
 function liveLastActionMs(member: FactionLiveMember): number | null {
   return typeof member.lastActionTimestamp === "number" && Number.isFinite(member.lastActionTimestamp)
@@ -1017,7 +1042,7 @@ function FactionLiveStatus({ playerName, onNavigate, apiBase, sessionToken }: Fa
         </div>
         {busy && !payload ? <p className="historical-key-muted">Loading the latest roster snapshot…</p> : filtered.length ? (
           <div className="historical-leaderboard faction-live-table-wrap">
-            <table><thead><tr><th>MEMBER</th><th>ACTIVITY</th><th>LAST ACTION</th><th>INACTIVITY</th><th>STATUS / TIMER</th><th>REVIVE SETTING</th><th>KEY REVIVABLE</th><th>FLAGS</th></tr></thead><tbody>
+            <table><thead><tr><th>MEMBER</th><th>ACTIVITY</th><th>LAST ACTION</th><th>INACTIVITY</th><th>STATUS / TIMER</th><th>REVIVE SETTING</th><th>KEY REVIVABLE</th><th>FLAGS</th><th>VOLUNTARY LIVE DATA</th></tr></thead><tbody>
               {filtered.map(member => {
                 const actionMs = liveLastActionMs(member)
                 const hospitalized = liveIsHospitalized(member)
@@ -1032,6 +1057,21 @@ function FactionLiveStatus({ playerName, onNavigate, apiBase, sessionToken }: Fa
                   <td>{member.reviveSetting || "Unknown"}</td>
                   <td><span className={"faction-live-pill " + (member.isRevivable === true ? "yes" : member.isRevivable === false ? "no" : "unknown")}>{member.isRevivable === true ? "Yes" : member.isRevivable === false ? "No" : "Unknown"}</span></td>
                   <td className="faction-live-flags">{member.isOnWall === true && <span>Wall</span>}{member.isInOc === true && <span>OC</span>}{member.hasEarlyDischarge === true && <span>Early discharge</span>}{member.isOnWall !== true && member.isInOc !== true && member.hasEarlyDischarge !== true ? "—" : ""}</td>
+                  <td className="faction-live-private-data">{member.privateLive ? <>
+                    <small>Updated {liveDurationLabel(Date.parse(member.privateLive.capturedAt), nowMs)} ago</small>
+                    <div className="faction-live-private-bars">
+                      <span>Energy <strong>{formatPrivateLiveBar(member.privateLive.bars?.energy)}</strong></span>
+                      <span>Nerve <strong>{formatPrivateLiveBar(member.privateLive.bars?.nerve)}</strong></span>
+                      <span>Happy <strong>{formatPrivateLiveBar(member.privateLive.bars?.happy)}</strong></span>
+                      <span>Life <strong>{formatPrivateLiveBar(member.privateLive.bars?.life)}</strong></span>
+                    </div>
+                    <div className="faction-live-private-cooldowns">
+                      <span>Drug <strong>{formatPrivateLiveCooldown(member.privateLive.cooldowns?.drug)}</strong></span>
+                      <span>Booster <strong>{formatPrivateLiveCooldown(member.privateLive.cooldowns?.booster)}</strong></span>
+                      <span>Medical <strong>{formatPrivateLiveCooldown(member.privateLive.cooldowns?.medical)}</strong></span>
+                    </div>
+                    {member.privateLive.networth && <small>Detailed networth: <strong>{member.privateLive.networth.total === undefined ? "—" : "$" + Math.round(member.privateLive.networth.total).toLocaleString()}</strong></small>}
+                  </> : <span className="faction-live-private-unavailable">Not connected or not shared</span>}</td>
                 </tr>
               })}
             </tbody></table>
