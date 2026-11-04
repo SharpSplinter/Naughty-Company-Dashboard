@@ -1183,6 +1183,16 @@ try {
     const liveStart = workerSource.indexOf("async function runHalloweenLiveSnapshot")
     const liveEnd = workerSource.indexOf("async function runHalloweenLiveSnapshotJob", liveStart)
     assert.ok(workerSource.slice(liveStart, liveEnd).includes("getHalloweenMemberEventWindow(env, playerId, eventYear)"))
+    const liveRouteStart = workerSource.indexOf('if (url.pathname === "/api/me/halloween/live" && request.method === "GET")')
+    const liveRouteEnd = workerSource.indexOf('if (url.pathname === "/api/me/halloween/live-snapshot"', liveRouteStart)
+    assert.ok(liveRouteStart >= 0 && liveRouteEnd > liveRouteStart, "the live Halloween board API must be present")
+    const liveRoute = workerSource.slice(liveRouteStart, liveRouteEnd)
+    assert.match(liveRoute, /row\.snapshotKind === "opening"[\s\S]*memberStartMs - 5 \* 60 \* 1000/,
+      "opening snapshots immediately around the personal start boundary must remain visible")
+    assert.match(liveRoute, /row\.snapshotKind === "closing"[\s\S]*snapshotMs >= memberEndMs/,
+      "closing snapshots captured after the personal end boundary must remain visible")
+    assert.match(liveRoute, /snapshotMs >= memberStartMs && snapshotMs < memberEndMs/,
+      "periodic and manual snapshots must remain inside the personal event window")
     const schedulerStart = workerSource.indexOf("async function enqueueScheduledHalloweenSnapshots")
     const schedulerEnd = workerSource.indexOf("async function handleGlobalRankingQueueBatch", schedulerStart)
     const schedulerSource = workerSource.slice(schedulerStart, schedulerEnd)
