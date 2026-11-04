@@ -1,22 +1,24 @@
 import assert from "node:assert/strict"
-import { execFileSync } from "node:child_process"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { join, resolve } from "node:path"
 import { createRequire } from "node:module"
 import ts from "typescript"
-import { validateAdminPassword } from "../src/lib/admin-password-policy.js"
 
 const root = process.cwd()
 const temp = mkdtempSync(join(tmpdir(), "naughty-company-tests-"))
 writeFileSync(join(temp, "package.json"), JSON.stringify({ type: "commonjs" }))
 const sourceFiles = [
-  "src/lib/admin-password-policy.js",
   "src/lib/automation/rules.ts",
   "src/lib/automation/discord-poll-monitoring.ts",
   "src/lib/company/engine.ts",
   "src/lib/company/types.ts",
   "src/lib/torn/client.ts",
+  "src/lib/torn/personalstats.ts",
+  "src/lib/faction-performance/collector.ts",
+  "src/lib/faction-performance/weekly.ts",
+  "src/lib/faction-performance/leaderboard.ts",
+  "src/lib/faction-performance/private-live.ts",
   "src/lib/torn/types.ts",
   "src/worker/index.ts",
   "src/worker/snapshot-provenance.ts",
@@ -51,6 +53,33 @@ try {
   const require = createRequire(import.meta.url)
   const { runEngine } = require(join(temp, "lib/company/engine.js"))
   const { TornApiClient, TornApiClientError } = require(join(temp, "lib/torn/client.js"))
+  const {
+    parseFactionRosterResponse,
+    parseFactionGymEnergyResponse,
+    parseFactionPublicStatsResponse,
+    parseFactionStatsResponse,
+    countCompletePublicMetrics,
+  } = require(join(temp, "lib/faction-performance/collector.js"))
+  const {
+    WEEKLY_METRIC_NAMES,
+    WEEK_MS,
+    utcSundayWindow,
+    calculateWeeklyMemberResult,
+    rankWeeklyMembers,
+  } = require(join(temp, "lib/faction-performance/weekly.js"))
+  const { filterAndSortWeeklyMembers } = require(join(temp, "lib/faction-performance/leaderboard.js"))
+  const { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } = require(join(temp, "lib/faction-performance/private-live.js"))
+  const {
+    buildPersonalStatsPath,
+    categoriesForMissingPersonalStats,
+    decodePersonalStatsResponse,
+  } = require(join(temp, "lib/torn/personalstats.js"))
+  const personalStatsFixtures = JSON.parse(readFileSync(resolve(root, "scripts/fixtures/torn-personalstats.json"), "utf8"))
+  const livePersonalStatsFixtures = JSON.parse(readFileSync(resolve(root, "scripts/fixtures/torn-personalstats-live-sanitized.json"), "utf8"))
+  const PERSONAL_STATS_HISTORIC_NAMES_FOR_TEST = [
+    "xantaken", "lsdtaken", "drugsused", "overdosed", "alcoholused", "boostersused",
+    "energydrinkused", "refills", "statenhancersused", "networth", "cantaken",
+  ]
   const worker = require(join(temp, "worker/index.js")).default
   const { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } = require(join(temp, "worker/snapshot-provenance.js"))
   const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
@@ -65,29 +94,602 @@ try {
     console.log("PASS", name)
   }
 
-  await test("administrator password hash generator passes Node syntax validation without running", () => {
-    execFileSync(process.execPath, ["--check", join(root, "scripts/generate-admin-password-hash.mjs")], { stdio: "pipe" })
+  await test("faction-wide stats parser validates the enum and reports missing/future fields explicitly", () => {
+    const parsed = parseFactionStatsResponse({ stats: [
+      { name: "medicalitemsused", value: 1167570 },
+      { name: "organisedcrimemoney", value: 369055040000 },
+      { name: "membersamount", value: 6 },
+      { name: "futurestat", value: 11 },
+    ] })
+    assert.equal(parsed.stats.find(stat => stat.name === "organisedcrimemoney")?.value, 369055040000)
+    assert.ok(parsed.missingStatNames.includes("gymdexterity"))
+    assert.deepEqual(parsed.unexpectedStatNames, ["futurestat"])
+    assert.throws(() => parseFactionStatsResponse({ stats: [{ name: "medicalitemsused", value: "11" }] }))
+    assert.throws(() => parseFactionStatsResponse({ stats: [{ name: "medicalitemsused", value: 1 }, { name: "medicalitemsused", value: 2 }] }))
   })
 
-  await test("administrator password policy requires 8 characters, all character classes, and rejects alphabetic/numeric sequences", () => {
-    for (const password of ["Tr7!xP9@", "Ax12!Qz9", "Mix8#Tree2"]) {
-      assert.deepEqual(validateAdminPassword(password), { valid: true }, `${password} should meet the policy`)
-    }
-    for (const [password, reason] of [
-      ["Ab1!", /at least 8 characters/i],
-      ["123456!@", /at least one letter/i],
-      ["Abcdef12", /special character/i],
-      ["Abc!7xQ9", /consecutive letters or digits/i],
-      ["Cba!7xQ9", /consecutive letters or digits/i],
-      ["Ax123!Qz", /consecutive letters or digits/i],
-      ["Ax321!Qz", /consecutive letters or digits/i],
-    ]) {
-      const result = validateAdminPassword(password)
-      assert.equal(result.valid, false, `${password} should be rejected`)
-      if (!result.valid) assert.match(result.reason, reason)
-    }
+  await test("Torn faction-wide totals use the authenticated /faction/stats v2 endpoint", async () => {
+    let requestedUrl = ""
+    const client = new TornApiClient({
+      apiKey: "synthetic-faction-stats-key",
+      fetcher: async (input, init) => {
+        requestedUrl = String(input)
+        assert.equal(new Headers(init?.headers).get("Authorization"), "ApiKey synthetic-faction-stats-key")
+        return new Response(JSON.stringify({ stats: [{ name: "attackswon", value: 19 }] }), {
+          status: 200, headers: { "content-type": "application/json" },
+        })
+      },
+    })
+    const payload = await client.getFactionStats()
+    assert.equal(requestedUrl, "https://api.torn.com/v2/faction/stats")
+    assert.equal(payload.stats[0].value, 19)
   })
 
+  await test("weekly windows start Sunday 00:00 UTC and remain exactly 168 hours across DST changes", () => {
+    const regular = utcSundayWindow(Date.parse("2026-11-02T18:00:00.000Z"))
+    assert.equal(regular.startAt, "2026-11-01T00:00:00.000Z")
+    assert.equal(regular.endAt, "2026-11-08T00:00:00.000Z")
+    assert.equal(Date.parse(regular.endAt) - Date.parse(regular.startAt), WEEK_MS)
+    const dstSunday = utcSundayWindow(Date.parse("2026-03-08T07:30:00.000Z"))
+    assert.equal(dstSunday.startAt, "2026-03-08T00:00:00.000Z")
+    assert.equal(Date.parse(dstSunday.endAt) - Date.parse(dstSunday.startAt), 168 * 60 * 60 * 1000)
+  })
+
+  await test("weekly deltas use Sunday baseline snapshots, keep Xanax and LSD separate, and allow negative networth change", () => {
+    const baselineValues = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const endingValues = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 105]))
+    baselineValues.xantaken = 1240
+    endingValues.xantaken = 1247
+    baselineValues.lsdtaken = 380
+    endingValues.lsdtaken = 390
+    baselineValues.networth = 10000
+    endingValues.networth = 9950
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "101", name: "Weekly Member", position: "Member", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { snapshotId: 1, runId: "sunday-baseline", userId: "101", capturedAt: "2026-11-01T00:03:00.000Z", ...baselineValues },
+        { snapshotId: 2, runId: "later-sample", userId: "101", capturedAt: "2026-11-01T00:20:00.000Z", ...endingValues },
+      ],
+      gymSnapshots: [
+        { snapshotId: 1, runId: "sunday-gym-baseline", userId: "101", capturedAt: "2026-11-01T00:04:00.000Z", gymEnergyTotal: 100 },
+        { snapshotId: 2, runId: "later-gym-sample", userId: "101", capturedAt: "2026-11-01T00:21:00.000Z", gymEnergyTotal: 125 },
+      ],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T12:00:00.000Z",
+      statsBoundaryRunId: "sunday-baseline",
+      gymBoundaryRunId: "sunday-gym-baseline",
+    })
+    assert.equal(result.metrics.xantaken, 7)
+    assert.equal(result.metrics.lsdtaken, 10)
+    assert.notEqual(result.metrics.xantaken, result.metrics.lsdtaken)
+    assert.equal(result.metrics.networth, -50)
+    assert.equal(result.startingNetworth, 10000)
+    assert.equal(result.endingNetworth, 9950)
+    assert.equal(result.gymEnergy, 25)
+    assert.equal(result.status, "complete")
+    assert.equal(result.participation, "full_week")
+  })
+
+  await test("decreased lifetime counters are anomalies and are never ranked as negative usage", () => {
+    const before = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 50]))
+    const after = { ...before, xantaken: 49 }
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "102", name: "Reset Counter", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { runId: "baseline", userId: "102", capturedAt: "2026-11-01T00:01:00.000Z", ...before },
+        { runId: "ending", userId: "102", capturedAt: "2026-11-01T00:16:00.000Z", ...after },
+      ],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T00:00:00.000Z",
+      statsBoundaryRunId: "baseline",
+    })
+    assert.equal(result.metrics.xantaken, null)
+    assert.ok(result.anomalyMetrics.includes("xantaken"))
+    assert.equal(result.status, "anomaly")
+  })
+
+  await test("midweek joiners use their first observed sample as a partial baseline", () => {
+    const before = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 10]))
+    const after = { ...before, xantaken: 15 }
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "103", name: "New Member", estimatedJoinedAt: "2026-11-02T09:00:00.000Z" },
+      statSnapshots: [
+        { runId: "join-baseline", userId: "103", capturedAt: "2026-11-02T09:15:00.000Z", ...before },
+        { runId: "later-sample", userId: "103", capturedAt: "2026-11-02T09:30:00.000Z", ...after },
+      ],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T12:00:00.000Z",
+    })
+    assert.equal(result.participation, "partial_week")
+    assert.equal(result.metrics.xantaken, 5)
+  })
+
+  await test("missing Sunday baseline or ending sample remains unknown rather than zero", () => {
+    const row = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const missingBaseline = calculateWeeklyMemberResult({
+      member: { userId: "104", name: "No Baseline", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [{ runId: "only-later", userId: "104", capturedAt: "2026-11-01T00:20:00.000Z", ...row }],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T00:00:00.000Z",
+      statsBoundaryRunId: "missing-boundary-run",
+    })
+    assert.equal(missingBaseline.status, "waiting_for_baseline")
+    assert.equal(missingBaseline.metrics.xantaken, null)
+
+    const missingEnding = calculateWeeklyMemberResult({
+      member: { userId: "105", name: "No Ending", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [{ runId: "baseline", userId: "105", capturedAt: "2026-11-01T00:20:00.000Z", ...row }],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T00:00:00.000Z",
+      statsBoundaryRunId: "baseline",
+    })
+    assert.equal(missingEnding.status, "waiting_for_update")
+    assert.equal(missingEnding.metrics.xantaken, null)
+  })
+
+  await test("midweek leavers remain partial-week participants and use only pre-departure samples", () => {
+    const before = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const after = { ...before, xantaken: 110 }
+    const afterDeparture = { ...before, xantaken: 900 }
+    const result = calculateWeeklyMemberResult({
+      member: {
+        userId: "106",
+        name: "Departed Midweek",
+        estimatedJoinedAt: "2026-01-01T00:00:00.000Z",
+        leftObservedAt: "2026-11-03T13:00:00.000Z",
+      },
+      statSnapshots: [
+        { runId: "baseline", userId: "106", capturedAt: "2026-11-01T00:06:00.000Z", ...before },
+        { runId: "before-leave", userId: "106", capturedAt: "2026-11-03T12:00:00.000Z", ...after },
+        { runId: "after-leave", userId: "106", capturedAt: "2026-11-04T12:00:00.000Z", ...afterDeparture },
+      ],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-05T00:00:00.000Z",
+      statsBoundaryRunId: "baseline",
+      requireEndingBoundary: true,
+    })
+    assert.equal(result.participation, "partial_week")
+    assert.equal(result.status, "complete", "a midweek leaver is complete when the last in-faction sample is complete")
+    assert.equal(result.metrics.xantaken, 10, "samples collected after observed departure must not affect the weekly result")
+    assert.equal(result.endingCapturedAt, "2026-11-03T12:00:00.000Z")
+  })
+
+  await test("failed samples do not replace a valid Sunday baseline or the latest successful ending sample", () => {
+    const baseline = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const ending = { ...baseline, xantaken: 107 }
+    const failed = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, null]))
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "108", name: "Failed Sample", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { runId: "baseline", userId: "108", capturedAt: "2026-11-01T00:02:00.000Z", collectionStatus: "complete", ...baseline },
+        { runId: "good-ending", userId: "108", capturedAt: "2026-11-01T00:17:00.000Z", collectionStatus: "complete", ...ending },
+        { runId: "failed-later", userId: "108", capturedAt: "2026-11-01T00:32:00.000Z", collectionStatus: "failed", ...failed },
+      ],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T00:00:00.000Z",
+      statsBoundaryRunId: "baseline",
+    })
+    assert.equal(result.metrics.xantaken, 7)
+    assert.equal(result.endingCapturedAt, "2026-11-01T00:17:00.000Z")
+  })
+
+  await test("closed weeks use next-Sunday boundary runs even when the actual capture is late", () => {
+    const values = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const later = { ...values, xantaken: 112, lsdtaken: 119, networth: 50 }
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "110", name: "Boundary Capture", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { runId: "stats-start", userId: "110", capturedAt: "2026-11-01T00:02:00.000Z", ...values },
+        { runId: "stats-end", userId: "110", capturedAt: "2026-11-08T00:07:00.000Z", ...later },
+      ],
+      gymSnapshots: [
+        { runId: "gym-start", userId: "110", capturedAt: "2026-11-01T00:03:00.000Z", gymEnergyTotal: 500 },
+        { runId: "gym-end", userId: "110", capturedAt: "2026-11-08T00:08:00.000Z", gymEnergyTotal: 540 },
+      ],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-08T00:15:00.000Z",
+      statsBoundaryRunId: "stats-start",
+      gymBoundaryRunId: "gym-start",
+      statsEndingBoundaryRunId: "stats-end",
+      gymEndingBoundaryRunId: "gym-end",
+      requireEndingBoundary: true,
+    })
+    assert.equal(result.metrics.xantaken, 12)
+    assert.equal(result.metrics.lsdtaken, 19)
+    assert.equal(result.metrics.networth, -50)
+    assert.equal(result.gymEnergy, 40)
+    assert.equal(result.endingCapturedAt, "2026-11-08T00:07:00.000Z")
+    assert.equal(result.endingIsBoundary, true)
+    assert.equal(result.gymEnergyEndingIsBoundary, true)
+    assert.equal(result.status, "complete")
+  })
+
+  await test("closed weeks without an ending boundary are marked partial instead of silently finalized as complete", () => {
+    const values = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const later = { ...values, xantaken: 105 }
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "111", name: "Missing Boundary", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { runId: "stats-start", userId: "111", capturedAt: "2026-11-01T00:02:00.000Z", ...values },
+        { runId: "stats-middle", userId: "111", capturedAt: "2026-11-05T12:00:00.000Z", ...later },
+      ],
+      gymSnapshots: [
+        { runId: "gym-start", userId: "111", capturedAt: "2026-11-01T00:03:00.000Z", gymEnergyTotal: 500 },
+        { runId: "gym-middle", userId: "111", capturedAt: "2026-11-05T12:01:00.000Z", gymEnergyTotal: 520 },
+      ],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-09T00:00:00.000Z",
+      statsBoundaryRunId: "stats-start",
+      gymBoundaryRunId: "gym-start",
+      statsEndingBoundaryRunId: "missing-stats-end",
+      gymEndingBoundaryRunId: "missing-gym-end",
+      requireEndingBoundary: true,
+    })
+    assert.equal(result.metrics.xantaken, 5)
+    assert.equal(result.endingIsBoundary, false)
+    assert.equal(result.status, "partial")
+  })
+
+  await test("the following Sunday 00:00 UTC is exclusive for the ending sample", () => {
+    const before = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const atNextBoundary = { ...before, xantaken: 107 }
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "107", name: "Boundary Member", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { runId: "baseline", userId: "107", capturedAt: "2026-11-01T00:01:00.000Z", ...before },
+        { runId: "next-sunday", userId: "107", capturedAt: "2026-11-08T00:00:00.000Z", ...atNextBoundary },
+      ],
+      gymSnapshots: [],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-08T00:00:00.000Z",
+      statsBoundaryRunId: "baseline",
+    })
+    assert.equal(result.status, "waiting_for_update")
+    assert.equal(result.metrics.xantaken, null)
+  })
+
+  await test("decreasing gym-energy contributor totals are marked anomalous and remain unranked", () => {
+    const baseline = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const ending = { ...baseline, xantaken: 105 }
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "109", name: "Gym Counter Reset", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { runId: "stats-baseline", userId: "109", capturedAt: "2026-11-01T00:01:00.000Z", ...baseline },
+        { runId: "stats-ending", userId: "109", capturedAt: "2026-11-01T00:16:00.000Z", ...ending },
+      ],
+      gymSnapshots: [
+        { runId: "gym-baseline", userId: "109", capturedAt: "2026-11-01T00:02:00.000Z", gymEnergyTotal: 1000 },
+        { runId: "gym-ending", userId: "109", capturedAt: "2026-11-01T00:17:00.000Z", gymEnergyTotal: 900 },
+      ],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T00:00:00.000Z",
+      statsBoundaryRunId: "stats-baseline",
+      gymBoundaryRunId: "gym-baseline",
+    })
+    assert.equal(result.gymEnergy, null)
+    assert.ok(result.anomalyMetrics.includes("gymEnergy"))
+    assert.equal(result.status, "anomaly")
+    const ranked = rankWeeklyMembers([{ ...result }], "gymEnergy")
+    assert.equal(ranked[0].rank, null)
+  })
+
+  await test("weekly ranking excludes unknown metrics and gives tied values the same rank", () => {
+    const metrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 10]))
+    const base = {
+      position: "Member", level: 50, participation: "full_week", status: "complete",
+      metrics, gymEnergy: null, knownMetricCount: WEEKLY_METRIC_NAMES.length, anomalyMetrics: [],
+      baselineCapturedAt: null, endingCapturedAt: null, baselineSnapshotId: null, endingSnapshotId: null,
+      gymEnergyBaselineCapturedAt: null, gymEnergyEndingCapturedAt: null,
+    }
+    const ranked = rankWeeklyMembers([
+      { ...base, userId: "201", name: "A", metrics: { ...metrics, xantaken: 12 } },
+      { ...base, userId: "202", name: "B", metrics: { ...metrics, xantaken: 12 } },
+      { ...base, userId: "203", name: "C", metrics: { ...metrics, xantaken: null }, status: "waiting_for_baseline" },
+    ], "xantaken")
+    assert.deepEqual(ranked.map(item => item.rank), [1, 1, null])
+
+    const gymRanked = rankWeeklyMembers([
+      { ...base, userId: "204", name: "Gym X", gymEnergy: 50 },
+      { ...base, userId: "205", name: "Gym Y", gymEnergy: 70 },
+      { ...base, userId: "206", name: "Gym Unknown", gymEnergy: null },
+    ], "gymEnergy")
+    assert.deepEqual(gymRanked.map(item => item.rank), [1, 2, null])
+    assert.equal(gymRanked[0].name, "Gym Y")
+  })
+
+  await test("weekly leaderboard filters members and sorts known metrics ahead of unknown values", () => {
+    const metrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 5]))
+    const base = {
+      position: "Member", level: 50, participation: "full_week", status: "complete",
+      metrics, startingNetworth: 1000, endingNetworth: 1100, gymEnergy: 20,
+      knownMetricCount: WEEKLY_METRIC_NAMES.length, anomalyMetrics: [],
+    }
+    const members = [
+      { ...base, userId: "301", name: "Alpha", rank: 1, metrics: { ...metrics, xantaken: 10 } },
+      { ...base, userId: "302", name: "Bravo", rank: 2, status: "partial", participation: "partial_week", knownMetricCount: 14, anomalyMetrics: ["lsdtaken"], metrics: { ...metrics, xantaken: 30 } },
+      { ...base, userId: "303", name: "Charlie", rank: null, status: "waiting_for_baseline", participation: "unknown", knownMetricCount: 0, metrics: { ...metrics, xantaken: null } },
+    ]
+    const descending = filterAndSortWeeklyMembers(members, { sortBy: "xantaken", direction: "desc" })
+    assert.deepEqual(descending.map(member => member.userId), ["302", "301", "303"])
+    const ascending = filterAndSortWeeklyMembers(members, { sortBy: "xantaken", direction: "asc" })
+    assert.deepEqual(ascending.map(member => member.userId), ["301", "302", "303"])
+    const filtered = filterAndSortWeeklyMembers(members, {
+      search: "BRAV", status: "partial", participation: "partial_week", anomaliesOnly: true,
+    })
+    assert.deepEqual(filtered.map(member => member.userId), ["302"])
+    assert.deepEqual(filterAndSortWeeklyMembers(members, { status: "complete" }).map(member => member.userId), ["301"])
+  })
+
+  await test("private live parsers whitelist owner bars, cooldowns and optional detailed networth", () => {
+    const bars = parsePrivateLiveBars({ bars: {
+      energy: { current: 125, maximum: 150 },
+      nerve: { current: 40, maximum: 60 },
+      happy: { current: 5000, maximum: 5000 },
+      life: { current: 2500, maximum: 3000 },
+      unrelated: { secret: "must not persist" },
+    } })
+    assert.deepEqual(bars.energy, { current: 125, maximum: 150 })
+    assert.equal(bars.life.current, 2500)
+    assert.equal(Object.keys(bars).length, 4)
+    assert.throws(() => parsePrivateLiveBars({ bars: { unrelated: { current: 12, maximum: 20 } } }))
+
+    const cooldowns = parsePrivateLiveCooldowns({ cooldowns: { drug: 1800, booster: 0, medical: 60, unrelated: 999 } })
+    assert.deepEqual(cooldowns, { drug: 1800, booster: 0, medical: 60 })
+    assert.throws(() => parsePrivateLiveCooldowns({ cooldowns: { unrelated: 999 } }))
+
+    const networth = parsePrivateLiveNetworth({ networth: {
+      total: 123456789, bank: 50000000, wallet: 1234, timestamp: 1791000000,
+      private_future_field: "must not persist",
+    } })
+    assert.equal(networth.total, 123456789)
+    assert.equal(networth.bank, 50000000)
+    assert.equal(networth.wallet, 1234)
+    assert.equal(Object.prototype.hasOwnProperty.call(networth, "private_future_field"), false)
+    assert.throws(() => parsePrivateLiveNetworth({ networth: { wallet: 100 } }))
+  })
+
+  await test("private live owner key requires consent, validates its owner, encrypts storage, and deletes its current snapshot on disconnect", async () => {
+    const originalFetch = globalThis.fetch
+    const token = "synthetic-private-live-session-token"
+    const tokenDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
+    const tokenHash = Array.from(new Uint8Array(tokenDigest), byte => byte.toString(16).padStart(2, "0")).join("")
+    const apiKey = "synthetic-owner-private-live-key-abcdef"
+    const keySecret = "private-live-test-encryption-secret-0123456789-abcdefghijklmnopqrstuvwxyz"
+    const player = {
+      player_id: "77", player_name: "Private Live Owner", faction_id: "8317",
+      faction_verified_at: new Date().toISOString(), membership_check_attempted_at: null,
+      membership_check_status: null, is_admin: 0,
+    }
+    const sessions = new Map([[tokenHash, { player_id: "77", expires_at: Math.floor(Date.now() / 1000) + 3600 }]])
+    const primaryKeyDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(keySecret))
+    const primaryKeyCrypto = await crypto.subtle.importKey("raw", primaryKeyDigest, { name: "AES-GCM" }, false, ["encrypt"])
+    const primaryKeyIv = crypto.getRandomValues(new Uint8Array(12))
+    const primaryKeyCiphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: primaryKeyIv }, primaryKeyCrypto, new TextEncoder().encode(apiKey))
+    const state = { key: null, snapshot: null, throttleAt: null, writes: [], primaryKey: {
+      ciphertext: Buffer.from(primaryKeyCiphertext).toString("base64"), iv: Buffer.from(primaryKeyIv).toString("base64"),
+    } }
+    const db = {
+      prepare(sql) {
+        const normalized = sql.toLowerCase().replace(/\s+/g, " ").trim()
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            if (normalized.includes("from sessions s join players p")) {
+              const session = sessions.get(String(values[0]))
+              if (!session || session.expires_at <= Number(values[1])) return null
+              return { ...player }
+            }
+            if (normalized.startsWith("select disabled_at from dashboard_member_status")) return { disabled_at: null }
+            if (normalized.startsWith("select ciphertext, iv from api_keys")) return state.primaryKey
+            if (normalized.startsWith("select value_json from admin_settings")) return null
+            if (normalized.startsWith("select last_four, include_networth")) return state.key
+            if (normalized.startsWith("select include_networth from member_private_live_keys")) return state.key ? { include_networth: state.key.include_networth } : null
+            if (normalized.startsWith("select ciphertext, iv, include_networth from member_private_live_keys")) {
+              return state.key ? { ciphertext: state.key.ciphertext, iv: state.key.iv, include_networth: state.key.include_networth } : null
+            }
+            if (normalized.startsWith("select captured_at, bars_json, cooldowns_json")) return state.snapshot
+            return null
+          },
+          async all() { return { results: [] } },
+          async run() {
+            state.writes.push({ sql: normalized, values: [...values] })
+            if (normalized.startsWith("insert into member_private_live_api_throttles")) {
+              const retryBefore = String(values[2])
+              const changes = !state.throttleAt || state.throttleAt <= retryBefore
+              if (changes) state.throttleAt = String(values[1])
+              return { success: true, meta: { changes: changes ? 1 : 0 } }
+            }
+            if (normalized.startsWith("insert into member_private_live_keys")) {
+              state.key = {
+                ciphertext: values[2], iv: values[3], last_four: values[4],
+                include_networth: values[5], share_with_faction: 1,
+                consent_version: values[6], consented_at: values[7], last_validated_at: values[8],
+                last_attempt_at: values[9], last_collected_at: values[10], last_error: null,
+                updated_at: values[12],
+              }
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("insert into faction_member_private_live_snapshots")) {
+              state.snapshot = {
+                captured_at: values[2], bars_json: values[3], cooldowns_json: values[4],
+                networth_json: values[5], source_timestamps_json: values[6],
+              }
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("update member_private_live_keys set last_attempt_at")) {
+              if (state.key) state.key.last_attempt_at = values[0]
+              return { success: true, meta: { changes: state.key ? 1 : 0 } }
+            }
+            if (normalized.startsWith("update member_private_live_keys set last_error")) {
+              if (state.key) { state.key.last_error = values[0]; state.key.updated_at = values[1] }
+              return { success: true, meta: { changes: state.key ? 1 : 0 } }
+            }
+            if (normalized.startsWith("delete from faction_member_private_live_snapshots")) {
+              state.snapshot = null
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("delete from member_private_live_keys")) {
+              state.key = null
+              return { success: true, meta: { changes: 1 } }
+            }
+            return { success: true, meta: { changes: 1 } }
+          },
+        }
+      },
+    }
+    let keyOwnerId = "88"
+    let upstreamErrorCode = null
+    const calls = []
+    globalThis.fetch = async input => {
+      const url = new URL(String(input))
+      calls.push(url.pathname)
+      if (url.pathname === "/v2/key/info") {
+        return new Response(JSON.stringify({ info: { user: { id: Number(keyOwnerId) } } }))
+      }
+      if (url.pathname === "/v2/user/bars") {
+        if (upstreamErrorCode !== null) {
+          return new Response(JSON.stringify({ error: { code: upstreamErrorCode, error: "Synthetic upstream owner state." } }))
+        }
+        return new Response(JSON.stringify({ bars: {
+          energy: { current: 90, maximum: 100 }, nerve: { current: 30, maximum: 60 },
+          happy: { current: 4000, maximum: 5000 }, life: { current: 800, maximum: 1000 },
+        } }))
+      }
+      if (url.pathname === "/v2/user/cooldowns") {
+        return new Response(JSON.stringify({ cooldowns: { drug: 120, booster: 0, medical: 60 } }))
+      }
+      if (url.pathname === "/v2/user/networth") {
+        return new Response(JSON.stringify({ networth: { total: 123456, wallet: 1234 }, timestamp: 1791000000 }))
+      }
+      throw new Error("Unexpected private live Torn request: " + url.pathname)
+    }
+    const env = {
+      DB: db,
+      KEY_ENCRYPTION_SECRET: keySecret,
+      ALLOWED_ORIGIN: "https://naughty-company-dashboard.pages.dev",
+    }
+    const request = (method, body, pathname = "/api/me/private-live/key") => worker.fetch(new Request("https://worker.test" + pathname, {
+      method,
+      headers: {
+        Origin: env.ALLOWED_ORIGIN,
+        Authorization: "Bearer " + token,
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }), env, { waitUntil() {} })
+
+    try {
+      const missingConsent = await request("POST", { shareWithFaction: true, consentVersion: "faction-private-live-v1" })
+      assert.equal(missingConsent.status, 400)
+      assert.equal(calls.length, 0, "consent is checked before contacting Torn")
+
+      const wrongOwner = await request("POST", {
+        consent: true, shareWithFaction: true, consentVersion: "faction-private-live-v1",
+      })
+      assert.equal(wrongOwner.status, 403)
+      assert.equal(state.key, null, "a key owned by another player must never be stored")
+      assert.equal(state.snapshot, null, "a key owned by another player must never create a faction snapshot")
+
+      keyOwnerId = "77"
+      // The failed owner verification consumed a request-budget slot. Reset
+      // only the request trace, not the D1 throttle state, for the next case.
+      calls.length = 0
+      state.throttleAt = new Date(Date.now() - 31000).toISOString()
+      const connected = await request("POST", {
+        consent: true, shareWithFaction: true,
+        consentVersion: "faction-private-live-v1", includeNetworth: false,
+      })
+      assert.equal(connected.status, 200)
+      const connectedBody = await connected.json()
+      assert.equal(connectedBody.connected, true)
+      assert.equal(connectedBody.includeNetworth, false)
+      assert.deepEqual(calls, ["/v2/key/info", "/v2/user/bars", "/v2/user/cooldowns"],
+        "networth must not be requested unless separately opted in")
+      assert.ok(state.key && state.snapshot)
+      assert.equal(state.key.include_networth, 0)
+      assert.equal(JSON.parse(state.snapshot.bars_json).energy.current, 90)
+      assert.equal(JSON.parse(state.snapshot.cooldowns_json).drug, 120)
+      assert.equal(state.snapshot.networth_json, null)
+      assert.ok(state.writes.every(write => !write.values.includes(apiKey)), "plaintext key must never be bound to D1")
+
+      const requestsBeforeThrottle = calls.length
+      const rateLimited = await request("POST", {
+        consent: true, shareWithFaction: true,
+        consentVersion: "faction-private-live-v1", includeNetworth: false,
+      })
+      assert.equal(rateLimited.status, 429, "repeat private live connect attempts must share the member request budget")
+      assert.equal(calls.length, requestsBeforeThrottle, "a rejected request must not contact Torn")
+
+      const insertKey = state.writes.find(write => write.sql.startsWith("insert into member_private_live_keys"))
+      assert.ok(insertKey)
+      assert.notEqual(insertKey.values[2], apiKey, "stored key value must be ciphertext")
+      const rawKey = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(keySecret))
+      const encryptionKey = await crypto.subtle.importKey("raw", rawKey, { name: "AES-GCM" }, false, ["decrypt"])
+      const decoded = await crypto.subtle.decrypt({
+        name: "AES-GCM",
+        iv: Uint8Array.from(Buffer.from(String(insertKey.values[3]), "base64")),
+      }, encryptionKey, Uint8Array.from(Buffer.from(String(insertKey.values[2]), "base64")))
+      assert.equal(new TextDecoder().decode(decoded), apiKey, "ciphertext must decrypt with the configured Worker encryption secret")
+
+      const status = await worker.fetch(new Request("https://worker.test/api/me/private-live/key", {
+        headers: { Origin: env.ALLOWED_ORIGIN, Authorization: "Bearer " + token },
+      }), env, { waitUntil() {} })
+      assert.equal(status.status, 200)
+      const statusBody = await status.json()
+      assert.equal(statusBody.connected, true)
+      assert.equal(statusBody.snapshot.bars.energy.current, 90)
+      assert.equal(JSON.stringify(statusBody).includes(apiKey), false)
+
+      // A temporary owner-state restriction must retain the key and the
+      // last successful snapshot so the member can retry when Torn restores access.
+      const lastGoodSnapshot = JSON.stringify(state.snapshot)
+      state.throttleAt = new Date(Date.now() - 31000).toISOString()
+      upstreamErrorCode = 10
+      const temporaryFailure = await request("POST", undefined, "/api/me/private-live/refresh")
+      assert.equal(temporaryFailure.status, 403)
+      assert.ok(state.key, "temporary federal-jail state must not delete the saved owner key")
+      assert.equal(JSON.stringify(state.snapshot), lastGoodSnapshot, "temporary owner state must preserve the last successful snapshot")
+      assert.match(String(state.key.last_error), /federal jail/i)
+
+      // Replace with an explicit detailed-networth opt-in after the
+      // server-enforced 30-second per-member request window has elapsed.
+      state.throttleAt = new Date(Date.now() - 31000).toISOString()
+      upstreamErrorCode = null
+      const networthConnection = await request("POST", {
+        consent: true, shareWithFaction: true,
+        consentVersion: "faction-private-live-v1", includeNetworth: true,
+      })
+      assert.equal(networthConnection.status, 200)
+      assert.ok(calls.includes("/v2/user/networth"))
+      assert.equal(state.key.include_networth, 1)
+      assert.equal(JSON.parse(state.snapshot.networth_json).total, 123456)
+
+      const disconnected = await request("DELETE")
+      assert.equal(disconnected.status, 200)
+      assert.equal(state.key, null)
+      assert.equal(state.snapshot, null)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
 
   await test("official stock lock-in timestamp accepts only fresh source data from the scheduled reporting day", () => {
     const scheduledAt = Date.parse("2026-10-21T18:10:00.000Z");
@@ -286,6 +888,128 @@ try {
     assert.doesNotMatch(floorSource, /currentStockQuantity - previousStockSnapshot\.stockQuantity/)
   })
 
+  await test("faction performance read API is faction-authenticated and exposes only public fields plus explicitly opted-in private live snapshots", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const routeStart = workerSource.indexOf('if (url.pathname === "/api/faction/performance" && request.method === "GET")')
+    const routeEnd = workerSource.indexOf('if (url.pathname === "/api/faction/shared-company-data"', routeStart)
+    assert.ok(routeStart >= 0 && routeEnd > routeStart)
+    const route = workerSource.slice(routeStart, routeEnd)
+    assert.match(route, /authenticate\(request, env\)/)
+    assert.match(route, /session\.faction_id !== NAUGHTY_SOULS_FACTION_ID/)
+    assert.match(route, /faction_member_roster_snapshots/)
+    assert.match(route, /faction_member_stat_snapshots/)
+    assert.match(route, /faction_gym_energy_snapshots/)
+    assert.match(route, /faction_performance_collection_runs/)
+    assert.match(route, /status = 'completed'/)
+    assert.match(workerSource, /if \(db\.batch\)/)
+    assert.match(workerSource, /await db\.batch\(\[finishRun, updateState\]\)/,
+      "the terminal run status and last-success timestamp must commit atomically in D1")
+    const deadLetterFailureStart = workerSource.indexOf("async function markFactionPerformanceRunFailed")
+    const deadLetterFailureEnd = workerSource.indexOf("async function enqueueOneFactionPerformanceRun", deadLetterFailureStart)
+    const deadLetterFailure = workerSource.slice(deadLetterFailureStart, deadLetterFailureEnd)
+    assert.match(deadLetterFailure, /await db\.batch\(\[failRun, failState\]\)/,
+      "DLQ terminal run status and collection state must commit atomically")
+    assert.match(route, /statsCapturedAt/)
+    assert.match(route, /gymEnergyCapturedAt/)
+    assert.match(route, /private, max-age=30/)
+    assert.match(route, /faction_member_private_live_snapshots/)
+    assert.match(route, /k\.share_with_faction = 1/, "private live values require the member's explicit sharing consent")
+    assert.match(route, /st\.disabled_at IS NULL/, "disabled members' private live values must not be shared")
+    assert.match(route, /privateLiveByUser/)
+    assert.doesNotMatch(route, /api_keys|encrypted_api_key|SELECT ciphertext|SELECT \\* FROM member_private_live_keys/,
+      "faction performance must never return encrypted credentials")
+  })
+
+  await test("faction performance migration preserves historical data independently of player rows", () => {
+    const migration = readFileSync(join(root, "migrations/auth/0019_faction_performance_collection.sql"), "utf8")
+    for (const table of [
+      "faction_performance_collection_runs",
+      "faction_performance_collection_state",
+      "faction_membership_intervals",
+      "faction_roster_snapshots",
+      "faction_member_roster_snapshots",
+      "faction_member_stat_snapshots",
+      "faction_gym_energy_snapshots",
+    ]) assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
+    assert.match(migration, /WHERE left_observed_at IS NULL/)
+    assert.match(migration, /estimated_joined_at/)
+    assert.ok(migration.includes("ON faction_membership_intervals(user_id, faction_id, estimated_joined_at DESC)"))
+    assert.ok(!migration.includes("ON faction_membership_intervals(user_id, faction_id, joined_at DESC)"))
+    assert.doesNotMatch(migration, /REFERENCES players|ON DELETE CASCADE|DROP TABLE|DELETE FROM/i)
+    assert.match(migration, /xantaken REAL/)
+    assert.match(migration, /lsdtaken REAL/)
+    assert.match(migration, /energydrinkused REAL/)
+    assert.match(migration, /networth REAL/)
+  })
+
+  await test("member departure revokes access but never deletes faction performance history", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const departureStart = workerSource.indexOf("async function removeDepartedFactionAccess")
+    const departureEnd = workerSource.indexOf("async function applyConfirmedFactionDeparture", departureStart)
+    const cleanup = workerSource.slice(departureStart, departureEnd)
+    for (const table of [
+      "faction_roster_snapshots",
+      "faction_member_roster_snapshots",
+      "faction_member_stat_snapshots",
+      "faction_gym_energy_snapshots",
+      "faction_membership_intervals",
+    ]) assert.doesNotMatch(cleanup, new RegExp(`DELETE FROM ${table}`))
+  })
+
+  await test("faction performance scheduler and queue use a dedicated Worker secret and bounded idempotent runs", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    assert.match(workerSource, /TORN_FACTION_API_KEY/)
+    assert.match(workerSource, /FACTION_PERFORMANCE_PAGE_SIZE = 5/)
+    assert.match(workerSource, /collection_key/)
+    assert.match(workerSource, /fiveMinuteBucket % 3 === 0/)
+    assert.match(workerSource, /FACTION_PERFORMANCE_QUEUE_KIND/)
+    assert.match(workerSource, /enqueueFactionPerformanceCollections\(env, scheduledTime\)/)
+    assert.match(workerSource, /runFactionPerformanceCollection\(env, runId\)/)
+    assert.match(workerSource, /message\.retry\(\{ delaySeconds: Math\.min\(60, attempts \* 10\) \}\)/)
+    assert.match(workerSource, /WHERE run_id = \? AND status NOT IN \('completed', 'partial', 'failed'\)/)
+    assert.match(workerSource, /left_observed_at IS NULL/)
+    const rosterStart = workerSource.indexOf("async function runFactionRosterCollection")
+    const rosterEnd = workerSource.indexOf("function emptyFactionPublicStats", rosterStart)
+    const rosterCollector = workerSource.slice(rosterStart, rosterEnd)
+    assert.match(rosterCollector, /members\.length === 0/, "an empty roster must not mark every member as departed")
+    assert.match(rosterCollector, /DELETE FROM faction_member_roster_snapshots WHERE run_id = \?/, "a retried roster run must replace stale child rows")
+    assert.ok(rosterCollector.indexOf("members.length === 0") < rosterCollector.indexOf("SELECT interval_id"),
+      "an empty roster must be rejected before membership history is modified")
+    assert.ok(workerSource.includes("setTimeout(resolve, 800)"))
+    assert.ok(workerSource.includes("error.status === 429 || error.status >= 500 || error.code === 9"))
+    assert.match(workerSource, /fetcher: env\.TORN_API_FIXTURE\?\.fetch\.bind\(env\.TORN_API_FIXTURE\)/,
+      "the staging integration Worker must route Torn requests through a private fixture Service Binding")
+    assert.match(workerSource, /Faction performance collection attempt failed/,
+      "queue retries must log a sanitized, actionable failure classification")
+    const integrationWrangler = readFileSync(join(root, "wrangler.faction-performance-integration.toml"), "utf8")
+    assert.match(integrationWrangler, /binding = "TORN_API_FIXTURE"/)
+    assert.match(integrationWrangler, /service = "naughty-company-api-faction-performance-mock"/)
+    const factionQueueStart = workerSource.lastIndexOf("if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId)")
+    const factionQueueEnd = workerSource.indexOf('if (body.kind === "faction-weekly-finalize")', factionQueueStart)
+    const factionQueue = workerSource.slice(factionQueueStart, factionQueueEnd)
+    const factionQueueCatch = factionQueue.slice(factionQueue.indexOf("} catch (error) {"))
+    assert.match(factionQueueCatch, /message\.retry\(\{ delaySeconds: Math\.min\(60, attempts \* 10\) \}\)/)
+    assert.doesNotMatch(factionQueueCatch, /markFactionPerformanceRunFailed|message\.ack\(\)/,
+      "retry exhaustion must flow through the configured Cloudflare DLQ, not be acknowledged by the source consumer")
+    const weeklyFinalizeStart = workerSource.indexOf('if (body.kind === "faction-weekly-finalize")', factionQueueStart)
+    const weeklyFinalizeEnd = workerSource.indexOf('if (body.kind === "halloween-live-snapshot"', weeklyFinalizeStart)
+    const weeklyFinalizeHandler = workerSource.slice(weeklyFinalizeStart, weeklyFinalizeEnd)
+    assert.match(weeklyFinalizeHandler, /await finalizeFactionWeeklyReport\(env, parsedStart\)/)
+    assert.match(weeklyFinalizeHandler, /message\.retry\(\{ delaySeconds: Math\.min\(60, attempts \* 10\) \}\)/,
+      "weekly report finalization must retry transient storage failures")
+    const dlqStart = workerSource.indexOf('if (batch.queue?.endsWith("-dlq"))')
+    const mainLoopStart = workerSource.indexOf("\n  for (const message of batch.messages) {", dlqStart + 1)
+    const dlqSource = workerSource.slice(dlqStart, mainLoopStart)
+    assert.match(dlqSource, /markFactionPerformanceRunFailed/,
+      "the dead-letter consumer must persist terminal collection failure")
+    const statsPageStart = workerSource.indexOf("async function runFactionPersonalStatsCollectionPage")
+    const statsPage = workerSource.slice(statsPageStart, workerSource.indexOf("async function runFactionGymEnergyCollection", statsPageStart))
+    assert.ok(statsPage.indexOf("await saveFactionMemberStatSample") > statsPage.indexOf("} catch (error) {"),
+      "D1 persistence must stay outside the per-member Torn API catch so storage failures retry the queue message")
+    assert.doesNotMatch(workerSource, /The CI-only secret is not a Worker binding/)
+    assert.ok(workerSource.includes('status === "completed" ? capturedAt : null'))
+  })
+
   await test("company stock refreshes preserve current values and append historical stock snapshots", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const migrationSource = readFileSync(join(root, "migrations/auth/0002_company_financial_history.sql"), "utf8")
@@ -324,7 +1048,13 @@ try {
   await test("global rankings use type-specific company lists at 18:10 UTC and official snapshot only verifies at 00:10 UTC", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const wranglerSource = readFileSync(join(root, "wrangler.toml"), "utf8")
-    assert.match(wranglerSource, /crons = \["10 18 \* \* \*", "10 0 \* \* \*"\]/)
+    const configuredCrons = wranglerSource.match(/crons\s*=\s*\[([^\]]*)\]/)?.[1]
+      .match(/"([^"]+)"/g)?.map((value) => value.slice(1, -1)) ?? []
+    assert.ok(configuredCrons.includes("10 18 * * *"), "the daily ranking capture schedule must remain configured")
+    assert.ok(configuredCrons.includes("10 0 * * *"), "the official snapshot verification schedule must remain configured")
+    assert.ok(configuredCrons.includes("*/5 * * * *"), "the Halloween live snapshot scheduler must remain configured")
+    assert.match(workerSource, /controller\.cron\.trim\(\) === "\*\/5 \* \* \* \*"/, "the five-minute scheduler must have a dedicated handler")
+    assert.match(workerSource, /runFiveMinuteScheduledJobs\(env, controller\.scheduledTime\)/, "the five-minute scheduler must run bounded membership and Halloween maintenance")
     assert.ok(workerSource.includes("https://api.torn.com/v2/company/\u0024{type.id}/companies?offset=\u0024{offset}&limit=\u0024{pageSize}"))
     assert.ok(workerSource.includes("https://api.torn.com/v2/company/snapshot"))
     assert.ok(workerSource.includes('source: "Daily cached Torn API v2 /company/{typeId}/companies lists"'))
@@ -349,12 +1079,136 @@ try {
     assert.equal([...workerSource.matchAll(/refreshGlobalRankingCache\(/g)].length, 4, "ranking cache refresh calls must be limited to the routine, scheduled capture, stale-cache path, and explicit admin endpoint")
   })
 
+  await test("inactive faction memberships are revalidated in bounded scheduled batches", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const migrationSource = readFileSync(join(root, "migrations/auth/0016_membership_revalidation_scheduler.sql"), "utf8")
+    const stateMigrationSource = readFileSync(join(root, "migrations/auth/0018_membership_verification_state.sql"), "utf8")
+    const batchStart = workerSource.indexOf("async function revalidateFactionMembershipBatch")
+    const batchEnd = workerSource.indexOf("async function authenticate", batchStart)
+    assert.ok(batchStart >= 0 && batchEnd > batchStart, "the scheduled membership revalidation batch must remain identifiable")
+    const batchSource = workerSource.slice(batchStart, batchEnd)
+    assert.match(migrationSource, /membership_check_attempted_at TEXT/)
+    assert.match(migrationSource, /players_membership_revalidation_idx/)
+    assert.match(stateMigrationSource, /membership_check_status TEXT/)
+    assert.match(stateMigrationSource, /'checking', 'unavailable', 'cleanup_pending'/)
+    assert.ok(batchSource.includes("LIMIT ?"))
+    assert.ok(batchSource.includes("membership_check_attempted_at IS NULL OR membership_check_attempted_at < ?"), "scheduled jobs must atomically claim stale membership checks")
+    assert.ok(batchSource.includes("claim.meta?.changes"), "overlapping scheduled or request-time checks must not duplicate Torn calls")
+    assert.ok(batchSource.indexOf("claim.meta?.changes") < batchSource.indexOf("await savedKey(env, playerId)"), "the scheduled sweep must win the atomic claim before decrypting or contacting Torn")
+    assert.ok(batchSource.includes("const attemptTime = Date.now()"), "scheduled claims must use execution time so delayed cron delivery cannot create an already-expired lock")
+    assert.ok(batchSource.includes("Math.min(10, batchSize)"))
+    assert.match(batchSource, /membership_check_attempted_at/)
+    assert.ok(batchSource.includes("catch {") && batchSource.includes("continue"), "Torn and decryption failures must be retried, not treated as faction departure")
+    assert.ok(batchSource.includes("await removeDepartedFactionAccess(env, playerId)"))
+    const authStart = workerSource.indexOf("async function authenticate")
+    const authEnd = workerSource.indexOf("async function validateTornKey", authStart)
+    const authSource = workerSource.slice(authStart, authEnd)
+    assert.match(authSource, /p\.membership_check_attempted_at/)
+    assert.ok(authSource.includes("attemptedRecently"), "request-time checks must honor a recent scheduled or request attempt")
+    assert.ok(authSource.includes("membership_check_attempted_at IS NULL OR membership_check_attempted_at < ?"), "request-time checks must use an atomic claim instead of racing concurrent requests")
+    assert.ok(authSource.includes("Number(claim.meta?.changes ?? 0) < 1"), "only the request that wins the check claim may contact Torn")
+    assert.ok(authSource.includes("Another request or the scheduled sweep claimed this check window"), "a losing concurrent request must use bounded grace without making a duplicate Torn call")
+    assert.ok(authSource.includes("attemptAgeMs <= 5 * 60 * 1000"), "repeated Torn checks must have a five-minute backoff")
+    assert.ok(authSource.includes("ageMs > 15 * 60 * 1000"), "outage grace must remain bounded by the last successful verification")
+    assert.ok(authSource.indexOf("UPDATE players SET membership_check_attempted_at = ?") < authSource.indexOf("await verifyFactionMembershipWithKey(apiKey)"), "record the request attempt before contacting Torn")
+    assert.ok(authSource.indexOf("const apiKey = await savedKey(env, session.player_id)") < authSource.indexOf("const attemptedRecently"), "a missing saved login key must still fail closed during the backoff")
+    assert.ok(authSource.includes('session.membership_check_status === "cleanup_pending"'), "confirmed departures pending cleanup must not be treated as ordinary outages")
+    assert.ok(authSource.includes("if (retryCleanup)"), "cleanup-pending retries must fail closed on another Torn outage")
+    assert.ok(authSource.includes('membership_check_status = \'unavailable\''), "only genuine Torn failures may enter outage grace")
+    assert.ok(authSource.includes('membership_check_status = \'cleanup_pending\''), "cleanup failures must remain explicitly pending")
+
+    assert.ok(batchSource.indexOf("await removeDepartedFactionAccess(env, playerId)") < batchSource.lastIndexOf("UPDATE players SET faction_id = ?"), "confirmed departure cleanup must complete before the membership row is changed")
+    const departedStart = workerSource.indexOf("async function removeDepartedFactionAccess")
+    const departedEnd = workerSource.indexOf("function classifyHalloweenLog", departedStart)
+    const departedSource = workerSource.slice(departedStart, departedEnd)
+    assert.ok(departedSource.includes("await purgeHalloweenMemberData(env, playerId)"))
+    assert.ok(departedSource.includes("DELETE FROM sessions WHERE player_id = ?"))
+    assert.ok(departedSource.includes("DELETE FROM api_keys WHERE player_id = ?"))
+    assert.ok(departedSource.includes("DELETE FROM faction_member_cache WHERE player_id = ?"))
+    assert.ok(departedSource.includes("DELETE FROM company_sharing_recipients"))
+    const scheduledStart = workerSource.indexOf("async function runFiveMinuteScheduledJobs")
+    const scheduledEnd = workerSource.indexOf("export default", scheduledStart)
+    const scheduledSource = workerSource.slice(scheduledStart, scheduledEnd)
+    assert.ok(scheduledSource.includes("revalidateFactionMembershipBatch(env, scheduledTime)"))
+    assert.ok(scheduledSource.includes("enqueueScheduledHalloweenSnapshots(env, scheduledTime)"))
+  })
+
+  await test("Halloween live snapshot jobs remain retryable until the bounded queue retry limit", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const jobStart = workerSource.indexOf("async function runHalloweenLiveSnapshotJob")
+    const jobEnd = workerSource.indexOf("async function enqueueHalloweenLiveSnapshot", jobStart)
+    assert.ok(jobStart >= 0 && jobEnd > jobStart, "the Halloween live snapshot job handler must remain identifiable")
+    const jobSource = workerSource.slice(jobStart, jobEnd)
+    const transientCatch = jobSource.slice(jobSource.indexOf("} catch (error) {"))
+    assert.ok(jobSource.includes("SET status = 'queued', last_error"), "transient failures must return the job to the queue")
+    assert.doesNotMatch(transientCatch, /SET status = 'failed'/, "a transient failure must not be terminal before queue retries are exhausted")
+    assert.ok(jobSource.includes("Snapshot was cancelled because this member's dashboard access is disabled."), "disabled members must stop before snapshot collection")
+    const queueSource = workerSource.slice(workerSource.indexOf("async function handleGlobalRankingQueueBatch"), workerSource.indexOf("async function refreshGlobalRankingCache"))
+    assert.ok(queueSource.includes("attempts < 4") && queueSource.includes("message.retry("), "live snapshot jobs must use bounded queue retries")
+    assert.ok(queueSource.includes("UPDATE halloween_live_snapshot_jobs SET status = 'failed'"), "the consumer must mark the job failed after the retry limit")
+    const enqueueStart = workerSource.indexOf("async function enqueueHalloweenLiveSnapshot")
+    const enqueueEnd = workerSource.indexOf("async function enqueueScheduledHalloweenSnapshots", enqueueStart)
+    const enqueueSource = workerSource.slice(enqueueStart, enqueueEnd)
+    assert.ok(enqueueSource.includes("if (existing) return"), "terminal jobs must not be re-enqueued on every scheduler tick")
+    assert.doesNotMatch(enqueueSource, /UPDATE halloween_live_snapshot_jobs SET status = 'queued'/, "a failed event bucket must not create an unbounded retry loop")
+  })
+
+  await test("Trick or Treat event windows follow each member's selected TCT slot", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const migrationSource = readFileSync(join(root, "migrations/auth/0017_halloween_member_event_slots.sql"), "utf8")
+    const uiSource = readFileSync(join(root, "src/components/portal/workspaces.tsx"), "utf8")
+    assert.match(migrationSource, /CREATE TABLE IF NOT EXISTS halloween_member_event_slots/)
+    assert.match(migrationSource, /start_minute_of_day INTEGER NOT NULL/)
+    assert.match(migrationSource, /BETWEEN 600 AND 960 AND start_minute_of_day % 15 = 0/)
+    assert.match(migrationSource, /window_start_at TEXT/)
+    assert.match(migrationSource, /window_end_at TEXT/)
+    const windowStart = workerSource.indexOf("function buildHalloweenMemberEventWindow")
+    const windowEnd = workerSource.indexOf("async function getHalloweenMemberEventWindow", windowStart)
+    assert.ok(windowStart >= 0 && windowEnd > windowStart, "the personal event-window builder must be present")
+    const windowSource = workerSource.slice(windowStart, windowEnd)
+    assert.ok(windowSource.includes("startMinuteOfDay < 600") && windowSource.includes("startMinuteOfDay > 960"))
+    assert.ok(windowSource.includes("startMinuteOfDay % 15 !== 0"), "only 15-minute TCT slots are accepted")
+    assert.ok(windowSource.includes("event.startAt.slice(0, 10)") && windowSource.includes("event.endAt.slice(0, 10)"))
+    assert.ok(windowSource.includes("startDay + startMinuteOfDay * 60 * 1000"))
+    assert.ok(windowSource.includes("endDay + startMinuteOfDay * 60 * 1000"), "the same selected TCT clock time must define the end boundary")
+    assert.ok(workerSource.includes('/api/me/halloween/event-window'), "members need authenticated read and save routes for their personal time")
+    assert.ok(workerSource.includes("halloween_member_event_slots (event_year, player_id, start_minute_of_day"), "the selected time must be saved per member and year")
+    assert.ok(workerSource.includes("Select your personal Trick or Treat start time before collecting historical logs."))
+    assert.ok(workerSource.includes("window_start_at, window_end_at"), "historical jobs must pin the selected personal window")
+    const collectorStart = workerSource.indexOf("async function runHalloweenLogCollectionPage")
+    const collectorEnd = workerSource.indexOf("async function runHalloweenLiveSnapshot", collectorStart)
+    const collectorSource = workerSource.slice(collectorStart, collectorEnd)
+    assert.ok(collectorSource.includes("job.window_start_at || event.start_at") && collectorSource.includes("job.window_end_at || event.end_at"))
+    assert.ok(collectorSource.includes("eventTimestamp < eventStart || eventTimestamp >= eventEnd"), "historical log inserts must remain inside the selected personal window")
+    const liveStart = workerSource.indexOf("async function runHalloweenLiveSnapshot")
+    const liveEnd = workerSource.indexOf("async function runHalloweenLiveSnapshotJob", liveStart)
+    assert.ok(workerSource.slice(liveStart, liveEnd).includes("getHalloweenMemberEventWindow(env, playerId, eventYear)"))
+    const liveRouteStart = workerSource.indexOf('if (url.pathname === "/api/me/halloween/live" && request.method === "GET")')
+    const liveRouteEnd = workerSource.indexOf('if (url.pathname === "/api/me/halloween/live-snapshot"', liveRouteStart)
+    assert.ok(liveRouteStart >= 0 && liveRouteEnd > liveRouteStart, "the live Halloween board API must be present")
+    const liveRoute = workerSource.slice(liveRouteStart, liveRouteEnd)
+    assert.match(liveRoute, /row\.snapshotKind === "opening"[\s\S]*memberStartMs - 5 \* 60 \* 1000/,
+      "opening snapshots immediately around the personal start boundary must remain visible")
+    assert.match(liveRoute, /row\.snapshotKind === "closing"[\s\S]*snapshotMs >= memberEndMs/,
+      "closing snapshots captured after the personal end boundary must remain visible")
+    assert.match(liveRoute, /snapshotMs >= memberStartMs && snapshotMs < memberEndMs/,
+      "periodic and manual snapshots must remain inside the personal event window")
+    const schedulerStart = workerSource.indexOf("async function enqueueScheduledHalloweenSnapshots")
+    const schedulerEnd = workerSource.indexOf("async function handleGlobalRankingQueueBatch", schedulerStart)
+    const schedulerSource = workerSource.slice(schedulerStart, schedulerEnd)
+    assert.ok(schedulerSource.includes("JOIN halloween_member_event_slots"), "live snapshots must be scheduled only for members with a configured slot")
+    assert.ok(schedulerSource.includes("memberStartMs") && schedulerSource.includes("memberEndMs"), "opening, periodic, and closing captures must use each member's own boundaries")
+    assert.ok(workerSource.includes("halloween_live_snapshot_jobs WHERE player_id = ? AND event_year = ? LIMIT 1"), "queued live captures must lock time-slot edits")
+    assert.ok(uiSource.includes("length: 25") && uiSource.includes("10 * 60 + index * 15"), "the UI must expose all 25 times from 10:00 through 16:00")
+    assert.ok(uiSource.includes('id="halloween-personal-start-time"'), "the member must be able to select a personal event start time")
+    assert.ok(uiSource.includes("November 1 at the same selected clock time"), "the UI must explain the correlated end time")
+  })
+
   await test("admin endpoint refresh is admin-gated, selective, audited, and live-only", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const uiSource = readFileSync(join(root, "src/components/floor/admin-panel.tsx"), "utf8")
     const floorAppSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
     const migrationSource = readFileSync(join(root, "migrations/auth/0008_admin_endpoint_refresh.sql"), "utf8")
-    const stepUpMigrationSource = readFileSync(join(root, "migrations/auth/0010_admin_step_up.sql"), "utf8")
     const adminStart = workerSource.indexOf("async function handleAdminRequest")
     const jobsRoute = workerSource.indexOf('if (url.pathname === "/api/admin/jobs" && request.method === "POST")', adminStart)
     const adminRoutes = workerSource.slice(adminStart, workerSource.indexOf("\nasync function ", adminStart + 30))
@@ -362,16 +1216,13 @@ try {
     const refreshEnd = workerSource.indexOf("async function runAdminJob", refreshStart)
     const refreshBody = workerSource.slice(refreshStart, refreshEnd)
     assert.ok(adminStart >= 0 && jobsRoute > adminStart)
-    assert.match(adminRoutes, /!isAdminElevated\(session\)/, "admin routes must require active session-scoped elevation")
-    assert.match(workerSource, /isAdmin: false, canElevateAdmin:/, "normal Torn sign-in must never grant admin")
-    assert.doesNotMatch(workerSource, /isAdmin: player\.id === ADMIN_PLAYER_ID/, "Torn player ID is only an elevation allowlist")
-    assert.match(workerSource, /ADMIN_PASSWORD_HASH/)
-    assert.match(workerSource, /ADMIN_USERNAME/)
-    assert.match(workerSource, /ADMIN_MAX_ATTEMPTS = 5/)
-    assert.match(workerSource, /admin_elevated_until/)
-    assert.match(floorAppSource, /Unlock administration/)
-    assert.match(floorAppSource, /\/api\/auth\/admin\/elevate/)
-    assert.match(stepUpMigrationSource, /ALTER TABLE sessions ADD COLUMN admin_elevated_until/)
+    assert.ok(adminRoutes.includes("session.is_admin !== 1"), "admin routes must require the current D1 role")
+    assert.ok(workerSource.includes("LEFT JOIN administrators a ON a.player_id = p.player_id AND a.revoked_at IS NULL"))
+    assert.ok(workerSource.includes("INSERT INTO administrators"), "administrator role must be persisted")
+    assert.ok(workerSource.includes("administrator.granted"))
+    assert.ok(workerSource.includes("administrator.revoked"))
+    assert.doesNotMatch(workerSource, /ADMIN_PASSWORD_HASH|ADMIN_USERNAME|isAdminElevated|admin_elevated_until/)
+    assert.doesNotMatch(floorAppSource, /Unlock administration|adminPassword|adminUsername/)
     assert.match(adminRoutes, /ensureAdminJobPayloadSchema\(env\)/)
     assert.match(adminRoutes, /"endpoint-refresh"/)
     assert.match(adminRoutes, /rawIds\.length > 100/, "selected-user jobs must be bounded")
@@ -630,13 +1481,312 @@ try {
       return new Response(JSON.stringify({ members: [], job: { position: "Director" }, profile: { id: 99 } }))
     } })
     await client.getFactionMembers()
+    await client.getFactionMembersForRoster()
+    await client.getFactionGymEnergyContributors()
     await client.getUserJobFor(12345)
     await client.getCompanyProfileById(96639)
     assert.deepEqual(requested, [
       "https://api.torn.com/v2/faction/members",
+      "https://api.torn.com/v2/faction/members?striptags=true",
+      "https://api.torn.com/v2/faction/contributors?stat=gymenergy",
       "https://api.torn.com/v2/user/12345/job",
       "https://api.torn.com/v2/company/96639/profile",
     ])
+  })
+
+  await test("decodes all current personalstats response variants using guarded runtime paths", () => {
+    const cases = [
+      ["full", { kind: "all" }, 20, 14],
+      ["fullPublic", { kind: "all" }, 10, 4],
+      ["popular", { kind: "popular" }, 7, 10],
+    ]
+    for (const [fixtureName, request, expectedXanax, expectedLsd] of cases) {
+      const decoded = decodePersonalStatsResponse(personalStatsFixtures[fixtureName], request)
+      assert.equal(decoded.kind, "current")
+      assert.equal(decoded.metrics.xantaken, expectedXanax)
+      assert.equal(decoded.metrics.lsdtaken, expectedLsd)
+      assert.equal(decoded.metrics.drugsused, fixtureName === "full" ? 145 : fixtureName === "fullPublic" ? 55 : 17)
+      assert.equal(decoded.metrics.alcoholused, fixtureName === "full" ? 22 : fixtureName === "fullPublic" ? 12 : 5)
+      assert.equal(decoded.metrics.energydrinkused, fixtureName === "full" ? 23 : fixtureName === "fullPublic" ? 13 : 6)
+      assert.equal(decoded.metrics.refills, fixtureName === "full" ? 25 : fixtureName === "fullPublic" ? 15 : 2)
+      assert.equal(decoded.metrics.networth, fixtureName === "full" ? 260000000 : fixtureName === "fullPublic" ? 160000000 : 180000000)
+      assert.equal(decoded.missingMetrics.length, 0)
+    }
+  })
+
+  await test("live sanitized Popular fixture contains every required dashboard metric", () => {
+    const decoded = decodePersonalStatsResponse(livePersonalStatsFixtures.popular, { kind: "popular" })
+    assert.equal(decoded.kind, "current")
+    assert.equal(decoded.missingMetrics.length, 0)
+    assert.equal(decoded.metrics.xantaken, 0)
+    assert.equal(decoded.metrics.lsdtaken, 0)
+    assert.equal(Object.values(decoded.metrics).filter((value) => value !== null).length, 18)
+    assert.ok(livePersonalStatsFixtures.capture.popularMetricCount === 18)
+    assert.equal(livePersonalStatsFixtures.capture.popularMissingMetricCount, 0)
+
+    const differentiated = structuredClone(livePersonalStatsFixtures.popular)
+    differentiated.personalstats.items.used.energy = 999
+    differentiated.personalstats.items.used.energy_drinks = 123
+    assert.equal(
+      decodePersonalStatsResponse(differentiated, { kind: "popular" }).metrics.energydrinkused,
+      123,
+      "the separate items.used.energy_drinks field is the energy-drink metric, not items.used.energy",
+    )
+  })
+
+  await test("faction roster parser rejects redacted placeholder identifiers in sanitized fixtures", () => {
+    const parsed = parseFactionRosterResponse(livePersonalStatsFixtures.factionRoster)
+    assert.equal(parsed.length, 0, "sanitized fixture IDs are intentionally invalid and must never be mistaken for real members")
+  })
+
+  await test("faction roster parser normalizes nested last-action/status fields and only official revive enums", () => {
+    const payload = {
+      members: [{
+        id: 123456,
+        name: "Example",
+        position: "Member",
+        level: 75,
+        days_in_faction: 40,
+        last_action: { status: "Online", timestamp: 1794000000, relative: "just now" },
+        status: { description: "Okay", details: null, state: "Okay", until: null, color: "green" },
+        is_revivable: true,
+        revive_setting: "Friends & faction",
+        is_on_wall: false,
+        is_in_oc: false,
+        has_early_discharge: false,
+      }, {
+        id: "123457",
+        name: "Unknown fields",
+        last_action: { status: "Unavailable", timestamp: "not-a-time" },
+        status: {},
+        is_revivable: false,
+        revive_setting: "Friends only",
+      }],
+    }
+    const members = parseFactionRosterResponse(payload)
+    assert.equal(members.length, 2)
+    assert.equal(members[0].lastActionStatus, "Online")
+    assert.equal(members[0].lastActionTimestamp, 1794000000)
+    assert.equal(members[0].isRevivable, true)
+    assert.equal(members[0].reviveSetting, "Friends & faction")
+    assert.equal(members[1].lastActionStatus, null)
+    assert.equal(members[1].lastActionTimestamp, null)
+    assert.equal(members[1].isRevivable, false)
+    assert.equal(members[1].reviveSetting, "Unknown", "do not invent unsupported revive enum members")
+    assert.throws(() => parseFactionRosterResponse({}), /members array/)
+  })
+
+  await test("gym-energy parser rejects missing values as unknown and deduplicates contributor IDs", () => {
+    const contributors = parseFactionGymEnergyResponse({
+      contributors: [
+        { id: 123, username: "Member A", value: 5000, in_faction: true },
+        { id: "124", username: "Member B", value: "500", in_faction: false },
+        { id: 123, username: "Duplicate", value: 9000, in_faction: true },
+      ],
+    })
+    assert.deepEqual(contributors, [
+      { userId: "123", username: "Member A", value: 5000, inFaction: true },
+      { userId: "124", username: "Member B", value: null, inFaction: false },
+    ])
+    assert.throws(() => parseFactionGymEnergyResponse({}), /contributors array/)
+  })
+
+  await test("Popular public-stat parser returns 18 distinct metrics and preserves missing values", () => {
+    const parsed = parseFactionPublicStatsResponse(livePersonalStatsFixtures.targetMemberPopular)
+    assert.equal(countCompletePublicMetrics(parsed), 18)
+    assert.equal(parsed.xantaken, 0)
+    assert.equal(parsed.lsdtaken, 0)
+    assert.deepEqual(parsed.missingMetrics, [])
+    const partial = parseFactionPublicStatsResponse({ personalstats: { drugs: { xanax: 7 } } })
+    assert.equal(partial.xantaken, 7)
+    assert.equal(partial.lsdtaken, null)
+    assert.ok(partial.missingMetrics.includes("lsdtaken"))
+    assert.equal(countCompletePublicMetrics(partial), 1)
+  })
+
+  await test("live sanitized target-member responses confirm the public personalstats route shape", () => {
+    const decoded = decodePersonalStatsResponse(livePersonalStatsFixtures.targetMemberPopular, { kind: "popular" })
+    assert.equal(decoded.kind, "current")
+    assert.equal(decoded.missingMetrics.length, 0)
+    assert.equal(Object.values(decoded.metrics).filter((value) => value !== null).length, 18)
+    assert.equal(livePersonalStatsFixtures.capture.targetMemberSampleCount, 2)
+    assert.equal(livePersonalStatsFixtures.capture.targetMemberPopularMetricCount, 18)
+  })
+
+  await test("live sanitized faction roster and gym-energy fixtures confirm collection field names", () => {
+    const members = livePersonalStatsFixtures.factionRoster.members
+    assert.equal(livePersonalStatsFixtures.capture.factionRosterMemberCount, 100)
+    assert.deepEqual(
+      Object.keys(members[0]).sort(),
+      ["days_in_faction", "has_early_discharge", "id", "is_in_oc", "is_on_wall", "is_revivable", "last_action", "level", "name", "position", "revive_setting", "status"].sort(),
+    )
+    assert.deepEqual(
+      Object.keys(members[0].last_action).sort(),
+      ["relative", "status", "timestamp"],
+    )
+    assert.deepEqual(
+      Object.keys(members[0].status).sort(),
+      ["color", "description", "details", "state", "until"],
+    )
+    const contributors = livePersonalStatsFixtures.gymEnergyContributors.contributors
+    assert.equal(livePersonalStatsFixtures.capture.gymEnergyContributorCount, 100)
+    assert.deepEqual(Object.keys(contributors[0]).sort(), ["id", "in_faction", "username", "value"])
+  })
+
+  await test("live sanitized category fixtures confirm required nested category paths", () => {
+    const drugs = decodePersonalStatsResponse(livePersonalStatsFixtures.categoryDrugs, { kind: "category", category: "drugs" })
+    assert.equal(drugs.metrics.xantaken, 0)
+    assert.equal(drugs.metrics.lsdtaken, 0)
+    assert.equal(drugs.metrics.cantaken, 0)
+    assert.equal(drugs.missingMetrics.length, 6)
+
+    const items = decodePersonalStatsResponse(livePersonalStatsFixtures.categoryItems, { kind: "category", category: "items" })
+    assert.equal(items.metrics.alcoholused, 0)
+    assert.equal(items.metrics.boostersused, 0)
+    assert.equal(items.metrics.energydrinkused, 0)
+    assert.equal(items.metrics.statenhancersused, 0)
+
+    const other = decodePersonalStatsResponse(livePersonalStatsFixtures.categoryOther, { kind: "category", category: "other" })
+    assert.equal(other.metrics.refills, 0)
+
+    const networth = decodePersonalStatsResponse(livePersonalStatsFixtures.categoryNetworth, { kind: "category", category: "networth" })
+    assert.equal(networth.metrics.networth, 0)
+    assert.ok(livePersonalStatsFixtures.capture.ownerNetworthBreakdownKeys.includes("wallet"))
+  })
+
+  await test("live sanitized historic fixtures confirm name/value/timestamp records", () => {
+    const decoded = decodePersonalStatsResponse(livePersonalStatsFixtures.historicBatch1, {
+      kind: "historic",
+      stats: ["xantaken", "lsdtaken"],
+      timestamp: 1794000000,
+    })
+    assert.equal(decoded.kind, "historic")
+    assert.deepEqual(decoded.stats, [
+      { name: "xantaken", value: 0, timestamp: 1794000000 },
+      { name: "lsdtaken", value: 0, timestamp: 1794000000 },
+    ])
+    assert.deepEqual(decoded.missingStats, [])
+    assert.deepEqual(livePersonalStatsFixtures.capture.ownerAllTopLevelKeys.slice(0, 5), [
+      "attacking", "battle_stats", "jobs", "trading", "jail",
+    ])
+    assert.equal(livePersonalStatsFixtures.capture.keyAccessLevel, 4)
+    assert.equal(livePersonalStatsFixtures.capture.keyAccessType, "Full Access")
+  })
+
+  await test("decodes category-specific nested personalstats and proposes only required category fallbacks", () => {
+    const drugs = decodePersonalStatsResponse(personalStatsFixtures.categoryDrugs, { kind: "category", category: "drugs" })
+    assert.equal(drugs.kind, "current")
+    assert.equal(drugs.category, "drugs")
+    assert.equal(drugs.metrics.xantaken, 20)
+    assert.equal(drugs.metrics.lsdtaken, 14)
+    assert.equal(drugs.metrics.alcoholused, null, "fields outside the requested category remain unknown")
+    assert.ok(drugs.missingMetrics.includes("alcoholused"))
+
+    const items = decodePersonalStatsResponse(personalStatsFixtures.categoryItems, { kind: "category", category: "items" })
+    assert.equal(items.metrics.alcoholused, 22)
+    assert.equal(items.metrics.boostersused, 21)
+    assert.equal(items.metrics.energydrinkused, 23)
+    assert.equal(items.metrics.statenhancersused, 24)
+
+    const other = decodePersonalStatsResponse(personalStatsFixtures.categoryOther, { kind: "category", category: "other" })
+    assert.equal(other.metrics.refills, 25)
+
+    const networth = decodePersonalStatsResponse(personalStatsFixtures.categoryNetworth, { kind: "category", category: "networth" })
+    assert.equal(networth.metrics.networth, 260000000)
+
+    assert.deepEqual(
+      categoriesForMissingPersonalStats(["energydrinkused", "refills", "networth"]),
+      ["items", "other", "networth"],
+      "fallback selection should request only the categories needed by missing metrics",
+    )
+  })
+
+  await test("decodes historic stat arrays, preserves per-stat timestamps, and marks omitted stats unknown", () => {
+    const decoded = decodePersonalStatsResponse(personalStatsFixtures.historic, {
+      kind: "historic",
+      stats: ["xantaken", "lsdtaken", "overdosed"],
+      timestamp: 1794000000,
+    })
+    assert.equal(decoded.kind, "historic")
+    assert.deepEqual(decoded.stats.slice(0, 2), [
+      { name: "xantaken", value: 247, timestamp: 1794000000 },
+      { name: "lsdtaken", value: 390, timestamp: 1794000015 },
+    ])
+    assert.deepEqual(decoded.missingStats, ["overdosed"], "a stat omitted by Torn must not become zero")
+    assert.equal(decoded.stats[2].name, "new_stat_not_requested", "unknown future stat names are retained rather than discarded")
+  })
+
+  await test("builds valid personalstats request paths and enforces the historical ten-stat limit", () => {
+    assert.equal(buildPersonalStatsPath(12345, { kind: "popular" }), "/user/12345/personalstats?cat=popular")
+    assert.equal(buildPersonalStatsPath("12345", { kind: "all" }), "/user/12345/personalstats?cat=all")
+    assert.equal(buildPersonalStatsPath(12345, { kind: "category", category: "drugs" }), "/user/12345/personalstats?cat=drugs")
+    assert.equal(buildPersonalStatsPath(null, { kind: "popular" }), "/user/personalstats?cat=popular")
+    assert.equal(buildPersonalStatsPath(null, { kind: "all" }), "/user/personalstats?cat=all")
+    const historicPath = buildPersonalStatsPath(12345, {
+      kind: "historic",
+      stats: ["xantaken", "lsdtaken"],
+      timestamp: 1794000000,
+    })
+    const historicUrl = new URL(historicPath, "https://api.torn.com/v2")
+    assert.equal(historicUrl.searchParams.get("stat"), "xantaken,lsdtaken")
+    assert.equal(historicUrl.searchParams.get("timestamp"), "1794000000")
+    assert.throws(() => buildPersonalStatsPath(0, { kind: "popular" }), /Player ID/)
+    assert.throws(() => buildPersonalStatsPath(12345, {
+      kind: "historic",
+      stats: PERSONAL_STATS_HISTORIC_NAMES_FOR_TEST,
+      timestamp: 1794000000,
+    }), /between 1 and 10/)
+    assert.throws(() => buildPersonalStatsPath(12345, {
+      kind: "historic",
+      stats: ["xantaken"],
+      timestamp: 0,
+    }), /Unix timestamp/)
+  })
+
+  await test("rejects invalid current and historical personalstats payloads rather than casting unknown data", () => {
+    assert.throws(() => decodePersonalStatsResponse({}, { kind: "popular" }), /missing its personalstats/)
+    assert.throws(() => decodePersonalStatsResponse({ personalstats: [] }, { kind: "popular" }), /must contain a personalstats object/)
+    assert.throws(() => decodePersonalStatsResponse({ personalstats: { items: {} } }, { kind: "category", category: "drugs" }), /did not include the requested drugs/)
+    assert.throws(() => decodePersonalStatsResponse({ personalstats: {} }, {
+      kind: "historic", stats: ["xantaken"], timestamp: 1794000000,
+    }), /must contain a personalstats array/)
+    assert.throws(() => decodePersonalStatsResponse({ personalstats: [{ name: "xantaken", value: "7", timestamp: 1794000000 }] }, {
+      kind: "historic", stats: ["xantaken"], timestamp: 1794000000,
+    }), /invalid name, value or timestamp/)
+  })
+
+  await test("requests a member's personalstats with the requested selection and Authorization header", async () => {
+    let requestedUrl = ""
+    let authorization = ""
+    const client = new TornApiClient({
+      apiKey: "personalstats-test-key",
+      fetcher: async (input, init) => {
+        requestedUrl = String(input)
+        authorization = new Headers(init?.headers).get("Authorization") ?? ""
+        return new Response(JSON.stringify(personalStatsFixtures.popular))
+      },
+    })
+    const response = await client.getUserPersonalStatsFor(12345, { kind: "popular" })
+    assert.equal(requestedUrl, "https://api.torn.com/v2/user/12345/personalstats?cat=popular")
+    assert.equal(authorization, "ApiKey personalstats-test-key")
+    assert.equal(decodePersonalStatsResponse(response, { kind: "popular" }).metrics.xantaken, 7)
+  })
+
+  await test("requests owner personalstats without a player ID while preserving Authorization", async () => {
+    let requestedUrl = ""
+    let authorization = ""
+    const client = new TornApiClient({
+      apiKey: "owner-personalstats-test-key",
+      fetcher: async (input, init) => {
+        requestedUrl = String(input)
+        authorization = new Headers(init?.headers).get("Authorization") ?? ""
+        return new Response(JSON.stringify(personalStatsFixtures.popular))
+      },
+    })
+    const response = await client.getMyPersonalStats({ kind: "popular" })
+    assert.equal(requestedUrl, "https://api.torn.com/v2/user/personalstats?cat=popular")
+    assert.equal(authorization, "ApiKey owner-personalstats-test-key")
+    assert.equal(decodePersonalStatsResponse(response, { kind: "popular" }).metrics.xantaken, 7)
   })
 
   await test("sends the Torn key in Authorization, never in the URL", async () => {
@@ -669,17 +1819,12 @@ try {
       error.message.includes("rate limit"))
   })
 
-  await test("sign-in automatically uses a company director login key when Torn returns director as a numeric ID", async () => {
+  await test("sign-in verifies faction membership without probing company or director access", async () => {
     const originalFetch = globalThis.fetch
     const apiKeys = new Map()
-    const companyKeys = new Map()
-    const companyApiKeys = new Map()
-    const companies = new Map()
-    const companySnapshots = new Map()
-    const companyFinancials = new Map()
-    const directorCache = new Map([["777", { is_director: 1 }]])
     const players = new Map()
     const sessions = new Map()
+    const tornPaths = []
     const db = {
       prepare(sql) {
         let values = []
@@ -689,25 +1834,16 @@ try {
             const lower = sql.toLowerCase()
             if (lower.includes("insert into players")) players.set(String(values[0]), { player_id: String(values[0]), player_name: values[1] })
             if (lower.includes("insert into api_keys")) apiKeys.set(String(values[0]), { last_four: values[3], updated_at: values[5], ciphertext: values[1], iv: values[2] })
-            if (lower.includes("insert into company_keys")) companyKeys.set(String(values[0]), { last_four: values[3], updated_at: values[5], ciphertext: values[1], iv: values[2] })
-            if (lower.includes("insert into company_api_keys")) companyApiKeys.set(`${values[0]}:${values[1]}`, { player_id: String(values[0]), company_id: String(values[1]), last_four: values[4], company_name: values[5], company_type: values[6], updated_at: values[8], ciphertext: values[2], iv: values[3] })
-            if (lower.includes("insert into companies")) companies.set(`${values[0]}:${values[1]}`, { player_id: String(values[0]), company_id: String(values[1]), company_name: values[2], company_type: values[3], profile_json: values[4], employees_json: values[5], fetched_at: values[6] })
-            if (lower.includes("insert into company_snapshots")) companySnapshots.set(`${values[0]}:${values[1]}`, { player_id: String(values[0]), company_id: String(values[1]), profile_json: values[2], employees_json: values[3], fetched_at: values[4] })
-            if (lower.includes("insert into company_financials")) companyFinancials.set(`${values[0]}:${values[1]}`, { player_id: String(values[0]), company_id: String(values[1]), stock_json: values[2], fetched_at: values[3] })
-            if (lower.includes("insert into sessions")) sessions.set(String(values[0]), { token_hash: String(values[0]), player_id: String(values[1]), expires_at: Number(values[2]) })
-            return { success: true }
+            if (lower.includes("insert into sessions")) sessions.set(String(values[0]), { player_id: String(values[1]), expires_at: Number(values[2]) })
+            return { success: true, meta: { changes: 1 } }
           },
           async first() {
             const lower = sql.toLowerCase()
-            if (lower.includes("from company_keys")) return companyKeys.get(String(values[0])) ?? null
-            if (lower.includes("from company_api_keys")) return [...companyApiKeys.values()].filter((row) => row.player_id === String(values[0])).sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))[0] ?? null
-            if (lower.includes("from faction_member_cache")) return directorCache.get(String(values[0])) ?? null
-            if (lower.includes("from companies")) return companies.get(`${values[0]}:${values[1]}`) ?? null
             if (lower.includes("from api_keys")) return apiKeys.get(String(values[0])) ?? null
             if (lower.includes("from sessions s join players p")) {
-              const savedSession = sessions.get(String(values[0]))
-              if (!savedSession || savedSession.expires_at <= Number(values[1])) return null
-              return { ...players.get(savedSession.player_id), player_id: savedSession.player_id }
+              const saved = sessions.get(String(values[0]))
+              if (!saved || saved.expires_at <= Number(values[1])) return null
+              return { player_id: saved.player_id, player_name: "Faction Member", is_admin: 0 }
             }
             return null
           },
@@ -715,69 +1851,38 @@ try {
         }
       },
     }
-    let combinedCompanyRequest = false
-    let combinedRequests = 0
-    let combinedFailureObserved = false
-    let fallbackProfileUsed = false
-    let tornRequestCount = 0
     globalThis.fetch = async (input) => {
-      tornRequestCount += 1
-      const url = new URL(String(input))
-      const path = url.pathname
-      if (path.endsWith("/v2/user/profile")) return new Response(JSON.stringify({ profile: { id: 777, name: "Test Director" } }))
+      const path = new URL(String(input)).pathname
+      tornPaths.push(path)
+      if (path.endsWith("/v2/user/profile")) return new Response(JSON.stringify({ profile: { id: 777, name: "Faction Member" } }))
       if (path.endsWith("/v2/user/faction")) return new Response(JSON.stringify({ faction: { id: 8317, name: "Naughty Souls" } }))
-      if (path.endsWith("/v2/user/job")) return new Response(JSON.stringify({ job: { type: "company", id: 77, type_id: 28, name: "Test Company", position: "Director" } }))
-      if (path.endsWith("/v2/company/profile")) {
-        fallbackProfileUsed = true
-        return new Response(JSON.stringify({ company: { id: 77, name: "Test Company", type: { id: 28, name: "Oil Rig" }, director: 777 } }))
-      }
-      if (path.endsWith("/v2/company/employees")) return new Response(JSON.stringify({ employees: [] }))
-      if (path.endsWith("/v2/company/stock")) return new Response(JSON.stringify({ stock: [] }))
-      if (path.endsWith("/v2/company") && url.searchParams.get("selections") === "timestamp,profile,stock,employees") {
-        combinedRequests += 1
-        if (combinedRequests === 2) {
-          combinedFailureObserved = true
-          return new Response(JSON.stringify({ error: { code: 16, error: "Not granted" } }), { status: 403 })
-        }
-        combinedCompanyRequest = true
-        return new Response(JSON.stringify({ employees: [], stock: [], profile: { id: 77, name: "Test Company", type: { id: 28, name: "Oil Rig" }, director: { id: 777, name: "Test Director" } } }))
-      }
-      return new Response(JSON.stringify({ error: { code: 16, error: "Not granted" } }), { status: 403 })
+      throw new Error(`Unexpected Torn request during sign-in: ${path}`)
     }
     try {
       const response = await worker.fetch(new Request("https://worker.test/api/auth/sign-in", {
         method: "POST",
         headers: { Origin: "https://naughty-company-dashboard.pages.dev", "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: "primary-login-key-7777" }),
+        body: JSON.stringify({ apiKey: "member-login-key-7777" }),
       }), { DB: db, KEY_ENCRYPTION_SECRET: "test-secret-0123456789-abcdefghijklmnopqrstuvwxyz" })
       assert.equal(response.status, 200)
       const payload = await response.json()
-      assert.equal(payload.company.isDirector, true)
-      assert.equal(payload.company.key.saved, true)
-      assert.equal(payload.company.key.lastFour, "7777")
-      assert.equal(combinedCompanyRequest, true)
-      assert.equal(combinedFailureObserved, true)
-      assert.equal(fallbackProfileUsed, true)
-      assert.equal(companyKeys.get("777").last_four, apiKeys.get("777").last_four)
-      assert.equal([...companyApiKeys.values()][0].last_four, apiKeys.get("777").last_four)
-      assert.equal(companies.get("777:77").company_name, "Test Company")
-      assert.equal(companySnapshots.has("777:77"), true)
+      assert.equal(payload.player.id, "777")
+      assert.equal(payload.player.name, "Faction Member")
+      assert.equal(payload.isAdmin, false)
+      assert.equal(payload.company, undefined, "company permissions are not part of the login response")
+      assert.deepEqual(tornPaths, ["/v2/user/profile", "/v2/user/faction"])
+      assert.equal(apiKeys.get("777").last_four, "7777")
+      assert.equal(sessions.size, 1)
 
-      // A returning director with a saved login credential is auto-connected if the primary company record is missing.
-      companyKeys.clear()
-      companyApiKeys.clear()
-      const requestsBeforeRestore = tornRequestCount
-      const restored = await worker.fetch(new Request("https://worker.test/api/auth/session", {
+      const session = await worker.fetch(new Request("https://worker.test/api/auth/session", {
         headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: `Bearer ${payload.token}` },
       }), { DB: db, KEY_ENCRYPTION_SECRET: "test-secret-0123456789-abcdefghijklmnopqrstuvwxyz" })
-      assert.equal(restored.status, 200)
-      const restoredPayload = await restored.json()
-      assert.equal(restoredPayload.company.isDirector, true)
-      assert.equal(restoredPayload.company.key.saved, true)
-      assert.equal(companyKeys.has("777"), true)
-      assert.equal(companyApiKeys.has("777:77"), true)
-      assert.equal(companies.has("777:77"), true)
-      assert.ok(tornRequestCount > requestsBeforeRestore)
+      assert.equal(session.status, 200)
+      const sessionPayload = await session.json()
+      assert.equal(sessionPayload.isAdmin, false)
+      assert.equal(sessionPayload.key.saved, true)
+      assert.equal(sessionPayload.company, undefined)
+      assert.deepEqual(tornPaths, ["/v2/user/profile", "/v2/user/faction"], "restoring a member session makes no additional Torn requests")
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -932,6 +2037,12 @@ try {
     assert.equal(payload.service, "naughty-company-api")
     assert.equal(payload.database, "ok")
     assert.ok(payload.checkedAt)
+
+    const portalResponse = await worker.fetch(new Request("https://worker.test/health", {
+      headers: { Origin: "https://naughtyfamily.pages.dev" },
+    }), { DB: { prepare() { return { bind() { return this }, async first() { return { ok: 1 } }, async all() { return { results: [] } }, async run() { return { success: true } } } } } })
+    assert.equal(portalResponse.status, 200)
+    assert.equal(portalResponse.headers.get("access-control-allow-origin"), "https://naughtyfamily.pages.dev")
   })
 
   await test("company intelligence routes are registered and require authentication", async () => {
@@ -1049,346 +2160,82 @@ try {
     assert.equal(response.status, 403)
   })
 
-  await test("administrator elevation fails closed when Worker secrets are not configured", async () => {
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST",
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-session", "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "owner", password: "not-a-real-password" }),
-    }), { DB: db })
-    assert.equal(response.status, 503)
-    assert.match((await response.json()).error, /not configured/i)
+  await test("administrator access uses active player-ID roles rather than password step-up", () => {
+    const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
+    const appSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
+    const roleMigration = readFileSync(join(root, "migrations/auth/0012_administrator_registry.sql"), "utf8")
+    assert.match(workerSource, /LEFT JOIN administrators a ON a\.player_id = p\.player_id AND a\.revoked_at IS NULL/)
+    assert.match(workerSource, /if \(session\.is_admin !== 1\)/)
+    assert.match(workerSource, /INSERT INTO administrators \(player_id, granted_by, granted_at/)
+    assert.match(workerSource, /administrator\.granted/)
+    assert.match(workerSource, /administrator\.revoked/)
+    assert.match(roleMigration, /CREATE TABLE IF NOT EXISTS administrators/)
+    assert.match(roleMigration, /WHERE player_id = '351311'/)
+    assert.doesNotMatch(workerSource, /ADMIN_USERNAME|ADMIN_PASSWORD_HASH|isAdminElevated|admin_elevated_until/)
+    assert.doesNotMatch(appSource, /Unlock administration|\/api\/auth\/admin\/elevate|adminPassword|adminUsername/)
+    const adminPanelSource = readFileSync(join(root, "src/components/floor/admin-panel.tsx"), "utf8")
+    const adminHandlerStart = workerSource.indexOf("async function handleAdminRequest")
+    const adminHandlerEnd = workerSource.indexOf("\nasync function ", adminHandlerStart + 30)
+    const weeklyDiagnosticsStart = workerSource.indexOf('if (url.pathname === "/api/admin/faction/weekly-boundaries"')
+    const weeklyRecoveryStart = workerSource.indexOf('if (url.pathname === "/api/admin/faction/weekly-boundaries/recover"')
+    const adminGate = workerSource.indexOf("if (session.is_admin !== 1)", adminHandlerStart)
+    assert.ok(adminHandlerStart >= 0 && weeklyDiagnosticsStart > adminGate && weeklyDiagnosticsStart < adminHandlerEnd,
+      "weekly boundary diagnostics must remain inside the authenticated administrator handler")
+    assert.ok(weeklyRecoveryStart > weeklyDiagnosticsStart && weeklyRecoveryStart < adminHandlerEnd,
+      "weekly boundary recovery must remain inside the authenticated administrator handler")
+    assert.match(workerSource, /week_start_at AS weekStartAt, week_end_at AS weekEndAt/)
+    assert.match(workerSource, /ageMs > DAY \* 1000/, "a missing boundary can only be reconstructed during the first 24 hours")
+    assert.match(workerSource, /ageMs > 8 \* DAY \* 1000/, "existing frozen runs have a bounded eight-day recovery window")
+    assert.match(workerSource, /weekly report references this Sunday boundary/i)
+    assert.match(workerSource, /status = 'queued', next_index = 0/)
+    assert.match(workerSource, /WHERE run_id = \? AND status = \? AND updated_at = \?/, "recovery must use an optimistic status/timestamp claim")
+    assert.match(workerSource, /faction\.weekly_boundary\.recovered/)
+    assert.match(adminPanelSource, /weekly-boundaries/)
+    assert.match(adminPanelSource, /!actionsArmed \|\| !boundary\.recoverable/,
+      "recovery controls must stay disabled until admin actions are explicitly enabled")
   })
 
-  await test("administrator elevation rejects a sequential password even when its stored hash matches", async () => {
-    const { pbkdf2Sync } = require("node:crypto")
-    const weakPassword = "abc123!x"
-    const salt = Buffer.alloc(16, 9)
-    const digest = pbkdf2Sync(weakPassword, salt, 210000, 32, "sha256")
-    const passwordHash = ["pbkdf2-sha256", "210000", salt.toString("base64"), digest.toString("base64")].join("$")
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) {
-          return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
-        }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST",
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-policy-session", "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "owner", password: weakPassword }),
-    }), { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: passwordHash })
-    assert.equal(response.status, 401)
-    const payload = await response.json()
-    assert.match(payload.error, /administrator sign-in failed/i)
-    assert.equal(payload.diagnostic, "password_policy")
-  })
-
-  await test("owner elevation diagnostics identify username mismatch and malformed hash without exposing secrets", async () => {
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) {
-          return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
-        }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-diagnostics-session", "Content-Type": "application/json" }
-    const wrongUsername = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST", headers, body: JSON.stringify({ username: "wrong", password: "Correct!7Horse?9" }),
-    }), { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: "malformed" })
-    assert.equal(wrongUsername.status, 401)
-    assert.equal((await wrongUsername.json()).diagnostic, "username_mismatch")
-
-    const malformedHash = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST", headers, body: JSON.stringify({ username: "owner", password: "Correct!7Horse?9" }),
-    }), { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: "malformed" })
-    assert.equal(malformedHash.status, 401)
-    const payload = await malformedHash.json()
-    assert.equal(payload.diagnostic, "stored_hash_invalid")
-    assert.equal(Object.hasOwn(payload, "password"), false)
-    assert.equal(JSON.stringify(payload).includes("malformed"), false, "diagnostics must not echo secret values")
-  })
-
-  await test("administrator hash diagnostics are owner-only", async () => {
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        const normalized = sql.toLowerCase()
-        if (normalized.includes("from sessions s join players p")) return { player_id: "123456", player_name: "RegularMember", admin_elevated_until: 0 }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session" }
-    const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/hash-diagnostics", { headers }), {
-      DB: db,
-      ADMIN_PASSWORD_HASH: "pbkdf2-sha256$210000$c2FsdHNhbHRzYWx0c2FsdA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-    })
-    assert.equal(response.status, 403)
-    const payload = await response.json()
-    assert.equal(Object.hasOwn(payload, "hashFingerprint"), false)
-  })
-
-  await test("administrator elevation is session-scoped, expires, and can be explicitly revoked", async () => {
-    const { createHash, pbkdf2Sync } = require("node:crypto")
-    const password = "Correct!7Horse?9"
-    const salt = Buffer.alloc(16, 7)
-    const digest = pbkdf2Sync(password, salt, 210000, 32, "sha256")
-    const passwordHash = ["pbkdf2-sha256", "210000", salt.toString("base64"), digest.toString("base64")].join("$")
-    let elevatedUntil = 0
-    const db = { prepare(sql) {
-      let values = []
-      return {
-        bind(...args) { values = args; return this },
-        async first() {
-          const normalized = sql.toLowerCase()
-          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: elevatedUntil }
-          return null
-        },
-        async all() { return { results: [] } },
-        async run() {
-          if (sql.toLowerCase().startsWith("update sessions set admin_elevated_until = ?")) elevatedUntil = Number(values[0])
-          else if (sql.toLowerCase().startsWith("update sessions set admin_elevated_until = 0")) elevatedUntil = 0
-          return { success: true, meta: { changes: 1 } }
-        },
-      }
-    } }
-    const env = { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: passwordHash }
-    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-session", "Content-Type": "application/json", "cf-connecting-ip": "192.0.2.10" }
-    const elevated = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST", headers, body: JSON.stringify({ username: "owner", password }),
-    }), env)
-    assert.equal(elevated.status, 200)
-    const elevatedPayload = await elevated.json()
-    assert.equal(elevatedPayload.isAdmin, true)
-    assert.ok(elevatedUntil > Math.floor(Date.now() / 1000))
-    assert.ok(elevatedUntil <= Math.floor(Date.now() / 1000) + 1800)
-
-    const diagnostics = await worker.fetch(new Request("https://worker.test/api/auth/admin/hash-diagnostics", { headers }), env)
-    assert.equal(diagnostics.status, 200)
-    const diagnosticsPayload = await diagnostics.json()
-    assert.equal(diagnosticsPayload.hashFingerprint, createHash("sha256").update(passwordHash, "utf8").digest("hex"))
-    assert.equal(diagnosticsPayload.hashFormatValid, true)
-    assert.equal(diagnosticsPayload.iterations, 210000)
-    assert.equal(Object.hasOwn(diagnosticsPayload, "passwordHash"), false)
-    assert.equal(JSON.stringify(diagnosticsPayload).includes(passwordHash), false, "hash diagnostics must not expose the stored hash")
-
-    const revoked = await worker.fetch(new Request("https://worker.test/api/auth/admin/de-elevate", { method: "POST", headers }), env)
-    assert.equal(revoked.status, 200)
-    assert.equal((await revoked.json()).isAdmin, false)
-    assert.equal(elevatedUntil, 0)
-
-    const adminRequest = await worker.fetch(new Request("https://worker.test/api/admin/overview", { headers }), env)
-    assert.equal(adminRequest.status, 403)
-  })
-
-  await test("administrator password hash round-trips Unicode and embedded spaces through the Worker verifier", async () => {
-    const { pbkdf2Sync, webcrypto } = require("node:crypto")
-    const password = "Café!2026 Horse?9"
-    assert.equal(validateAdminPassword(password).valid, true, "the synthetic Unicode password should pass policy")
-    const salt = Buffer.alloc(16, 11)
-    const digest = pbkdf2Sync(password, salt, 210000, 32, "sha256")
-    const key = await webcrypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"])
-    const webDigest = Buffer.from(await webcrypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: new Uint8Array(salt), iterations: 210000 }, key, 256))
-    assert.deepEqual(webDigest, digest, "Node and Web Crypto must encode the same candidate password identically")
-    const passwordHash = ["pbkdf2-sha256", "210000", salt.toString("base64"), digest.toString("base64")].join("$")
-
-    let elevatedUntil = 0
-    const db = { prepare(sql) {
+  await test("admin registry rejects non-administrator sessions and allows active role sessions", async () => {
+    const makeDb = (isAdmin) => ({ prepare(sql) {
       const normalized = sql.toLowerCase()
-      let values = []
       return {
-        bind(...args) { values = args; return this },
+        bind() { return this },
         async first() {
-          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "Synthetic Owner", admin_elevated_until: elevatedUntil }
+          if (normalized.includes("from sessions s join players p")) return { player_id: isAdmin ? "351311" : "777", player_name: "Registry Tester", is_admin: isAdmin ? 1 : 0 }
           return null
         },
-        async all() { return { results: [] } },
-        async run() {
-          if (normalized.startsWith("update sessions set admin_elevated_until = ?")) elevatedUntil = Number(values[0])
-          else if (normalized.startsWith("update sessions set admin_elevated_until = 0")) elevatedUntil = 0
-          return { success: true, meta: { changes: 1 } }
+        async all() {
+          if (normalized.includes("from administrators a join players p")) return { results: [{ playerId: "351311", playerName: "Registry Tester", grantedBy: "351311", grantedAt: "2026-11-02T00:00:00.000Z", revokedAt: null }] }
+          return { results: [] }
         },
+        async run() { return { success: true, meta: { changes: 1 } } },
       }
-    } }
-    const env = { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: passwordHash }
-    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer synthetic-unicode-owner-session", "Content-Type": "application/json" }
-    const elevated = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST", headers, body: JSON.stringify({ username: "owner", password }),
-    }), env)
-    assert.equal(elevated.status, 200, "Worker verifier should accept the exact candidate used to generate the hash")
-    assert.equal((await elevated.json()).isAdmin, true)
-    assert.ok(elevatedUntil > Math.floor(Date.now() / 1000))
-
-    const revoked = await worker.fetch(new Request("https://worker.test/api/auth/admin/de-elevate", { method: "POST", headers }), env)
-    assert.equal(revoked.status, 200)
-    assert.equal(elevatedUntil, 0, "synthetic elevated session should be revoked before the negative check")
-
-    const altered = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST", headers, body: JSON.stringify({ username: "owner", password: "Cafe!2026 Horse?9" }),
-    }), env)
-    assert.equal(altered.status, 401)
-    assert.equal((await altered.json()).diagnostic, "password_mismatch", "a one-character candidate change must fail closed")
-    assert.equal(elevatedUntil, 0, "a rejected candidate must not grant elevation")
-  })
-
-  await test("maintenance mode permits owner recovery authentication but blocks ordinary APIs until elevation", async () => {
-    let companyAutoConnectLookup = false
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        const normalized = sql.toLowerCase()
-        if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
-        if (normalized.includes("from admin_settings")) return { value_json: "true" }
-        if (normalized.includes("select company_id from company_api_keys") && normalized.includes("order by updated_at desc limit 1")) companyAutoConnectLookup = true
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-maintenance-session" }
-    const restored = await worker.fetch(new Request("https://worker.test/api/auth/session", { headers }), { DB: db })
-    assert.equal(restored.status, 200, "the allowlisted owner must be able to reach the separate elevation prompt")
-    const session = await restored.json()
-    assert.equal(session.isAdmin, false, "maintenance recovery must not confer admin privileges")
-    assert.equal(session.canElevateAdmin, true)
-    assert.equal(companyAutoConnectLookup, false, "maintenance recovery should not trigger automatic company connection work")
-
-    const protectedData = await worker.fetch(new Request("https://worker.test/api/me/health", { headers }), { DB: db })
-    assert.equal(protectedData.status, 401, "normal authenticated API routes remain blocked during maintenance before elevation")
-  })
-
-  await test("expired administrator elevation is denied at the Worker even if the browser still has stale admin state", async () => {
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) {
-          return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: Math.floor(Date.now() / 1000) - 60 }
-        }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const response = await worker.fetch(new Request("https://worker.test/api/admin/overview", {
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer stale-admin-session" },
-    }), { DB: db })
-    assert.equal(response.status, 403)
-    assert.match((await response.json()).error, /administrator verification/i)
-  })
-
-  await test("administrator elevation rate-limits repeated invalid credentials", async () => {
-    let attempt = { failures: 0, windowStartedAt: Math.floor(Date.now() / 1000), lockedUntil: 0 }
-    const db = { prepare(sql) {
-      let values = []
-      return {
-        bind(...args) { values = args; return this },
-        async first() {
-          const normalized = sql.toLowerCase()
-          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
-          if (normalized.includes("from admin_auth_attempts") && normalized.includes("select locked_until")) return { lockedUntil: attempt.lockedUntil }
-          if (normalized.includes("from admin_auth_attempts") && normalized.includes("select failures")) return { ...attempt, windowStartedAt: attempt.windowStartedAt, lockedUntil: attempt.lockedUntil }
-          return null
-        },
-        async all() { return { results: [] } },
-        async run() {
-          if (sql.toLowerCase().startsWith("insert into admin_auth_attempts")) attempt = { failures: Number(values[1]), windowStartedAt: Number(values[2]), lockedUntil: Number(values[3]) }
-          return { success: true, meta: { changes: 1 } }
-        },
-      }
-    } }
-    const env = { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: "malformed" }
-    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-session", "Content-Type": "application/json", "cf-connecting-ip": "192.0.2.11" }
-    for (let index = 0; index < 5; index++) {
-      const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-        method: "POST", headers, body: JSON.stringify({ username: "wrong", password: "incorrect-password" }),
-      }), env)
-      assert.equal(response.status, index === 4 ? 429 : 401)
-    }
-    assert.equal(attempt.failures, 5)
-    assert.ok(attempt.lockedUntil > Math.floor(Date.now() / 1000))
-    const locked = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST", headers, body: JSON.stringify({ username: "owner", password: "incorrect-password" }),
-    }), env)
-    assert.equal(locked.status, 429)
-  })
-
-  await test("administrator elevation is denied to non-allowlisted Torn identities", async () => {
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "777", player_name: "Member Tester", admin_elevated_until: 0 }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const response = await worker.fetch(new Request("https://worker.test/api/auth/admin/elevate", {
-      method: "POST",
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session", "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "owner", password: "some-password" }),
-    }), { DB: db, ADMIN_USERNAME: "owner", ADMIN_PASSWORD_HASH: "malformed" })
-    assert.equal(response.status, 403)
-    assert.match((await response.json()).error, /verification failed/i)
-  })
-
-  await test("admin API rejects requests without an authenticated dashboard session", async () => {
-    const response = await worker.fetch(new Request("https://worker.test/api/admin/overview", {
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev" },
-    }), { DB: { prepare() { return { bind() { return this }, async first() { return null }, async all() { return { results: [] } }, async run() { return { success: true } } } } } })
-    assert.equal(response.status, 401)
-    assert.match((await response.json()).error, /active dashboard session/i)
-  })
-
-  await test("owner Torn session has no admin access until step-up verification", async () => {
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true, meta: { changes: 1 } } },
-    } } }
-    const response = await worker.fetch(new Request("https://worker.test/api/admin/overview", {
-      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-standard-session" },
-    }), { DB: db })
-    assert.equal(response.status, 403)
-    assert.match((await response.json()).error, /administrator verification/i)
-  })
-
-  await test("admin API rejects an authenticated non-administrator", async () => {
-    const db = { prepare(sql) { return {
-      bind() { return this },
-      async first() {
-        if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "777", player_name: "Member Tester" }
-        return null
-      },
-      async all() { return { results: [] } },
-      async run() { return { success: true } },
-    } } }
-    const response = await worker.fetch(new Request("https://worker.test/api/admin/overview", {
+    } })
+    const denied = await worker.fetch(new Request("https://worker.test/api/admin/administrators", {
       headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer member-session" },
-    }), { DB: db })
-    assert.equal(response.status, 403)
-    assert.match((await response.json()).error, /administrator (?:verification|access)/i)
+    }), { DB: makeDb(false) })
+    assert.equal(denied.status, 403)
+    assert.match((await denied.json()).error, /administrator access/i)
+
+    const allowed = await worker.fetch(new Request("https://worker.test/api/admin/administrators", {
+      headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer admin-session" },
+    }), { DB: makeDb(true) })
+    assert.equal(allowed.status, 200)
+    assert.equal((await allowed.json()).administrators[0].playerId, "351311")
+  })
+
+  await test("administrators cannot grant themselves or revoke their own role", async () => {
+    const db = { prepare(sql) { return {
+      bind() { return this },
+      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "Owner", is_admin: 1 }; return null },
+      async all() { return { results: [] } },
+      async run() { return { success: true, meta: { changes: 1 } } },
+    } } }
+    const headers = { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer owner-session", "Content-Type": "application/json" }
+    const grant = await worker.fetch(new Request("https://worker.test/api/admin/administrators/grant", { method: "POST", headers, body: JSON.stringify({ playerId: "351311" }) }), { DB: db })
+    assert.equal(grant.status, 409)
+    const revoke = await worker.fetch(new Request("https://worker.test/api/admin/administrators/revoke", { method: "POST", headers, body: JSON.stringify({ playerId: "351311" }) }), { DB: db })
+    assert.equal(revoke.status, 409)
   })
 
   await test("admin automation insights aggregate runs for the selected time window", async () => {
@@ -1400,7 +2247,7 @@ try {
         bind(...args) { values = args; return this },
         async first() {
           const normalized = sql.toLowerCase()
-          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: Math.floor(Date.now() / 1000) + 1800 }
+          if (normalized.includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", is_admin: 1 }
           if (normalized.includes("count(*) as totalruns")) return { totalRuns: 4, succeededRuns: 2, failedRuns: 1, partialRuns: 1, runningRuns: 0, completedRuns: 4, avgDurationSeconds: 65.2, companiesFailed: 3, alertsCreated: 5, latestRunAt: "2026-10-10T18:00:00.000Z" }
           return null
         },
@@ -1432,7 +2279,7 @@ try {
     const writes = []
     const db = { prepare(sql) { let values = []; return {
       bind(...args) { values = args; return this },
-      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: Math.floor(Date.now() / 1000) + 1800 }; return null },
+      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", is_admin: 1 }; return null },
       async all() { return { results: [] } },
       async run() { if (sql.toLowerCase().includes("insert into admin_settings")) writes.push(values); return { success: true, meta: { changes: 1 } } },
     } } }
@@ -1448,7 +2295,7 @@ try {
   await test("admin panel cannot disable its primary administrator account", async () => {
     const db = { prepare(sql) { return {
       bind() { return this },
-      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: Math.floor(Date.now() / 1000) + 1800 }; return null },
+      async first() { if (sql.toLowerCase().includes("from sessions s join players p")) return { player_id: "351311", player_name: "SharpSplinter", is_admin: 1 }; return null },
       async all() { return { results: [] } },
       async run() { return { success: true, meta: { changes: 1 } } },
     } } }
@@ -1972,18 +2819,133 @@ try {
     const db = { prepare(sql) { let values = []; return { bind(...args) { values = args; return this }, async first() { const query = sql.toLowerCase(); if (query.includes("from sessions s join players p")) return { player_id: "777", player_name: "Key Tester" }; if (query.includes("from dashboard_member_status") || query.includes("from admin_settings")) return null; if (query.includes("select ciphertext, iv from company_api_keys where player_id = ? and company_id = ?")) return values[1] === "123" ? encrypted : null; if (query.includes("select company_id from company_api_keys where player_id = ? and company_id != ? limit 1")) return { company_id: "456" }; if (query.includes("select last_four, updated_at from company_api_keys where player_id = ? order by updated_at desc limit 1")) return { last_four: "9876", updated_at: "2026-10-10T00:00:00.000Z" }; return null }, async run() { writes.push({ sql, values }); return { success: true, meta: { changes: 1 } } } } } }
     const response = await worker.fetch(new Request("https://worker.test/api/auth/company-key?companyId=123", { method: "DELETE", headers: { Origin: "https://naughty-company-dashboard.pages.dev", Authorization: "Bearer company-key-session" } }), { DB: db, KEY_ENCRYPTION_SECRET: secret })
     assert.equal(response.status, 200)
-    assert.deepEqual(await response.json(), { deleted: true, companyId: "123", companyDataRetained: true, companyKeySaved: true })
+    assert.deepEqual(await response.json(), { deleted: true, companyId: "123", companyDataRetained: true, companyKeySaved: true, portalKeyStillProvidesAccess: false })
     assert.equal(writes.length, 1)
     assert.match(writes[0].sql, /DELETE FROM company_api_keys WHERE player_id = \? AND company_id = \?/)
     assert.deepEqual(writes[0].values, ["777", "123"])
     assert.equal(writes.some((write) => /DELETE FROM (companies|company_snapshots|company_financials)/i.test(write.sql)), false)
   })
 
-  await test("connection settings expose per-company key removal without deleting company records", () => {
+  await test("secondary company keys may belong to a different Torn player when they return a company profile", async () => {
+    const originalFetch = globalThis.fetch
+    const token = "secondary-company-key-session-token"
+    const tokenDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
+    const tokenHash = Array.from(new Uint8Array(tokenDigest), byte => byte.toString(16).padStart(2, "0")).join("")
+    const portalPlayerId = "777"
+    const secondaryKey = "synthetic-company-key-owned-by-another-player"
+    const portalKey = "synthetic-primary-portal-key"
+    const secret = "company-secondary-test-encryption-secret-0123456789"
+    const keyDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret))
+    const cryptoKey = await crypto.subtle.importKey("raw", keyDigest, { name: "AES-GCM" }, false, ["encrypt"])
+    const iv = crypto.getRandomValues(new Uint8Array(12))
+    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, cryptoKey, new TextEncoder().encode(portalKey))
+    const encryptedPortalKey = {
+      ciphertext: Buffer.from(ciphertext).toString("base64"),
+      iv: Buffer.from(iv).toString("base64"),
+    }
+    const writes = []
+    const db = {
+      prepare(sql) {
+        const normalized = sql.toLowerCase().replace(/\s+/g, " ").trim()
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            if (normalized.includes("from sessions s join players p")) {
+              assert.equal(values[0], tokenHash)
+              return {
+                player_id: portalPlayerId,
+                player_name: "Portal Owner",
+                faction_id: "8317",
+                faction_verified_at: new Date().toISOString(),
+                membership_check_attempted_at: null,
+                membership_check_status: null,
+                is_admin: 0,
+              }
+            }
+            if (normalized.startsWith("select disabled_at from dashboard_member_status")) return { disabled_at: null }
+            if (normalized.startsWith("select ciphertext, iv from api_keys where player_id = ?")) {
+              assert.deepEqual(values, [portalPlayerId])
+              return encryptedPortalKey
+            }
+            return null
+          },
+          async all() { return { results: [] } },
+          async run() {
+            writes.push({ sql: normalized, values: [...values] })
+            return { success: true, meta: { changes: 1 } }
+          },
+        }
+      },
+    }
+    const calls = []
+    globalThis.fetch = async (input, init = {}) => {
+      const url = new URL(String(input))
+      const authorization = new Headers(init.headers).get("Authorization")
+      calls.push({ path: url.pathname, authorization })
+      if (url.pathname === "/v2/key/info") {
+        return new Response(JSON.stringify({ info: { user: { id: 888 } } }), { status: 200 })
+      }
+      if (url.pathname === "/v2/company") {
+        assert.equal(authorization, "ApiKey " + secondaryKey)
+        return new Response(JSON.stringify({
+          profile: { id: 123, name: "Additional Company", type: { name: "Oil Rig" } },
+          employees: { employees: [] },
+          stock: { stock: [] },
+          timestamp: 1791000000,
+        }), { status: 200 })
+      }
+      throw new Error("Unexpected Torn API request in secondary-company test: " + url.pathname)
+    }
+
+    try {
+      const response = await worker.fetch(new Request("https://worker.test/api/auth/company-key", {
+        method: "POST",
+        headers: {
+          Origin: "https://naughty-company-dashboard.pages.dev",
+          Authorization: "Bearer " + token,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ apiKey: secondaryKey }),
+      }), {
+        DB: db,
+        KEY_ENCRYPTION_SECRET: secret,
+        ALLOWED_ORIGIN: "https://naughty-company-dashboard.pages.dev",
+      }, { waitUntil() {} })
+
+      assert.equal(response.status, 200)
+      assert.deepEqual(await response.json(), {
+        saved: true,
+        secondary: true,
+        companyId: 123,
+        companyName: "Additional Company",
+        companyType: "Oil Rig",
+        lastFour: secondaryKey.slice(-4),
+      })
+      assert.deepEqual(calls.map(call => call.path), ["/v2/company"], "the company key must be validated against its company profile")
+      assert.ok(calls.every(call => call.authorization === "ApiKey " + secondaryKey))
+      const savedCompanyKey = writes.find(write => write.sql.startsWith("insert into company_api_keys"))
+      assert.ok(savedCompanyKey, "the validated key must be stored in the per-company key table")
+      assert.equal(savedCompanyKey.values[0], portalPlayerId, "the connection remains owned by the authenticated portal account")
+      assert.equal(savedCompanyKey.values[1], "123", "the key is associated with the company returned by Torn")
+      assert.equal(savedCompanyKey.values[4], secondaryKey.slice(-4))
+      assert.equal(writes.some(write => write.sql.startsWith("insert into company_keys")), false, "secondary keys must not replace the primary portal/company key")
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+  await test("company connection settings reuse the portal key and allow optional secondary company keys", () => {
     const source = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
-    assert.match(source, /deleteSavedCompanyKey/)
-    assert.match(source, /Remove key/)
-    assert.match(source, /\/api\/auth\/company-key\?companyId=/)
+    const settings = readFileSync(join(root, "src/components/portal/workspaces.tsx"), "utf8")
+    assert.match(source, /Your single saved portal key is reused for company data/)
+    assert.match(source, /Your portal API key could not connect a company/)
+    assert.match(source, /\/api\/auth\/company-key/)
+    assert.match(settings, /settings-secondary-company-key/)
+    assert.match(settings, /Validate & add secondary key/)
+    assert.match(settings, /removeCompanyKey/)
+    assert.match(settings, /can_remove_key/)
+    assert.match(settings, /uses_portal_key/)
+    assert.doesNotMatch(readFileSync(join(root, "src/worker/index.ts"), "utf8"), /if \(isSecondary\) await validatePrivateLiveKeyOwner\(env, apiKey, session\.player_id\)/, "secondary company keys may belong to a different Torn player")
   })
 
   await test("historical company trends are owner-scoped, ordered, and summarize period changes", async () => {
@@ -2388,6 +3350,481 @@ try {
     assert.match(workerSource, /if \(!skipAutomationSchemaBootstrap\) await ensureAutomationSchema\(env\)/)
     assert.match(migration, /CREATE TABLE IF NOT EXISTS discord_account_links/)
     assert.match(migration, /CREATE TABLE IF NOT EXISTS discord_link_codes/)
+  })
+
+  async function makeEncryptedTestKey(secret, apiKey) {
+    const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret))
+    const key = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt"])
+    const iv = crypto.getRandomValues(new Uint8Array(12))
+    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(apiKey))
+    return { ciphertext: Buffer.from(ciphertext).toString("base64"), iv: Buffer.from(iv).toString("base64") }
+  }
+
+  async function makeMembershipFixture({ members, failDeleteOnce = null } = {}) {
+    const secret = "membership-e2e-secret-0123456789-abcdefghijklmnopqrstuvwxyz"
+    const players = new Map()
+    const sessions = new Map()
+    const apiKeys = new Map()
+    const administrators = new Map()
+    const disabled = new Map()
+    const halloweenTables = {
+      halloween_historical_keys: new Map(),
+      halloween_event_logs: new Map(),
+      halloween_live_snapshots: new Map(),
+      halloween_collection_jobs: new Map(),
+      halloween_live_snapshot_jobs: new Map(),
+      halloween_member_event_slots: new Map(),
+      halloween_api_throttles: new Map(),
+    }
+    const factionCache = new Map()
+    const sharing = new Map()
+    const audit = []
+    let failDelete = failDeleteOnce
+    const tokenByPlayer = new Map()
+    for (const member of members) {
+      const playerId = String(member.playerId)
+      players.set(playerId, {
+        player_id: playerId,
+        player_name: member.playerName || "Test Member " + playerId,
+        faction_id: member.factionId ?? "8317",
+        faction_verified_at: member.verifiedAt ?? new Date(Date.now() - 8 * 60 * 1000).toISOString(),
+        membership_check_attempted_at: member.attemptedAt ?? null,
+        membership_check_status: member.checkStatus ?? null,
+        created_at: new Date(Date.now() - 86400000).toISOString(),
+      })
+      if (member.apiKey) apiKeys.set(playerId, await makeEncryptedTestKey(secret, member.apiKey))
+      if (member.isAdmin) administrators.set(playerId, {
+        player_id: playerId,
+        granted_by: "900",
+        granted_at: new Date().toISOString(),
+        revoked_by: null,
+        revoked_at: null,
+      })
+      const token = member.token || "e2e-session-" + playerId
+      tokenByPlayer.set(playerId, token)
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
+      const tokenHash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("")
+      sessions.set(tokenHash, { token_hash: tokenHash, player_id: playerId, expires_at: Math.floor(Date.now() / 1000) + 3600 })
+      for (const table of Object.values(halloweenTables)) table.set(playerId, { player_id: playerId, marker: "retained-until-cleanup" })
+      factionCache.set(playerId, { player_id: playerId, is_director: 1 })
+      sharing.set(playerId + ":777", { owner_player_id: playerId, recipient_player_id: "777" })
+      sharing.set("777:" + playerId, { owner_player_id: "777", recipient_player_id: playerId })
+    }
+
+    const db = {
+      prepare(sql) {
+        const normalized = sql.toLowerCase().replace(/\s+/g, " ").trim()
+        let values = []
+        return {
+          bind(...args) { values = args; return this },
+          async first() {
+            if (normalized.includes("from sessions s join players p")) {
+              const savedSession = sessions.get(String(values[0]))
+              if (!savedSession || savedSession.expires_at <= Number(values[1])) return null
+              const player = players.get(savedSession.player_id)
+              if (!player) return null
+              const role = administrators.get(savedSession.player_id)
+              return {
+                ...player,
+                is_admin: role && role.revoked_at == null ? 1 : 0,
+              }
+            }
+            if (normalized.startsWith("select disabled_at from dashboard_member_status")) {
+              return { disabled_at: disabled.get(String(values[0])) ?? null }
+            }
+            if (normalized.startsWith("select ciphertext, iv from api_keys")) return apiKeys.get(String(values[0])) ?? null
+            if (normalized.startsWith("select player_id from halloween_historical_keys")) {
+              const row = halloweenTables.halloween_historical_keys.get(String(values[0]))
+              return row ? { player_id: String(values[0]) } : null
+            }
+            if (normalized.startsWith("select ciphertext, iv from halloween_historical_keys")) {
+              const row = halloweenTables.halloween_historical_keys.get(String(values[0]))
+              return row?.ciphertext && row?.iv ? row : null
+            }
+            if (normalized.startsWith("select last_request_at from halloween_api_throttles")) {
+              return halloweenTables.halloween_api_throttles.get(String(values[0])) ?? null
+            }
+            if (normalized.startsWith("select job_id, player_id, event_year, status, cursor_ts, cursor_url, cursor_direction, pages_collected, logs_collected, window_start_at, window_end_at from halloween_collection_jobs where job_id = ?")) {
+              return [...halloweenTables.halloween_collection_jobs.values()].find(row => row.job_id === String(values[0])) ?? null
+            }
+            if (normalized.startsWith("select start_at, end_at, historical_collection_enabled from halloween_event_windows")) {
+              return { start_at: "2026-10-25T10:00:00.000Z", end_at: "2026-11-01T10:00:00.000Z", historical_collection_enabled: 1 }
+            }
+            if (normalized.startsWith("select value_json from admin_settings")) return null
+            if (normalized.includes("from administrators a join players p")) {
+              const role = administrators.get(String(values[0]))
+              const player = players.get(String(values[0]))
+              return role && player ? { player_name: player.player_name, revoked_at: role.revoked_at } : null
+            }
+            return null
+          },
+          async all() {
+            if (normalized.startsWith("pragma table_info(admin_jobs)")) return { results: [{ name: "job_payload_json" }] }
+            return { results: [] }
+          },
+          async run() {
+            if (failDelete && normalized.startsWith("delete from " + failDelete)) {
+              failDelete = null
+              throw new Error("Injected D1 cleanup failure for test coverage.")
+            }
+            if (normalized.startsWith("update players set membership_check_attempted_at = ?, membership_check_status = 'checking'")) {
+              const [attemptedAt, playerId, claimBefore] = values
+              const player = players.get(String(playerId))
+              if (!player) return { success: true, meta: { changes: 0 } }
+              const canClaim = player.membership_check_status === "cleanup_pending" ||
+                player.membership_check_attempted_at == null ||
+                player.membership_check_attempted_at < String(claimBefore)
+              if (!canClaim) return { success: true, meta: { changes: 0 } }
+              player.membership_check_attempted_at = String(attemptedAt)
+              player.membership_check_status = "checking"
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("update players set membership_check_status = 'unavailable'")) {
+              const [playerId, attemptedAt] = values
+              const player = players.get(String(playerId))
+              if (!player || (values.length > 1 && player.membership_check_attempted_at !== attemptedAt)) return { success: true, meta: { changes: 0 } }
+              player.membership_check_status = "unavailable"
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("update players set membership_check_status = 'cleanup_pending'")) {
+              const player = players.get(String(values[0]))
+              if (!player) return { success: true, meta: { changes: 0 } }
+              player.membership_check_status = "cleanup_pending"
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("update players set faction_id = ?, faction_verified_at = ?, membership_check_attempted_at = ?, membership_check_status = null")) {
+              const [factionId, verifiedAt, attemptedAt, updatedAt, playerId] = values
+              const player = players.get(String(playerId))
+              if (!player) return { success: true, meta: { changes: 0 } }
+              Object.assign(player, {
+                faction_id: factionId,
+                faction_verified_at: verifiedAt,
+                membership_check_attempted_at: attemptedAt,
+                membership_check_status: null,
+                updated_at: updatedAt,
+              })
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("update administrators set revoked_by = 'system'")) {
+              const [revokedAt, playerId] = values
+              const role = administrators.get(String(playerId))
+              if (!role || role.revoked_at != null) return { success: true, meta: { changes: 0 } }
+              role.revoked_by = "system"
+              role.revoked_at = revokedAt
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("update administrators set revoked_by = ?")) {
+              const [revokedBy, revokedAt, playerId] = values
+              const activeCount = [...administrators.values()].filter(role => role.revoked_at == null).length
+              const role = administrators.get(String(playerId))
+              if (!role || role.revoked_at != null || activeCount <= 1) return { success: true, meta: { changes: 0 } }
+              role.revoked_by = String(revokedBy)
+              role.revoked_at = String(revokedAt)
+              return { success: true, meta: { changes: 1 } }
+            }
+            if (normalized.startsWith("delete from sessions where player_id = ?")) {
+              const playerId = String(values[0])
+              let changes = 0
+              for (const [hash, session] of sessions) if (session.player_id === playerId) { sessions.delete(hash); changes++ }
+              return { success: true, meta: { changes } }
+            }
+            if (normalized.startsWith("delete from sessions where token_hash = ?")) {
+              return { success: true, meta: { changes: sessions.delete(String(values[0])) ? 1 : 0 } }
+            }
+            if (normalized.startsWith("delete from api_keys where player_id = ?")) {
+              return { success: true, meta: { changes: apiKeys.delete(String(values[0])) ? 1 : 0 } }
+            }
+            if (normalized.startsWith("delete from faction_member_cache where player_id = ?")) {
+              return { success: true, meta: { changes: factionCache.delete(String(values[0])) ? 1 : 0 } }
+            }
+            if (normalized.startsWith("delete from company_sharing_recipients")) {
+              const [ownerId, recipientId] = values.map(String)
+              let changes = 0
+              for (const [key, row] of sharing) if (row.owner_player_id === ownerId || row.recipient_player_id === recipientId) { sharing.delete(key); changes++ }
+              return { success: true, meta: { changes } }
+            }
+            if (normalized.startsWith("delete from halloween_")) {
+              const tableName = normalized.match(/^delete from (halloween_[a-z_]+)/)?.[1]
+              const table = tableName ? halloweenTables[tableName] : null
+              const playerId = String(values[0])
+              return { success: true, meta: { changes: table?.delete(playerId) ? 1 : 0 } }
+            }
+            if (normalized.startsWith("insert into admin_audit_log")) {
+              audit.push({
+                actor_player_id: values[0],
+                actor_player_name: values[1],
+                action: values[2],
+                target_type: values[3],
+                target_id: values[4],
+                outcome: values[5],
+                summary: values[6],
+              })
+              return { success: true, meta: { changes: 1 } }
+            }
+            return { success: true, meta: { changes: 1 } }
+          },
+        }
+      },
+    }
+    return {
+      env: { DB: db, KEY_ENCRYPTION_SECRET: secret, ALLOWED_ORIGIN: "https://naughty-company-dashboard.pages.dev" },
+      players, sessions, apiKeys, administrators, disabled, halloweenTables, factionCache, sharing, audit, tokenByPlayer,
+    }
+  }
+
+  await test("confirmed faction departure invalidates sessions, credentials, Halloween data, director cache, sharing, and administrator role end-to-end", async () => {
+    const originalFetch = globalThis.fetch
+    const fixture = await makeMembershipFixture({
+      members: [{ playerId: "222", playerName: "Departed Member", apiKey: "departed-login-key", isAdmin: true }],
+    })
+    const secondDeviceToken = "e2e-second-device-222"
+    const secondDeviceDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secondDeviceToken))
+    const secondDeviceHash = Array.from(new Uint8Array(secondDeviceDigest), byte => byte.toString(16).padStart(2, "0")).join("")
+    fixture.sessions.set(secondDeviceHash, {
+      token_hash: secondDeviceHash,
+      player_id: "222",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    })
+    assert.equal(fixture.sessions.size, 2, "the departure test begins with two active device sessions")
+    let factionChecks = 0
+    globalThis.fetch = async input => {
+      const path = new URL(String(input)).pathname
+      if (path === "/v2/user/faction") {
+        factionChecks++
+        return new Response(JSON.stringify({ faction: { id: 9999, name: "Different Faction" } }))
+      }
+      if (path === "/v2/user/profile") return new Response(JSON.stringify({ profile: { id: 222, name: "Departed Member" } }))
+      throw new Error("Unexpected Torn request in departure E2E test: " + path)
+    }
+    try {
+      const token = fixture.tokenByPlayer.get("222")
+      const response = await worker.fetch(new Request("https://worker.test/api/auth/session", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + token },
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(response.status, 401, "a confirmed departure must invalidate the authenticated request")
+      assert.equal(factionChecks, 1, "the stale member's faction must be checked against Torn")
+      assert.equal(fixture.sessions.size, 0, "all active sessions for the departed member must be deleted")
+      assert.equal(fixture.apiKeys.has("222"), false, "the saved faction login credential must be deleted")
+      assert.equal(fixture.factionCache.has("222"), false, "cached director/member data must be deleted")
+      assert.equal([...fixture.sharing.values()].some(row => row.owner_player_id === "222" || row.recipient_player_id === "222"), false, "sharing relationships must be deleted in both directions")
+      for (const [name, table] of Object.entries(fixture.halloweenTables)) assert.equal(table.has("222"), false, name + " must be purged on departure")
+      const role = fixture.administrators.get("222")
+      assert.ok(role?.revoked_at, "the durable administrator role must be revoked")
+      assert.equal(role.revoked_by, "system", "departure-driven revocation must be attributed to the system")
+      assert.equal(fixture.players.get("222").faction_id, "9999", "the new faction ID is stored only after cleanup completes")
+      const repeated = await worker.fetch(new Request("https://worker.test/api/auth/session", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + token },
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(repeated.status, 401, "a deleted session must remain invalid")
+      assert.equal(factionChecks, 1, "a deleted session must not trigger another Torn request")
+      const signIn = await worker.fetch(new Request("https://worker.test/api/auth/sign-in", {
+        method: "POST",
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: "departed-login-key" }),
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(signIn.status, 403, "a departed member must not be able to sign in again")
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test("cleanup-pending departure stays fail-closed through a Torn outage and retries cleanup", async () => {
+    const originalFetch = globalThis.fetch
+    const fixture = await makeMembershipFixture({
+      members: [{ playerId: "223", playerName: "Cleanup Pending Member", apiKey: "cleanup-login-key", isAdmin: true }],
+      failDeleteOnce: "halloween_event_logs",
+    })
+    let mode = "departed"
+    let factionChecks = 0
+    globalThis.fetch = async input => {
+      const path = new URL(String(input)).pathname
+      if (path !== "/v2/user/faction") throw new Error("Unexpected Torn request in cleanup retry E2E test: " + path)
+      factionChecks++
+      if (mode === "outage") return new Response(JSON.stringify({ error: { code: 9 } }), { status: 429 })
+      return new Response(JSON.stringify({ faction: { id: 9999, name: "Different Faction" } }))
+    }
+    try {
+      const token = fixture.tokenByPlayer.get("223")
+      const request = () => worker.fetch(new Request("https://worker.test/api/auth/session", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + token },
+      }), fixture.env, { waitUntil() {} })
+      const first = await request()
+      assert.equal(first.status, 401, "the first departure attempt must fail closed when cleanup throws")
+      assert.equal(fixture.players.get("223").membership_check_status, "cleanup_pending")
+      assert.ok(fixture.sessions.size === 1, "injected failure happens before session deletion")
+      assert.equal(fixture.apiKeys.has("223"), true, "the login key is retained until retry can finish cleanup")
+      assert.equal(fixture.administrators.get("223").revoked_by, "system", "admin revocation happens before fallible archive cleanup")
+
+      mode = "outage"
+      const duringOutage = await request()
+      assert.equal(duringOutage.status, 401, "a later Torn outage must not turn a confirmed departure into an outage-grace session")
+      assert.equal(fixture.players.get("223").membership_check_status, "cleanup_pending", "cleanup-pending state must survive retry outages")
+      assert.equal(fixture.sessions.size, 1, "failed cleanup keeps the session record inaccessible until cleanup can finish")
+      assert.equal(factionChecks, 2)
+
+      mode = "departed"
+      const retry = await request()
+      assert.equal(retry.status, 401, "a successful cleanup retry must leave the old session invalid")
+      assert.equal(fixture.players.get("223").faction_id, "9999")
+      assert.equal(fixture.players.get("223").membership_check_status, null)
+      assert.equal(fixture.sessions.size, 0)
+      assert.equal(fixture.apiKeys.has("223"), false)
+      for (const table of Object.values(fixture.halloweenTables)) assert.equal(table.has("223"), false)
+      assert.equal(factionChecks, 3)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test("genuine Torn outage uses only bounded last-success grace and does not purge member access", async () => {
+    const originalFetch = globalThis.fetch
+    const fixture = await makeMembershipFixture({
+      members: [{ playerId: "224", playerName: "Torn Outage Member", apiKey: "outage-login-key", isAdmin: true }],
+    })
+    let factionChecks = 0
+    globalThis.fetch = async input => {
+      factionChecks++
+      return new Response(JSON.stringify({ error: { code: 9 } }), { status: 429 })
+    }
+    try {
+      const token = fixture.tokenByPlayer.get("224")
+      const request = () => worker.fetch(new Request("https://worker.test/api/auth/session", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + token },
+      }), fixture.env, { waitUntil() {} })
+      const first = await request()
+      assert.equal(first.status, 200, "a recent successful membership verification may use the 15-minute outage grace")
+      assert.equal(fixture.players.get("224").membership_check_status, "unavailable")
+      const second = await request()
+      assert.equal(second.status, 200, "a recent unavailable check may use the same bounded grace without another Torn request")
+      assert.equal(factionChecks, 1, "the five-minute backoff must suppress duplicate outage requests")
+      assert.equal(fixture.sessions.size, 1)
+      assert.equal(fixture.apiKeys.has("224"), true)
+      assert.equal(fixture.administrators.get("224").revoked_at, null)
+      assert.ok(fixture.halloweenTables.halloween_historical_keys.has("224"))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test("Torn outage beyond the 15-minute last-success window fails closed without treating the member as departed", async () => {
+    const originalFetch = globalThis.fetch
+    const fixture = await makeMembershipFixture({
+      members: [{
+        playerId: "225",
+        playerName: "Stale Verification Member",
+        apiKey: "stale-login-key",
+        isAdmin: true,
+        verifiedAt: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
+      }],
+    })
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: 9 } }), { status: 429 })
+    try {
+      const response = await worker.fetch(new Request("https://worker.test/api/auth/session", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + fixture.tokenByPlayer.get("225") },
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(response.status, 401, "outage grace must not extend beyond 15 minutes from the last successful verification")
+      assert.equal(fixture.players.get("225").membership_check_status, "unavailable")
+      assert.equal(fixture.players.get("225").faction_id, "8317", "a Torn outage must not be interpreted as faction departure")
+      assert.equal(fixture.sessions.size, 1)
+      assert.equal(fixture.apiKeys.has("225"), true)
+      assert.equal(fixture.administrators.get("225").revoked_at, null)
+      assert.ok(fixture.halloweenTables.halloween_historical_keys.has("225"))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test("historical collector discovery of faction departure uses the same full access invalidation path", async () => {
+    const originalFetch = globalThis.fetch
+    const fixture = await makeMembershipFixture({
+      members: [{ playerId: "226", playerName: "Collector-Detected Departure", apiKey: "full-access-key", isAdmin: true }],
+    })
+    const encrypted = fixture.apiKeys.get("226")
+    fixture.halloweenTables.halloween_historical_keys.set("226", {
+      player_id: "226",
+      ciphertext: encrypted.ciphertext,
+      iv: encrypted.iv,
+    })
+    fixture.halloweenTables.halloween_collection_jobs.set("226", {
+      job_id: "collector-job-226",
+      player_id: "226",
+      event_year: 2026,
+      status: "running",
+      cursor_ts: Math.floor(Date.parse("2026-10-25T10:00:00.000Z") / 1000),
+      cursor_url: null,
+      cursor_direction: null,
+      pages_collected: 0,
+      logs_collected: 0,
+      window_start_at: "2026-10-25T10:00:00.000Z",
+      window_end_at: "2026-11-01T10:00:00.000Z",
+    })
+    globalThis.fetch = async input => {
+      const path = new URL(String(input)).pathname
+      if (path !== "/v2/user/faction") throw new Error("Unexpected Torn request in collector departure test: " + path)
+      return new Response(JSON.stringify({ faction: { id: 9999, name: "Different Faction" } }))
+    }
+    try {
+      let acknowledged = false
+      let retried = false
+      await worker.queue({
+        messages: [{
+          body: { kind: "halloween-log-collection", jobId: "collector-job-226" },
+          attempts: 1,
+          ack() { acknowledged = true },
+          retry() { retried = true },
+        }],
+      }, fixture.env)
+      assert.equal(acknowledged, true, "the departure cleanup should complete and the queue message should ack")
+      assert.equal(retried, false)
+      assert.equal(fixture.players.get("226").faction_id, "9999")
+      assert.equal(fixture.players.get("226").membership_check_status, null)
+      assert.equal(fixture.sessions.size, 0)
+      assert.equal(fixture.apiKeys.has("226"), false)
+      assert.equal(fixture.factionCache.has("226"), false)
+      assert.equal([...fixture.sharing.values()].some(row => row.owner_player_id === "226" || row.recipient_player_id === "226"), false)
+      assert.equal(fixture.administrators.get("226").revoked_by, "system")
+      for (const table of Object.values(fixture.halloweenTables)) assert.equal(table.has("226"), false)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test("administrator revocation removes privileges from an existing session and records the actor", async () => {
+    const originalFetch = globalThis.fetch
+    const fixture = await makeMembershipFixture({
+      members: [
+        { playerId: "900", playerName: "Acting Admin", token: "acting-admin-token", isAdmin: true, verifiedAt: new Date().toISOString() },
+        { playerId: "901", playerName: "Revoked Admin", token: "revoked-admin-token", isAdmin: true, verifiedAt: new Date().toISOString() },
+      ],
+    })
+    globalThis.fetch = async () => { throw new Error("Fresh administrator sessions must not call Torn.") }
+    try {
+      const actorToken = fixture.tokenByPlayer.get("900")
+      const targetToken = fixture.tokenByPlayer.get("901")
+      const revoke = await worker.fetch(new Request("https://worker.test/api/admin/administrators/revoke", {
+        method: "POST",
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + actorToken, "Content-Type": "application/json" },
+        body: JSON.stringify({ playerId: "901" }),
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(revoke.status, 200)
+      assert.equal(fixture.administrators.get("901").revoked_by, "900")
+      assert.ok(fixture.administrators.get("901").revoked_at)
+      assert.ok(fixture.audit.some(item => item.action === "administrator.revoked" && item.target_id === "901" && item.actor_player_id === "900"))
+
+      const targetSession = await worker.fetch(new Request("https://worker.test/api/auth/session", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + targetToken },
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(targetSession.status, 200, "revocation removes administrator privileges but does not sign the user out")
+      assert.equal((await targetSession.json()).isAdmin, false, "an existing session must immediately reflect the revoked role")
+
+      const denied = await worker.fetch(new Request("https://worker.test/api/admin/administrators", {
+        headers: { Origin: fixture.env.ALLOWED_ORIGIN, Authorization: "Bearer " + targetToken },
+      }), fixture.env, { waitUntil() {} })
+      assert.equal(denied.status, 403, "the existing session must immediately lose access to administrator routes")
+      assert.ok(fixture.audit.some(item => item.action === "authorization.denied" && item.actor_player_id === "901"))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 
   console.log(`\n${passed} backend checks passed.`)

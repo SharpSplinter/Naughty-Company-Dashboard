@@ -1,0 +1,39 @@
+name = "naughtyfamily-api-staging"
+account_id = "6c03b978ed9a59adc3f61c715bdad45c"
+main = "src/worker/index.ts"
+compatibility_date = "2026-10-08"
+workers_dev = true
+
+# Isolated real-key acceptance Worker. D1, Queues and scheduled collectors are staging-only.
+[vars]
+ALLOWED_ORIGIN = "https://naughtyfamily-staging.pages.dev"
+
+[observability]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "naughtyfamily-acceptance-staging"
+database_id = "02cca699-1232-495f-8a0a-de525058b92a"
+migrations_dir = "migrations/auth"
+
+# Cron triggers are omitted on the Free account because its five-trigger quota
+# is already used. User/admin-triggered background jobs still use this queue.
+[[queues.producers]]
+binding = "GLOBAL_RANKINGS_QUEUE"
+queue = "ncd-naughtyfamily-staging-collection"
+
+[[queues.consumers]]
+queue = "ncd-naughtyfamily-staging-collection"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 4
+max_concurrency = 1
+dead_letter_queue = "ncd-naughtyfamily-staging-dlq"
+
+[[queues.consumers]]
+queue = "ncd-naughtyfamily-staging-dlq"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 1
+max_concurrency = 1

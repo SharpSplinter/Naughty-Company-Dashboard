@@ -1,0 +1,8 @@
+name = "naughty-company-api-faction-performance-mock"
+account_id = "6c03b978ed9a59adc3f61c715bdad45c"
+main = "scripts/faction-performance-torn-mock-worker.ts"
+compatibility_date = "2026-10-08"
+workers_dev = true
+
+[observability]
+enabled = true

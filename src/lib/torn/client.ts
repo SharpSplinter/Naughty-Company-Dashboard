@@ -1,3 +1,4 @@
+import { buildPersonalStatsPath, type PersonalStatsRequest } from "./personalstats"
 import type {
   TornClientOptions,
   TornCompanyData,
@@ -105,9 +106,29 @@ export class TornApiClient {
     return this.request<Record<string, unknown>>("/faction/members")
   }
 
+  async getFactionMembersForRoster(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("/faction/members?striptags=true")
+  }
+
+  async getFactionStats(): Promise<unknown> {
+    return this.request<unknown>("/faction/stats")
+  }
+
+  async getFactionGymEnergyContributors(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("/faction/contributors?stat=gymenergy")
+  }
+
   async getUserJobFor(playerId: string | number): Promise<Record<string, unknown>> {
     if (!/^\d+$/.test(String(playerId))) throw new TornApiClientError("Player ID must be numeric.", { status: 400 })
     return this.request<Record<string, unknown>>(`/user/${playerId}/job`)
+  }
+
+  async getMyPersonalStats(selection: PersonalStatsRequest): Promise<unknown> {
+    return this.request<unknown>(buildPersonalStatsPath(null, selection))
+  }
+
+  async getUserPersonalStatsFor(playerId: string | number, selection: PersonalStatsRequest): Promise<unknown> {
+    return this.request<unknown>(buildPersonalStatsPath(playerId, selection))
   }
 
   async getCompanyProfileById(companyId: string | number): Promise<TornCompanyResponse<TornCompanyProfile>> {

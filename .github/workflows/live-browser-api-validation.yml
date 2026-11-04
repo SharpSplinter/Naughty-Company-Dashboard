@@ -37,9 +37,9 @@ jobs:
           if (!response?.ok || body?.ok !== true || body?.database !== 'ok') process.exit(1);
           NODE
       - name: Checkout workflow source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Install Playwright Chromium

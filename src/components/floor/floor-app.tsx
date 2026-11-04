@@ -10,6 +10,8 @@ import { AdminPanel } from "./admin-panel"
 import { InsightsWorkspace } from "./insights-workspace"
 import { AlertsPanel, NotificationSettingsPanel } from "./alerts-panel"
 import { companyTypeIdFromProfile, estimateWeeklyProfit, financialCosts, formatMoney, formatNumber, getObject, pretty, reportedCompanyProfit, stockPriceRows } from "./financial-utils"
+import { AccountSettingsWorkspace, FactionWorkspacePlaceholder, HalloweenWorkspace, PortalHome } from "../portal/workspaces"
+import "../portal/workspaces.css"
 
 const catalog = positionsData as CompanyPositionCatalog
 const companyNames = Object.keys(catalog.companies).sort()
@@ -61,6 +63,7 @@ type SharedCompany = { playerId: string; directorName: string; companyId: string
 
 
 export function FloorApp() {
+  const [routePath, setRoutePath] = useState(() => window.location.pathname || "/")
   const [activeView, setActiveView] = useState<DashboardView>(() => {
     try { const saved = sessionStorage.getItem("ncd_active_view"); if (saved && dashboardViews.includes(saved as DashboardView)) return saved as DashboardView } catch { /* Storage may be disabled. */ }
     return "overview"
@@ -80,9 +83,7 @@ export function FloorApp() {
   const [search, setSearch] = useState("")
   const [selectedCompany, setSelectedCompany] = useState(companyNames[0] ?? "")
   const [apiKey, setApiKey] = useState("")
-  const [secondaryCompanyKey, setSecondaryCompanyKey] = useState("")
   const [companyKeySaved, setCompanyKeySaved] = useState(false)
-  const [needsSecondaryKey, setNeedsSecondaryKey] = useState(false)
   const [isDirector, setIsDirector] = useState(false)
   const [result, setResult] = useState<ApiResult | null>(null)
   const [error, setError] = useState("")
@@ -90,18 +91,11 @@ export function FloorApp() {
   const [showRaw, setShowRaw] = useState(false)
   const [sessionToken, setSessionToken] = useState("")
   const [sessionActionBusy, setSessionActionBusy] = useState(false)
-  const [companyKeyActionBusy, setCompanyKeyActionBusy] = useState("")
   const [authChecking, setAuthChecking] = useState(true)
   const [demoMode, setDemoMode] = useState(false)
   const [playerName, setPlayerName] = useState("")
   const [playerId, setPlayerId] = useState("")
   const [isAdmin, setIsAdmin] = useState(false)
-  const [adminElevatedUntil, setAdminElevatedUntil] = useState<number | null>(null)
-  const [adminAuthOpen, setAdminAuthOpen] = useState(false)
-  const [adminUsername, setAdminUsername] = useState("")
-  const [adminPassword, setAdminPassword] = useState("")
-  const [adminAuthError, setAdminAuthError] = useState("")
-  const [adminAuthBusy, setAdminAuthBusy] = useState(false)
   const [selectedCompanyId, setSelectedCompanyId] = useState("")
   const [showCompanySelector, setShowCompanySelector] = useState(false)
   const [keySaved, setKeySaved] = useState(false)
@@ -136,6 +130,25 @@ export function FloorApp() {
   const [sharingNotice, setSharingNotice] = useState("")
   const [sharedCompanies, setSharedCompanies] = useState<SharedCompany[]>([])
   const [employeeComparePlayerId, setEmployeeComparePlayerId] = useState("")
+
+  const navigateToPath = useCallback((path: string) => {
+    if (window.location.pathname !== path) window.history.pushState({}, "", path)
+    setRoutePath(path)
+    if (path === "/company") setActiveView("overview")
+    if (path === "/admin") setActiveView("admin")
+    setSidebarCollapsed(true)
+  }, [])
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = window.location.pathname || "/"
+      setRoutePath(path)
+      if (path === "/company") setActiveView("overview")
+      if (path === "/admin") setActiveView("admin")
+    }
+    window.addEventListener("popstate", handlePopState)
+    return () => window.removeEventListener("popstate", handlePopState)
+  }, [])
 
   useEffect(() => {
     try { sessionStorage.setItem("ncd_active_view", activeView) } catch { /* Storage may be disabled. */ }
@@ -182,17 +195,16 @@ export function FloorApp() {
       try {
         const response = await fetch(`${API_BASE}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } })
         if (!response.ok) throw new Error("Session expired")
-        const session = await response.json() as { player: { id: string; name: string }; isAdmin?: boolean; adminElevatedUntil?: number | null; key: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
+        const session = await response.json() as { player: { id: string; name: string }; isAdmin?: boolean; key: { saved: boolean } }
         if (cancelled) return
         setSessionToken(token)
         setPlayerName(session.player.name)
         setPlayerId(session.player.id)
-        setIsAdmin(session.isAdmin === true && session.player.id === "351311")
-        setAdminElevatedUntil(typeof session.adminElevatedUntil === "number" ? session.adminElevatedUntil : null)
+        setIsAdmin(session.isAdmin === true)
         setKeySaved(session.key.saved)
-        setIsDirector(session.company?.isDirector ?? false)
-        setCompanyKeySaved(session.company?.key?.saved ?? false)
-        setNeedsSecondaryKey(session.company?.needsSecondaryKey ?? !(session.company?.key?.saved ?? false))
+        setIsDirector(false)
+        setCompanyKeySaved(false)
+
         const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${token}` } })
         if (!listResponse.ok) return
         const list = await listResponse.json() as { companies: SavedCompany[] }
@@ -228,16 +240,6 @@ export function FloorApp() {
     const adminOnlyViews = ["admin", "dashboard-members", "member-insights"]
     if (!authChecking && adminOnlyViews.includes(activeView) && (!isAdmin || demoMode)) setActiveView("overview")
   }, [authChecking, activeView, isAdmin, demoMode])
-
-  useEffect(() => {
-    if (!isAdmin || !adminElevatedUntil) return
-    const timeout = window.setTimeout(() => {
-      setIsAdmin(false)
-      setAdminElevatedUntil(null)
-      setActiveView((view) => ["admin", "dashboard-members", "member-insights"].includes(view) ? "overview" : view)
-    }, Math.max(0, adminElevatedUntil * 1000 - Date.now()))
-    return () => window.clearTimeout(timeout)
-  }, [isAdmin, adminElevatedUntil])
 
   useEffect(() => {
     if (!sessionToken) return
@@ -702,27 +704,8 @@ export function FloorApp() {
   }
 
 
-  async function deleteSavedCompanyKey(company: SavedCompany) {
-    if (!sessionToken || !company.has_api_key || companyKeyActionBusy) return
-    const name = company.company_name || `Company #${company.company_id}`
-    if (!window.confirm(`Remove the saved API key for ${name}? Its saved company history will be retained.`)) return
-    setCompanyKeyActionBusy(company.company_id)
-    setError("")
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/company-key?companyId=${encodeURIComponent(company.company_id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${sessionToken}` } })
-      const payload = await response.json() as { error?: string; companyKeySaved?: boolean }
-      if (!response.ok) throw new Error(payload.error || "Could not remove this company key.")
-      setSavedCompanies((current) => current.map((item) => item.company_id === company.company_id ? { ...item, has_api_key: false, key_last_four: null, key_updated_at: null } : item))
-      setCompanyKeySaved(payload.companyKeySaved ?? false)
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not remove this company key.")
-    } finally {
-      setCompanyKeyActionBusy("")
-    }
-  }
-
   async function deleteSavedKey() {
-    if (!sessionToken || !window.confirm("Permanently delete your saved login and company keys? Your player profile and saved company data will remain.")) return
+    if (!sessionToken || !window.confirm("Delete your primary portal API key and feature opt-ins? Independent secondary company keys and saved company records will remain.")) return
     setError("")
     try {
       const response = await fetch(`${API_BASE}/api/auth/key`, { method: "DELETE", headers: { Authorization: `Bearer ${sessionToken}` } })
@@ -730,7 +713,7 @@ export function FloorApp() {
       if (!response.ok) throw new Error(payload.error || "Could not delete the saved key.")
       setKeySaved(false)
       setCompanyKeySaved(false)
-      setNeedsSecondaryKey(true)
+
       setIsDirector(false)
       setApiKey("")
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not delete the saved key.") }
@@ -767,7 +750,7 @@ export function FloorApp() {
     setKeySaved(false)
     setIsDirector(true)
     setCompanyKeySaved(true)
-    setNeedsSecondaryKey(false)
+
     setResult(demo.result)
     setSavedCompanies([demo.company])
     setSelectedCompanyId(demo.company.company_id)
@@ -787,117 +770,42 @@ export function FloorApp() {
     event.preventDefault()
     setDemoMode(false)
     setError("")
-    if (!apiKey.trim()) { setError("Enter your limited-access Torn API key to continue."); return }
+    if (!apiKey.trim()) { setError("Enter your Naughty Family Portal Torn API key to continue."); return }
     setLoading(true)
     try {
       const response = await fetch(`${API_BASE}/api/auth/sign-in`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ apiKey: apiKey.trim(), secondaryCompanyKey: secondaryCompanyKey.trim() }),
+        body: JSON.stringify({ apiKey: apiKey.trim() }),
       })
-      const payload = await response.json() as { error?: string; token?: string; isAdmin?: boolean; player?: { id: string; name: string }; key?: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
-      if (!response.ok) throw new Error(payload.error || "Sign-in failed. Check that your Torn key is valid and has limited permissions.")
+      const payload = await response.json() as { error?: string; token?: string; isAdmin?: boolean; player?: { id: string; name: string }; key?: { saved: boolean } }
+      if (!response.ok) throw new Error(payload.error || "Sign-in failed. Check that your Torn custom key or Full Access key is valid and includes User profile and faction access.")
       if (!payload.token) throw new Error("The sign-in service did not return a session. Please try again.")
       localStorage.setItem("ncd_session", payload.token)
       setSessionToken(payload.token)
       setPlayerName(payload.player?.name || "Torn member")
       setPlayerId(payload.player?.id || "")
-      setIsAdmin(false)
-      setAdminElevatedUntil(null)
+      setIsAdmin(payload.isAdmin === true)
       setKeySaved(payload.key?.saved ?? true)
-      setIsDirector(payload.company?.isDirector ?? false)
-      setCompanyKeySaved(payload.company?.key?.saved ?? false)
-      setNeedsSecondaryKey(payload.company?.needsSecondaryKey ?? !(payload.company?.key?.saved ?? false))
+      setIsDirector(false)
+      setCompanyKeySaved(false)
+
       setApiKey("")
-      setSecondaryCompanyKey("")
+
       const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
-      let companies: SavedCompany[] = []
       if (listResponse.ok) {
         const list = await listResponse.json() as { companies: SavedCompany[] }
-        companies = list.companies || []
+        const companies = list.companies || []
         setSavedCompanies(companies)
+        setCompanyKeySaved(companies.length > 0)
       }
-      if (companies.length) {
-        const company = companies[0]
-        setSelectedCompanyId(company.company_id)
-        let companyResponse = await fetch(`${API_BASE}/api/me/companies/${company.company_id}`, { headers: { Authorization: `Bearer ${payload.token}` } })
-        if (!companyResponse.ok) companyResponse = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${payload.token}` }, body: JSON.stringify({ companyId: company.company_id }) })
-        if (companyResponse.ok) {
-          const data = await companyResponse.json() as { profile: unknown; employees: unknown; stock?: unknown; incomeHistory?: IncomeSnapshot[]; companyId?: string | number }
-          const normalized = runEngine(data.profile, data.employees, catalog)
-          if (normalized) {
-            setResult({ profile: data.profile, employees: data.employees, stock: data.stock, incomeHistory: data.incomeHistory, model: normalized })
-            setSelectedCompanyId(String(data.companyId ?? normalized.company.id))
-            setSelectedRankingType(normalized.company.typeName)
-          }
-          const refreshedList = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
-          if (refreshedList.ok) { const saved = await refreshedList.json() as { companies: SavedCompany[] }; setSavedCompanies(saved.companies || []) }
-        }
-      } else if (payload.company?.key?.saved) {
-        const companyResponse = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { Authorization: `Bearer ${payload.token}` } })
-        if (companyResponse.ok) {
-          const data = await companyResponse.json() as { profile: unknown; employees: unknown; stock?: unknown; companyId?: string | number; incomeHistory?: IncomeSnapshot[] }
-          const normalized = runEngine(data.profile, data.employees, catalog)
-          if (normalized) { setResult({ profile: data.profile, employees: data.employees, stock: data.stock, incomeHistory: data.incomeHistory, model: normalized }); setSelectedCompanyId(String(data.companyId ?? normalized.company.id)); setSelectedRankingType(normalized.company.typeName) }
-          const refreshedList = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
-          if (refreshedList.ok) { const saved = await refreshedList.json() as { companies: SavedCompany[] }; setSavedCompanies(saved.companies || []) }
-        }
-      }
+      // A successful faction sign-in always lands on the portal. Company data
+      // is not requested until the member explicitly opens /company.
+      window.history.replaceState({}, "", "/")
+      setRoutePath("/")
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not sign in.")
     } finally { setLoading(false) }
-  }
-
-  async function elevateAdmin(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!sessionToken || playerId !== "351311" || adminAuthBusy) return
-    setAdminAuthBusy(true)
-    setAdminAuthError("")
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/admin/elevate`, {
-        method: "POST",
-        headers: { "content-type": "application/json", Authorization: `Bearer ${sessionToken}` },
-        body: JSON.stringify({ username: adminUsername, password: adminPassword }),
-      })
-      const payload = await response.json() as { error?: string; diagnostic?: string; isAdmin?: boolean; adminElevatedUntil?: number }
-      if (!response.ok || payload.isAdmin !== true || typeof payload.adminElevatedUntil !== "number") {
-        const diagnosticMessages: Record<string, string> = {
-          username_mismatch: "The username does not match the configured ADMIN_USERNAME secret.",
-          stored_hash_invalid: "The configured ADMIN_PASSWORD_HASH is malformed or incomplete. Generate a new hash and replace the entire hash line in Cloudflare.",
-          password_policy: "The password does not meet the current policy. Use at least 8 characters with a letter, digit, and symbol, and avoid sequences such as abc, cba, 123, or 321.",
-          password_mismatch: "The credential does not match the active Worker hash. Do not repeat resets blindly; use the direct-API recovery workflow and check its hash-binding fingerprint diagnostic. Never copy or share passwords or hashes.",
-        }
-        const detail = payload.diagnostic ? diagnosticMessages[payload.diagnostic] : undefined
-        const missingDiagnostic = response.status === 401 && payload.error === "Administrator sign-in failed."
-          ? "The API did not return an owner-only diagnostic. This usually means the active Torn session is not being recognized as the allowlisted owner, or the dashboard API deployment is out of sync. Confirm this is the owner Torn account (player ID 351311), reload the dashboard, and try only once more. Do not regenerate the password hash yet."
-          : undefined
-        throw new Error([payload.error || "Administrator sign-in failed.", detail ?? missingDiagnostic].filter(Boolean).join(" "))
-      }
-      setIsAdmin(true)
-      setAdminElevatedUntil(payload.adminElevatedUntil)
-      setAdminAuthOpen(false)
-      setAdminPassword("")
-      setAdminUsername("")
-      setActiveView("admin")
-    } catch (caught) {
-      setAdminAuthError(caught instanceof Error ? caught.message : "Administrator sign-in failed.")
-    } finally { setAdminAuthBusy(false) }
-  }
-
-  async function deElevateAdmin() {
-    if (!sessionToken || adminAuthBusy) return
-    setAdminAuthBusy(true)
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/admin/de-elevate`, { method: "POST", headers: { Authorization: `Bearer ${sessionToken}` } })
-      if (!response.ok) throw new Error("Could not lock administrator access. Try again.")
-      setIsAdmin(false)
-      setAdminElevatedUntil(null)
-      setAdminAuthOpen(false)
-      setActiveView((view) => ["admin", "dashboard-members", "member-insights"].includes(view) ? "overview" : view)
-    } catch (caught) {
-      setAdminAuthError(caught instanceof Error ? caught.message : "Could not lock administrator access.")
-      setAdminAuthOpen(true)
-    } finally { setAdminAuthBusy(false) }
   }
 
   function signOut(revokeServerSession = true) {
@@ -906,23 +814,20 @@ export function FloorApp() {
       void fetch(`${API_BASE}/api/auth/sign-out`, { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => undefined)
     }
     localStorage.removeItem("ncd_session")
+    window.history.replaceState({}, "", "/")
+    setRoutePath("/")
     setDemoMode(false)
     setSessionToken("")
     setPlayerName("")
     setPlayerId("")
     setIsAdmin(false)
-    setAdminElevatedUntil(null)
-    setAdminAuthOpen(false)
-    setAdminUsername("")
-    setAdminPassword("")
-    setAdminAuthError("")
     setSelectedCompanyId("")
     setShowCompanySelector(false)
     setKeySaved(false)
     setCompanyKeySaved(false)
-    setNeedsSecondaryKey(false)
+
     setIsDirector(false)
-    setSecondaryCompanyKey("")
+
     setSavedCompanies([])
     setResult(null)
     setRankingCompanies([])
@@ -953,31 +858,27 @@ export function FloorApp() {
   async function connectCompany(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (demoMode) { setError("Live Torn connections are disabled in the demo workspace. Exit demo to connect real data."); return }
+    if (!sessionToken) { setError("Sign in with your portal API key first."); return }
     setError("")
-    if (!sessionToken && !apiKey.trim()) { setError("Sign in with your Torn API key to create your player workspace."); return }
     setLoading(true)
     try {
-      let token = sessionToken
-      let targetCompanyId = selectedCompanyId
-      if (!secondaryCompanyKey.trim() && targetCompanyId) {
-        await loadSavedCompany(targetCompanyId)
-        return
-      }
-      if (secondaryCompanyKey.trim()) {
-        if (!token) throw new Error("Sign in with your primary Torn API key first.")
-        const keyResponse = await fetch(`${API_BASE}/api/auth/company-key`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ apiKey: secondaryCompanyKey.trim() }) })
-        const keyPayload = await keyResponse.json() as { error?: string; saved?: boolean; companyId?: string | number }
-        if (!keyResponse.ok) throw new Error(keyPayload.error || "Could not save the authorized company key.")
-        targetCompanyId = String(keyPayload.companyId ?? "")
-        setCompanyKeySaved(true)
-        setNeedsSecondaryKey(false)
-        setSecondaryCompanyKey("")
-      }
-      if (!token) throw new Error("Sign in with a Torn API key first.")
-      if (!secondaryCompanyKey.trim() && !targetCompanyId) throw new Error("No saved company data is available yet. Add the authorized company key to initialize the company, or wait for the scheduled 18:10 UTC data refresh.")
-      const response = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${token}` }, body: targetCompanyId ? JSON.stringify({ companyId: targetCompanyId }) : "{}" })
+      const keyResponse = await fetch(`${API_BASE}/api/auth/company-key`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({}),
+      })
+      const keyPayload = await keyResponse.json() as { error?: string; saved?: boolean; companyId?: string | number }
+      if (!keyResponse.ok) throw new Error(keyPayload.error || "Your portal API key could not connect a company.")
+      const targetCompanyId = String(keyPayload.companyId ?? "")
+      if (!/^\\d+$/.test(targetCompanyId)) throw new Error("Torn did not return a valid company ID for your portal key.")
+      setCompanyKeySaved(true)
+      const response = await fetch(`${API_BASE}/api/company/refresh`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({ companyId: targetCompanyId }),
+      })
       const payload = await response.json() as { error?: string; profile?: unknown; employees?: unknown; stock?: unknown; incomeHistory?: IncomeSnapshot[] }
-      if (!response.ok) throw new Error(payload.error || "The API request failed. Check the key and its company-data permissions.")
+      if (!response.ok) throw new Error(payload.error || "The API request failed. Check your portal key's company selections and company permissions.")
       const normalized = runEngine(payload.profile, payload.employees, catalog)
       if (!normalized) throw new Error("Torn returned an unexpected company profile. The response was not added to your saved workspace.")
       setResult({ profile: payload.profile, employees: payload.employees, stock: payload.stock, incomeHistory: payload.incomeHistory, model: normalized })
@@ -985,7 +886,7 @@ export function FloorApp() {
       setSelectedCompanyId(String(normalized.company.id))
       setShowCompanySelector(false)
       setActiveView("overview")
-      const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${token}` } })
+      const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${sessionToken}` } })
       if (listResponse.ok) { const list = await listResponse.json() as { companies: SavedCompany[] }; setSavedCompanies(list.companies || []) }
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not connect to the Torn API.") }
     finally { setLoading(false) }
@@ -996,37 +897,44 @@ export function FloorApp() {
   if (!sessionToken && !demoMode) return (
     <main className="login-screen">
       <section className="login-card" aria-labelledby="login-title">
-        <div className="login-brand"><span className="brand-mark">NC</span><span><strong>NAUGHTY</strong><small>COMPANY OPERATIONS</small></span></div>
+        <div className="login-brand"><span className="brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>FACTION PORTAL</small></span></div>
         <div className="login-eyebrow"><span className="eyebrow-line" /> FACTION MEMBER ACCESS</div>
-        <h1 id="login-title">Naughty Company Dashboard</h1>
-        <p className="login-subtitle">A private operations workspace for members of <strong>Naughty Souls</strong>.</p>
-        <div className="member-notice"><span>◆</span><p><strong>Naughty Souls members only</strong><br />Sign in with your own limited-access Torn API key. Use the minimum permissions needed for the company data you are authorized to view.</p></div>
+        <h1 id="login-title">Naughty Family Portal</h1>
+        <p className="login-subtitle">A private faction-wide portal for verified members of <strong>Naughty Souls</strong>.</p>
+        <div className="member-notice"><span>◆</span><p><strong>Naughty Souls members only</strong><br />Sign in with one Torn API key created on your own account. A Custom Access key using our recommended builder is preferred; a Full Access key is also accepted. We verify your identity and Naughty Souls membership, then reuse this same key across the portal wherever its selections permit.</p></div>
         <form className="login-form" onSubmit={signIn}>
-          <label htmlFor="login-api-key">Limited-access Torn API key</label>
+          <label htmlFor="login-api-key">Your Naughty Family Portal Torn API key</label>
           <input id="login-api-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your Torn API key" required />
           <p className="login-hint">Your key is sent securely to the dashboard API for validation. It is never stored in this browser's local storage.</p>
-          <p className="login-hint">Your login key will be checked for company access first. A secondary company key is only needed if Torn does not allow company data access with your login key.</p>
+          <p className="login-hint">This is your one portal key for sign-in, company data, private live status and optional Halloween collection. Features are enabled only when your key has the required Torn selections and you grant their separate data-sharing consent.</p>
+          <p className="login-hint"><a href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Naughty%20Family%20Portal&user=profile,faction,job,personalstats,bars,cooldowns,networth,halloween,log&faction=members,stats,contributors&company=profile,employees,stock,companies&torn=companies&key=info" target="_blank" rel="noreferrer">Create the recommended Naughty Family Portal custom key ↗</a></p>
           {error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}
           <button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Verifying key…</> : <>Sign in securely <span>→</span></>}</button>
         </form>
         <button className="login-demo-button" type="button" onClick={startDemo} disabled={loading}>Explore the demo dashboard <span>→</span></button>
         <p className="login-hint demo-caption">No Torn key needed. The demo uses fictional data and never contacts Torn.</p>
         <div className="policy-block"><strong>Data & API policy</strong><p>Use only a key you own and keep its access limited. The dashboard requests Torn data available to that key, which may include company and employee details, and stores retrieved company records to support your workspace. Saved keys are intended to be encrypted at rest; deleting a key does not delete previously saved company records. Data is for Naughty Souls faction operations only. Do not submit another player's key or use data you are not authorized to access.</p></div>
-        <div className="login-footer"><span>NAUGHTY COMPANY DASHBOARD</span><span>TORN API · CLOUDFLARE</span></div>
+        <div className="login-footer"><span>NAUGHTY FAMILY PORTAL</span><span>TORN API · CLOUDFLARE</span></div>
       </section>
     </main>
   )
 
+  if (routePath === "/") return <PortalHome playerName={playerName} playerId={playerId} isAdmin={isAdmin} loginKeySaved={keySaved} companyKeySaved={companyKeySaved} companies={savedCompanies} onNavigate={navigateToPath} onSignOut={() => signOut()} />
+  if (routePath === "/faction") return <FactionWorkspacePlaceholder playerName={playerName} apiBase={API_BASE} sessionToken={sessionToken} onNavigate={navigateToPath} />
+  if (routePath === "/halloween") return <HalloweenWorkspace playerName={playerName} apiBase={API_BASE} sessionToken={sessionToken} onNavigate={navigateToPath} />
+  if (routePath === "/settings") return <AccountSettingsWorkspace playerName={playerName} playerId={playerId} isAdmin={isAdmin} loginKeySaved={keySaved} companyKeySaved={companyKeySaved} companies={savedCompanies} apiBase={API_BASE} sessionToken={sessionToken} onCompaniesChanged={(companies) => { setSavedCompanies(companies); setCompanyKeySaved(companies.some(company => company.has_api_key === true)) }} onLoginKeyChanged={setKeySaved} onNavigate={navigateToPath} onSignOut={() => signOut()} />
+  if (routePath === "/admin" && !isAdmin) return <main className="module-page"><section className="module-placeholder"><div className="portal-eyebrow"><span /> RESTRICTED WORKSPACE</div><h1>Administrator access required</h1><p>This workspace is available only to accounts with an active administrator role.</p><button type="button" className="portal-primary-button" onClick={() => navigateToPath("/")}>Return to portal →</button></section></main>
+
   return (
     <div className={`app-shell dashboard-density-${dashboardPreferences.density} dashboard-width-${dashboardPreferences.contentWidth}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
-      {adminAuthOpen && playerId === "351311" && !isAdmin && !demoMode && <div className="login-screen admin-elevation-screen"><section className="login-card" role="dialog" aria-modal="true" aria-labelledby="admin-elevation-title"><div className="login-brand"><span className="brand-mark">NC</span><span><strong>NAUGHTY</strong><small>ADMINISTRATOR VERIFICATION</small></span></div><div className="login-eyebrow"><span className="eyebrow-line" /> STEP-UP AUTHENTICATION</div><h1 id="admin-elevation-title">Unlock administration</h1><p className="login-subtitle">Your Torn session is standard access. Verify your separate administrator credentials to unlock privileged controls for 30 minutes.</p><form className="login-form" onSubmit={elevateAdmin}><label htmlFor="admin-username">Administrator username</label><input id="admin-username" type="text" autoComplete="username" value={adminUsername} onChange={(event) => setAdminUsername(event.target.value)} required maxLength={120} /><label htmlFor="admin-password">Administrator password</label><input id="admin-password" type="password" autoComplete="current-password" aria-describedby="admin-password-policy-hint" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} required minLength={8} maxLength={1024} /><p className="field-hint" id="admin-password-policy-hint">At least 8 characters, including a letter, digit and symbol. Avoid sequences such as abc, cba, 123 or 321.</p>{adminAuthError && <div className="error-banner" role="alert">{adminAuthError}</div>}<button className="primary-button form-submit" disabled={adminAuthBusy}>{adminAuthBusy ? "Verifying…" : "Verify and unlock"}</button><button className="text-button" type="button" disabled={adminAuthBusy} onClick={() => { setAdminAuthOpen(false); setAdminPassword(""); setAdminAuthError("") }}>Cancel</button></form><p className="login-hint">Repeated failed attempts are rate-limited. Administrator access expires automatically.</p></section></div>}
       <aside className="sidebar">
-        <a className="brand" href="#" onClick={(event) => { event.preventDefault(); setActiveView("overview") }}>
+        <a className="brand" href="/" onClick={(event) => { event.preventDefault(); navigateToPath("/") }}>
           <span className="brand-mark">NC</span>
           <span><strong>NAUGHTY</strong><small>COMPANY OPERATIONS</small></span>
         </a>
         <button className="sidebar-mobile-close" type="button" onClick={() => setSidebarCollapsed(true)} aria-label="Close navigation">×</button>
         <div className="side-label">WORKSPACE</div>
+        <button type="button" className="nav-item portal-nav-link" onClick={() => navigateToPath("/")}><span aria-hidden="true">⌂</span><span className="nav-label">Portal Home</span></button>
         <nav className="nav-list" aria-label="Main navigation">
           <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.company} onClick={() => setOpenNavGroups((groups) => ({ ...groups, company: !groups.company }))}><span>Company</span><b>{openNavGroups.company ? "⌄" : "›"}</b></button>{openNavGroups.company && <div className="nav-subitems"><button className={activeView === "overview" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("overview")}><span aria-hidden="true">◫</span><span className="nav-label">Company Details</span></button><button className={activeView === "employees" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("employees")}><span aria-hidden="true">♙</span><span className="nav-label">Employees</span></button><button className={activeView === "charts" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("charts")}><span aria-hidden="true">⌁</span><span className="nav-label">Trends & Charts</span></button><button className={activeView === "roster-insights" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("roster-insights")}><span aria-hidden="true">♙</span><span className="nav-label">Roster Insights</span></button><button className={activeView === "executive" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("executive")}><span aria-hidden="true">▤</span><span className="nav-label">Executive Overview</span></button><button className={activeView === "layout" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("layout")}><span aria-hidden="true">▤</span><span className="nav-label">Customize Layout</span></button></div>}</div>
           <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.rankings} onClick={() => setOpenNavGroups((groups) => ({ ...groups, rankings: !groups.rankings }))}><span>Rankings</span><b>{openNavGroups.rankings ? "⌄" : "›"}</b></button>{openNavGroups.rankings && <div className="nav-subitems"><button className={activeView === "type-rankings" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("type-rankings")}><span aria-hidden="true">↗</span><span className="nav-label">Company Rankings</span></button><button className={activeView === "faction-rankings" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("faction-rankings")}><span aria-hidden="true">♜</span><span className="nav-label">Faction Rankings</span></button></div>}</div>
@@ -1044,7 +952,7 @@ export function FloorApp() {
         {demoMode && <div className="demo-banner"><strong>DEMO MODE</strong><span>All player, company, employee and income data below is fictional. Live Torn connections are disabled.</span><button type="button" onClick={exitDemo}>Exit demo ×</button></div>}
         <header className="topbar">
           <div className="topbar-leading"><button className="sidebar-toggle" type="button" onClick={() => setSidebarCollapsed((collapsed) => !collapsed)} aria-label={sidebarCollapsed ? "Expand navigation sidebar" : "Minimize navigation sidebar"} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? "Expand navigation" : "Minimize navigation"}><span aria-hidden="true">{sidebarCollapsed ? "☰" : "‹"}</span></button><div className="breadcrumbs">Workspace <span>/</span> {activePageGroup} <span>/</span> <strong>{activePageTitle}</strong></div></div>
-          <div className="topbar-right">{playerId === "351311" && !demoMode && <button className="admin-step-up-button" type="button" aria-label={isAdmin ? "Lock administration" : "Unlock administration"} title={isAdmin ? "Lock administration" : "Unlock administration"} disabled={adminAuthBusy} onClick={() => isAdmin ? void deElevateAdmin() : (setAdminAuthError(""), setAdminAuthOpen(true))}>{adminAuthBusy ? "Please wait…" : isAdmin ? "Lock admin" : "Unlock admin"}</button>}<span className="environment-pill"><i /> {demoMode ? "DEMO DATA" : "CLOUDFLARE WORKER"}</span><div className="user-company-switcher"><button className="user-company-trigger" type="button" aria-expanded={showCompanySelector} onClick={() => setShowCompanySelector((open) => !open)}><span className="avatar">{playerName.slice(0, 2).toUpperCase() || "NC"}</span><span className="user-company-label"><strong>{playerName || "Connected user"}</strong><small>Torn ID {playerId || "—"} · {result?.model.company.name || "No company loaded"} · {result?.model.company.typeName || "No company type"}</small></span><span className="switch-chevron">⌄</span></button>{showCompanySelector && <div className="company-switcher-menu"><div className="company-switcher-menu-heading"><strong>Choose a company</strong><button type="button" className="company-connect-plus" onClick={() => { setShowCompanySelector(false); setActiveView("connect") }} aria-label="Connect company" title="Connect company">＋</button></div>{savedCompanies.length ? savedCompanies.map((company) => <button key={company.company_id} type="button" className={selectedCompanyId === company.company_id ? "company-switcher-option selected" : "company-switcher-option"} onClick={() => void loadSavedCompany(company.company_id)}><span>{company.company_name || `Company #${company.company_id}`}</span><small>{company.company_type || "Company"} · #{company.company_id}</small></button>) : <p>No saved companies yet. Connect a company key to add one.</p>}</div>}</div></div>
+          <div className="topbar-right">{isAdmin && !demoMode && <span className="admin-role-indicator">ADMINISTRATOR</span>}<span className="environment-pill"><i /> {demoMode ? "DEMO DATA" : "CLOUDFLARE WORKER"}</span><div className="user-company-switcher"><button className="user-company-trigger" type="button" aria-expanded={showCompanySelector} onClick={() => setShowCompanySelector((open) => !open)}><span className="avatar">{playerName.slice(0, 2).toUpperCase() || "NC"}</span><span className="user-company-label"><strong>{playerName || "Connected user"}</strong><small>Torn ID {playerId || "—"} · {result?.model.company.name || "No company loaded"} · {result?.model.company.typeName || "No company type"}</small></span><span className="switch-chevron">⌄</span></button>{showCompanySelector && <div className="company-switcher-menu"><div className="company-switcher-menu-heading"><strong>Choose a company</strong><button type="button" className="company-connect-plus" onClick={() => { setShowCompanySelector(false); setActiveView("connect") }} aria-label="Connect company" title="Connect company">＋</button></div>{savedCompanies.length ? savedCompanies.map((company) => <button key={company.company_id} type="button" className={selectedCompanyId === company.company_id ? "company-switcher-option selected" : "company-switcher-option"} onClick={() => void loadSavedCompany(company.company_id)}><span>{company.company_name || `Company #${company.company_id}`}</span><small>{company.company_type || "Company"} · #{company.company_id}</small></button>) : <p>No saved companies yet. Connect a company key to add one.</p>}</div>}</div></div>
         </header>
 
         <div className="page-content">
@@ -1137,7 +1045,7 @@ export function FloorApp() {
             </section>
           ) : activeView === "connect" ? (
             <div className="settings-workspace"><NotificationSettingsPanel apiBase={API_BASE} sessionToken={sessionToken} demoMode={demoMode} /><section className="connect-layout">
-              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Torn API & company connections</h2><p>Manage your player login and authorized company keys for companies you direct.</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-key">{needsSecondaryKey ? "First company API key" : "Add another company API key"}</label><input id="company-key" type="password" autoComplete="off" value={secondaryCompanyKey} onChange={(event) => setSecondaryCompanyKey(event.target.value)} placeholder={demoMode ? "Disabled in demo mode" : "Paste an authorized API key for a company you are permitted to manage"} disabled={demoMode} /><p className="field-hint"><span>♥</span> "Each key is validated for company profile and employee access, then saved against that company. Only add keys you have permission to use."</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}{demoMode && <p className="demo-caption">This tutorial workspace is read-only. Exit demo to connect real Torn data.</p>}<button className="primary-button form-submit" disabled={loading || demoMode}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>"Company keys are encrypted and stored separately, so adding another company does not replace your other saved company keys."</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <div key={company.company_id} className="saved-company-row"><button type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}><span className="saved-company-title">{company.company_name || `Company #${company.company_id}`}</span><span>#{company.company_id}</span></button>{company.has_api_key && <button type="button" className="text-button danger-text saved-company-remove" disabled={companyKeyActionBusy !== ""} onClick={() => void deleteSavedCompanyKey(company)}>{companyKeyActionBusy === company.company_id ? "Removing…" : "Remove key"}</button>}</div>)}</div>}</div>}{sessionToken && <div className="key-store-panel"><div><strong>Account security</strong><p>Sign out of all active dashboard sessions while keeping saved keys and company history.</p></div><button className="text-button danger-text" type="button" disabled={sessionActionBusy || demoMode} onClick={() => void signOutEverywhere()}>{sessionActionBusy ? "Revoking sessions…" : "Sign out all devices"}</button></div>}</div>
+              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Torn API & company connections</h2><p>Your single saved portal key is reused for company data wherever your Torn permissions allow.</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><p className="field-hint">Connect or refresh your own company using the same API key you used to sign in. Torn must allow the Company profile, employees and stock selections, and you must have the required company role.</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}{demoMode && <p className="demo-caption">This tutorial workspace is read-only. Exit demo to connect real Torn data.</p>}<button className="primary-button form-submit" disabled={loading || demoMode}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>Your single portal key is stored encrypted and reused for supported dashboard features.</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <div key={company.company_id} className="saved-company-row"><button type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}><span className="saved-company-title">{company.company_name || `Company #${company.company_id}`}</span><span>#{company.company_id}</span></button></div>)}</div>}</div>}{sessionToken && <div className="key-store-panel"><div><strong>Account security</strong><p>Sign out of all active dashboard sessions while keeping saved keys and company history.</p></div><button className="text-button danger-text" type="button" disabled={sessionActionBusy || demoMode} onClick={() => void signOutEverywhere()}>{sessionActionBusy ? "Revoking sessions…" : "Sign out all devices"}</button></div>}</div>
               <div className="panel guide-panel"><span className="guide-icon">✓</span><h2>Before you connect</h2><ul><li>Use a Torn API key with the access needed for your company.</li><li>Private employee stats may only be available to authorized company directors.</li><li>Requests pass through the Cloudflare Worker to Torn's API.</li></ul><div className="guide-note"><strong>Privacy by design</strong><p>Your player account is identified by Torn. Deleting the saved key does not delete recorded company data.</p></div></div>
             </section></div>
           ) : (

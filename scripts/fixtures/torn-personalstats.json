@@ -1,0 +1,202 @@
+{
+  "_fixtureNote": "Synthetic structural fixtures derived from the user-supplied generated schema. These are not captured live Torn responses; Full, FullPublic and Popular payload shape must still be verified against sanitized live fixtures before production use.",
+  "full": {
+    "personalstats": {
+      "drugs": {
+        "cannabis": 11,
+        "ecstasy": 12,
+        "ketamine": 13,
+        "lsd": 14,
+        "opium": 15,
+        "pcp": 16,
+        "shrooms": 17,
+        "speed": 18,
+        "vicodin": 19,
+        "xanax": 20,
+        "total": 145,
+        "overdoses": 2
+      },
+      "items": {
+        "used": {
+          "boosters": 21,
+          "alcohol": 22,
+          "energy_drinks": 23,
+          "stat_enhancers": 24
+        }
+      },
+      "other": {
+        "refills": {
+          "energy": 25,
+          "nerve": 1,
+          "token": 0
+        }
+      },
+      "networth": {
+        "total": 260000000
+      }
+    }
+  },
+  "fullPublic": {
+    "personalstats": {
+      "drugs": {
+        "cannabis": 1,
+        "ecstasy": 2,
+        "ketamine": 3,
+        "lsd": 4,
+        "opium": 5,
+        "pcp": 6,
+        "shrooms": 7,
+        "speed": 8,
+        "vicodin": 9,
+        "xanax": 10,
+        "total": 55,
+        "overdoses": 0
+      },
+      "items": {
+        "used": {
+          "boosters": 11,
+          "alcohol": 12,
+          "energy_drinks": 13,
+          "stat_enhancers": 14
+        }
+      },
+      "other": {
+        "refills": {
+          "energy": 15,
+          "nerve": 0,
+          "token": 0
+        }
+      },
+      "networth": {
+        "total": 160000000
+      }
+    }
+  },
+  "popular": {
+    "personalstats": {
+      "drugs": {
+        "cannabis": 0,
+        "ecstasy": 0,
+        "ketamine": 0,
+        "lsd": 10,
+        "opium": 0,
+        "pcp": 0,
+        "shrooms": 0,
+        "speed": 0,
+        "vicodin": 0,
+        "xanax": 7,
+        "total": 17,
+        "overdoses": 1
+      },
+      "items": {
+        "used": {
+          "boosters": 4,
+          "alcohol": 5,
+          "energy_drinks": 6,
+          "stat_enhancers": 0
+        }
+      },
+      "other": {
+        "refills": {
+          "energy": 2
+        }
+      },
+      "networth": {
+        "total": 180000000
+      }
+    }
+  },
+  "categoryDrugs": {
+    "personalstats": {
+      "drugs": {
+        "cannabis": 11,
+        "ecstasy": 12,
+        "ketamine": 13,
+        "lsd": 14,
+        "opium": 15,
+        "pcp": 16,
+        "shrooms": 17,
+        "speed": 18,
+        "vicodin": 19,
+        "xanax": 20,
+        "total": 145,
+        "overdoses": 2,
+        "rehabilitations": {
+          "amount": 1,
+          "fees": 100
+        }
+      }
+    }
+  },
+  "categoryItems": {
+    "personalstats": {
+      "items": {
+        "found": {
+          "city": 1,
+          "dump": 2,
+          "easter_eggs": 3
+        },
+        "trashed": 0,
+        "used": {
+          "books": 0,
+          "boosters": 21,
+          "consumables": 0,
+          "candy": 0,
+          "alcohol": 22,
+          "energy_drinks": 23,
+          "stat_enhancers": 24,
+          "easter_eggs": 0
+        },
+        "viruses_coded": 0
+      }
+    }
+  },
+  "categoryOther": {
+    "personalstats": {
+      "other": {
+        "activity": {
+          "time": 120,
+          "streak": {
+            "best": 5,
+            "current": 2
+          }
+        },
+        "awards": 3,
+        "merits_bought": 4,
+        "refills": {
+          "energy": 25,
+          "nerve": 1,
+          "token": 0
+        },
+        "donator_days": 0,
+        "ranked_war_wins": 2
+      }
+    }
+  },
+  "categoryNetworth": {
+    "personalstats": {
+      "networth": {
+        "total": 260000000
+      }
+    }
+  },
+  "historic": {
+    "personalstats": [
+      {
+        "name": "xantaken",
+        "value": 247,
+        "timestamp": 1794000000
+      },
+      {
+        "name": "lsdtaken",
+        "value": 390,
+        "timestamp": 1794000015
+      },
+      {
+        "name": "new_stat_not_requested",
+        "value": 9,
+        "timestamp": 1794000020
+      }
+    ]
+  }
+}

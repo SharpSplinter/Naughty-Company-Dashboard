@@ -1,7 +1,41 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 
-type AdminTab = "overview" | "members" | "operations" | "history" | "settings" | "audit"
+type AdminTab = "overview" | "members" | "administrators" | "operations" | "history" | "settings" | "weekly-boundaries" | "audit"
 type AdminSettings = { maintenanceMode: boolean; manualRefreshEnabled: boolean; historyImportEnabled: boolean }
+type AdminWeeklyRunDiagnostic = {
+  runId: string
+  status: string
+  scheduledAt: string | null
+  startedAt: string | null
+  completedAt: string | null
+  lastEnqueuedAt: string | null
+  updatedAt: string | null
+  lastError: string | null
+  targetMemberCount: number
+  capturedMemberCount: number
+  completeMemberCount: number
+  firstCapturedAt: string | null
+  lastCapturedAt: string | null
+  timingDeviationSeconds: number | null
+  late: boolean
+  stale: boolean
+  nextIndex: number
+}
+type AdminWeeklyReportReference = { weekStartAt: string; weekEndAt: string; status: string; finalizedAt: string }
+type AdminWeeklyBoundary = {
+  boundaryAt: string
+  boundaryExists: boolean
+  knownMemberCount: number
+  status: string
+  stats: AdminWeeklyRunDiagnostic | null
+  gymEnergy: AdminWeeklyRunDiagnostic | null
+  endingWeekReport: AdminWeeklyReportReference | null
+  startingWeekReport: AdminWeeklyReportReference | null
+  recoverable: boolean
+  recoveryCollections: string[]
+  recoveryReason: string | null
+}
+type Administrator = { playerId: string; playerName: string; grantedBy: string; grantedByName?: string | null; grantedAt: string; revokedBy?: string | null; revokedByName?: string | null; revokedAt?: string | null }
 type AdminMember = { playerId: string; playerName: string; createdAt?: string | null; updatedAt?: string | null; companyId: string | null; companyName: string | null; companyType: string | null; companyTypeId?: number | string | null; disabled: boolean; disabledAt?: string | null; disableReason?: string | null; loginKeySaved: boolean; companyKeyCount: number; snapshotCount: number }
 type AdminJob = { jobId: string; jobType: string; targetPlayerId?: string | null; targetCompanyId?: string | null; status: string; createdAt: string; startedAt?: string | null; finishedAt?: string | null; errorMessage?: string | null; result?: unknown; refreshConfig?: AdminRefreshConfig | null }
 type AutomationRun = { runId: string; triggerName: string; status: string; startedAt: string; finishedAt?: string | null; companiesChecked: number; companiesFailed: number; alertsCreated: number; errorSummary?: string | null }
@@ -79,6 +113,9 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   const [notice, setNotice] = useState("")
   const [overview, setOverview] = useState<Record<string, unknown> | null>(null)
   const [members, setMembers] = useState<AdminMember[]>([])
+  const [administrators, setAdministrators] = useState<Administrator[]>([])
+  const [administratorPlayerId, setAdministratorPlayerId] = useState("")
+  const [administratorBusy, setAdministratorBusy] = useState(false)
   const [memberTotal, setMemberTotal] = useState(0)
   const [memberQuery, setMemberQuery] = useState("")
   const [memberSearch, setMemberSearch] = useState("")
@@ -103,6 +140,9 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   const [settingsDirty, setSettingsDirty] = useState(false)
   const [historySummary, setHistorySummary] = useState<Record<string, unknown> | null>(null)
   const [audit, setAudit] = useState<AuditEvent[]>([])
+  const [weeklyBoundaries, setWeeklyBoundaries] = useState<AdminWeeklyBoundary[]>([])
+  const [weeklyBoundariesLoading, setWeeklyBoundariesLoading] = useState(false)
+  const [weeklyBoundaryRecoveryBusy, setWeeklyBoundaryRecoveryBusy] = useState("")
   const [historyTarget, setHistoryTarget] = useState("")
   const [restoreFile, setRestoreFile] = useState<File | null>(null)
   const [restorePreview, setRestorePreview] = useState<{ counts?: Record<string, number>; warnings?: string[]; exportedAt?: string; targetPlayerId?: string } | null>(null)
@@ -182,6 +222,8 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   }, [apiBase, sessionToken, selectedMemberId])
 
   useEffect(() => { void refreshAll() }, [refreshAll])
+  useEffect(() => { if (tab === "administrators") void loadAdministrators() }, [tab])
+  useEffect(() => { if (tab === "weekly-boundaries") void loadWeeklyBoundaries() }, [tab])
   useEffect(() => { if (tab === "operations") void loadAutomationRuns() }, [tab, loadAutomationRuns])
   useEffect(() => { if (tab === "operations") void loadRefreshCandidates(refreshMemberSearch, refreshMemberOffset) }, [tab, loadRefreshCandidates, refreshMemberSearch, refreshMemberOffset])
   useEffect(() => {
@@ -326,18 +368,74 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
     finally { setHistoryBusy(false) }
   }
 
+  async function loadWeeklyBoundaries() {
+    setWeeklyBoundariesLoading(true)
+    try {
+      const payload = await adminFetch<{ generatedAt: string; windowStartAt: string; boundaries: AdminWeeklyBoundary[] }>(apiBase, sessionToken, "/api/admin/faction/weekly-boundaries?limit=12")
+      setWeeklyBoundaries(payload.boundaries || [])
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load Sunday boundary diagnostics.") }
+    finally { setWeeklyBoundariesLoading(false) }
+  }
+
+  async function recoverWeeklyBoundary(boundary: AdminWeeklyBoundary) {
+    if (!actionsArmed || weeklyBoundaryRecoveryBusy || !boundary.recoverable) return
+    const collectionNames = boundary.boundaryExists
+      ? boundary.recoveryCollections.map((kind) => kind === "personalstats" ? "public personal stats" : "gym-energy").join(" and ")
+      : "both Sunday baseline collections"
+    const detail = boundary.boundaryExists
+      ? "Retry " + collectionNames + " using the existing frozen member cohort. Captures will keep their actual timestamps and may be marked late."
+      : "Create and queue both Sunday captures for the known membership cohort. This is only available within 24 hours of the boundary."
+    if (!window.confirm("Recover the Sunday boundary " + prettyDate(boundary.boundaryAt) + "?\\n\\n" + detail + "\\n\\nFinalized weekly reports are protected and will not be changed.")) return
+    try {
+      setWeeklyBoundaryRecoveryBusy(boundary.boundaryAt); setError(""); setNotice("")
+      const payload = await adminFetch<{ created: boolean; queued?: Array<{ collection: string; runId: string }>; queuedCollections?: string[]; skipped?: Array<{ collection: string; reason: string }> }>(apiBase, sessionToken, "/api/admin/faction/weekly-boundaries/recover", {
+        method: "POST",
+        body: JSON.stringify({ boundaryAt: boundary.boundaryAt, ...(boundary.boundaryExists ? { collections: boundary.recoveryCollections } : {}) }),
+      })
+      const queued = payload.queued?.map((item) => item.collection).join(", ") || payload.queuedCollections?.join(", ") || "both collections"
+      setNotice((payload.created ? "Created missing Sunday boundary. " : "Queued recovery for " + queued + ". ") + "Refresh diagnostics to follow actual capture progress.")
+      await Promise.all([loadWeeklyBoundaries(), loadAudit()])
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not recover the Sunday boundary.") }
+    finally { setWeeklyBoundaryRecoveryBusy("") }
+  }
+
   async function loadAudit() {
     try { const payload = await adminFetch<{ events: AuditEvent[] }>(apiBase, sessionToken, "/api/admin/audit?limit=50"); setAudit(payload.events || []) }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load audit records.") }
+  }
+  async function loadAdministrators() {
+    try {
+      const payload = await adminFetch<{ administrators: Administrator[] }>(apiBase, sessionToken, "/api/admin/administrators")
+      setAdministrators(payload.administrators || [])
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load administrator roles.") }
+  }
+
+  async function changeAdministratorRole(action: "grant" | "revoke", target?: Administrator) {
+    if (!actionsArmed || administratorBusy) return
+    const targetId = action === "grant" ? administratorPlayerId.trim() : target?.playerId || ""
+    if (!/^\\d{1,20}$/.test(targetId)) { setError("Enter a valid Torn player ID."); return }
+    const targetName = target?.playerName || `Torn ID #${targetId}`
+    const confirmed = window.confirm(action === "grant"
+      ? `Grant administrator privileges to ${targetName}? The player must already have a registered Naughty Souls member account.`
+      : `Revoke administrator privileges from ${targetName}? Their current sessions will remain signed in, but admin endpoints will reject access immediately.`)
+    if (!confirmed) return
+    try {
+      setAdministratorBusy(true); setError(""); setNotice("")
+      await adminFetch(apiBase, sessionToken, `/api/admin/administrators/${action}`, { method: "POST", body: JSON.stringify({ playerId: targetId }) })
+      setNotice(action === "grant" ? `Administrator privileges granted to ${targetName}.` : `Administrator privileges revoked from ${targetName}.`)
+      setAdministratorPlayerId("")
+      await Promise.all([loadAdministrators(), loadAudit()])
+    } catch (caught) { setError(caught instanceof Error ? caught.message : `Could not ${action} administrator privileges.`) }
+    finally { setAdministratorBusy(false) }
   }
 
   const metrics = (overview?.metrics || {}) as Record<string, unknown>
   const historyStats = (historySummary?.stats || {}) as Record<string, unknown>
   const filteredAutomationRuns = useMemo(() => automationStatusFilter === "all" ? automationRuns : automationRuns.filter((run) => run.status === automationStatusFilter), [automationRuns, automationStatusFilter])
   const tabItems: Array<{ key: AdminTab; label: string; icon: string }> = [
-    { key: "overview", label: "Overview", icon: "◫" }, { key: "members", label: "Members", icon: "♙" },
+    { key: "overview", label: "Overview", icon: "◫" }, { key: "members", label: "Members", icon: "♙" }, { key: "administrators", label: "Administrators", icon: "♛" },
     { key: "operations", label: "Operations", icon: "↻" }, { key: "history", label: "History & Backups", icon: "▤" },
-    { key: "settings", label: "Global Settings", icon: "⚙" }, { key: "audit", label: "Audit Log", icon: "≡" },
+    { key: "settings", label: "Global Settings", icon: "⚙" }, { key: "weekly-boundaries", label: "Weekly Boundaries", icon: "◷" }, { key: "audit", label: "Audit Log", icon: "≡" },
   ]
 
   return <div className="admin-console">
@@ -369,6 +467,21 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
       </div>
     </div>}
 
+    {tab === "administrators" && <div className="admin-section-stack">
+      <div className="admin-section-heading"><div><h2>Administrator management</h2><p>Privileges are attached to a verified Torn player ID and checked by the Worker on every administration request.</p></div><button type="button" className="secondary-button" onClick={() => void loadAdministrators()}>Refresh roles ↻</button></div>
+      <section className="panel admin-subpanel">
+        <div className="panel-heading"><div><h3>Grant administrator access</h3><p>Enter the Torn ID of a player who has already signed in and verified Naughty Souls membership. Administrators never handle another member's API keys.</p></div></div>
+        <form className="admin-search-row" onSubmit={(event) => { event.preventDefault(); void changeAdministratorRole("grant") }}>
+          <input inputMode="numeric" value={administratorPlayerId} onChange={(event) => setAdministratorPlayerId(event.target.value.replace(/[^0-9]/g, "").slice(0, 20))} placeholder="Torn player ID" aria-label="Torn player ID to grant administrator access" disabled={!actionsArmed || administratorBusy} />
+          <button className="primary-button" type="submit" disabled={!actionsArmed || administratorBusy || !administratorPlayerId.trim()}>{administratorBusy ? "Saving…" : "Grant administrator"}</button>
+        </form>
+        <p className="field-hint">Only a registered, non-suspended member account can receive the role. The grant is recorded in the audit log.</p>
+      </section>
+      <section className="panel admin-subpanel">
+        <div className="panel-heading"><div><h3>Role registry</h3><p>Active roles and retained revocation history.</p></div><span className="count-chip">{administrators.filter((admin) => !admin.revokedAt).length} active</span></div>
+        {administrators.length ? <div className="table-scroll"><table className="admin-table"><thead><tr><th>ADMINISTRATOR</th><th>GRANTED BY</th><th>GRANTED</th><th>STATUS / REVOKED</th><th>ACTIONS</th></tr></thead><tbody>{administrators.map((admin) => <tr key={admin.playerId}><td><strong>{admin.playerName}</strong><small>#{admin.playerId}</small></td><td>{admin.grantedByName || `#${admin.grantedBy}`}</td><td>{prettyDate(admin.grantedAt)}</td><td>{admin.revokedAt ? <><span className="admin-status danger">Revoked</span><small>{admin.revokedByName || (admin.revokedBy ? `#${admin.revokedBy}` : "Unknown")} · {prettyDate(admin.revokedAt)}</small></> : <span className="admin-status good">Active</span>}</td><td>{admin.revokedAt ? <span className="field-hint">Retained in history</span> : admin.playerId === playerId ? <span className="field-hint">Current account</span> : <button type="button" className="text-button" disabled={!actionsArmed || administratorBusy} onClick={() => void changeAdministratorRole("revoke", admin)}>Revoke access</button>}</td></tr>)}</tbody></table></div> : <div className="empty-state">No administrator roles were returned.</div>}
+      </section>
+    </div>}
     {tab === "operations" && <div className="admin-section-stack">
       <div className="admin-section-heading"><div><h2>Refresh and maintenance jobs</h2><p>Jobs are tracked in D1, prevent equivalent concurrent requests, and report final outcomes.</p></div><button type="button" className="secondary-button" onClick={() => void loadJobs()}>Refresh job list ↻</button></div>
       <section className="panel admin-subpanel">
@@ -435,6 +548,36 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
         { key: "historyImportEnabled" as const, title: "History imports and restores", description: "Allow member history imports and administrative history restoration. Exporting backups remains a separate audited action." },
       ].map((item) => <label className="admin-setting-row" key={item.key}><span className="admin-toggle"><input type="checkbox" checked={settings[item.key]} disabled={!actionsArmed} onChange={(event) => { setSettings((current) => ({ ...current, [item.key]: event.target.checked })); setSettingsDirty(true) }} /><i /></span><span><strong>{item.title}</strong><small>{item.description}</small></span><em>{settings[item.key] ? "Enabled" : "Disabled"}</em></label>)}{settingsDirty && <p className="admin-armed-note">Unsaved settings changes. They do not take effect until you save.</p>}</section>
       <p className="field-hint">Global settings affect server behavior. Audit records track updates. Member-specific sharing settings and opt-in comparisons remain independent.</p>
+    </div>}
+
+    {tab === "weekly-boundaries" && <div className="admin-section-stack">
+      <div className="admin-section-heading"><div><h2>Sunday boundary diagnostics</h2><p>Scheduled UTC captures, actual collection timestamps, queue state, and immutable report locks for the most recent 12 Sundays.</p></div><button type="button" className="secondary-button" onClick={() => void loadWeeklyBoundaries()} disabled={weeklyBoundariesLoading}>{weeklyBoundariesLoading ? "Refreshing…" : "Reload diagnostics ↻"}</button></div>
+      <div className="admin-metric-grid">
+        <article className="admin-metric-card"><small>BOUNDARIES CHECKED</small><strong>{weeklyBoundaries.length}</strong></article>
+        <article className="admin-metric-card"><small>RECOVERABLE</small><strong>{weeklyBoundaries.filter((item) => item.recoverable).length}</strong></article>
+        <article className="admin-metric-card"><small>FINALIZED / LOCKED</small><strong>{weeklyBoundaries.filter((item) => item.endingWeekReport || item.startingWeekReport).length}</strong></article>
+      </div>
+      <section className="panel admin-subpanel">
+        <p className="field-hint">A missing boundary can only be created during the first 24 hours. Existing failed, partial, or stale runs can be retried for up to eight days using the original frozen cohort. Actual capture times remain visible as late when appropriate. Once either adjacent weekly report is finalized, recovery is blocked to protect its immutable results.</p>
+        {weeklyBoundariesLoading && !weeklyBoundaries.length ? <div className="empty-state">Loading Sunday boundary records…</div> : (
+          <div className="table-scroll"><table className="admin-table"><thead><tr><th>SUNDAY · UTC</th><th>STATS RUN</th><th>GYM ENERGY RUN</th><th>MEMBERS KNOWN</th><th>WEEKLY REPORTS</th><th>RECOVERY</th></tr></thead><tbody>
+            {weeklyBoundaries.map((boundary) => {
+              const runLabel = (run: AdminWeeklyRunDiagnostic | null) => !run ? "No run" : run.status + " · " + run.capturedMemberCount + "/" + Math.max(run.targetMemberCount, run.capturedMemberCount) + " captured · " + run.completeMemberCount + " complete"
+              const captureLabel = (run: AdminWeeklyRunDiagnostic | null) => !run?.firstCapturedAt ? "No sample captured" : "First " + prettyDate(run.firstCapturedAt) + (run.lastCapturedAt && run.lastCapturedAt !== run.firstCapturedAt ? " · last " + prettyDate(run.lastCapturedAt) : "") + (run.timingDeviationSeconds === null ? "" : " · " + (run.timingDeviationSeconds >= 0 ? "+" : "") + Math.round(run.timingDeviationSeconds / 60) + "m")
+              const reportLabel = [boundary.endingWeekReport, boundary.startingWeekReport].filter(Boolean).map((report) => report!.status + " · " + report!.weekStartAt.slice(0, 10)).join(" / ")
+              return <tr key={boundary.boundaryAt}>
+                <td><strong>{prettyDate(boundary.boundaryAt)}</strong><small>{boundary.status.replaceAll("_", " ")}</small></td>
+                <td><span className={"admin-status " + (boundary.stats?.status === "completed" ? "good" : boundary.stats?.stale || boundary.stats?.status === "failed" ? "danger" : "warning")}>{runLabel(boundary.stats)}</span><small>{captureLabel(boundary.stats)}</small>{boundary.stats?.lastError && <small>{boundary.stats.lastError}</small>}</td>
+                <td><span className={"admin-status " + (boundary.gymEnergy?.status === "completed" ? "good" : boundary.gymEnergy?.stale || boundary.gymEnergy?.status === "failed" ? "danger" : "warning")}>{runLabel(boundary.gymEnergy)}</span><small>{captureLabel(boundary.gymEnergy)}</small>{boundary.gymEnergy?.lastError && <small>{boundary.gymEnergy.lastError}</small>}</td>
+                <td>{boundary.knownMemberCount.toLocaleString()}</td>
+                <td>{reportLabel || "No adjacent finalized report"}</td>
+                <td><button type="button" className="secondary-button" disabled={!actionsArmed || !boundary.recoverable || weeklyBoundaryRecoveryBusy === boundary.boundaryAt} onClick={() => void recoverWeeklyBoundary(boundary)}>{weeklyBoundaryRecoveryBusy === boundary.boundaryAt ? "Queueing…" : boundary.boundaryExists ? "Recover run" : "Create boundary"}</button><small>{boundary.recoveryReason || "No recovery required."}</small></td>
+              </tr>
+            })}
+          </tbody></table></div>
+        )}
+        {!weeklyBoundariesLoading && !weeklyBoundaries.length && <div className="empty-state">No Sunday boundaries are available yet.</div>}
+      </section>
     </div>}
 
     {tab === "audit" && <div className="admin-section-stack">

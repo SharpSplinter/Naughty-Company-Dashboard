@@ -1,23 +1,45 @@
 import { TornApiClient, TornApiClientError } from "../lib/torn/client"
+import {
+  FACTION_PUBLIC_STAT_COLUMNS,
+  parseFactionGymEnergyResponse,
+  parseFactionPublicStatsResponse,
+  parseFactionRosterResponse,
+  parseFactionStatsResponse,
+} from "../lib/faction-performance/collector"
+import {
+  calculateWeeklyMemberResult,
+  rankWeeklyMembers,
+  utcSundayWindow,
+  utcSundayStart,
+  WEEK_MS,
+  WEEKLY_METRIC_NAMES,
+  type WeeklyMemberResult,
+  type WeeklyMembership,
+  type WeeklyMetricName,
+  type WeeklyRankingMetric,
+  type WeeklySnapshot,
+} from "../lib/faction-performance/weekly"
+import { PERSONAL_STATS_HISTORICAL_NAMES } from "../lib/torn/personalstats"
+import { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } from "../lib/faction-performance/private-live"
 import { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } from "./snapshot-provenance"
-import { validateAdminPassword } from "../lib/admin-password-policy.js"
 import { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isSnapshotStale, normalizeWebhookUrl, normalizeAlertThreshold, normalizeCooldownHours } from "../lib/automation/rules"
 
 type D1Result<T = Record<string, unknown>> = { results?: T[]; success?: boolean; meta?: { changes?: number } }
 type D1Statement = { bind(...values: (string | number | null)[]): D1Statement; first<T = Record<string, unknown>>(): Promise<T | null>; all<T = Record<string, unknown>>(): Promise<D1Result<T>>; run(): Promise<D1Result> }
-type D1Database = { prepare(sql: string): D1Statement }
+type D1Database = {
+  prepare(sql: string): D1Statement
+  batch?(statements: D1Statement[]): Promise<D1Result[]>
+}
 type QueueProducer = { send(message: unknown): Promise<unknown> }
 type QueueMessage = { body: unknown; attempts?: number; ack(): void; retry(options?: { delaySeconds?: number }): void }
-type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; GLOBAL_RANKINGS_QUEUE?: QueueProducer; ADMIN_USERNAME?: string; ADMIN_PASSWORD_HASH?: string }
-type Session = { player_id: string; player_name: string; admin_elevated_until: number }
+type TornFixtureBinding = { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> }
+type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; TORN_FACTION_API_KEY?: string; TORN_API_KEY_CUSTOM?: string; TORN_API_BASE_URL?: string; TORN_API_FIXTURE?: TornFixtureBinding; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
+type Session = { player_id: string; player_name: string; is_admin: number; faction_id?: string | null; faction_verified_at?: string | null; membership_check_attempted_at?: string | null; membership_check_status?: string | null }
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }
 const DAY = 86400
 const ADMIN_PLAYER_ID = "351311"
-const ADMIN_ELEVATION_SECONDS = 30 * 60
-const ADMIN_ATTEMPT_WINDOW_SECONDS = 15 * 60
-const ADMIN_LOCKOUT_SECONDS = 15 * 60
-const ADMIN_MAX_ATTEMPTS = 5
+const NAUGHTY_SOULS_FACTION_ID = "8317"
 
 function jsonResponse(body: unknown, status = 200, origin = "null", extraHeaders: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...jsonHeaders, "access-control-allow-origin": origin, "access-control-allow-methods": "GET, POST, DELETE, OPTIONS", "access-control-allow-headers": "Authorization, Content-Type, X-Admin-Confirm-Restore", vary: "Origin", ...extraHeaders } })
@@ -29,7 +51,7 @@ function allowedOrigin(request: Request, env: WorkerEnv): string | null {
   if (configured && configured !== "*" && incoming === configured) return incoming
   try {
     const url = new URL(incoming)
-    const isDashboard = url.protocol === "https:" && /^(?:[a-z0-9-]+\.)?naughty-company-dashboard\.pages\.dev$/.test(url.hostname)
+    const isDashboard = url.protocol === "https:" && (/^(?:[a-z0-9-]+\.)?naughty-company-dashboard\.pages\.dev$/.test(url.hostname) || url.hostname === "naughtyfamily.pages.dev")
     const isLocalDev = url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1") && url.port === "3000"
     return isDashboard || isLocalDev ? incoming : null
   } catch { return null }
@@ -66,70 +88,191 @@ async function readAdminBoolean(env: WorkerEnv, key: string, fallback: boolean):
   const value = await readAdminSetting(env, key)
   return typeof value === "boolean" ? value : fallback
 }
+async function verifyFactionMembershipWithKey(apiKey: string): Promise<string> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10000)
+  try {
+    const response = await fetch("https://api.torn.com/v2/user/faction", {
+      headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+      signal: controller.signal,
+    })
+    const payload: unknown = await response.json().catch(() => null)
+    const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+    if (!response.ok || error) {
+      const code = typeof error?.code === "number" ? error.code : undefined
+      throw Object.assign(new Error(code === 9 ? "Torn rate limit reached while checking faction membership." : "Could not refresh current Naughty Souls membership."), { status: code === 9 ? 429 : 502 })
+    }
+    const faction = isRecord(payload) && isRecord(payload.faction) ? payload.faction : null
+    const id = faction?.id ?? (isRecord(payload) ? payload.faction_id : undefined)
+    if ((typeof id !== "number" && typeof id !== "string") || !/^\d+$/.test(String(id))) return ""
+    return String(id)
+  } finally { clearTimeout(timeout) }
+}
+
+async function revalidateFactionMembershipBatch(env: WorkerEnv, scheduledTime: number, batchSize = 5): Promise<number> {
+  if (!env.DB) return 0
+  const db = requireDb(env)
+  const checkedBefore = new Date(scheduledTime - 30 * 60 * 1000).toISOString()
+  const retryBefore = checkedBefore
+  const candidates = await db.prepare(
+    "SELECT p.player_id AS playerId, p.membership_check_status AS membershipCheckStatus FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL AND (p.membership_check_status = 'cleanup_pending' OR ((p.faction_verified_at IS NULL OR p.faction_verified_at < ?) AND (p.membership_check_attempted_at IS NULL OR p.membership_check_attempted_at < ?))) ORDER BY CASE WHEN p.membership_check_status = 'cleanup_pending' THEN 0 ELSE 1 END, COALESCE(p.membership_check_attempted_at, p.faction_verified_at, p.created_at) ASC LIMIT ?"
+  ).bind(NAUGHTY_SOULS_FACTION_ID, checkedBefore, retryBefore, Math.max(1, Math.min(10, batchSize))).all<{ playerId: string; membershipCheckStatus: string | null }>()
+  let checked = 0
+  for (const candidate of candidates.results ?? []) {
+    const playerId = String(candidate.playerId)
+    const retryCleanup = candidate.membershipCheckStatus === "cleanup_pending"
+    const attemptTime = Date.now()
+    const attemptedAt = new Date(attemptTime).toISOString()
+    const claimBefore = new Date(attemptTime - 5 * 60 * 1000).toISOString()
+    const claim = await db.prepare("UPDATE players SET membership_check_attempted_at = ?, membership_check_status = 'checking' WHERE player_id = ? AND (membership_check_status = 'cleanup_pending' OR membership_check_attempted_at IS NULL OR membership_check_attempted_at < ?)")
+      .bind(attemptedAt, playerId, claimBefore).run()
+    // The cron candidate list can race with an authenticated request or another
+    // scheduler invocation. Only the request that atomically claims this
+    // member's check window may contact Torn.
+    if (Number(claim.meta?.changes ?? 0) < 1) continue
+    const apiKey = await savedKey(env, playerId).catch(() => null)
+    if (!apiKey) {
+      if (retryCleanup) {
+        await db.prepare("UPDATE players SET membership_check_status = 'cleanup_pending' WHERE player_id = ?")
+          .bind(playerId).run().catch(() => undefined)
+      } else {
+        await db.prepare("UPDATE players SET membership_check_status = 'unavailable' WHERE player_id = ? AND membership_check_attempted_at = ?")
+          .bind(playerId, attemptedAt).run().catch(() => undefined)
+      }
+      continue
+    }
+    try {
+      if (checked > 0) await new Promise((resolve) => setTimeout(resolve, 800))
+      const factionId = await verifyFactionMembershipWithKey(apiKey)
+      checked++
+      if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
+        try {
+          await removeDepartedFactionAccess(env, playerId)
+        } catch {
+          // A confirmed departure is not an outage. Mark it so authenticated
+          // requests and the next sweep fail closed and retry cleanup.
+          await db.prepare("UPDATE players SET membership_check_status = 'cleanup_pending' WHERE player_id = ?")
+            .bind(playerId).run().catch(() => undefined)
+          continue
+        }
+      }
+      const verifiedAt = new Date().toISOString()
+      await db.prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, membership_check_attempted_at = ?, membership_check_status = NULL, updated_at = ? WHERE player_id = ?")
+        .bind(factionId || null, verifiedAt, verifiedAt, verifiedAt, playerId).run()
+    } catch {
+      // Torn network/rate-limit failures are not proof of faction departure.
+      // But they must never erase a previously confirmed, pending departure.
+      if (retryCleanup) {
+        await db.prepare("UPDATE players SET membership_check_status = 'cleanup_pending' WHERE player_id = ?")
+          .bind(playerId).run().catch(() => undefined)
+      } else {
+        await db.prepare("UPDATE players SET membership_check_status = 'unavailable' WHERE player_id = ? AND membership_check_attempted_at = ?")
+          .bind(playerId, attemptedAt).run().catch(() => undefined)
+      }
+      continue
+    }
+  }
+  return checked
+}
+
 async function authenticate(request: Request, env: WorkerEnv): Promise<Session | null> {
   const token = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
   if (!token || !env.DB) return null
   const hash = await sha256(token)
-  const session = await requireDb(env).prepare("SELECT p.player_id, p.player_name, s.admin_elevated_until FROM sessions s JOIN players p ON p.player_id = s.player_id WHERE s.token_hash = ? AND s.expires_at > ?").bind(hash, Math.floor(Date.now() / 1000)).first<Session>()
+  const session = await requireDb(env).prepare(
+    "SELECT p.player_id, p.player_name, p.faction_id, p.faction_verified_at, p.membership_check_attempted_at, p.membership_check_status, CASE WHEN a.player_id IS NULL THEN 0 ELSE 1 END AS is_admin FROM sessions s JOIN players p ON p.player_id = s.player_id LEFT JOIN administrators a ON a.player_id = p.player_id AND a.revoked_at IS NULL WHERE s.token_hash = ? AND s.expires_at > ?"
+  ).bind(hash, Math.floor(Date.now() / 1000)).first<Session>()
   if (!session) return null
-  const normalizedSession = { ...session, admin_elevated_until: Number(session.admin_elevated_until ?? 0) }
+  const normalizedSession = { ...session, is_admin: Number(session.is_admin ?? 0) }
   const status = await requireDb(env).prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?").bind(session.player_id).first<{ disabled_at: string | null }>()
   if (status?.disabled_at) return null
+
+  // D1 rows on the migrated schema always include faction fields. Undefined
+  // is tolerated only by lightweight legacy test doubles.
+  if (session.faction_id !== undefined || session.faction_verified_at !== undefined) {
+    const nowMs = Date.now()
+    const ageMs = session.faction_verified_at ? nowMs - Date.parse(session.faction_verified_at) : Number.POSITIVE_INFINITY
+    const fresh = Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= 5 * 60 * 1000
+    if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID || !fresh) {
+      const apiKey = await savedKey(env, session.player_id)
+      if (!apiKey) return null
+
+      // A confirmed departure whose cleanup failed must never use the outage
+      // grace. It can only recover through another successful check+cleanup.
+      const attemptAgeMs = session.membership_check_attempted_at
+        ? nowMs - Date.parse(session.membership_check_attempted_at)
+        : Number.POSITIVE_INFINITY
+      const attemptedRecently = Number.isFinite(attemptAgeMs) && attemptAgeMs >= 0 && attemptAgeMs <= 5 * 60 * 1000
+      const retryCleanup = session.membership_check_status === "cleanup_pending"
+      if (attemptedRecently && session.membership_check_status === "unavailable") {
+        if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > 15 * 60 * 1000) return null
+      } else if (attemptedRecently && !retryCleanup) {
+        // 'checking' means another request or sweep owns the claim. Unknown
+        // legacy state also fails closed rather than assuming an outage.
+        return null
+      } else {
+        const attemptedAt = new Date(nowMs).toISOString()
+        const claimBefore = new Date(nowMs - 5 * 60 * 1000).toISOString()
+        const claim = await requireDb(env).prepare("UPDATE players SET membership_check_attempted_at = ?, membership_check_status = 'checking' WHERE player_id = ? AND (membership_check_status = 'cleanup_pending' OR membership_check_attempted_at IS NULL OR membership_check_attempted_at < ?)")
+          .bind(attemptedAt, session.player_id, claimBefore).run()
+        if (Number(claim.meta?.changes ?? 0) < 1) {
+          // Another request or the scheduled sweep claimed this check window.
+          // Only an already-recorded genuine outage may use bounded grace.
+          if (session.membership_check_status !== "unavailable" || session.faction_id !== NAUGHTY_SOULS_FACTION_ID || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > 15 * 60 * 1000) return null
+        } else {
+          let currentFactionId: string
+          let verified = true
+          try {
+            currentFactionId = await verifyFactionMembershipWithKey(apiKey)
+          } catch {
+            if (retryCleanup) {
+              // A previously confirmed departure remains fail-closed even if
+              // Torn becomes unavailable while cleanup is being retried.
+              await requireDb(env).prepare("UPDATE players SET membership_check_status = 'cleanup_pending' WHERE player_id = ?")
+                .bind(session.player_id).run().catch(() => undefined)
+              return null
+            }
+            await requireDb(env).prepare("UPDATE players SET membership_check_status = 'unavailable' WHERE player_id = ? AND membership_check_attempted_at = ?")
+              .bind(session.player_id, attemptedAt).run().catch(() => undefined)
+            // A short outage grace is tied to the last successful verification,
+            // never to the attempted check timestamp. Do not refresh it here.
+            if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > 15 * 60 * 1000) return null
+            normalizedSession.membership_check_attempted_at = attemptedAt
+            normalizedSession.membership_check_status = "unavailable"
+            currentFactionId = NAUGHTY_SOULS_FACTION_ID
+            verified = false
+          }
+          if (currentFactionId !== NAUGHTY_SOULS_FACTION_ID) {
+            // Departure is authoritative. Failed cleanup remains explicitly
+            // pending, so the next request cannot mistake it for a Torn outage.
+            try { await removeDepartedFactionAccess(env, session.player_id) }
+            catch {
+              await requireDb(env).prepare("UPDATE players SET membership_check_status = 'cleanup_pending' WHERE player_id = ?")
+                .bind(session.player_id).run().catch(() => undefined)
+              return null
+            }
+            const verifiedAt = new Date().toISOString()
+            await requireDb(env).prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, membership_check_attempted_at = ?, membership_check_status = NULL, updated_at = ? WHERE player_id = ?")
+              .bind(currentFactionId || null, verifiedAt, verifiedAt, verifiedAt, session.player_id).run()
+            return null
+          }
+          if (verified) {
+            const verifiedAt = new Date().toISOString()
+            await requireDb(env).prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, membership_check_attempted_at = ?, membership_check_status = NULL, updated_at = ? WHERE player_id = ?")
+              .bind(currentFactionId, verifiedAt, attemptedAt, verifiedAt, session.player_id).run()
+            normalizedSession.faction_id = currentFactionId
+            normalizedSession.faction_verified_at = verifiedAt
+            normalizedSession.membership_check_attempted_at = attemptedAt
+            normalizedSession.membership_check_status = null
+          }
+        }
+      }
+    }
+  }
+
   const maintenanceMode = await readAdminBoolean(env, "maintenanceMode", false)
-  const pathname = new URL(request.url).pathname
-  const ownerRecoveryRoutes = ["/api/auth/session", "/api/auth/admin/elevate", "/api/auth/admin/hash-diagnostics", "/api/auth/admin/de-elevate", "/api/auth/sign-out-all"]
-  const recoveryAllowed = session.player_id === ADMIN_PLAYER_ID && ownerRecoveryRoutes.includes(pathname)
-  if (maintenanceMode && !isAdminElevated(normalizedSession) && !recoveryAllowed) return null
+  if (maintenanceMode && normalizedSession.is_admin !== 1) return null
   return normalizedSession
-}
-function isAdminElevated(session: Session): boolean {
-  return session.player_id === ADMIN_PLAYER_ID && Number(session.admin_elevated_until) > Math.floor(Date.now() / 1000)
-}
-function constantTimeEqual(left: string, right: string): boolean {
-  const a = new TextEncoder().encode(left), b = new TextEncoder().encode(right)
-  let difference = a.length ^ b.length
-  for (let i = 0; i < Math.max(a.length, b.length); i++) difference |= (a[i] ?? 0) ^ (b[i] ?? 0)
-  return difference === 0
-}
-function isWellFormedAdminPasswordHash(encoded: string): boolean {
-  const parts = encoded.split("$")
-  if (parts.length !== 4 || parts[0] !== "pbkdf2-sha256") return false
-  const iterations = Number(parts[1])
-  if (!Number.isInteger(iterations) || iterations < 150000 || iterations > 600000) return false
-  try {
-    const decode = (value: string) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0))
-    const salt = decode(parts[2]), expected = decode(parts[3])
-    return salt.length >= 16 && expected.length === 32
-  } catch { return false }
-}
-async function verifyAdminPassword(password: string, encoded: string): Promise<boolean> {
-  const parts = encoded.split("$")
-  if (parts.length !== 4 || parts[0] !== "pbkdf2-sha256") return false
-  const iterations = Number(parts[1])
-  if (!Number.isInteger(iterations) || iterations < 150000 || iterations > 600000) return false
-  try {
-    const decode = (value: string) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0))
-    const salt = decode(parts[2]), expected = decode(parts[3])
-    if (salt.length < 16 || expected.length !== 32) return false
-    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"])
-    const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations }, key, 256)
-    const actual = btoa(String.fromCharCode(...new Uint8Array(bits)))
-    return constantTimeEqual(actual, parts[3])
-  } catch { return false }
-}
-async function recordAdminAttempt(env: WorkerEnv, attemptKey: string, now: number): Promise<{ locked: boolean; failures: number }> {
-  const db = requireDb(env)
-  const row = await db.prepare("SELECT failures, window_started_at AS windowStartedAt, locked_until AS lockedUntil FROM admin_auth_attempts WHERE attempt_key = ?").bind(attemptKey).first<{ failures: number; windowStartedAt: number; lockedUntil: number }>()
-  if (Number(row?.lockedUntil ?? 0) > now) return { locked: true, failures: Number(row?.failures ?? ADMIN_MAX_ATTEMPTS) }
-  const inWindow = row && now - Number(row.windowStartedAt) < ADMIN_ATTEMPT_WINDOW_SECONDS
-  const failures = inWindow ? Number(row.failures) + 1 : 1
-  const windowStartedAt = inWindow ? Number(row.windowStartedAt) : now
-  const lockedUntil = failures >= ADMIN_MAX_ATTEMPTS ? now + ADMIN_LOCKOUT_SECONDS : 0
-  await db.prepare("INSERT INTO admin_auth_attempts (attempt_key, failures, window_started_at, locked_until) VALUES (?, ?, ?, ?) ON CONFLICT(attempt_key) DO UPDATE SET failures = excluded.failures, window_started_at = excluded.window_started_at, locked_until = excluded.locked_until").bind(attemptKey, failures, windowStartedAt, lockedUntil).run()
-  return { locked: lockedUntil > now, failures }
-}
-async function clearAdminAttempts(env: WorkerEnv, attemptKey: string): Promise<void> {
-  await requireDb(env).prepare("DELETE FROM admin_auth_attempts WHERE attempt_key = ?").bind(attemptKey).run()
 }
 async function validateTornKey(apiKey: string): Promise<{ id: string; name: string; factionId: string; factionName: string }> {
   if (!apiKey || apiKey.length > 256 || /\s/.test(apiKey)) throw new Error("Enter a valid Torn API key.")
@@ -180,6 +323,775 @@ async function savedKey(env: WorkerEnv, playerId: string): Promise<string | null
   const row = await requireDb(env).prepare("SELECT ciphertext, iv FROM api_keys WHERE player_id = ?").bind(playerId).first<{ ciphertext: string; iv: string }>()
   return row ? decryptKey(env, row.ciphertext, row.iv) : null
 }
+
+/** Remove feature registrations tied to an older portal credential while retaining user data/history. */
+async function invalidateMemberKeyDependents(env: WorkerEnv, playerId: string, previousPortalKey?: string | null): Promise<void> {
+  const db = requireDb(env)
+  const now = new Date().toISOString()
+  await db.prepare("DELETE FROM faction_member_private_live_snapshots WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM member_private_live_keys WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_historical_keys WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("UPDATE halloween_collection_jobs SET status = 'cancelled', last_error = ?, updated_at = ? WHERE player_id = ? AND status IN ('queued', 'running')")
+    .bind("The member's portal API key changed or was removed. Re-enable historical collection with the current key.", now, playerId).run()
+
+  // Secondary company keys are independent member-owned credentials. Remove
+  // only per-company/legacy copies that contain the old primary portal key.
+  if (previousPortalKey) {
+    const legacyCompanyKey = await savedCompanyKey(env, playerId).catch(() => null)
+    if (legacyCompanyKey === previousPortalKey) {
+      await db.prepare("DELETE FROM company_keys WHERE player_id = ?").bind(playerId).run()
+    }
+    const companyKeys = await db.prepare("SELECT company_id, ciphertext, iv FROM company_api_keys WHERE player_id = ?")
+      .bind(playerId).all<{ company_id: string; ciphertext: string; iv: string }>()
+    for (const row of companyKeys.results ?? []) {
+      const storedKey = await decryptKey(env, row.ciphertext, row.iv).catch(() => null)
+      if (storedKey === previousPortalKey) {
+        await db.prepare("DELETE FROM company_api_keys WHERE player_id = ? AND company_id = ?")
+          .bind(playerId, String(row.company_id)).run()
+      }
+    }
+  }
+}
+
+async function claimPrivateLiveRequest(env: WorkerEnv, playerId: string, nowMs = Date.now()): Promise<boolean> {
+  const now = new Date(nowMs).toISOString()
+  const retryBefore = new Date(nowMs - 30 * 1000).toISOString()
+  const result = await requireDb(env).prepare(
+    "INSERT INTO member_private_live_api_throttles (player_id, last_attempt_at) VALUES (?, ?) ON CONFLICT(player_id) DO UPDATE SET last_attempt_at = excluded.last_attempt_at WHERE member_private_live_api_throttles.last_attempt_at <= ?"
+  ).bind(playerId, now, retryBefore).run()
+  return Number(result.meta?.changes ?? 0) > 0
+}
+
+function privateLiveFetcher(env: WorkerEnv): typeof fetch {
+  // Staging binds a sanitized synthetic Torn Worker. Production has no fixture
+  // binding and always uses the official Torn API origin.
+  return env.TORN_API_FIXTURE
+    ? env.TORN_API_FIXTURE.fetch.bind(env.TORN_API_FIXTURE) as typeof fetch
+    : fetch.bind(globalThis)
+}
+
+async function fetchPrivateLiveSelection(env: WorkerEnv, apiKey: string, selection: "bars" | "cooldowns" | "networth"): Promise<unknown> {
+  const fetcher = privateLiveFetcher(env)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10000)
+  try {
+    const response = await fetcher("https://api.torn.com/v2/user/" + selection, {
+      headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+      signal: controller.signal,
+    })
+    const payload: unknown = await response.json().catch(() => null)
+    const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+    if (!response.ok || error) {
+      const code = typeof error?.code === "number" ? error.code : undefined
+      const status = code === 2 || code === 18 ? 401
+        : code === 5 || code === 14 ? 429
+        : code === 7 || code === 10 || code === 13 || code === 16 ? 403
+        : code === 9 || code === 17 ? 503
+        : code === 3 || code === 4 || code === 6 ? 400
+        : response.status >= 500 ? 502 : 502
+      const message = code === 2 ? "The private live Torn API key is invalid."
+        : code === 3 || code === 4 ? "Torn rejected the requested private live selection. Check the selection and try again."
+        : code === 5 ? "Torn rate limit reached. Wait before refreshing your private live data."
+        : code === 7 ? "Torn denied this owner-only data selection for the submitted request."
+        : code === 10 ? "The key owner is in federal jail. Your saved key and last successful snapshot were retained."
+        : code === 13 ? "Torn temporarily disabled this key because its owner has been inactive. Your last successful snapshot was retained."
+        : code === 14 ? "Torn's daily API read limit has been reached. Your key and last successful snapshot were retained."
+        : code === 16 ? "This key does not have permission for the requested private Torn selection."
+        : code === 18 ? "This Torn API key has been paused by its owner."
+        : code === 9 ? "Torn's API is temporarily unavailable. Try again shortly."
+        : code === 17 ? "Torn reported a temporary backend error. Your last successful snapshot was retained."
+        : "Torn could not provide the requested private live data."
+      throw new TornApiClientError(message, { status, code })
+    }
+    return payload
+  } catch (error) {
+    if (error instanceof TornApiClientError) throw error
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new TornApiClientError("Torn's private live API request timed out.", { status: 504 })
+    }
+    throw new TornApiClientError("Could not reach Torn to refresh private live data.", { status: 502 })
+  } finally { clearTimeout(timeout) }
+}
+
+async function validatePrivateLiveKeyOwner(env: WorkerEnv, apiKey: string, playerId: string): Promise<void> {
+  const fetcher = privateLiveFetcher(env)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10000)
+  try {
+    const response = await fetcher("https://api.torn.com/v2/key/info", {
+      headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+      signal: controller.signal,
+    })
+    const payload: unknown = await response.json().catch(() => null)
+    const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+    if (!response.ok || error) {
+      const code = typeof error?.code === "number" ? error.code : undefined
+      const status = code === 2 ? 401 : code === 5 ? 429 : response.status >= 500 ? 502 : 400
+      throw new TornApiClientError(code === 5 ? "Torn rate limit reached while validating your private live key." : "Torn could not validate this private live API key.", { status, code })
+    }
+    const root = isRecord(payload) && isRecord(payload.info) ? payload.info : null
+    const owner = isRecord(root?.user) ? root.user.id : isRecord(payload) && isRecord(payload.user) ? payload.user.id : undefined
+    if (String(owner ?? "") !== playerId) {
+      throw new TornApiClientError("That key belongs to a different Torn player. Connect a key created on your own account.", { status: 403 })
+    }
+  } catch (error) {
+    if (error instanceof TornApiClientError) throw error
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new TornApiClientError("Torn's key validation request timed out.", { status: 504 })
+    }
+    throw new TornApiClientError("Could not reach Torn to validate your private live key.", { status: 502 })
+  } finally { clearTimeout(timeout) }
+}
+
+async function fetchPrivateLiveBase(env: WorkerEnv, apiKey: string): Promise<{ bars: ReturnType<typeof parsePrivateLiveBars>; cooldowns: ReturnType<typeof parsePrivateLiveCooldowns> }> {
+  const [barsPayload, cooldownsPayload] = await Promise.all([
+    fetchPrivateLiveSelection(env, apiKey, "bars"),
+    fetchPrivateLiveSelection(env, apiKey, "cooldowns"),
+  ])
+  return {
+    bars: parsePrivateLiveBars(barsPayload),
+    cooldowns: parsePrivateLiveCooldowns(cooldownsPayload),
+  }
+}
+
+function privateLiveSafeError(error: unknown): { status: number; message: string; code?: number } {
+  if (error instanceof TornApiClientError) return { status: error.status, message: error.message, code: error.code }
+  if (error instanceof Error && /Torn did not return|Torn returned/.test(error.message)) {
+    return { status: 502, message: error.message }
+  }
+  return { status: 502, message: "Private live collection failed. The previous successful snapshot has been retained." }
+}
+
+function privateLiveKeyMustBeRevoked(error: unknown): boolean {
+  // Permanently invalid keys, owner-paused keys, or keys that have lost the
+  // required private selections are disconnected. Temporary owner states
+  // (federal jail/inactivity), rate limits and API outages retain the key and
+  // the last known snapshot until the member explicitly retries.
+  return error instanceof TornApiClientError && [2, 16, 18].includes(Number(error.code))
+}
+
+function safeStoredJson(value: unknown): unknown {
+  if (typeof value !== "string") return null
+  try { return JSON.parse(value) as unknown } catch { return null }
+}
+
+type FactionPerformanceRunRow = {
+  runId: string
+  factionId: string
+  collectionKind: "roster" | "personalstats" | "gym_energy"
+  status: "queued" | "running" | "completed" | "partial" | "failed"
+  scheduledAt: string
+  targetUserIdsJson: string | null
+  nextIndex: number
+  lastEnqueuedAt: string | null
+}
+
+const FACTION_PERFORMANCE_PAGE_SIZE = 5
+const FACTION_PERFORMANCE_QUEUE_KIND = "faction-performance-collection"
+const FACTION_STATS_QUEUE_KIND = "faction-stats-collection"
+
+function factionCollectionSafeError(error: unknown): { summary: string; tornCode: number | null } {
+  if (error instanceof Error && (
+    error.message === "Faction performance collection exhausted its queue retries." ||
+    error.message === "Faction stats collection exhausted its queue retries."
+  )) {
+    return { summary: error.message, tornCode: null }
+  }
+  if (error instanceof TornApiClientError) {
+    return {
+      summary: error.code === undefined ? "Torn API request failed." : `Torn API error ${error.code}.`,
+      tornCode: typeof error.code === "number" ? error.code : null,
+    }
+  }
+  return { summary: "Collection failed due to an upstream or storage error.", tornCode: null }
+}
+
+async function finishFactionPerformanceRun(
+  env: WorkerEnv,
+  run: FactionPerformanceRunRow,
+  status: "completed" | "partial",
+  capturedAt: string,
+  error: string | null = null,
+): Promise<void> {
+  const now = new Date().toISOString()
+  const db = requireDb(env)
+  const finishRun = db.prepare(
+    "UPDATE faction_performance_collection_runs SET status = ?, completed_at = ?, last_error = ?, updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'partial', 'failed')"
+  ).bind(status, now, error, now, run.runId)
+  // A partial capture is not a last fully successful collection. Preserve
+  // the previous last_success_at while still recording this run and its error.
+  const updateState = db.prepare(
+    "INSERT INTO faction_performance_collection_state (faction_id, collection_kind, last_success_at, last_run_id, last_error, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(faction_id, collection_kind) DO UPDATE SET last_success_at = COALESCE(excluded.last_success_at, faction_performance_collection_state.last_success_at), last_run_id = excluded.last_run_id, last_error = excluded.last_error, updated_at = excluded.updated_at"
+  ).bind(run.factionId, run.collectionKind, status === "completed" ? capturedAt : null, run.runId, error, now)
+  if (db.batch) {
+    // D1 batch is transactional: a state-write failure must roll back the
+    // terminal run status so the retried queue message can finish both writes.
+    await db.batch([finishRun, updateState])
+  } else {
+    // Lightweight test doubles may expose only prepare(). Production D1 always
+    // supports batch(), which keeps the success marker and run state atomic.
+    await finishRun.run()
+    await updateState.run()
+  }
+}
+
+async function markFactionPerformanceRunFailed(env: WorkerEnv, runId: string, error: unknown): Promise<void> {
+  if (!env.DB) return
+  const safe = factionCollectionSafeError(error)
+  const now = new Date().toISOString()
+  const db = requireDb(env)
+  const run = await db.prepare(
+    "SELECT faction_id AS factionId, collection_kind AS collectionKind, status FROM faction_performance_collection_runs WHERE run_id = ?"
+  ).bind(runId).first<{ factionId: string; collectionKind: FactionPerformanceRunRow["collectionKind"]; status: FactionPerformanceRunRow["status"] }>()
+  if (!run || run.status === "completed" || run.status === "partial" || run.status === "failed") return
+
+  const failRun = db.prepare(
+    "UPDATE faction_performance_collection_runs SET status = 'failed', completed_at = ?, last_error = ?, updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'partial', 'failed')"
+  ).bind(now, safe.summary, now, runId)
+  const failState = db.prepare(
+    "INSERT INTO faction_performance_collection_state (faction_id, collection_kind, last_success_at, last_run_id, last_error, updated_at) VALUES (?, ?, NULL, ?, ?, ?) ON CONFLICT(faction_id, collection_kind) DO UPDATE SET last_run_id = excluded.last_run_id, last_error = excluded.last_error, updated_at = excluded.updated_at"
+  ).bind(run.factionId, run.collectionKind, runId, safe.summary, now)
+  if (db.batch) {
+    // Keep the run's terminal failure and collection status in one D1 transaction.
+    await db.batch([failRun, failState])
+  } else {
+    await failRun.run()
+    await failState.run()
+  }
+}
+
+
+async function markFactionStatsRunFailed(env: WorkerEnv, runId: string, error: unknown): Promise<void> {
+  if (!env.DB) return
+  const safe = factionCollectionSafeError(error)
+  const now = new Date().toISOString()
+  const db = requireDb(env)
+  const run = await db.prepare(
+    "SELECT faction_id AS factionId, status FROM faction_stats_collection_runs WHERE run_id = ?"
+  ).bind(runId).first<{ factionId: string; status: string }>()
+  if (!run || ["completed", "failed"].includes(run.status)) return
+  const failRun = db.prepare(
+    "UPDATE faction_stats_collection_runs SET status = 'failed', completed_at = ?, last_error = ?, updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'failed')"
+  ).bind(now, safe.summary, now, runId)
+  const failState = db.prepare(
+    "INSERT INTO faction_stats_collection_state (faction_id, last_success_at, last_run_id, last_error, updated_at) VALUES (?, NULL, ?, ?, ?) ON CONFLICT(faction_id) DO UPDATE SET last_run_id = excluded.last_run_id, last_error = excluded.last_error, updated_at = excluded.updated_at"
+  ).bind(run.factionId, runId, safe.summary, now)
+  if (db.batch) await db.batch([failRun, failState])
+  else { await failRun.run(); await failState.run() }
+}
+
+async function enqueueOneFactionPerformanceRun(
+  env: WorkerEnv,
+  scheduledTime: number,
+  kind: FactionPerformanceRunRow["collectionKind"],
+  intervalMs: number,
+): Promise<boolean> {
+  if (!env.DB || !env.GLOBAL_RANKINGS_QUEUE || !env.TORN_FACTION_API_KEY?.trim()) return false
+  const db = requireDb(env)
+  const bucketStart = Math.floor(scheduledTime / intervalMs) * intervalMs
+  const scheduledAt = new Date(bucketStart).toISOString()
+  const collectionKey = `${NAUGHTY_SOULS_FACTION_ID}:${kind}:${bucketStart}`
+  let targetUserIds: string[] | null = null
+
+  if (kind === "personalstats") {
+    const active = await db.prepare(
+      "SELECT user_id AS userId FROM faction_membership_intervals WHERE faction_id = ? AND left_observed_at IS NULL ORDER BY user_id"
+    ).bind(NAUGHTY_SOULS_FACTION_ID).all<{ userId: string }>()
+    targetUserIds = Array.from(new Set((active.results ?? []).map((row) => String(row.userId)).filter((id) => /^[1-9]\d*$/.test(id))))
+    if (!targetUserIds.length) return false
+  }
+
+  let run = await db.prepare(
+    "SELECT run_id AS runId, faction_id AS factionId, collection_kind AS collectionKind, status, scheduled_at AS scheduledAt, target_user_ids_json AS targetUserIdsJson, next_index AS nextIndex, last_enqueued_at AS lastEnqueuedAt FROM faction_performance_collection_runs WHERE collection_key = ?"
+  ).bind(collectionKey).first<FactionPerformanceRunRow>()
+
+  if (!run) {
+    const now = new Date().toISOString()
+    const runId = crypto.randomUUID()
+    await db.prepare(
+      "INSERT OR IGNORE INTO faction_performance_collection_runs (run_id, collection_key, faction_id, collection_kind, status, scheduled_at, target_user_ids_json, next_index, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?)"
+    ).bind(runId, collectionKey, NAUGHTY_SOULS_FACTION_ID, kind, scheduledAt, targetUserIds ? asJson(targetUserIds) : null, now, now).run()
+    run = await db.prepare(
+      "SELECT run_id AS runId, faction_id AS factionId, collection_kind AS collectionKind, status, scheduled_at AS scheduledAt, target_user_ids_json AS targetUserIdsJson, next_index AS nextIndex, last_enqueued_at AS lastEnqueuedAt FROM faction_performance_collection_runs WHERE collection_key = ?"
+    ).bind(collectionKey).first<FactionPerformanceRunRow>()
+  }
+  if (!run || run.status === "completed" || run.status === "partial" || run.status === "failed") return false
+
+  const lastEnqueuedMs = run.lastEnqueuedAt ? Date.parse(run.lastEnqueuedAt) : Number.NEGATIVE_INFINITY
+  const staleAfterMs = run.status === "running" ? 10 * 60 * 1000 : 4 * 60 * 1000
+  if (Number.isFinite(lastEnqueuedMs) && scheduledTime - lastEnqueuedMs < staleAfterMs) return false
+
+  await env.GLOBAL_RANKINGS_QUEUE.send({ kind: FACTION_PERFORMANCE_QUEUE_KIND, runId: run.runId })
+  const enqueuedAt = new Date().toISOString()
+  await db.prepare(
+    "UPDATE faction_performance_collection_runs SET last_enqueued_at = ?, updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
+  ).bind(enqueuedAt, enqueuedAt, String(run.runId)).run()
+  return true
+}
+
+
+async function enqueueFactionStatsCollection(env: WorkerEnv, scheduledTime: number): Promise<boolean> {
+  if (!env.DB || !env.GLOBAL_RANKINGS_QUEUE || !env.TORN_FACTION_API_KEY?.trim()) return false
+  const db = requireDb(env)
+  const intervalMs = 15 * 60 * 1000
+  const bucketStart = Math.floor(scheduledTime / intervalMs) * intervalMs
+  const scheduledAt = new Date(bucketStart).toISOString()
+  const collectionKey = `${NAUGHTY_SOULS_FACTION_ID}:faction_stats:${bucketStart}`
+  let run = await db.prepare(
+    "SELECT run_id AS runId, status, last_enqueued_at AS lastEnqueuedAt FROM faction_stats_collection_runs WHERE collection_key = ?"
+  ).bind(collectionKey).first<{ runId: string; status: string; lastEnqueuedAt: string | null }>()
+  if (!run) {
+    const now = new Date().toISOString()
+    const runId = crypto.randomUUID()
+    await db.prepare(
+      "INSERT OR IGNORE INTO faction_stats_collection_runs (run_id, collection_key, faction_id, status, scheduled_at, created_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)"
+    ).bind(runId, collectionKey, NAUGHTY_SOULS_FACTION_ID, scheduledAt, now, now).run()
+    run = await db.prepare(
+      "SELECT run_id AS runId, status, last_enqueued_at AS lastEnqueuedAt FROM faction_stats_collection_runs WHERE collection_key = ?"
+    ).bind(collectionKey).first<{ runId: string; status: string; lastEnqueuedAt: string | null }>()
+  }
+  if (!run || ["completed", "failed"].includes(run.status)) return false
+  const lastEnqueuedMs = run.lastEnqueuedAt ? Date.parse(run.lastEnqueuedAt) : Number.NEGATIVE_INFINITY
+  const staleAfterMs = run.status === "running" ? 10 * 60 * 1000 : 4 * 60 * 1000
+  if (Number.isFinite(lastEnqueuedMs) && scheduledTime - lastEnqueuedMs < staleAfterMs) return false
+  await env.GLOBAL_RANKINGS_QUEUE.send({ kind: FACTION_STATS_QUEUE_KIND, runId: run.runId })
+  const enqueuedAt = new Date().toISOString()
+  await db.prepare(
+    "UPDATE faction_stats_collection_runs SET last_enqueued_at = ?, updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
+  ).bind(enqueuedAt, enqueuedAt, String(run.runId)).run()
+  return true
+}
+
+async function runFactionStatsCollection(env: WorkerEnv, runId: string): Promise<void> {
+  const db = requireDb(env)
+  const run = await db.prepare(
+    "SELECT run_id AS runId, faction_id AS factionId, status, scheduled_at AS scheduledAt FROM faction_stats_collection_runs WHERE run_id = ?"
+  ).bind(runId).first<{ runId: string; factionId: string; status: string; scheduledAt: string }>()
+  if (!run || ["completed", "failed"].includes(run.status)) return
+  const apiKey = env.TORN_FACTION_API_KEY?.trim()
+  if (!apiKey) throw new Error("Faction collector secret is not configured.")
+  const startedAt = new Date().toISOString()
+  await db.prepare(
+    "UPDATE faction_stats_collection_runs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
+  ).bind(startedAt, startedAt, runId).run()
+  const client = new TornApiClient({
+    apiKey,
+    baseUrl: env.TORN_API_BASE_URL,
+    fetcher: env.TORN_API_FIXTURE?.fetch.bind(env.TORN_API_FIXTURE),
+  })
+  const parsed = parseFactionStatsResponse(await client.getFactionStats())
+  const capturedAt = new Date().toISOString()
+  const snapshot = db.prepare(
+    "INSERT INTO faction_stats_snapshots (run_id, faction_id, captured_at, scheduled_at, collection_status, stats_json, missing_stat_names_json, unexpected_stat_names_json, returned_stat_count, response_version) VALUES (?, ?, ?, ?, 'complete', ?, ?, ?, ?, 'torn-v2') ON CONFLICT(run_id) DO UPDATE SET captured_at = excluded.captured_at, scheduled_at = excluded.scheduled_at, collection_status = excluded.collection_status, stats_json = excluded.stats_json, missing_stat_names_json = excluded.missing_stat_names_json, unexpected_stat_names_json = excluded.unexpected_stat_names_json, returned_stat_count = excluded.returned_stat_count"
+  ).bind(runId, run.factionId, capturedAt, run.scheduledAt, asJson(parsed.stats), asJson(parsed.missingStatNames), asJson(parsed.unexpectedStatNames), parsed.stats.length)
+  const finishRun = db.prepare(
+    "UPDATE faction_stats_collection_runs SET status = 'completed', completed_at = ?, last_error = NULL, updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'failed')"
+  ).bind(capturedAt, capturedAt, runId)
+  const updateState = db.prepare(
+    "INSERT INTO faction_stats_collection_state (faction_id, last_success_at, last_run_id, last_error, updated_at) VALUES (?, ?, ?, NULL, ?) ON CONFLICT(faction_id) DO UPDATE SET last_success_at = excluded.last_success_at, last_run_id = excluded.last_run_id, last_error = NULL, updated_at = excluded.updated_at"
+  ).bind(run.factionId, capturedAt, runId, capturedAt)
+  if (!db.batch) throw new Error("D1 transactional batch support is required to save faction-wide stats.")
+  await db.batch([snapshot, finishRun, updateState])
+}
+
+async function enqueueFactionPerformanceCollections(env: WorkerEnv, scheduledTime: number): Promise<number> {
+  // Dedicated Cloudflare Worker secret. Never substitute a member login key.
+  if (!env.DB || !env.GLOBAL_RANKINGS_QUEUE || !env.TORN_FACTION_API_KEY?.trim()) return 0
+  let enqueued = 0
+  if (await enqueueOneFactionPerformanceRun(env, scheduledTime, "roster", 5 * 60 * 1000)) enqueued += 1
+  const fiveMinuteBucket = Math.floor(scheduledTime / (5 * 60 * 1000))
+  if (fiveMinuteBucket % 3 === 0) {
+    if (await enqueueOneFactionPerformanceRun(env, scheduledTime, "personalstats", 15 * 60 * 1000)) enqueued += 1
+    if (await enqueueOneFactionPerformanceRun(env, scheduledTime, "gym_energy", 15 * 60 * 1000)) enqueued += 1
+    if (await enqueueFactionStatsCollection(env, scheduledTime)) enqueued += 1
+  }
+  return enqueued
+}
+
+async function enqueueFactionWeeklyBoundaryRun(env: WorkerEnv, scheduledTime: number): Promise<boolean> {
+  if (!env.DB || !env.GLOBAL_RANKINGS_QUEUE || !env.TORN_FACTION_API_KEY?.trim()) return false
+  const db = requireDb(env)
+  const boundaryMs = utcSundayStart(scheduledTime)
+  const boundaryAt = new Date(boundaryMs).toISOString()
+  let boundary = await db.prepare(
+    "SELECT stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId FROM faction_weekly_boundary_runs WHERE faction_id = ? AND boundary_at = ?"
+  ).bind(NAUGHTY_SOULS_FACTION_ID, boundaryAt).first<{ statsRunId: string; gymEnergyRunId: string }>()
+  if (!boundary) {
+    // Freeze the cohort that was known to be in-faction at this exact
+    // Sunday boundary. A delayed scheduler must still include members who
+    // left after the boundary, while excluding people who joined afterward.
+    const active = await db.prepare(
+      "SELECT user_id AS userId FROM faction_membership_intervals WHERE faction_id = ? AND COALESCE(estimated_joined_at, first_seen_at) <= ? AND (left_observed_at IS NULL OR left_observed_at > ?) ORDER BY user_id"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, boundaryAt, boundaryAt).all<{ userId: string }>()
+    const targetUserIds = Array.from(new Set((active.results ?? [])
+      .map((row) => String(row.userId))
+      .filter((id) => /^[1-9]\d*$/.test(id))))
+    // The roster refresh is queued earlier in this scheduler tick. If this is
+    // a fresh install with no observed membership intervals yet, do not lock
+    // an empty Sunday baseline. Retry on the next five-minute tick instead.
+    if (!targetUserIds.length) return false
+    const statsRunId = crypto.randomUUID()
+    const gymRunId = crypto.randomUUID()
+    const now = new Date().toISOString()
+    const statsKey = `${NAUGHTY_SOULS_FACTION_ID}:personalstats:weekly-boundary:${boundaryMs}`
+    const gymKey = `${NAUGHTY_SOULS_FACTION_ID}:gym_energy:weekly-boundary:${boundaryMs}`
+    await db.prepare(
+      "INSERT OR IGNORE INTO faction_performance_collection_runs (run_id, collection_key, faction_id, collection_kind, status, scheduled_at, target_user_ids_json, next_index, created_at, updated_at) VALUES (?, ?, ?, 'personalstats', 'queued', ?, ?, 0, ?, ?)"
+    ).bind(statsRunId, statsKey, NAUGHTY_SOULS_FACTION_ID, boundaryAt, asJson(targetUserIds), now, now).run()
+    await db.prepare(
+      "INSERT OR IGNORE INTO faction_performance_collection_runs (run_id, collection_key, faction_id, collection_kind, status, scheduled_at, target_user_ids_json, next_index, created_at, updated_at) VALUES (?, ?, ?, 'gym_energy', 'queued', ?, NULL, 0, ?, ?)"
+    ).bind(gymRunId, gymKey, NAUGHTY_SOULS_FACTION_ID, boundaryAt, now, now).run()
+    const [savedStatsRun, savedGymRun] = await Promise.all([
+      db.prepare("SELECT run_id AS runId FROM faction_performance_collection_runs WHERE collection_key = ?")
+        .bind(statsKey).first<{ runId: string }>(),
+      db.prepare("SELECT run_id AS runId FROM faction_performance_collection_runs WHERE collection_key = ?")
+        .bind(gymKey).first<{ runId: string }>(),
+    ])
+    if (!savedStatsRun || !savedGymRun) throw new Error("Weekly boundary collection runs could not be initialized.")
+    await db.prepare(
+      "INSERT OR IGNORE INTO faction_weekly_boundary_runs (faction_id, boundary_at, stats_run_id, gym_energy_run_id, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, boundaryAt, savedStatsRun.runId, savedGymRun.runId, now).run()
+    boundary = await db.prepare(
+      "SELECT stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId FROM faction_weekly_boundary_runs WHERE faction_id = ? AND boundary_at = ?"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, boundaryAt).first<{ statsRunId: string; gymEnergyRunId: string }>()
+  }
+  if (!boundary) return false
+
+  let enqueued = false
+  for (const runId of [boundary.statsRunId, boundary.gymEnergyRunId]) {
+    const run = await db.prepare(
+      "SELECT status, last_enqueued_at AS lastEnqueuedAt FROM faction_performance_collection_runs WHERE run_id = ?"
+    ).bind(runId).first<{ status: string; lastEnqueuedAt: string | null }>()
+    if (!run || ["completed", "partial", "failed"].includes(run.status)) continue
+    const lastEnqueuedMs = run.lastEnqueuedAt ? Date.parse(run.lastEnqueuedAt) : Number.NEGATIVE_INFINITY
+    const retryAfter = run.status === "running" ? 10 * 60 * 1000 : 4 * 60 * 1000
+    if (Number.isFinite(lastEnqueuedMs) && scheduledTime - lastEnqueuedMs < retryAfter) continue
+    await env.GLOBAL_RANKINGS_QUEUE.send({ kind: FACTION_PERFORMANCE_QUEUE_KIND, runId })
+    const enqueuedAt = new Date().toISOString()
+    await db.prepare(
+      "UPDATE faction_performance_collection_runs SET last_enqueued_at = ?, updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
+    ).bind(enqueuedAt, enqueuedAt, runId).run()
+    enqueued = true
+  }
+  return enqueued
+}
+
+
+async function finalizeFactionWeeklyReport(env: WorkerEnv, weekStartMs: number): Promise<boolean> {
+  if (!env.DB || !Number.isFinite(weekStartMs)) return false
+  const db = requireDb(env)
+  const weekStartAt = new Date(utcSundayStart(weekStartMs)).toISOString()
+  const weekEndAt = new Date(Date.parse(weekStartAt) + WEEK_MS).toISOString()
+  const existing = await db.prepare(
+    "SELECT report_status AS reportStatus FROM faction_weekly_reports WHERE faction_id = ? AND week_start_at = ?"
+  ).bind(NAUGHTY_SOULS_FACTION_ID, weekStartAt).first<{ reportStatus: string }>()
+  if (existing) return false
+
+  const boundaries = await db.prepare(
+    "SELECT boundary_at AS boundaryAt, stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId FROM faction_weekly_boundary_runs WHERE faction_id = ? AND boundary_at IN (?, ?)"
+  ).bind(NAUGHTY_SOULS_FACTION_ID, weekStartAt, weekEndAt).all<{
+    boundaryAt: string; statsRunId: string; gymEnergyRunId: string
+  }>()
+  const boundaryByAt = new Map((boundaries.results ?? []).map((row) => [row.boundaryAt, row]))
+  const startBoundary = boundaryByAt.get(weekStartAt)
+  const endBoundary = boundaryByAt.get(weekEndAt)
+  if (!startBoundary || !endBoundary) return false
+
+  const runIds = [
+    startBoundary.statsRunId, endBoundary.statsRunId,
+    startBoundary.gymEnergyRunId, endBoundary.gymEnergyRunId,
+  ]
+  const placeholders = runIds.map(() => "?").join(",")
+  const runRows = await db.prepare(
+    `SELECT run_id AS runId, collection_kind AS collectionKind, status FROM faction_performance_collection_runs WHERE run_id IN (${placeholders})`
+  ).bind(...runIds).all<{ runId: string; collectionKind: string; status: string }>()
+  const runsById = new Map((runRows.results ?? []).map((row) => [row.runId, row]))
+  const allTerminal = runIds.every((runId) => {
+    const status = runsById.get(runId)?.status
+    return status === "completed" || status === "partial" || status === "failed"
+  })
+  if (!allTerminal) return false
+
+  const now = new Date().toISOString()
+  const [membersRows, statsRows, gymRows, captureRows] = await Promise.all([
+    db.prepare(
+      "SELECT user_id AS userId, member_name AS name, position, level, estimated_joined_at AS estimatedJoinedAt, first_seen_at AS firstSeenAt, left_observed_at AS leftObservedAt FROM faction_membership_intervals WHERE faction_id = ? AND first_seen_at < ? AND (left_observed_at IS NULL OR left_observed_at > ?) ORDER BY member_name COLLATE NOCASE, user_id"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, weekEndAt, weekStartAt).all<WeeklyMembership>(),
+    db.prepare(
+      "SELECT snapshot_id AS snapshotId, run_id AS runId, user_id AS userId, captured_at AS capturedAt, scheduled_at AS scheduledAt, collection_status AS collectionStatus, xantaken, lsdtaken, drugsused, overdosed, alcoholused, boostersused, energydrinkused, refills, statenhancersused, networth, cantaken, exttaken, kettaken, opitaken, shrtaken, spetaken, pcptaken, victaken FROM faction_member_stat_snapshots WHERE faction_id = ? AND ((captured_at >= ? AND captured_at < ?) OR run_id IN (?, ?)) ORDER BY user_id, captured_at, snapshot_id"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, weekStartAt, weekEndAt, startBoundary.statsRunId, endBoundary.statsRunId).all<WeeklySnapshot>(),
+    db.prepare(
+      "SELECT snapshot_id AS snapshotId, run_id AS runId, user_id AS userId, captured_at AS capturedAt, gym_energy_total AS gymEnergyTotal, collection_status AS collectionStatus FROM faction_gym_energy_snapshots WHERE faction_id = ? AND ((captured_at >= ? AND captured_at < ?) OR run_id IN (?, ?)) ORDER BY user_id, captured_at, snapshot_id"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, weekStartAt, weekEndAt, startBoundary.gymEnergyRunId, endBoundary.gymEnergyRunId).all<WeeklySnapshot>(),
+    db.prepare(
+      "SELECT (SELECT MIN(captured_at) FROM faction_member_stat_snapshots WHERE run_id = ?) AS statsStartCapturedAt, (SELECT MIN(captured_at) FROM faction_member_stat_snapshots WHERE run_id = ?) AS statsEndCapturedAt, (SELECT MIN(captured_at) FROM faction_gym_energy_snapshots WHERE run_id = ?) AS gymStartCapturedAt, (SELECT MIN(captured_at) FROM faction_gym_energy_snapshots WHERE run_id = ?) AS gymEndCapturedAt"
+    ).bind(startBoundary.statsRunId, endBoundary.statsRunId, startBoundary.gymEnergyRunId, endBoundary.gymEnergyRunId).first<{
+      statsStartCapturedAt: string | null
+      statsEndCapturedAt: string | null
+      gymStartCapturedAt: string | null
+      gymEndCapturedAt: string | null
+    }>(),
+  ])
+
+  const calculated = (membersRows.results ?? []).map((member) => calculateWeeklyMemberResult({
+    member,
+    statSnapshots: statsRows.results ?? [],
+    gymSnapshots: gymRows.results ?? [],
+    weekStart: weekStartAt,
+    weekEnd: weekEndAt,
+    now,
+    statsBoundaryRunId: startBoundary.statsRunId,
+    gymBoundaryRunId: startBoundary.gymEnergyRunId,
+    statsEndingBoundaryRunId: endBoundary.statsRunId,
+    gymEndingBoundaryRunId: endBoundary.gymEnergyRunId,
+    requireEndingBoundary: true,
+  }))
+
+  const statSummary = Object.fromEntries(WEEKLY_METRIC_NAMES.map((metric) => {
+    const known = calculated.map((member) => member.metrics[metric]).filter((value): value is number => value !== null)
+    return [metric, { total: known.reduce((sum, value) => sum + value, 0), knownMembers: known.length }]
+  }))
+  const knownGymEnergy = calculated.map((member) => member.gymEnergy).filter((value): value is number => value !== null)
+  const summary = {
+    ...statSummary,
+    gymEnergy: { total: knownGymEnergy.reduce((sum, value) => sum + value, 0), knownMembers: knownGymEnergy.length },
+  }
+  const allRunsCompleted = runIds.every((runId) => runsById.get(runId)?.status === "completed")
+  const allMembersComplete = calculated.every((member) => member.status === "complete")
+  const reportStatus = allRunsCompleted && allMembersComplete && calculated.length > 0 ? "complete" : "partial"
+  const finalizedAt = new Date().toISOString()
+
+  if (!db.batch) throw new Error("D1 transactional batch support is required to finalize immutable weekly reports.")
+  const statements = [
+    db.prepare(
+      "INSERT OR IGNORE INTO faction_weekly_reports (faction_id, week_start_at, week_end_at, report_status, stats_start_run_id, stats_end_run_id, gym_start_run_id, gym_end_run_id, stats_start_captured_at, stats_end_captured_at, gym_start_captured_at, gym_end_captured_at, member_count, complete_member_count, summary_json, finalized_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind(
+      NAUGHTY_SOULS_FACTION_ID, weekStartAt, weekEndAt, reportStatus,
+      startBoundary.statsRunId, endBoundary.statsRunId, startBoundary.gymEnergyRunId, endBoundary.gymEnergyRunId,
+      captureRows?.statsStartCapturedAt ?? null, captureRows?.statsEndCapturedAt ?? null,
+      captureRows?.gymStartCapturedAt ?? null, captureRows?.gymEndCapturedAt ?? null,
+      calculated.length, calculated.filter((member) => member.status === "complete").length,
+      asJson(summary), finalizedAt, finalizedAt,
+    ),
+    ...calculated.map((member) => db.prepare(
+      "INSERT OR IGNORE INTO faction_weekly_member_results (faction_id, week_start_at, user_id, member_name, position, level, participation, result_status, metrics_json, starting_networth, ending_networth, gym_energy, known_metric_count, anomaly_metrics_json, baseline_captured_at, ending_captured_at, ending_is_boundary, baseline_snapshot_id, ending_snapshot_id, gym_baseline_captured_at, gym_ending_captured_at, gym_ending_is_boundary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind(
+      NAUGHTY_SOULS_FACTION_ID, weekStartAt, member.userId, member.name, member.position, member.level,
+      member.participation, member.status, asJson(member.metrics), member.startingNetworth, member.endingNetworth,
+      member.gymEnergy, member.knownMetricCount, asJson(member.anomalyMetrics),
+      member.baselineCapturedAt, member.endingCapturedAt, member.endingIsBoundary ? 1 : 0,
+      member.baselineSnapshotId === null ? null : Number(member.baselineSnapshotId),
+      member.endingSnapshotId === null ? null : Number(member.endingSnapshotId),
+      member.gymEnergyBaselineCapturedAt, member.gymEnergyEndingCapturedAt,
+      member.gymEnergyEndingIsBoundary ? 1 : 0, finalizedAt,
+    )),
+  ]
+  await db.batch(statements)
+  return true
+}
+
+function sqliteBoolean(value: boolean | null): number | null {
+  return value === null ? null : value ? 1 : 0
+}
+
+async function runFactionRosterCollection(env: WorkerEnv, run: FactionPerformanceRunRow, client: TornApiClient): Promise<void> {
+  const payload = await client.getFactionMembersForRoster()
+  const members = parseFactionRosterResponse(payload)
+  if (members.length === 0) {
+    throw new Error("Torn returned an empty faction roster; existing membership intervals were preserved.")
+  }
+  const capturedAt = new Date().toISOString()
+  const db = requireDb(env)
+  // A retried run may have persisted a subset from an earlier response. Replace
+  // its child rows so members absent from the successful retry cannot linger.
+  await db.prepare("DELETE FROM faction_member_roster_snapshots WHERE run_id = ?").bind(run.runId).run()
+
+  await db.prepare(
+    "INSERT INTO faction_roster_snapshots (run_id, faction_id, captured_at, scheduled_at, member_count, response_version) VALUES (?, ?, ?, ?, ?, 'torn-v2') ON CONFLICT(run_id) DO UPDATE SET captured_at = excluded.captured_at, member_count = excluded.member_count"
+  ).bind(run.runId, run.factionId, capturedAt, run.scheduledAt, members.length).run()
+
+  const activeRows = await db.prepare(
+    "SELECT interval_id AS intervalId, user_id AS userId FROM faction_membership_intervals WHERE faction_id = ? AND left_observed_at IS NULL"
+  ).bind(run.factionId).all<{ intervalId: string; userId: string }>()
+  const activeByUser = new Map((activeRows.results ?? []).map((row) => [String(row.userId), String(row.intervalId)]))
+  const seen = new Set<string>()
+
+  for (const member of members) {
+    seen.add(member.userId)
+    const activeIntervalId = activeByUser.get(member.userId)
+    const estimatedJoinedAt = member.daysInFaction === null
+      ? null
+      : new Date(Date.parse(capturedAt) - Math.max(0, member.daysInFaction) * DAY * 1000).toISOString()
+    if (activeIntervalId) {
+      await db.prepare(
+        "UPDATE faction_membership_intervals SET member_name = ?, position = ?, level = ?, days_in_faction = ?, last_seen_at = ? WHERE interval_id = ? AND left_observed_at IS NULL"
+      ).bind(member.name, member.position, member.level, member.daysInFaction, capturedAt, activeIntervalId).run()
+    } else {
+      await db.prepare(
+        "INSERT INTO faction_membership_intervals (interval_id, faction_id, user_id, member_name, position, level, days_in_faction, estimated_joined_at, first_seen_at, last_seen_at, left_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)"
+      ).bind(crypto.randomUUID(), run.factionId, member.userId, member.name, member.position, member.level, member.daysInFaction, estimatedJoinedAt, capturedAt, capturedAt).run()
+    }
+
+    await db.prepare(
+      "INSERT INTO faction_member_roster_snapshots (run_id, faction_id, user_id, captured_at, name, position, level, days_in_faction, last_action_status, last_action_timestamp, last_action_relative, status_description, status_details, status_state, status_until, status_color, is_revivable, revive_setting, is_on_wall, is_in_oc, has_early_discharge) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, user_id) DO UPDATE SET captured_at = excluded.captured_at, name = excluded.name, position = excluded.position, level = excluded.level, days_in_faction = excluded.days_in_faction, last_action_status = excluded.last_action_status, last_action_timestamp = excluded.last_action_timestamp, last_action_relative = excluded.last_action_relative, status_description = excluded.status_description, status_details = excluded.status_details, status_state = excluded.status_state, status_until = excluded.status_until, status_color = excluded.status_color, is_revivable = excluded.is_revivable, revive_setting = excluded.revive_setting, is_on_wall = excluded.is_on_wall, is_in_oc = excluded.is_in_oc, has_early_discharge = excluded.has_early_discharge"
+    ).bind(
+      run.runId, run.factionId, member.userId, capturedAt, member.name, member.position, member.level, member.daysInFaction,
+      member.lastActionStatus, member.lastActionTimestamp, member.lastActionRelative, member.statusDescription, member.statusDetails,
+      member.statusState, member.statusUntil, member.statusColor, sqliteBoolean(member.isRevivable), member.reviveSetting,
+      sqliteBoolean(member.isOnWall), sqliteBoolean(member.isInOc), sqliteBoolean(member.hasEarlyDischarge),
+    ).run()
+  }
+
+  for (const active of activeRows.results ?? []) {
+    const userId = String(active.userId)
+    if (seen.has(userId)) continue
+    await db.prepare(
+      "UPDATE faction_membership_intervals SET left_observed_at = ? WHERE interval_id = ? AND left_observed_at IS NULL"
+    ).bind(capturedAt, String(active.intervalId)).run()
+  }
+
+  await finishFactionPerformanceRun(env, run, "completed", capturedAt)
+}
+
+function emptyFactionPublicStats(): ReturnType<typeof parseFactionPublicStatsResponse> {
+  const metrics = Object.fromEntries(PERSONAL_STATS_HISTORICAL_NAMES.map((name) => [name, null])) as Record<(typeof PERSONAL_STATS_HISTORICAL_NAMES)[number], number | null>
+  return { ...metrics, missingMetrics: [...PERSONAL_STATS_HISTORICAL_NAMES] }
+}
+
+async function saveFactionMemberStatSample(
+  env: WorkerEnv,
+  run: FactionPerformanceRunRow,
+  userId: string,
+  capturedAt: string,
+  stats: ReturnType<typeof parseFactionPublicStatsResponse>,
+  status: "complete" | "partial" | "failed",
+  tornErrorCode: number | null = null,
+): Promise<void> {
+  const columns = FACTION_PUBLIC_STAT_COLUMNS.join(", ")
+  const values = FACTION_PUBLIC_STAT_COLUMNS.map((name) => stats[name])
+  const placeholders = Array.from({ length: values.length + 9 }, () => "?").join(", ")
+  const updateColumns = [
+    "captured_at", "scheduled_at", "collection_status", ...FACTION_PUBLIC_STAT_COLUMNS, "missing_metrics_json", "torn_error_code",
+  ]
+  const updateSql = updateColumns.map((column) => `${column} = excluded.${column}`).join(", ")
+  await requireDb(env).prepare(
+    `INSERT INTO faction_member_stat_snapshots (run_id, faction_id, user_id, captured_at, scheduled_at, response_variant, collection_status, ${columns}, missing_metrics_json, torn_error_code) VALUES (${placeholders}) ON CONFLICT(run_id, user_id) DO UPDATE SET ${updateSql}`
+  ).bind(
+    run.runId, run.factionId, userId, capturedAt, run.scheduledAt, "popular", status, ...values,
+    asJson(stats.missingMetrics), tornErrorCode,
+  ).run()
+}
+
+async function runFactionPersonalStatsCollectionPage(env: WorkerEnv, run: FactionPerformanceRunRow, client: TornApiClient): Promise<void> {
+  let targetUserIds: string[]
+  try {
+    const parsed: unknown = run.targetUserIdsJson ? JSON.parse(run.targetUserIdsJson) : []
+    targetUserIds = Array.isArray(parsed) ? Array.from(new Set(parsed.filter((value): value is string => typeof value === "string" && /^[1-9]\d*$/.test(value)))) : []
+  } catch {
+    throw new Error("Faction personalstats run has an invalid target list.")
+  }
+  let index = Math.max(0, Number(run.nextIndex) || 0)
+  const endIndex = Math.min(targetUserIds.length, index + FACTION_PERFORMANCE_PAGE_SIZE)
+  let partialCount = 0
+
+  while (index < endIndex) {
+    const userId = targetUserIds[index]
+    let capturedAt = new Date().toISOString()
+    let stats = emptyFactionPublicStats()
+    let sampleStatus: "complete" | "partial" | "failed" = "failed"
+    let tornErrorCode: number | null = null
+    try {
+      const payload = await client.getUserPersonalStatsFor(userId, { kind: "popular" })
+      stats = parseFactionPublicStatsResponse(payload)
+      capturedAt = new Date().toISOString()
+      sampleStatus = stats.missingMetrics.length ? "partial" : "complete"
+      if (sampleStatus === "partial") partialCount += 1
+    } catch (error) {
+      // Rate limits, transient Torn failures and network errors retry the same
+      // member. Permanent per-member errors are recorded without blocking the
+      // remaining roster. D1 writes stay outside this catch so storage failures
+      // retry the queue message instead of becoming false member/API failures.
+      if (error instanceof TornApiClientError &&
+        (error.status === 429 || error.status >= 500 || error.code === 9)) {
+        throw error
+      }
+      capturedAt = new Date().toISOString()
+      partialCount += 1
+      tornErrorCode = factionCollectionSafeError(error).tornCode
+    }
+    await saveFactionMemberStatSample(env, run, userId, capturedAt, stats, sampleStatus, tornErrorCode)
+    index += 1
+    if (index < endIndex) await new Promise((resolve) => setTimeout(resolve, 800))
+    await requireDb(env).prepare(
+      "UPDATE faction_performance_collection_runs SET next_index = ?, updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
+    ).bind(index, new Date().toISOString(), run.runId).run()
+  }
+
+  if (index < targetUserIds.length) {
+    await requireDb(env).prepare(
+      "UPDATE faction_performance_collection_runs SET status = 'queued', updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'partial', 'failed')"
+    ).bind(new Date().toISOString(), run.runId).run()
+    if (!env.GLOBAL_RANKINGS_QUEUE) throw new Error("Faction performance collection queue is not configured.")
+    await env.GLOBAL_RANKINGS_QUEUE.send({ kind: FACTION_PERFORMANCE_QUEUE_KIND, runId: run.runId })
+    await requireDb(env).prepare(
+      "UPDATE faction_performance_collection_runs SET last_enqueued_at = ?, updated_at = ? WHERE run_id = ?"
+    ).bind(new Date().toISOString(), new Date().toISOString(), run.runId).run()
+    return
+  }
+
+  const failures = await requireDb(env).prepare(
+    "SELECT COUNT(*) AS count FROM faction_member_stat_snapshots WHERE run_id = ? AND collection_status != 'complete'"
+  ).bind(run.runId).first<{ count: number }>()
+  const status = partialCount > 0 || Number(failures?.count ?? 0) > 0 ? "partial" : "completed"
+  const capturedAt = new Date().toISOString()
+  await finishFactionPerformanceRun(env, run, status, capturedAt, status === "partial" ? "One or more member stat samples were incomplete or unavailable." : null)
+}
+
+async function runFactionGymEnergyCollection(env: WorkerEnv, run: FactionPerformanceRunRow, client: TornApiClient): Promise<void> {
+  const payload = await client.getFactionGymEnergyContributors()
+  const contributors = parseFactionGymEnergyResponse(payload)
+  const capturedAt = new Date().toISOString()
+  let partial = false
+  for (const contributor of contributors) {
+    const status = contributor.value === null || contributor.inFaction === null ? "partial" : "complete"
+    if (status === "partial") partial = true
+    await requireDb(env).prepare(
+      "INSERT INTO faction_gym_energy_snapshots (run_id, faction_id, user_id, captured_at, gym_energy_total, in_faction, collection_status) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, user_id) DO UPDATE SET captured_at = excluded.captured_at, gym_energy_total = excluded.gym_energy_total, in_faction = excluded.in_faction, collection_status = excluded.collection_status"
+    ).bind(run.runId, run.factionId, contributor.userId, capturedAt, contributor.value, sqliteBoolean(contributor.inFaction), status).run()
+  }
+  await finishFactionPerformanceRun(env, run, partial ? "partial" : "completed", capturedAt, partial ? "One or more gym-energy values were missing." : null)
+}
+
+async function runFactionPerformanceCollection(env: WorkerEnv, runId: string): Promise<void> {
+  const db = requireDb(env)
+  const run = await db.prepare(
+    "SELECT run_id AS runId, faction_id AS factionId, collection_kind AS collectionKind, status, scheduled_at AS scheduledAt, target_user_ids_json AS targetUserIdsJson, next_index AS nextIndex, last_enqueued_at AS lastEnqueuedAt FROM faction_performance_collection_runs WHERE run_id = ?"
+  ).bind(runId).first<FactionPerformanceRunRow>()
+  if (!run || run.status === "completed" || run.status === "partial" || run.status === "failed") return
+  const apiKey = env.TORN_FACTION_API_KEY?.trim()
+  if (!apiKey) throw new Error("Faction collector secret is not configured.")
+  const now = new Date().toISOString()
+  await db.prepare(
+    "UPDATE faction_performance_collection_runs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
+  ).bind(now, now, runId).run()
+  const client = new TornApiClient({
+    apiKey,
+    baseUrl: env.TORN_API_BASE_URL,
+    // The staging acceptance test routes the Torn client through an isolated
+    // Service Binding to deterministic fixture responses, never public Torn.
+    fetcher: env.TORN_API_FIXTURE?.fetch.bind(env.TORN_API_FIXTURE),
+  })
+
+  if (run.collectionKind === "roster") {
+    await runFactionRosterCollection(env, run, client)
+  } else if (run.collectionKind === "personalstats") {
+    await runFactionPersonalStatsCollectionPage(env, run, client)
+  } else if (run.collectionKind === "gym_energy") {
+    await runFactionGymEnergyCollection(env, run, client)
+  } else {
+    throw new Error("Unknown faction performance collection kind.")
+  }
+}
 async function saveCompanyKey(env: WorkerEnv, playerId: string, apiKey: string): Promise<void> {
   const encrypted = await encryptKey(env, apiKey)
   const now = new Date().toISOString()
@@ -202,10 +1114,11 @@ async function persistCompanyConnection(
   apiKey: string,
   validated: { companyId: number; profile: unknown; employees: unknown; stock: unknown; sourceTimestamp?: number | null },
   captureHistory = true,
+  saveLegacyKey = true,
 ): Promise<void> {
-  // Store the same credential in both legacy and per-company slots, with the
-  // per-company record updated last so it becomes the active primary key.
-  await saveCompanyKey(env, playerId, apiKey)
+  // The member's primary portal key may be retained in the legacy slot.
+  // Secondary company credentials are stored only against their company ID.
+  if (saveLegacyKey) await saveCompanyKey(env, playerId, apiKey)
   await saveCompanyApiKey(env, playerId, validated.companyId, apiKey, validated.profile)
   const profile = validated.profile
   const root = isRecord(profile) && isRecord(profile.company) ? profile.company : isRecord(profile) && isRecord(profile.profile) ? profile.profile : {}
@@ -565,6 +1478,10 @@ async function fetchGlobalCompanyTypeCatalog(apiKey: string): Promise<GlobalComp
 
 async function getGlobalRankingApiKey(env: WorkerEnv, preferredKey?: string): Promise<string> {
   if (preferredKey) return preferredKey
+  // Use the dedicated service-owned Custom Access key for public global-company
+  // directory/ranking data. Never borrow an arbitrary member's login credential.
+  const configured = env.TORN_API_KEY_CUSTOM?.trim()
+  if (configured) return configured
   const row = await requireDb(env).prepare("SELECT player_id FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string }>()
   const key = row ? await savedKey(env, row.player_id) : null
   if (!key) throw Object.assign(new Error("No saved Torn API key is available to refresh the global company rankings cache."), { status: 503 })
@@ -642,7 +1559,7 @@ async function completeLinkedAdminRankingJob(env: WorkerEnv, run: GlobalRankingR
   const now = new Date().toISOString()
   await db.prepare("UPDATE admin_jobs SET status = 'completed', finished_at = ?, result_json = ?, error_message = NULL WHERE job_id = ? AND status = 'running'")
     .bind(now, asJson(result), run.admin_job_id).run()
-  const actor = { player_id: ADMIN_PLAYER_ID, player_name: "SharpSplinter", admin_elevated_until: 0 }
+  const actor: Session = { player_id: ADMIN_PLAYER_ID, player_name: "SharpSplinter", is_admin: 1 }
   await writeAdminAudit(env, actor, "job.completed", "job", run.admin_job_id, succeeded ? "succeeded" : "failed",
     succeeded ? "Administrative endpoint refresh completed, including resumable global company rankings." : "Administrative endpoint refresh completed with a failed global company ranking endpoint.",
     { jobType: "endpoint-refresh", refreshRunId: run.run_id, partialFailure: !succeeded })
@@ -792,12 +1709,424 @@ async function processGlobalRankingQueueMessage(env: WorkerEnv, runId: string): 
   }
 }
 
+async function purgeHalloweenMemberData(env: WorkerEnv, playerId: string): Promise<void> {
+  const db = requireDb(env)
+  await db.prepare("DELETE FROM halloween_historical_keys WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_event_logs WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_live_snapshots WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_collection_jobs WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_live_snapshot_jobs WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_member_event_slots WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_api_throttles WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("UPDATE administrators SET revoked_by = 'system', revoked_at = ? WHERE player_id = ? AND revoked_at IS NULL")
+    .bind(new Date().toISOString(), playerId).run()
+}
+
+async function removeDepartedFactionAccess(env: WorkerEnv, playerId: string): Promise<void> {
+  const db = requireDb(env)
+  // Revoke the durable admin role first. If later archive/session cleanup fails,
+  // administrator access is still removed immediately.
+  await db.prepare("UPDATE administrators SET revoked_by = 'system', revoked_at = ? WHERE player_id = ? AND revoked_at IS NULL")
+    .bind(new Date().toISOString(), playerId).run()
+  await purgeHalloweenMemberData(env, playerId)
+  // Private owner-key data is live-only and is removed immediately on a
+  // confirmed faction departure. It is never retained as faction history.
+  await db.prepare("DELETE FROM faction_member_private_live_snapshots WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM member_private_live_keys WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM member_private_live_api_throttles WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM sessions WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM api_keys WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM faction_member_cache WHERE player_id = ?").bind(playerId).run()
+  // Sharing preferences are optional on older installations. Their absence
+  // must not block session/key invalidation or Halloween-data deletion.
+  await db.prepare("DELETE FROM company_sharing_recipients WHERE owner_player_id = ? OR recipient_player_id = ?")
+    .bind(playerId, playerId).run().catch(() => undefined)
+}
+
+async function applyConfirmedFactionDeparture(env: WorkerEnv, playerId: string, factionId: string): Promise<void> {
+  const db = requireDb(env)
+  // A collector may discover departure before the normal session revalidator.
+  // Mark it pending before cleanup so every active session fails closed.
+  await db.prepare("UPDATE players SET membership_check_status = 'cleanup_pending' WHERE player_id = ?")
+    .bind(playerId).run()
+  await removeDepartedFactionAccess(env, playerId)
+  const verifiedAt = new Date().toISOString()
+  await db.prepare("UPDATE players SET faction_id = ?, faction_verified_at = ?, membership_check_attempted_at = ?, membership_check_status = NULL, updated_at = ? WHERE player_id = ?")
+    .bind(factionId || null, verifiedAt, verifiedAt, verifiedAt, playerId).run()
+}
+
+function classifyHalloweenLog(row: Record<string, unknown>): { labels: string[]; isHit: boolean; relevant: boolean } {
+  const details = isRecord(row.details) ? row.details : {}
+  const title = typeof details.title === "string" ? details.title.toLowerCase() : ""
+  const category = typeof details.category === "string" ? details.category.toLowerCase() : ""
+  const searchable = (title + " " + category + " " + JSON.stringify(row.data ?? {}) + " " + JSON.stringify(row.params ?? {})).toLowerCase()
+  const labels = new Set<string>()
+  if (searchable.includes("trick or treat")) labels.add("trick_or_treat")
+  if (searchable.includes("treat") && /(receive|received|gain|gained|collect|collected|earned)/.test(searchable)) labels.add("treat_received")
+  if (searchable.includes("basket")) labels.add("basket")
+  if (title.includes("attack") && title.includes("leave")) labels.add("attack_leave")
+  if (title.includes("attack") && title.includes("mug")) labels.add("attack_mug")
+  if (title.includes("attack") && /(hospital|hospitalize|hospitalise)/.test(title)) labels.add("attack_hospitalize")
+  if (searchable.includes("revitalize") || searchable.includes("revitalise")) labels.add("revitalize")
+  if (searchable.includes("boost")) labels.add("boost")
+  if (searchable.includes("book") && /(activate|activation|used|use)/.test(searchable)) labels.add("book_activation")
+  if (searchable.includes("company") && /(change|changed|joined|left|director)/.test(searchable)) labels.add("company_change")
+  if (title.includes("item use") || title.includes("items use")) labels.add("item_use")
+  const isHit = labels.has("attack_leave") || labels.has("attack_mug") || labels.has("attack_hospitalize")
+  return { labels: Array.from(labels), isHit, relevant: labels.size > 0 }
+}
+
+async function throttleHalloweenRequest(env: WorkerEnv, playerId: string): Promise<void> {
+  const db = requireDb(env)
+  const row = await db.prepare("SELECT last_request_at FROM halloween_api_throttles WHERE player_id = ?")
+    .bind(playerId).first<{ last_request_at: number }>()
+  const now = Date.now()
+  const waitMs = Math.max(0, 800 - (now - Number(row?.last_request_at ?? 0)))
+  if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs))
+  const startedAt = Date.now()
+  await db.prepare("INSERT INTO halloween_api_throttles (player_id, last_request_at) VALUES (?, ?) ON CONFLICT(player_id) DO UPDATE SET last_request_at = excluded.last_request_at")
+    .bind(playerId, startedAt).run()
+}
+
+async function sendHalloweenCollectionJob(env: WorkerEnv, jobId: string): Promise<void> {
+  if (!env.GLOBAL_RANKINGS_QUEUE) throw new Error("The background collection queue is not configured.")
+  await env.GLOBAL_RANKINGS_QUEUE.send({ kind: "halloween-log-collection", jobId })
+}
+
+type HalloweenEventDefinition = { eventYear: number; startAt: string; endAt: string }
+type HalloweenMemberEventWindow = {
+  configured: boolean
+  startMinuteOfDay: number | null
+  startTime: string | null
+  startAt: string | null
+  endAt: string | null
+}
+
+function formatHalloweenStartTime(startMinuteOfDay: number): string {
+  const hour = Math.floor(startMinuteOfDay / 60)
+  const minute = startMinuteOfDay % 60
+  return String(hour).padStart(2, "0") + ":" + String(minute).padStart(2, "0")
+}
+
+function buildHalloweenMemberEventWindow(event: HalloweenEventDefinition, startMinuteOfDay: number): HalloweenMemberEventWindow {
+  if (!Number.isInteger(startMinuteOfDay) || startMinuteOfDay < 600 || startMinuteOfDay > 960 || startMinuteOfDay % 15 !== 0) {
+    throw new Error("Choose a Trick or Treat start time from 10:00 through 16:00 TCT in 15-minute increments.")
+  }
+  const startDate = event.startAt.slice(0, 10)
+  const endDate = event.endAt.slice(0, 10)
+  const startDay = Date.parse(startDate + "T00:00:00.000Z")
+  const endDay = Date.parse(endDate + "T00:00:00.000Z")
+  if (!Number.isFinite(startDay) || !Number.isFinite(endDay) || endDay <= startDay) {
+    throw new Error("The configured Halloween calendar dates are invalid.")
+  }
+  const time = formatHalloweenStartTime(startMinuteOfDay)
+  const startAt = new Date(startDay + startMinuteOfDay * 60 * 1000).toISOString()
+  const endAt = new Date(endDay + startMinuteOfDay * 60 * 1000).toISOString()
+  return { configured: true, startMinuteOfDay, startTime: time, startAt, endAt }
+}
+
+async function getHalloweenMemberEventWindow(env: WorkerEnv, playerId: string, eventYear: number): Promise<{ event: HalloweenEventDefinition; window: HalloweenMemberEventWindow } | null> {
+  const db = requireDb(env)
+  const event = await db.prepare("SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt FROM halloween_event_windows WHERE event_year = ?")
+    .bind(eventYear).first<HalloweenEventDefinition>()
+  if (!event) return null
+  const slot = await db.prepare("SELECT start_minute_of_day AS startMinuteOfDay FROM halloween_member_event_slots WHERE player_id = ? AND event_year = ?")
+    .bind(playerId, eventYear).first<{ startMinuteOfDay: number }>()
+  if (!slot || slot.startMinuteOfDay == null) {
+    return { event, window: { configured: false, startMinuteOfDay: null, startTime: null, startAt: null, endAt: null } }
+  }
+  return { event, window: buildHalloweenMemberEventWindow(event, Number(slot.startMinuteOfDay)) }
+}
+
+async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Promise<void> {
+  const db = requireDb(env)
+  const job = await db.prepare("SELECT job_id, player_id, event_year, status, cursor_ts, cursor_url, cursor_direction, pages_collected, logs_collected, window_start_at, window_end_at FROM halloween_collection_jobs WHERE job_id = ?")
+    .bind(jobId).first<{ job_id: string; player_id: string; event_year: number; status: string; cursor_ts: number; cursor_url: string | null; cursor_direction: string | null; pages_collected: number; logs_collected: number; window_start_at: string | null; window_end_at: string | null }>()
+  if (!job || ["complete", "failed", "cancelled"].includes(job.status)) return
+  const memberStatus = await db.prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?")
+    .bind(job.player_id).first<{ disabled_at: string | null }>()
+  if (memberStatus?.disabled_at) {
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'cancelled', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("Collection was cancelled because this member's dashboard access is disabled.", new Date().toISOString(), jobId).run()
+    return
+  }
+  const event = await db.prepare("SELECT start_at, end_at, historical_collection_enabled FROM halloween_event_windows WHERE event_year = ?")
+    .bind(job.event_year).first<{ start_at: string; end_at: string; historical_collection_enabled: number }>()
+  if (!event || event.historical_collection_enabled !== 1) {
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("Historical collection is disabled for this event year.", new Date().toISOString(), jobId).run()
+    return
+  }
+  const keyRow = await db.prepare("SELECT player_id FROM halloween_historical_keys WHERE player_id = ?")
+    .bind(job.player_id).first<{ player_id: string }>()
+  const apiKey = keyRow ? await savedKey(env, job.player_id) : null
+  if (!apiKey) {
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("The member's portal API key is no longer connected. Sign in with a key that includes user log access.", new Date().toISOString(), jobId).run()
+    return
+  }
+  await throttleHalloweenRequest(env, job.player_id)
+  const factionId = await verifyFactionMembershipWithKey(apiKey)
+  if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
+    await applyConfirmedFactionDeparture(env, job.player_id, factionId)
+    return
+  }
+
+  const eventStart = Math.floor(Date.parse(job.window_start_at || event.start_at) / 1000)
+  const eventEnd = Math.floor(Date.parse(job.window_end_at || event.end_at) / 1000)
+  const dayStart = Number(job.cursor_ts)
+  if (!Number.isFinite(eventStart) || !Number.isFinite(eventEnd) || eventEnd <= eventStart || !Number.isFinite(dayStart) || dayStart < eventStart) {
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("The personal Halloween event window is invalid.", new Date().toISOString(), jobId).run()
+    return
+  }
+  if (dayStart >= eventEnd) {
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'complete', completed_at = ?, updated_at = ?, last_error = NULL WHERE job_id = ?")
+      .bind(new Date().toISOString(), new Date().toISOString(), jobId).run()
+    return
+  }
+  const dayEnd = Math.min(dayStart + 86400, eventEnd)
+  let requestUrl = job.cursor_url || (() => {
+    const url = new URL("https://api.torn.com/v2/user/log")
+    url.searchParams.set("from", String(dayStart))
+    url.searchParams.set("to", String(dayEnd - 1))
+    url.searchParams.set("limit", "100")
+    url.searchParams.set("sort", "desc")
+    return url.toString()
+  })()
+  const parsedUrl = new URL(requestUrl)
+  if (parsedUrl.protocol !== "https:" || parsedUrl.hostname !== "api.torn.com" || parsedUrl.pathname !== "/v2/user/log" || parsedUrl.searchParams.has("key")) {
+    throw new Error("Torn returned an unsafe pagination URL. The API key was not sent.")
+  }
+  await throttleHalloweenRequest(env, job.player_id)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 15000)
+  let response: Response
+  let payload: unknown
+  try {
+    response = await fetch(parsedUrl.toString(), {
+      headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+      signal: controller.signal,
+    })
+    payload = await response.json().catch(() => null)
+  } finally { clearTimeout(timeout) }
+  const apiError = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+  if (!response.ok || apiError) {
+    const code = typeof apiError?.code === "number" ? apiError.code : undefined
+    if (code === 2 || code === 16 || code === 18) {
+      await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+        .bind("Torn rejected the saved Full Access key. Reconnect a valid Full Access key with user log access.", new Date().toISOString(), jobId).run()
+      return
+    }
+    throw new Error(code === 5 ? "Torn rate limit reached during historical collection." : "Torn historical log request failed.")
+  }
+  if (!isRecord(payload) || !Array.isArray(payload.log)) throw new Error("Torn returned an unexpected user log response.")
+  const collectedAt = new Date().toISOString()
+  let inserted = 0
+  for (const raw of payload.log) {
+    if (!isRecord(raw) || raw.id == null || !Number.isFinite(Number(raw.timestamp))) continue
+    const eventTimestamp = Number(raw.timestamp)
+    if (eventTimestamp < eventStart || eventTimestamp >= eventEnd) continue
+    const classification = classifyHalloweenLog(raw)
+    if (!classification.relevant) continue
+    const details = isRecord(raw.details) ? raw.details : {}
+    const logTypeId = details.id == null ? null : Number(details.id)
+    const result = await db.prepare("INSERT OR IGNORE INTO halloween_event_logs (event_year, player_id, log_id, event_timestamp, log_type_id, category, title, labels_json, is_hit, log_json, collected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(job.event_year, job.player_id, String(raw.id), Number(raw.timestamp), Number.isFinite(logTypeId) ? logTypeId : null, typeof details.category === "string" ? details.category : null, typeof details.title === "string" ? details.title : null, asJson(classification.labels), classification.isHit ? 1 : 0, asJson(raw), collectedAt).run()
+    inserted += Number(result.meta?.changes ?? 0)
+  }
+  const metadata = isRecord(payload._metadata) ? payload._metadata : {}
+  const links = isRecord(metadata.links) ? metadata.links : {}
+  const direction = job.cursor_direction || (typeof links.prev === "string" ? "prev" : "next")
+  const candidate = links[direction]
+  const nextUrl = typeof candidate === "string" ? candidate : null
+  const pages = Number(job.pages_collected ?? 0) + 1
+  const logs = Number(job.logs_collected ?? 0) + inserted
+  const now = new Date().toISOString()
+  if (nextUrl) {
+    const next = new URL(nextUrl, parsedUrl)
+    if (next.protocol !== "https:" || next.hostname !== "api.torn.com" || next.pathname !== "/v2/user/log" || next.searchParams.has("key")) throw new Error("Torn returned an unsafe historical pagination link.")
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'running', cursor_url = ?, cursor_direction = ?, pages_collected = ?, logs_collected = ?, last_error = NULL, updated_at = ? WHERE job_id = ?")
+      .bind(next.toString(), direction, pages, logs, now, jobId).run()
+    await sendHalloweenCollectionJob(env, jobId)
+    return
+  }
+  if (dayEnd < eventEnd) {
+    await db.prepare("UPDATE halloween_collection_jobs SET status = 'queued', cursor_ts = ?, cursor_url = NULL, cursor_direction = NULL, pages_collected = ?, logs_collected = ?, last_error = NULL, updated_at = ? WHERE job_id = ?")
+      .bind(dayEnd, pages, logs, now, jobId).run()
+    await sendHalloweenCollectionJob(env, jobId)
+    return
+  }
+  await db.prepare("UPDATE halloween_collection_jobs SET status = 'complete', pages_collected = ?, logs_collected = ?, last_error = NULL, completed_at = ?, updated_at = ? WHERE job_id = ?")
+    .bind(pages, logs, now, now, jobId).run()
+}
+
+async function runHalloweenLiveSnapshot(env: WorkerEnv, playerId: string, eventYear: number, snapshotKind: "opening" | "periodic" | "closing" | "manual"): Promise<Record<string, unknown>> {
+  const db = requireDb(env)
+  const personal = await getHalloweenMemberEventWindow(env, playerId, eventYear)
+  if (!personal) throw new Error("No Halloween event window is configured for that year.")
+  if (!personal.window.configured || !personal.window.startAt || !personal.window.endAt) throw new Error("Select your personal Trick or Treat start time before collecting live snapshots.")
+  const startMs = Date.parse(personal.window.startAt)
+  const endMs = Date.parse(personal.window.endAt)
+  const nowMs = Date.now()
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) throw new Error("The personal Halloween event window is invalid.")
+  if (snapshotKind === "manual" && (nowMs < startMs || nowMs >= endMs)) throw new Error("Manual live snapshots are only available during your personal Halloween event window.")
+
+  const apiKey = await savedKey(env, playerId)
+  if (!apiKey) throw new Error("This member has no saved faction login key.")
+  await throttleHalloweenRequest(env, playerId)
+  const factionId = await verifyFactionMembershipWithKey(apiKey)
+  if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
+    await applyConfirmedFactionDeparture(env, playerId, factionId)
+    throw new Error("This member is no longer in Naughty Souls. Their sessions, faction login key, administrator role, and Halloween contributions were removed.")
+  }
+
+  await throttleHalloweenRequest(env, playerId)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 12000)
+  let response: Response
+  let payload: unknown
+  try {
+    response = await fetch("https://api.torn.com/v2/user/halloween", {
+      headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+      signal: controller.signal,
+    })
+    payload = await response.json().catch(() => null)
+  } finally { clearTimeout(timeout) }
+  const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+  if (!response.ok || error) {
+    const code = typeof error?.code === "number" ? error.code : undefined
+    throw new Error(code === 9 ? "Torn rate limit reached while collecting Halloween summary." : code === 3 ? "The saved login key does not have the Minimal Access Halloween selection." : "Torn's Halloween summary endpoint is temporarily unavailable.")
+  }
+  const halloween = isRecord(payload) && isRecord(payload.halloween) ? payload.halloween : null
+  const treats = isRecord(halloween?.treats) ? halloween.treats : null
+  const upgrades = Array.isArray(halloween?.basket_upgrades) ? halloween.basket_upgrades : null
+  if (!treats || !upgrades) throw new Error("Torn returned an incomplete Halloween treats summary.")
+  const current = Number(treats.current)
+  const total = Number(treats.total)
+  if (!Number.isInteger(current) || current < 0 || !Number.isInteger(total) || total < 0) throw new Error("Torn returned invalid Halloween treat counts.")
+  const metadata = isRecord(payload) && isRecord(payload._metadata) ? payload._metadata : {}
+  const sourceTimestamp = typeof metadata.timestamp === "number" && Number.isFinite(metadata.timestamp) ? metadata.timestamp : null
+  const capturedAt = new Date().toISOString()
+  await db.prepare("INSERT INTO halloween_live_snapshots (event_year, player_id, captured_at, snapshot_kind, treats_current, treats_total, upgrades_json, payload_json, source_timestamp, collection_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete')")
+    .bind(eventYear, playerId, capturedAt, snapshotKind, current, total, asJson(upgrades), asJson(payload), sourceTimestamp).run()
+  return { eventYear, playerId, capturedAt, snapshotKind, treatsCurrent: current, treatsTotal: total, upgradesUnlocked: upgrades.length, sourceTimestamp }
+}
+
+async function runHalloweenLiveSnapshotJob(env: WorkerEnv, jobId: string): Promise<void> {
+  const db = requireDb(env)
+  const job = await db.prepare("SELECT job_id AS jobId, player_id AS playerId, event_year AS eventYear, snapshot_kind AS snapshotKind, status FROM halloween_live_snapshot_jobs WHERE job_id = ?")
+    .bind(jobId).first<{ jobId: string; playerId: string; eventYear: number; snapshotKind: "opening" | "periodic" | "closing"; status: string }>()
+  if (!job || job.status === "complete" || job.status === "failed") return
+  const memberStatus = await db.prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?")
+    .bind(job.playerId).first<{ disabled_at: string | null }>()
+  if (memberStatus?.disabled_at) {
+    await db.prepare("UPDATE halloween_live_snapshot_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("Snapshot was cancelled because this member's dashboard access is disabled.", new Date().toISOString(), jobId).run()
+    return
+  }
+  await db.prepare("UPDATE halloween_live_snapshot_jobs SET status = 'running', updated_at = ? WHERE job_id = ?")
+    .bind(new Date().toISOString(), jobId).run()
+  try {
+    await runHalloweenLiveSnapshot(env, job.playerId, job.eventYear, job.snapshotKind)
+    const now = new Date().toISOString()
+    await db.prepare("UPDATE halloween_live_snapshot_jobs SET status = 'complete', completed_at = ?, updated_at = ?, last_error = NULL WHERE job_id = ?")
+      .bind(now, now, jobId).run()
+  } catch (error) {
+    const now = new Date().toISOString()
+    const message = error instanceof Error ? error.message.slice(0, 240) : "Halloween snapshot failed."
+    // Keep transient failures eligible for the queue's bounded retry policy.
+    // The consumer marks the job failed only after the final delivery attempt.
+    await db.prepare("UPDATE halloween_live_snapshot_jobs SET status = 'queued', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind(message, now, jobId).run()
+    throw error
+  }
+}
+
+async function enqueueHalloweenLiveSnapshot(env: WorkerEnv, eventYear: number, playerId: string, kind: "opening" | "periodic" | "closing", bucketStart: number): Promise<void> {
+  if (!env.GLOBAL_RANKINGS_QUEUE) return
+  const db = requireDb(env)
+  const existing = await db.prepare("SELECT job_id AS jobId, status FROM halloween_live_snapshot_jobs WHERE event_year = ? AND player_id = ? AND snapshot_kind = ? AND bucket_start = ?")
+    .bind(eventYear, playerId, kind, bucketStart).first<{ jobId: string; status: string }>()
+  // Each event bucket receives one bounded queue attempt sequence. A terminal
+  // failure is not re-enqueued on every five-minute scheduler tick.
+  if (existing) return
+  const now = new Date().toISOString()
+  const jobId = crypto.randomUUID()
+  await db.prepare("INSERT INTO halloween_live_snapshot_jobs (job_id, event_year, player_id, snapshot_kind, bucket_start, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)")
+    .bind(jobId, eventYear, playerId, kind, bucketStart, now, now).run()
+  await env.GLOBAL_RANKINGS_QUEUE.send({ kind: "halloween-live-snapshot", jobId })
+}
+
+async function enqueueScheduledHalloweenSnapshots(env: WorkerEnv, scheduledTime: number): Promise<number> {
+  if (!env.DB || !env.GLOBAL_RANKINGS_QUEUE) return 0
+  const db = requireDb(env)
+  const nowMs = scheduledTime
+  const nowIso = new Date(nowMs).toISOString()
+  const events = await db.prepare("SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt FROM halloween_event_windows WHERE live_collection_enabled = 1")
+    .all<{ eventYear: number; startAt: string; endAt: string }>()
+  let queued = 0
+  for (const event of events.results ?? []) {
+    const startMs = Date.parse(event.startAt)
+    const endMs = Date.parse(event.endAt)
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) continue
+    const members = await db.prepare("SELECT p.player_id AS playerId, s.start_minute_of_day AS startMinuteOfDay FROM players p JOIN halloween_member_event_slots s ON s.player_id = p.player_id AND s.event_year = ? LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL")
+      .bind(event.eventYear, NAUGHTY_SOULS_FACTION_ID).all<{ playerId: string; startMinuteOfDay: number }>()
+    for (const member of members.results ?? []) {
+      let personalWindow: HalloweenMemberEventWindow
+      try { personalWindow = buildHalloweenMemberEventWindow(event, Number(member.startMinuteOfDay)) } catch { continue }
+      const memberStartMs = Date.parse(personalWindow.startAt || "")
+      const memberEndMs = Date.parse(personalWindow.endAt || "")
+      if (!Number.isFinite(memberStartMs) || !Number.isFinite(memberEndMs) || memberEndMs <= memberStartMs) continue
+      const openingExists = await db.prepare("SELECT job_id FROM halloween_live_snapshot_jobs WHERE event_year = ? AND player_id = ? AND snapshot_kind = 'opening' AND status = 'complete' LIMIT 1")
+        .bind(event.eventYear, member.playerId).first<{ job_id: string }>()
+      if (!openingExists && nowMs >= memberStartMs - 5 * 60 * 1000 && nowMs <= memberStartMs + 60 * 1000) {
+        await enqueueHalloweenLiveSnapshot(env, event.eventYear, member.playerId, "opening", Math.floor(memberStartMs / 1000))
+        queued++
+        continue
+      }
+      if (nowMs >= memberStartMs && nowMs < memberEndMs) {
+        const last = await db.prepare("SELECT MAX(captured_at) AS capturedAt FROM halloween_live_snapshots WHERE event_year = ? AND player_id = ?")
+          .bind(event.eventYear, member.playerId).first<{ capturedAt: string | null }>()
+        const lastMs = last?.capturedAt ? Date.parse(last.capturedAt) : Number.NEGATIVE_INFINITY
+        if (!Number.isFinite(lastMs) || nowMs - lastMs >= 6 * 60 * 60 * 1000) {
+          const bucket = memberStartMs + Math.floor((nowMs - memberStartMs) / (6 * 60 * 60 * 1000)) * (6 * 60 * 60 * 1000)
+          await enqueueHalloweenLiveSnapshot(env, event.eventYear, member.playerId, "periodic", Math.floor(bucket / 1000))
+          queued++
+          continue
+        }
+      }
+      const closingExists = await db.prepare("SELECT job_id FROM halloween_live_snapshot_jobs WHERE event_year = ? AND player_id = ? AND snapshot_kind = 'closing' AND status = 'complete' LIMIT 1")
+        .bind(event.eventYear, member.playerId).first<{ job_id: string }>()
+      if (!closingExists && nowMs >= memberEndMs && nowMs <= memberEndMs + 5 * 60 * 1000) {
+        await enqueueHalloweenLiveSnapshot(env, event.eventYear, member.playerId, "closing", Math.floor(memberEndMs / 1000))
+        queued++
+      }
+    }
+  }
+  return queued
+}
+
 async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; queue?: string }, env: WorkerEnv): Promise<void> {
-  if (batch.queue === "ncd-global-rankings-refresh-dlq") {
+  if (batch.queue?.endsWith("-dlq")) {
     for (const message of batch.messages) {
       const body = isRecord(message.body) ? message.body : {}
       const runId = typeof body.runId === "string" ? body.runId : ""
-      if (body.kind === "manual-snapshot-recovery" && runId) {
+      const halloweenJobId = typeof body.jobId === "string" ? body.jobId : ""
+      const liveSnapshotJobId = typeof body.jobId === "string" ? body.jobId : ""
+      if (body.kind === FACTION_STATS_QUEUE_KIND && runId) {
+        await markFactionStatsRunFailed(env, runId, new Error("Faction stats collection exhausted its queue retries."))
+      } else if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
+        await markFactionPerformanceRunFailed(env, runId, new Error("Faction performance collection exhausted its queue retries."))
+      } else if (body.kind === "faction-weekly-finalize") {
+        console.error("Weekly report finalization exhausted its queue retries.")
+      } else if (body.kind === "halloween-live-snapshot" && liveSnapshotJobId) {
+        await requireDb(env).prepare("UPDATE halloween_live_snapshot_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+          .bind("Live Halloween snapshot exhausted its queue retries.", new Date().toISOString(), liveSnapshotJobId).run()
+      } else if (body.kind === "halloween-log-collection" && halloweenJobId) {
+        await requireDb(env).prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ? AND status NOT IN ('complete', 'cancelled')")
+          .bind("Historical collection exhausted its queue retries. Check the saved Full Access key and retry.", new Date().toISOString(), halloweenJobId).run()
+      } else if (body.kind === "manual-snapshot-recovery" && runId) {
         await markManualSnapshotRecoveryFailed(env, runId, "Manual snapshot recovery exhausted its queue retries.")
       } else if (runId) {
         await markGlobalRankingRunFailed(env, runId, new Error("Global-ranking refresh exhausted its queue retries. The last good cache was preserved."))
@@ -809,6 +2138,86 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
   for (const message of batch.messages) {
     const body = isRecord(message.body) ? message.body : {}
     const runId = typeof body.runId === "string" ? body.runId : ""
+    const halloweenJobId = typeof body.jobId === "string" ? body.jobId : ""
+    const liveSnapshotJobId = typeof body.jobId === "string" ? body.jobId : ""
+    if (body.kind === FACTION_STATS_QUEUE_KIND && runId) {
+      try {
+        await runFactionStatsCollection(env, runId)
+        message.ack()
+      } catch (error) {
+        const safe = factionCollectionSafeError(error)
+        console.error("Faction stats collection attempt failed", { runId, summary: safe.summary, tornCode: safe.tornCode })
+        const attempts = Math.max(1, Number(message.attempts ?? 1))
+        message.retry({ delaySeconds: Math.min(60, attempts * 10) })
+      }
+      continue
+    }
+    if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
+      try {
+        await runFactionPerformanceCollection(env, runId)
+        message.ack()
+      } catch (error) {
+        // Emit only the classified, sanitized reason; never log the key,
+        // request headers, raw upstream body, or arbitrary exception text.
+        const safe = factionCollectionSafeError(error)
+        console.error("Faction performance collection attempt failed", {
+          runId,
+          summary: safe.summary,
+          tornCode: safe.tornCode,
+        })
+        // Leave retry exhaustion to Cloudflare Queues so the configured DLQ
+        // receives the message and records the terminal collection failure.
+        const attempts = Math.max(1, Number(message.attempts ?? 1))
+        message.retry({ delaySeconds: Math.min(60, attempts * 10) })
+      }
+      continue
+    }
+    if (body.kind === "faction-weekly-finalize") {
+      const weekStartAt = typeof body.weekStartAt === "string" ? body.weekStartAt : ""
+      const parsedStart = Date.parse(weekStartAt)
+      if (!Number.isFinite(parsedStart) || new Date(utcSundayStart(parsedStart)).toISOString() !== weekStartAt) {
+        message.ack()
+        continue
+      }
+      try {
+        await finalizeFactionWeeklyReport(env, parsedStart)
+        message.ack()
+      } catch {
+        const attempts = Math.max(1, Number(message.attempts ?? 1))
+        message.retry({ delaySeconds: Math.min(60, attempts * 10) })
+      }
+      continue
+    }
+    if (body.kind === "halloween-live-snapshot" && liveSnapshotJobId) {
+      try {
+        await runHalloweenLiveSnapshotJob(env, liveSnapshotJobId)
+        message.ack()
+      } catch {
+        const attempts = Number(message.attempts ?? 1)
+        if (attempts < 4) message.retry({ delaySeconds: Math.min(60, attempts * 10) })
+        else {
+          await requireDb(env).prepare("UPDATE halloween_live_snapshot_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+            .bind("Live Halloween snapshot failed after repeated Torn API errors.", new Date().toISOString(), liveSnapshotJobId).run()
+          message.ack()
+        }
+      }
+      continue
+    }
+    if (body.kind === "halloween-log-collection" && halloweenJobId) {
+      try {
+        await runHalloweenLogCollectionPage(env, halloweenJobId)
+        message.ack()
+      } catch {
+        const attempts = Number(message.attempts ?? 1)
+        if (attempts < 4) message.retry({ delaySeconds: Math.min(30, attempts * 5) })
+        else {
+          await requireDb(env).prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+            .bind("Historical collection failed after repeated Torn API errors. Retry the collection from the Historical tab.", new Date().toISOString(), halloweenJobId).run()
+          message.ack()
+        }
+      }
+      continue
+    }
     if (!runId) { message.ack(); continue }
     if (body.kind === "manual-snapshot-recovery") {
       const reportingDay = typeof body.reportingDay === "string" ? body.reportingDay : ""
@@ -2119,12 +3528,12 @@ async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
       throw new Error("Unsupported administrative job type.")
     }
     await db.prepare("UPDATE admin_jobs SET status = 'completed', finished_at = ?, result_json = ?, error_message = NULL WHERE job_id = ?").bind(new Date().toISOString(), asJson(result), jobId).run()
-    const actor = { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
+    const actor: Session = { player_id: "351311", player_name: "SharpSplinter", is_admin: 1 }
     await writeAdminAudit(env, actor, "job.completed", "job", jobId, "succeeded", `Administrative job ${job.job_type} completed.`, { jobType: job.job_type, targetPlayerId: job.target_player_id, targetCompanyId: job.target_company_id })
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 220) : "The operation failed unexpectedly."
     await db.prepare("UPDATE admin_jobs SET status = 'failed', finished_at = ?, error_message = ? WHERE job_id = ?").bind(new Date().toISOString(), message, jobId).run()
-    const actor = { player_id: "351311", player_name: "SharpSplinter", admin_elevated_until: 0 }
+    const actor: Session = { player_id: "351311", player_name: "SharpSplinter", is_admin: 1 }
     await writeAdminAudit(env, actor, "job.failed", "job", jobId, "failed", `Administrative job ${job.job_type} failed.`, { jobType: job.job_type, targetPlayerId: job.target_player_id, targetCompanyId: job.target_company_id, error: message })
   }
 }
@@ -2710,16 +4119,353 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
   if (!url.pathname.startsWith("/api/admin")) return null
   const session = await authenticate(request, env)
   if (!session) return jsonResponse({ error: "An active dashboard session is required." }, 401, origin)
-  if (!isAdminElevated(session)) {
-    await writeAdminAudit(env, session, "authorization.denied", "route", url.pathname, "denied", "A session without active administrator elevation attempted to access an administration route.")
-    return jsonResponse({ error: "Administrator verification is required. Unlock administration and try again." }, 403, origin)
+  if (session.is_admin !== 1) {
+    await writeAdminAudit(env, session, "authorization.denied", "route", url.pathname, "denied", "A non-administrator session attempted to access an administration route.")
+    return jsonResponse({ error: "Administrator access is required." }, 403, origin)
   }
   const db = requireDb(env)
   await ensureAdminJobPayloadSchema(env)
   await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
   await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
+  if (url.pathname === "/api/admin/administrators" && request.method === "GET") {
+    const rows = await db.prepare(
+      "SELECT a.player_id AS playerId, p.player_name AS playerName, a.granted_by AS grantedBy, grantor.player_name AS grantedByName, a.granted_at AS grantedAt, a.revoked_by AS revokedBy, revoker.player_name AS revokedByName, a.revoked_at AS revokedAt FROM administrators a JOIN players p ON p.player_id = a.player_id LEFT JOIN players grantor ON grantor.player_id = a.granted_by LEFT JOIN players revoker ON revoker.player_id = a.revoked_by ORDER BY CASE WHEN a.revoked_at IS NULL THEN 0 ELSE 1 END, p.player_name COLLATE NOCASE"
+    ).all<Record<string, unknown>>()
+    return jsonResponse({ administrators: rows.results ?? [] }, 200, origin)
+  }
+  if (url.pathname === "/api/admin/administrators/grant" && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    const targetId = isRecord(body) && typeof body.playerId === "string" ? body.playerId.trim() : ""
+    if (!/^\d{1,20}$/.test(targetId) || !positiveId(targetId)) return jsonResponse({ error: "Enter a valid Torn player ID." }, 400, origin)
+    if (targetId === session.player_id) return jsonResponse({ error: "Your own administrator role is already active." }, 409, origin)
+    const target = await db.prepare("SELECT p.player_id, p.player_name, p.faction_id, p.faction_verified_at, st.disabled_at FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.player_id = ?")
+      .bind(targetId).first<{ player_id: string; player_name: string; faction_id: string | null; faction_verified_at: string | null; disabled_at: string | null }>()
+    if (!target) return jsonResponse({ error: "That player must sign in and verify Naughty Souls membership before receiving an administrator role." }, 404, origin)
+    if (target.disabled_at) return jsonResponse({ error: "That member's dashboard access is suspended. Restore member access before granting administrator privileges." }, 409, origin)
+    const targetVerificationAge = target.faction_verified_at ? Date.now() - Date.parse(target.faction_verified_at) : Number.POSITIVE_INFINITY
+    if (target.faction_id !== NAUGHTY_SOULS_FACTION_ID || !Number.isFinite(targetVerificationAge) || targetVerificationAge < 0 || targetVerificationAge > 5 * 60 * 1000) {
+      return jsonResponse({ error: "That member must sign in and refresh their Naughty Souls membership verification before administrator privileges can be granted." }, 409, origin)
+    }
+    const now = new Date().toISOString()
+    await db.prepare("INSERT INTO administrators (player_id, granted_by, granted_at, revoked_by, revoked_at) VALUES (?, ?, ?, NULL, NULL) ON CONFLICT(player_id) DO UPDATE SET granted_by = excluded.granted_by, granted_at = excluded.granted_at, revoked_by = NULL, revoked_at = NULL")
+      .bind(targetId, session.player_id, now).run()
+    await writeAdminAudit(env, session, "administrator.granted", "administrator", targetId, "succeeded", `Granted administrator privileges to ${target.player_name}.`, { playerId: targetId })
+    return jsonResponse({ granted: true, playerId: targetId, playerName: target.player_name, grantedAt: now }, 200, origin)
+  }
+  if (url.pathname === "/api/admin/administrators/revoke" && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    const targetId = isRecord(body) && typeof body.playerId === "string" ? body.playerId.trim() : ""
+    if (!/^\d{1,20}$/.test(targetId) || !positiveId(targetId)) return jsonResponse({ error: "Enter a valid Torn player ID." }, 400, origin)
+    if (targetId === session.player_id) return jsonResponse({ error: "You cannot revoke your own administrator role. Another administrator must do that." }, 409, origin)
+    const target = await db.prepare("SELECT p.player_name, a.revoked_at FROM administrators a JOIN players p ON p.player_id = a.player_id WHERE a.player_id = ?")
+      .bind(targetId).first<{ player_name: string; revoked_at: string | null }>()
+    if (!target || target.revoked_at) return jsonResponse({ error: "That player does not have an active administrator role." }, 404, origin)
+    const now = new Date().toISOString()
+    // Keep at least one active administrator. The count predicate lives in
+    // the UPDATE itself so concurrent revocations cannot strand the portal.
+    const revocation = await db.prepare("UPDATE administrators SET revoked_by = ?, revoked_at = ? WHERE player_id = ? AND revoked_at IS NULL AND (SELECT COUNT(*) FROM administrators WHERE revoked_at IS NULL) > 1")
+      .bind(session.player_id, now, targetId).run()
+    if (Number(revocation.meta?.changes ?? 0) !== 1) {
+      await writeAdminAudit(env, session, "administrator.revocation_blocked", "administrator", targetId, "denied", "Blocked administrator revocation because it would remove the last active administrator or the role changed concurrently.", { playerId: targetId })
+      return jsonResponse({ error: "The last active administrator cannot be removed. Grant another administrator role first." }, 409, origin)
+    }
+    await writeAdminAudit(env, session, "administrator.revoked", "administrator", targetId, "succeeded", `Revoked administrator privileges from ${target.player_name}.`, { playerId: targetId })
+    return jsonResponse({ revoked: true, playerId: targetId, playerName: target.player_name, revokedAt: now }, 200, origin)
+  }
   const memberMatch = url.pathname.match(/^\/api\/admin\/members\/(\d+)(?:\/(status|connection-test|connection-repair))?$/)
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 50) || 50))
+  if (url.pathname === "/api/admin/faction/weekly-boundaries" && request.method === "GET") {
+    const boundaryLimit = Math.min(26, Math.max(1, Number(url.searchParams.get("limit") || 12) || 12))
+    const currentSundayMs = utcSundayStart(Date.now())
+    const boundaryTimes = Array.from({ length: boundaryLimit }, (_, index) =>
+      new Date(currentSundayMs - index * WEEK_MS).toISOString())
+    const reportWeekStarts = Array.from(new Set([
+      ...boundaryTimes,
+      ...boundaryTimes.map((value) => new Date(Date.parse(value) - WEEK_MS).toISOString()),
+    ]))
+    const boundaryPlaceholders = boundaryTimes.map(() => "?").join(", ")
+    const reportPlaceholders = reportWeekStarts.map(() => "?").join(", ")
+    const [registryRows, reportRows, membershipRows] = await Promise.all([
+      db.prepare(
+        `SELECT boundary_at AS boundaryAt, stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId, created_at AS createdAt
+         FROM faction_weekly_boundary_runs
+         WHERE faction_id = ? AND boundary_at IN (${boundaryPlaceholders})`
+      ).bind(NAUGHTY_SOULS_FACTION_ID, ...boundaryTimes).all<Record<string, unknown>>(),
+      db.prepare(
+        `SELECT week_start_at AS weekStartAt, week_end_at AS weekEndAt, report_status AS status,
+                member_count AS memberCount, complete_member_count AS completeMemberCount, finalized_at AS finalizedAt
+         FROM faction_weekly_reports
+         WHERE faction_id = ? AND week_start_at IN (${reportPlaceholders})`
+      ).bind(NAUGHTY_SOULS_FACTION_ID, ...reportWeekStarts).all<Record<string, unknown>>(),
+      db.prepare(
+        "SELECT user_id AS userId, estimated_joined_at AS estimatedJoinedAt, first_seen_at AS firstSeenAt, left_observed_at AS leftObservedAt FROM faction_membership_intervals WHERE faction_id = ?"
+      ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
+    ])
+    const registryByBoundary = new Map((registryRows.results ?? []).map((row) => [String(row.boundaryAt), row]))
+    const reportByWeek = new Map((reportRows.results ?? []).map((row) => [String(row.weekStartAt), row]))
+    const runIds = Array.from(new Set((registryRows.results ?? []).flatMap((row) =>
+      [String(row.statsRunId ?? ""), String(row.gymEnergyRunId ?? "")].filter(Boolean))))
+    const runPlaceholders = runIds.map(() => "?").join(", ")
+    const runRows = runIds.length ? await db.prepare(
+      `SELECT r.run_id AS runId, r.collection_kind AS collectionKind, r.status,
+              r.scheduled_at AS scheduledAt, r.started_at AS startedAt, r.completed_at AS completedAt,
+              r.last_enqueued_at AS lastEnqueuedAt, r.last_error AS lastError, r.updated_at AS updatedAt,
+              r.target_user_ids_json AS targetUserIdsJson, r.next_index AS nextIndex,
+              (SELECT COUNT(*) FROM faction_member_stat_snapshots s WHERE s.run_id = r.run_id) AS capturedStatMembers,
+              (SELECT COUNT(*) FROM faction_member_stat_snapshots s WHERE s.run_id = r.run_id AND s.collection_status = 'complete') AS completeStatMembers,
+              (SELECT MIN(s.captured_at) FROM faction_member_stat_snapshots s WHERE s.run_id = r.run_id) AS firstStatCapturedAt,
+              (SELECT MAX(s.captured_at) FROM faction_member_stat_snapshots s WHERE s.run_id = r.run_id) AS lastStatCapturedAt,
+              (SELECT COUNT(*) FROM faction_gym_energy_snapshots g WHERE g.run_id = r.run_id) AS capturedGymMembers,
+              (SELECT COUNT(*) FROM faction_gym_energy_snapshots g WHERE g.run_id = r.run_id AND g.collection_status = 'complete') AS completeGymMembers,
+              (SELECT MIN(g.captured_at) FROM faction_gym_energy_snapshots g WHERE g.run_id = r.run_id) AS firstGymCapturedAt,
+              (SELECT MAX(g.captured_at) FROM faction_gym_energy_snapshots g WHERE g.run_id = r.run_id) AS lastGymCapturedAt
+       FROM faction_performance_collection_runs r WHERE r.run_id IN (${runPlaceholders})`
+    ).bind(...runIds).all<Record<string, unknown>>() : { results: [] as Record<string, unknown>[] }
+    const runsById = new Map((runRows.results ?? []).map((row) => [String(row.runId), row]))
+    const nowMs = Date.now()
+    const now = new Date(nowMs).toISOString()
+    const diagnosticRun = (runId: unknown, expectedKind: "personalstats" | "gym_energy", cohortMemberCount = 0) => {
+      const row = typeof runId === "string" ? runsById.get(runId) : undefined
+      if (!row || row.collectionKind !== expectedKind) return null
+      const status = String(row.status ?? "unknown")
+      const scheduledAt = row.scheduledAt == null ? null : String(row.scheduledAt)
+      const lastEnqueuedAt = row.lastEnqueuedAt == null ? null : String(row.lastEnqueuedAt)
+      const updatedAt = row.updatedAt == null ? null : String(row.updatedAt)
+      const activityAt = lastEnqueuedAt ?? updatedAt ?? (row.startedAt == null ? null : String(row.startedAt)) ?? scheduledAt
+      const ageMs = activityAt ? nowMs - Date.parse(activityAt) : Number.POSITIVE_INFINITY
+      const staleAfterMs = status === "running" ? 10 * 60 * 1000 : 4 * 60 * 1000
+      const stale = (status === "queued" || status === "running") && Number.isFinite(ageMs) && ageMs > staleAfterMs
+      let targetMemberCount = 0
+      try {
+        const targets = row.targetUserIdsJson ? JSON.parse(String(row.targetUserIdsJson)) as unknown : []
+        targetMemberCount = Array.isArray(targets) && targets.length ? targets.length : cohortMemberCount
+      } catch { targetMemberCount = 0 }
+      const statsCollection = expectedKind === "personalstats"
+      const capturedMemberCount = Number(statsCollection ? row.capturedStatMembers ?? 0 : row.capturedGymMembers ?? 0)
+      const completeMemberCount = Number(statsCollection ? row.completeStatMembers ?? 0 : row.completeGymMembers ?? 0)
+      const firstCapturedAt = (statsCollection ? row.firstStatCapturedAt : row.firstGymCapturedAt) == null
+        ? null : String(statsCollection ? row.firstStatCapturedAt : row.firstGymCapturedAt)
+      const lastCapturedAt = (statsCollection ? row.lastStatCapturedAt : row.lastGymCapturedAt) == null
+        ? null : String(statsCollection ? row.lastStatCapturedAt : row.lastGymCapturedAt)
+      const timingDeviationSeconds = firstCapturedAt && scheduledAt
+        ? Math.round((Date.parse(firstCapturedAt) - Date.parse(scheduledAt)) / 1000)
+        : null
+      return {
+        runId: String(row.runId),
+        status,
+        scheduledAt,
+        startedAt: row.startedAt == null ? null : String(row.startedAt),
+        completedAt: row.completedAt == null ? null : String(row.completedAt),
+        lastEnqueuedAt,
+        updatedAt,
+        lastError: row.lastError == null ? null : String(row.lastError),
+        targetMemberCount,
+        capturedMemberCount,
+        completeMemberCount,
+        firstCapturedAt,
+        lastCapturedAt,
+        timingDeviationSeconds,
+        late: timingDeviationSeconds !== null && timingDeviationSeconds > 300,
+        stale,
+        nextIndex: Number(row.nextIndex ?? 0),
+      }
+    }
+    const boundaries = boundaryTimes.map((boundaryAt) => {
+      const registry = registryByBoundary.get(boundaryAt)
+      const boundaryMs = Date.parse(boundaryAt)
+      const knownMemberCount = (membershipRows.results ?? []).filter((row) => {
+        const joinedAt = Date.parse(String(row.estimatedJoinedAt ?? row.firstSeenAt ?? ""))
+        const leftAt = row.leftObservedAt == null ? Number.POSITIVE_INFINITY : Date.parse(String(row.leftObservedAt))
+        return Number.isFinite(joinedAt) && joinedAt <= boundaryMs && leftAt > boundaryMs
+      }).length
+      const stats = registry ? diagnosticRun(registry.statsRunId, "personalstats") : null
+      const gymEnergy = registry ? diagnosticRun(registry.gymEnergyRunId, "gym_energy", knownMemberCount) : null
+      const endingWeekStartAt = new Date(boundaryMs - WEEK_MS).toISOString()
+      const endingWeekReport = reportByWeek.get(endingWeekStartAt) ?? null
+      const startingWeekReport = reportByWeek.get(boundaryAt) ?? null
+      const locked = Boolean(endingWeekReport || startingWeekReport)
+      const ageMs = nowMs - boundaryMs
+      const withinExistingRunRecoveryWindow = ageMs >= 0 && ageMs <= 8 * DAY * 1000
+      const withinMissingBoundaryRecoveryWindow = ageMs >= 0 && ageMs <= DAY * 1000
+      const recoveryCollections: string[] = []
+      let status: string
+      let recoveryReason: string | null = null
+      if (!registry) {
+        status = "missing"
+        if (locked) recoveryReason = "A finalized report references this boundary; historical data is immutable."
+        else if (!withinMissingBoundaryRecoveryWindow) recoveryReason = "A missing Sunday capture can only be created within 24 hours; later collection cannot reconstruct the original counters."
+        else if (knownMemberCount === 0) recoveryReason = "No known membership intervals cover this Sunday, so a safe cohort cannot be reconstructed."
+        else recoveryReason = "The Sunday boundary is missing and its known member cohort can still be captured late."
+      } else if (!stats || !gymEnergy) {
+        status = "broken_registry"
+        recoveryReason = "The boundary registry references a missing or mismatched collection run; automatic repair is disabled."
+      } else {
+        const runs = [stats, gymEnergy]
+        const recoverableRun = (run: NonNullable<typeof stats>) =>
+          run.status === "failed" || run.status === "partial" || run.stale
+        if (locked) {
+          status = String(endingWeekReport?.status ?? startingWeekReport?.status ?? "locked") === "complete" ? "locked" : "report_finalized"
+          recoveryReason = "A finalized weekly report references this boundary; recovery would make source captures disagree with the immutable report."
+        } else if (!withinExistingRunRecoveryWindow) {
+          status = "expired"
+          recoveryReason = "This boundary is older than the eight-day recovery window. Replaying it would produce misleading historical deltas."
+        } else {
+          if (recoverableRun(stats)) recoveryCollections.push("personalstats")
+          if (recoverableRun(gymEnergy)) recoveryCollections.push("gym_energy")
+          if (recoveryCollections.length) {
+            status = runs.some((run) => run.stale) ? "stale" : runs.some((run) => run.status === "failed") ? "failed" : "partial"
+            recoveryReason = "Only failed, partial, or stale captures can be retried; the frozen Sunday cohort and actual capture timestamps are retained."
+          } else if (stats.status === "completed" && gymEnergy.status === "completed") {
+            status = "complete"
+            recoveryReason = "Both Sunday captures completed successfully."
+          } else {
+            status = "collecting"
+            recoveryReason = "One or both Sunday captures are still within their normal queue retry window."
+          }
+        }
+      }
+      const recoveryEligible = !locked && (
+        (!registry && withinMissingBoundaryRecoveryWindow && knownMemberCount > 0) ||
+        (Boolean(registry && stats && gymEnergy) && withinExistingRunRecoveryWindow && recoveryCollections.length > 0)
+      )
+      return {
+        boundaryAt,
+        boundaryExists: Boolean(registry),
+        knownMemberCount,
+        status,
+        stats,
+        gymEnergy,
+        endingWeekReport: endingWeekReport ? {
+          weekStartAt: String(endingWeekReport.weekStartAt),
+          weekEndAt: String(endingWeekReport.weekEndAt),
+          status: String(endingWeekReport.status),
+          finalizedAt: String(endingWeekReport.finalizedAt),
+        } : null,
+        startingWeekReport: startingWeekReport ? {
+          weekStartAt: String(startingWeekReport.weekStartAt),
+          weekEndAt: String(startingWeekReport.weekEndAt),
+          status: String(startingWeekReport.status),
+          finalizedAt: String(startingWeekReport.finalizedAt),
+        } : null,
+        recoverable: recoveryEligible,
+        recoveryCollections,
+        recoveryReason,
+      }
+    })
+    return jsonResponse({ generatedAt: now, windowStartAt: boundaryTimes[boundaryTimes.length - 1], boundaries }, 200, origin)
+  }
+  if (url.pathname === "/api/admin/faction/weekly-boundaries/recover" && request.method === "POST") {
+    const body: unknown = await request.json().catch(() => null)
+    const boundaryAt = isRecord(body) && typeof body.boundaryAt === "string" ? body.boundaryAt : ""
+    const requestedRaw = isRecord(body) ? body.collections : undefined
+    const requestedCollections = requestedRaw === undefined ? ["personalstats", "gym_energy"] :
+      Array.isArray(requestedRaw) ? requestedRaw : null
+    if (!boundaryAt || requestedCollections === null || requestedCollections.length === 0 ||
+        requestedCollections.some((kind) => kind !== "personalstats" && kind !== "gym_energy")) {
+      return jsonResponse({ error: "Provide a Sunday boundary and one or both supported collection kinds." }, 400, origin)
+    }
+    const boundaryMs = Date.parse(boundaryAt)
+    if (!Number.isFinite(boundaryMs) || new Date(utcSundayStart(boundaryMs)).toISOString() !== boundaryAt) {
+      return jsonResponse({ error: "Select a Sunday 00:00 UTC boundary." }, 400, origin)
+    }
+    const currentSundayMs = utcSundayStart(Date.now())
+    if (boundaryMs > currentSundayMs) return jsonResponse({ error: "Future Sunday boundaries cannot be recovered." }, 400, origin)
+    if (!env.GLOBAL_RANKINGS_QUEUE || !env.TORN_FACTION_API_KEY?.trim()) {
+      return jsonResponse({ error: "Faction collection queue or dedicated faction API key is not configured." }, 503, origin)
+    }
+    const relatedWeekStarts = [
+      new Date(boundaryMs - WEEK_MS).toISOString(),
+      boundaryAt,
+    ]
+    const reportPlaceholders = relatedWeekStarts.map(() => "?").join(", ")
+    const finalized = await db.prepare(
+      `SELECT week_start_at AS weekStartAt, report_status AS status FROM faction_weekly_reports
+       WHERE faction_id = ? AND week_start_at IN (${reportPlaceholders}) LIMIT 2`
+    ).bind(NAUGHTY_SOULS_FACTION_ID, ...relatedWeekStarts).all<Record<string, unknown>>()
+    if ((finalized.results ?? []).length) {
+      await writeAdminAudit(env, session, "faction.weekly_boundary.recovery_blocked", "faction_weekly_boundary", boundaryAt, "denied",
+        "Blocked recovery because a finalized weekly report references this Sunday boundary.", { relatedReports: (finalized.results ?? []).map((row) => ({ weekStartAt: row.weekStartAt, status: row.status })) })
+      return jsonResponse({ error: "A finalized weekly report references this boundary. Its source captures and member results are immutable." }, 409, origin)
+    }
+    const ageMs = Date.now() - boundaryMs
+    const registry = await db.prepare(
+      "SELECT stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId FROM faction_weekly_boundary_runs WHERE faction_id = ? AND boundary_at = ?"
+    ).bind(NAUGHTY_SOULS_FACTION_ID, boundaryAt).first<{ statsRunId: string; gymEnergyRunId: string }>()
+    if (!registry) {
+      if (ageMs < 0 || ageMs > DAY * 1000) {
+        return jsonResponse({ error: "A missing Sunday capture can only be created within 24 hours. The original historical counter values cannot be reconstructed later." }, 409, origin)
+      }
+      const enqueued = await enqueueFactionWeeklyBoundaryRun(env, boundaryMs)
+      if (!enqueued) {
+        return jsonResponse({ error: "No known membership cohort covers this Sunday, or the boundary could not be queued. No capture was created." }, 409, origin)
+      }
+      const created = await db.prepare(
+        "SELECT stats_run_id AS statsRunId, gym_energy_run_id AS gymEnergyRunId FROM faction_weekly_boundary_runs WHERE faction_id = ? AND boundary_at = ?"
+      ).bind(NAUGHTY_SOULS_FACTION_ID, boundaryAt).first<{ statsRunId: string; gymEnergyRunId: string }>()
+      if (!created) return jsonResponse({ error: "The Sunday boundary could not be verified after queueing." }, 503, origin)
+      const createdKinds = ["personalstats", "gym_energy"]
+      await writeAdminAudit(env, session, "faction.weekly_boundary.created", "faction_weekly_boundary", boundaryAt, "succeeded",
+        "Created and queued a missing Sunday boundary for its known membership cohort.", { collections: createdKinds })
+      return jsonResponse({ boundaryAt, created: true, queuedCollections: createdKinds, runIds: { personalstats: created.statsRunId, gym_energy: created.gymEnergyRunId } }, 200, origin)
+    }
+    if (ageMs < 0 || ageMs > 8 * DAY * 1000) {
+      return jsonResponse({ error: "Existing Sunday captures can only be retried within eight days. Replaying older counters would produce misleading historical deltas." }, 409, origin)
+    }
+    const selected = new Set(requestedCollections as string[])
+    const runRows = await db.prepare(
+      "SELECT run_id AS runId, collection_kind AS collectionKind, status, last_enqueued_at AS lastEnqueuedAt, started_at AS startedAt, scheduled_at AS scheduledAt, updated_at AS updatedAt FROM faction_performance_collection_runs WHERE run_id IN (?, ?) AND faction_id = ?"
+    ).bind(registry.statsRunId, registry.gymEnergyRunId, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
+    const runsByKind = new Map((runRows.results ?? []).map((row) => [String(row.collectionKind), row]))
+    const now = new Date().toISOString()
+    const queued: Array<{ collection: string; runId: string }> = []
+    const skipped: Array<{ collection: string; reason: string }> = []
+    for (const collection of ["personalstats", "gym_energy"]) {
+      if (!selected.has(collection)) continue
+      const run = runsByKind.get(collection)
+      if (!run || String(run.runId) !== String(collection === "personalstats" ? registry.statsRunId : registry.gymEnergyRunId)) {
+        skipped.push({ collection, reason: "The registry run is missing or has the wrong collection kind." })
+        continue
+      }
+      const status = String(run.status)
+      const activityAt = run.lastEnqueuedAt ?? run.updatedAt ?? run.startedAt ?? run.scheduledAt
+      const ageSinceActivity = activityAt ? Date.now() - Date.parse(String(activityAt)) : Number.POSITIVE_INFINITY
+      const staleAfter = status === "running" ? 10 * 60 * 1000 : 4 * 60 * 1000
+      const stale = (status === "queued" || status === "running") && Number.isFinite(ageSinceActivity) && ageSinceActivity > staleAfter
+      if (status === "completed") {
+        skipped.push({ collection, reason: "The capture already completed." })
+        continue
+      }
+      if (!(status === "failed" || status === "partial" || stale)) {
+        skipped.push({ collection, reason: "The collection is still within its normal retry window." })
+        continue
+      }
+      const reset = await db.prepare(
+        "UPDATE faction_performance_collection_runs SET status = 'queued', next_index = 0, started_at = NULL, completed_at = NULL, last_enqueued_at = NULL, last_error = NULL, updated_at = ? WHERE run_id = ? AND status = ? AND updated_at = ?"
+      ).bind(now, String(run.runId), status, run.updatedAt == null ? "" : String(run.updatedAt)).run()
+      if (Number(reset.meta?.changes ?? 0) !== 1) {
+        skipped.push({ collection, reason: "The run changed concurrently; reload diagnostics before retrying." })
+        continue
+      }
+      try {
+        await env.GLOBAL_RANKINGS_QUEUE.send({ kind: FACTION_PERFORMANCE_QUEUE_KIND, runId: String(run.runId) })
+        const enqueuedAt = new Date().toISOString()
+        await db.prepare(
+          "UPDATE faction_performance_collection_runs SET last_enqueued_at = ?, updated_at = ? WHERE run_id = ? AND status = 'queued'"
+        ).bind(enqueuedAt, enqueuedAt, String(run.runId)).run()
+        queued.push({ collection, runId: String(run.runId) })
+      } catch {
+        await writeAdminAudit(env, session, "faction.weekly_boundary.recovery_failed", "faction_weekly_boundary", boundaryAt, "failed",
+          "A collection run was reset but its queue message could not be delivered.", { collection, runId: run.runId })
+        return jsonResponse({ error: "The run was reset but the queue message could not be delivered. Reload diagnostics and retry after the queue-dispatch window." }, 503, origin)
+      }
+    }
+    if (!queued.length) {
+      return jsonResponse({ error: skipped.map((item) => item.collection + ": " + item.reason).join(" ") || "No selected collection needed recovery.", skipped }, 409, origin)
+    }
+    await writeAdminAudit(env, session, "faction.weekly_boundary.recovered", "faction_weekly_boundary", boundaryAt, "succeeded",
+      "Requeued incomplete Sunday boundary captures without changing any finalized report.", { queued, skipped })
+    return jsonResponse({ boundaryAt, created: false, queued, skipped }, 200, origin)
+  }
   if (url.pathname === "/api/admin/member-activity" && request.method === "GET") {
     const daysRaw = Number(url.searchParams.get("days") || 30), days = [7, 30, 90, 365].includes(daysRaw) ? daysRaw : 30
     const cutoff = new Date(Date.now() - days * DAY * 1000).toISOString()
@@ -2963,11 +4709,25 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
   return jsonResponse({ error: "Administration route not found." }, 404, origin)
 }
 
+async function runFiveMinuteScheduledJobs(env: WorkerEnv, scheduledTime: number): Promise<void> {
+  // Membership checks, faction performance collection and Halloween snapshots
+  // are isolated: one source outage must not suppress the other scheduled work.
+  try { await revalidateFactionMembershipBatch(env, scheduledTime) } catch { /* Retry stale members on a later tick. */ }
+  try { await enqueueFactionPerformanceCollections(env, scheduledTime) } catch { /* Idempotent schedule buckets retry on a later tick. */ }
+  try { await enqueueFactionWeeklyBoundaryRun(env, scheduledTime) } catch { /* The unique Sunday boundary is retried on a later five-minute tick. */ }
+  try { await finalizeFactionWeeklyReport(env, utcSundayStart(scheduledTime) - WEEK_MS) } catch { /* Finalization retries after the ending boundary batches reach a terminal state. */ }
+  try { await enqueueScheduledHalloweenSnapshots(env, scheduledTime) } catch { /* Retry the next event sweep. */ }
+}
+
 export default {
   async queue(batch: { messages: QueueMessage[]; queue?: string }, env: WorkerEnv): Promise<void> {
     await handleGlobalRankingQueueBatch(batch, env)
   },
   async scheduled(controller: { scheduledTime: number; cron: string }, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
+    if (controller.cron.trim() === "*/5 * * * *") {
+      ctx.waitUntil(runFiveMinuteScheduledJobs(env, controller.scheduledTime))
+      return
+    }
     ctx.waitUntil(runScheduledAutomation(controller, env))
   },
   async fetch(request: Request, env: WorkerEnv, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<Response> {
@@ -2983,125 +4743,64 @@ export default {
     if (insightsResponse) return insightsResponse
     if (url.pathname === "/health" && request.method === "GET") {
       const checkedAt = new Date().toISOString()
-      try { await requireDb(env).prepare("SELECT 1 AS ok").first<{ ok: number }>(); return jsonResponse({ ok: true, service: "naughty-company-api", database: "ok", checkedAt }, 200, origin) }
-      catch { return jsonResponse({ ok: false, service: "naughty-company-api", database: "error", checkedAt }, 503, origin) }
-    }
-    if (url.pathname === "/api/auth/admin/hash-diagnostics" && request.method === "GET") {
-      const session = await authenticate(request, env)
-      if (!session) return jsonResponse({ error: "An active dashboard session is required." }, 401, origin)
-      if (session.player_id !== ADMIN_PLAYER_ID) return jsonResponse({ error: "Administrator diagnostics are owner-only." }, 403, origin)
-
-      const passwordHash = env.ADMIN_PASSWORD_HASH?.trim() || ""
-      if (!passwordHash) return jsonResponse({ error: "Administrator password hash is not configured." }, 503, origin)
-      const parts = passwordHash.split("$")
-      return jsonResponse({
-        hashFingerprint: await sha256(passwordHash),
-        hashFormatValid: isWellFormedAdminPasswordHash(passwordHash),
-        iterations: parts.length === 4 ? Number(parts[1]) : null,
-      }, 200, origin, { "cache-control": "no-store", pragma: "no-cache" })
-    }
-    if (url.pathname === "/api/auth/admin/elevate" && request.method === "POST") {
-      const session = await authenticate(request, env)
-      if (!session) return jsonResponse({ error: "An active dashboard session is required." }, 401, origin)
-      if (session.player_id !== ADMIN_PLAYER_ID) {
-        await writeAdminAudit(env, session, "authorization.denied", "admin-elevation", session.player_id, "denied", "A non-allowlisted member attempted administrator elevation.")
-        return jsonResponse({ error: "Administrator verification failed." }, 403, origin)
-      }
-      const configuredUsername = env.ADMIN_USERNAME?.trim() || ""
-      const passwordHash = env.ADMIN_PASSWORD_HASH?.trim() || ""
-      if (!configuredUsername || !passwordHash || passwordHash.length > 1024) return jsonResponse({ error: "Administrator sign-in is not configured. Contact the deployment owner." }, 503, origin)
-      const now = Math.floor(Date.now() / 1000)
-      const ip = request.headers.get("cf-connecting-ip")?.trim() || "unknown"
-      const attemptKey = await sha256(`admin-elevation:${session.player_id}:${ip}`)
-      const existingAttempt = await requireDb(env).prepare("SELECT locked_until AS lockedUntil FROM admin_auth_attempts WHERE attempt_key = ?").bind(attemptKey).first<{ lockedUntil: number }>()
-      if (Number(existingAttempt?.lockedUntil ?? 0) > now) return jsonResponse({ error: "Too many failed administrator sign-in attempts. Try again later." }, 429, origin, { "retry-after": String(Math.max(1, Number(existingAttempt?.lockedUntil) - now)) })
-      const body: unknown = await request.json().catch(() => null)
-      const username = isRecord(body) && typeof body.username === "string" ? body.username.trim() : ""
-      const password = isRecord(body) && typeof body.password === "string" ? body.password : ""
-      if (username.length > 120 || password.length > 1024 || !username || !password) {
-        const attempt = await recordAdminAttempt(env, attemptKey, now)
-        return jsonResponse({ error: attempt.locked ? "Too many failed administrator sign-in attempts. Try again later." : "Administrator sign-in failed." }, attempt.locked ? 429 : 401, origin)
-      }
-      const validUsername = constantTimeEqual(username, configuredUsername)
-      const passwordPolicy = validateAdminPassword(password)
-      const passwordHashFormatValid = isWellFormedAdminPasswordHash(passwordHash)
-      const validPassword = passwordPolicy.valid && passwordHashFormatValid && await verifyAdminPassword(password, passwordHash)
-      if (!validUsername || !validPassword) {
-        const attempt = await recordAdminAttempt(env, attemptKey, now)
-        await writeAdminAudit(env, session, "admin.elevation.failed", "admin-elevation", session.player_id, "denied", "Administrator credentials were rejected.")
-        const diagnostic = session.player_id !== ADMIN_PLAYER_ID ? undefined
-          : !validUsername ? "username_mismatch"
-          : !passwordHashFormatValid ? "stored_hash_invalid"
-          : !passwordPolicy.valid ? "password_policy"
-          : "password_mismatch"
-        return jsonResponse({
-          error: attempt.locked ? "Too many failed administrator sign-in attempts. Try again later." : "Administrator sign-in failed.",
-          ...(diagnostic ? { diagnostic } : {}),
-        }, attempt.locked ? 429 : 401, origin)
-      }
-      await clearAdminAttempts(env, attemptKey)
-      const elevatedUntil = now + ADMIN_ELEVATION_SECONDS
-      const token = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || ""
-      const updatedSession = await requireDb(env).prepare("UPDATE sessions SET admin_elevated_until = ? WHERE token_hash = ? AND player_id = ? AND expires_at > ?").bind(elevatedUntil, await sha256(token), session.player_id, now).run()
-      if (Number(updatedSession.meta?.changes ?? 0) !== 1) return jsonResponse({ error: "The dashboard session expired. Sign in again." }, 401, origin)
-      await writeAdminAudit(env, session, "admin.elevation.granted", "admin-elevation", session.player_id, "succeeded", "Administrator access was elevated after separate credential verification.", { expiresAt: new Date(elevatedUntil * 1000).toISOString() })
-      return jsonResponse({ isAdmin: true, adminElevatedUntil: elevatedUntil }, 200, origin)
-    }
-    if (url.pathname === "/api/auth/admin/de-elevate" && request.method === "POST") {
-      const session = await authenticate(request, env)
-      if (!session) return jsonResponse({ error: "An active dashboard session is required." }, 401, origin)
-      const token = request.headers.get("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || ""
-      await requireDb(env).prepare("UPDATE sessions SET admin_elevated_until = 0 WHERE token_hash = ? AND player_id = ?").bind(await sha256(token), session.player_id).run()
-      if (isAdminElevated(session)) await writeAdminAudit(env, session, "admin.elevation.revoked", "admin-elevation", session.player_id, "succeeded", "Administrator elevation was explicitly revoked.")
-      return jsonResponse({ isAdmin: false }, 200, origin)
+      const keyEncryption = env.KEY_ENCRYPTION_SECRET && env.KEY_ENCRYPTION_SECRET.length >= 32 ? "ok" : "missing"
+      try { await requireDb(env).prepare("SELECT 1 AS ok").first<{ ok: number }>(); return jsonResponse({ ok: true, service: "naughty-company-api", database: "ok", keyEncryption, checkedAt }, 200, origin) }
+      catch { return jsonResponse({ ok: false, service: "naughty-company-api", database: "error", keyEncryption, checkedAt }, 503, origin) }
     }
     if (url.pathname === "/api/auth/sign-in" && request.method === "POST") {
       try {
         const body: unknown = await request.json().catch(() => null)
         const apiKey = isRecord(body) && typeof body.apiKey === "string" ? body.apiKey.trim() : ""
-        const secondaryCompanyKey = isRecord(body) && typeof body.secondaryCompanyKey === "string" ? body.secondaryCompanyKey.trim() : ""
         if (!apiKey) return jsonResponse({ error: "A Torn API key is required." }, 400, origin)
+
+        // The login key proves the player's identity and Naughty Souls membership.
+        // Company permissions are deliberately not part of faction portal sign-in.
         const player = await validateTornKey(apiKey)
-        const memberStatus = await requireDb(env).prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?").bind(player.id).first<{ disabled_at: string | null }>()
-        if (memberStatus?.disabled_at) return jsonResponse({ error: "Dashboard access for this account has been disabled. Contact the dashboard administrator." }, 403, origin)
-        if (await readAdminBoolean(env, "maintenanceMode", false) && player.id !== ADMIN_PLAYER_ID) return jsonResponse({ error: "The dashboard is in maintenance mode. Please try again later." }, 503, origin)
-        const directorCheck = await inspectDirectorKey(apiKey, player.id)
-        let loginCompanyData: Awaited<ReturnType<typeof validateCompanyKey>> | null = null
-        let loginCompanyError: string | null = null
-        try { loginCompanyData = await validateCompanyKey(apiKey) } catch (error) { loginCompanyError = error instanceof Error ? error.message : "Company access could not be verified." }
-        const db = requireDb(env)
-        const now = new Date().toISOString()
-        await db.prepare("INSERT INTO players (player_id, player_name, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, updated_at = excluded.updated_at").bind(player.id, player.name, now, now).run()
-        await saveKey(env, player.id, apiKey)
-        // Prefer the sign-in credential and persist the primary key plus its company snapshot.
-        let selectedCompanyData = loginCompanyData
-        let selectedCompanyApiKey = selectedCompanyData ? apiKey : ""
-        if (!selectedCompanyData && secondaryCompanyKey) {
-          selectedCompanyData = await validateCompanyKey(secondaryCompanyKey)
-          selectedCompanyApiKey = secondaryCompanyKey
+        if (player.factionId !== NAUGHTY_SOULS_FACTION_ID) {
+          return jsonResponse({ error: "ACCESS DENIED: Naughty Souls faction membership is required." }, 403, origin)
         }
-        if (selectedCompanyData) await persistCompanyConnection(env, player.id, selectedCompanyApiKey, selectedCompanyData)
-        const companyKey = await companyKeyMeta(env, player.id)
+        const db = requireDb(env)
+        const memberStatus = await db.prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?").bind(player.id).first<{ disabled_at: string | null }>()
+        if (memberStatus?.disabled_at) return jsonResponse({ error: "Dashboard access for this account has been disabled. Contact the dashboard administrator." }, 403, origin)
+
+        const now = new Date().toISOString()
+        await db.prepare("INSERT INTO players (player_id, player_name, created_at, updated_at, faction_id, faction_verified_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, updated_at = excluded.updated_at, faction_id = excluded.faction_id, faction_verified_at = excluded.faction_verified_at").bind(player.id, player.name, now, now, player.factionId, now).run()
+
+        // Bootstrap the original owner ID once. A later explicit revocation is
+        // retained because INSERT OR IGNORE never reactivates a revoked row.
+        if (player.id === ADMIN_PLAYER_ID) {
+          await db.prepare("INSERT OR IGNORE INTO administrators (player_id, granted_by, granted_at) VALUES (?, ?, ?)").bind(player.id, player.id, now).run()
+        }
+        const adminRole = await db.prepare("SELECT player_id FROM administrators WHERE player_id = ? AND revoked_at IS NULL").bind(player.id).first<{ player_id: string }>()
+        if (await readAdminBoolean(env, "maintenanceMode", false) && !adminRole) {
+          return jsonResponse({ error: "The dashboard is in maintenance mode. Please try again later." }, 503, origin)
+        }
+
+        const priorKey = await savedKey(env, player.id).catch(() => null)
+        if (priorKey && priorKey !== apiKey) await invalidateMemberKeyDependents(env, player.id, priorKey)
+        await saveKey(env, player.id, apiKey)
         const token = randomToken()
         const expiresAt = Math.floor(Date.now() / 1000) + 30 * DAY
         await db.prepare("INSERT INTO sessions (token_hash, player_id, expires_at, created_at) VALUES (?, ?, ?, ?)").bind(await sha256(token), player.id, expiresAt, now).run()
         const meta = await db.prepare("SELECT last_four, updated_at FROM api_keys WHERE player_id = ?").bind(player.id).first<{ last_four: string; updated_at: string }>()
-        return jsonResponse({ token, expiresAt, player, isAdmin: false, canElevateAdmin: player.id === ADMIN_PLAYER_ID, key: { saved: true, lastFour: meta?.last_four, updatedAt: meta?.updated_at }, company: { isDirector: directorCheck.isDirector, key: companyKey, needsSecondaryKey: !companyKey.saved } }, 200, origin)
+        return jsonResponse({
+          token,
+          expiresAt,
+          player,
+          isAdmin: Boolean(adminRole),
+          key: { saved: true, lastFour: meta?.last_four, updatedAt: meta?.updated_at },
+        }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
     if (url.pathname === "/api/auth/session" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
-      let companyConnectionError: string | null = null
-      const maintenanceRecovery = session.player_id === ADMIN_PLAYER_ID && !isAdminElevated(session) && await readAdminBoolean(env, "maintenanceMode", false)
-      if (!maintenanceRecovery) {
-        try { await ensurePrimaryCompanyConnection(env, session.player_id) } catch (error) { companyConnectionError = error instanceof Error ? error.message : "Company connection could not be verified." }
-      }
       const key = await requireDb(env).prepare("SELECT last_four, updated_at FROM api_keys WHERE player_id = ?").bind(session.player_id).first<{ last_four: string; updated_at: string }>()
-      const companyKey = await companyKeyMeta(env, session.player_id)
-      const cachedDirector = await requireDb(env).prepare("SELECT is_director FROM faction_member_cache WHERE player_id = ?").bind(session.player_id).first<{ is_director: number }>()
-      const isDirector = cachedDirector?.is_director === 1
-      return jsonResponse({ player: { id: session.player_id, name: session.player_name }, isAdmin: isAdminElevated(session), canElevateAdmin: session.player_id === ADMIN_PLAYER_ID, adminElevatedUntil: isAdminElevated(session) ? session.admin_elevated_until : null, key: key ? { saved: true, lastFour: key.last_four, updatedAt: key.updated_at } : { saved: false }, company: { isDirector, key: companyKey, needsSecondaryKey: !companyKey.saved, connectionError: companyConnectionError } }, 200, origin)
+      return jsonResponse({
+        player: { id: session.player_id, name: session.player_name },
+        isAdmin: session.is_admin === 1,
+        key: key ? { saved: true, lastFour: key.last_four, updatedAt: key.updated_at } : { saved: false },
+      }, 200, origin)
     }
     if (url.pathname === "/api/auth/key" && request.method === "POST") {
       const session = await authenticate(request, env)
@@ -3112,22 +4811,481 @@ export default {
         if (!apiKey) return jsonResponse({ error: "A Torn API key is required." }, 400, origin)
         const player = await validateTornKey(apiKey)
         if (player.id !== session.player_id) return jsonResponse({ error: "That key belongs to a different Torn player. Sign out and sign in as that player to switch accounts." }, 403, origin)
+        const priorKey = await savedKey(env, player.id).catch(() => null)
+        if (priorKey && priorKey !== apiKey) await invalidateMemberKeyDependents(env, player.id, priorKey)
         await saveKey(env, player.id, apiKey)
-        return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), updatedAt: new Date().toISOString() }, 200, origin)
+        return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), updatedAt: new Date().toISOString(), dependentConnectionsReset: priorKey !== null && priorKey !== apiKey }, 200, origin)
       } catch (error) { return tornError(error, origin) }
+    }
+
+    if (url.pathname === "/api/me/private-live/key" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) return jsonResponse({ error: "Private live connections are available only to current Naughty Souls members." }, 403, origin)
+      const db = requireDb(env)
+      const [key, snapshot] = await Promise.all([
+        db.prepare("SELECT last_four, include_networth, share_with_faction, consent_version, consented_at, last_validated_at, last_attempt_at, last_collected_at, last_error, created_at, updated_at FROM member_private_live_keys WHERE player_id = ? AND faction_id = ?")
+          .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID).first<Record<string, unknown>>(),
+        db.prepare("SELECT captured_at, bars_json, cooldowns_json, networth_json, source_timestamps_json FROM faction_member_private_live_snapshots WHERE player_id = ? AND faction_id = ?")
+          .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID).first<Record<string, unknown>>(),
+      ])
+      return jsonResponse({
+        connected: Boolean(key),
+        key: key ? {
+          lastFour: String(key.last_four ?? ""),
+          includeNetworth: Number(key.include_networth) === 1,
+          shareWithFaction: Number(key.share_with_faction) === 1,
+          consentVersion: String(key.consent_version ?? ""),
+          consentedAt: key.consented_at ?? null,
+          lastValidatedAt: key.last_validated_at ?? null,
+          lastAttemptAt: key.last_attempt_at ?? null,
+          lastCollectedAt: key.last_collected_at ?? null,
+          lastError: key.last_error ?? null,
+          updatedAt: key.updated_at ?? null,
+        } : null,
+        snapshot: snapshot ? {
+          capturedAt: snapshot.captured_at,
+          bars: safeStoredJson(snapshot.bars_json),
+          cooldowns: safeStoredJson(snapshot.cooldowns_json),
+          networth: safeStoredJson(snapshot.networth_json),
+          sourceTimestamps: safeStoredJson(snapshot.source_timestamps_json),
+        } : null,
+      }, 200, origin)
+    }
+
+    if (url.pathname === "/api/me/private-live/key" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) return jsonResponse({ error: "Private live connections are available only to current Naughty Souls members." }, 403, origin)
+      try {
+        const body: unknown = await request.json().catch(() => null)
+        const apiKey = await savedKey(env, session.player_id) ?? ""
+        const consent = isRecord(body) && body.consent === true
+        const shareWithFaction = isRecord(body) && body.shareWithFaction === true
+        const consentVersion = isRecord(body) && typeof body.consentVersion === "string" ? body.consentVersion : ""
+        let includeNetworth = isRecord(body) && body.includeNetworth === true
+        if (!apiKey) return jsonResponse({ error: "Sign in with your single Naughty Family Portal Torn API key before enabling private live data." }, 409, origin)
+        if (!consent || !shareWithFaction || consentVersion !== "faction-private-live-v1") {
+          return jsonResponse({ error: "Review and accept the private live data-sharing terms before connecting your key." }, 400, origin)
+        }
+        if (!await claimPrivateLiveRequest(env, session.player_id)) {
+          return jsonResponse({ error: "A private live Torn request was made recently. Please wait 30 seconds before connecting or refreshing again." }, 429, origin, { "retry-after": "30" })
+        }
+
+        // Never trust a player ID supplied in the request. The key must belong
+        // to the already-authenticated session owner before any data is read.
+        await validatePrivateLiveKeyOwner(env, apiKey, session.player_id)
+        const live = await fetchPrivateLiveBase(env, apiKey)
+        let networth: ReturnType<typeof parsePrivateLiveNetworth> | null = null
+        let networthSourceTimestamp: number | null = null
+        let networthWarning: string | null = null
+        if (includeNetworth) {
+          try {
+            const networthPayload = await fetchPrivateLiveSelection(env, apiKey, "networth")
+            networth = parsePrivateLiveNetworth(networthPayload)
+            if (isRecord(networthPayload) && typeof networthPayload.timestamp === "number" && Number.isFinite(networthPayload.timestamp)) {
+              networthSourceTimestamp = networthPayload.timestamp
+            }
+          } catch (error) {
+            if (error instanceof TornApiClientError && error.code === 16) {
+              includeNetworth = false
+              networthWarning = "Torn did not grant this key access to detailed networth. Bars and cooldowns were connected; optional networth was left off."
+            } else throw error
+          }
+        }
+
+        const encrypted = await encryptKey(env, apiKey)
+        const now = new Date().toISOString()
+        const db = requireDb(env)
+        await db.prepare("INSERT INTO member_private_live_keys (player_id, faction_id, ciphertext, iv, last_four, include_networth, share_with_faction, consent_version, consented_at, last_validated_at, last_attempt_at, last_collected_at, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, NULL, ?, ?) ON CONFLICT(player_id) DO UPDATE SET faction_id = excluded.faction_id, ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, include_networth = excluded.include_networth, share_with_faction = 1, consent_version = excluded.consent_version, consented_at = excluded.consented_at, last_validated_at = excluded.last_validated_at, last_attempt_at = excluded.last_attempt_at, last_collected_at = excluded.last_collected_at, last_error = NULL, updated_at = excluded.updated_at")
+          .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID, encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), includeNetworth ? 1 : 0, "faction-private-live-v1", now, now, now, now, now, now).run()
+        await db.prepare("INSERT INTO faction_member_private_live_snapshots (player_id, faction_id, captured_at, bars_json, cooldowns_json, networth_json, source_timestamps_json) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET faction_id = excluded.faction_id, captured_at = excluded.captured_at, bars_json = excluded.bars_json, cooldowns_json = excluded.cooldowns_json, networth_json = excluded.networth_json, source_timestamps_json = excluded.source_timestamps_json")
+          .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID, now, asJson(live.bars), asJson(live.cooldowns), networth ? asJson(networth) : null, asJson({ capturedAt: now, networthSourceTimestamp })).run()
+        return jsonResponse({
+          saved: true,
+          connected: true,
+          lastFour: apiKey.slice(-4),
+          includeNetworth,
+          shareWithFaction: true,
+          warning: networthWarning,
+          consentedAt: now,
+          capturedAt: now,
+        }, 200, origin)
+      } catch (error) {
+        return tornError(error, origin)
+      }
+    }
+
+    if (url.pathname === "/api/me/private-live/refresh" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) return jsonResponse({ error: "Private live connections are available only to current Naughty Souls members." }, 403, origin)
+      const db = requireDb(env)
+      const key = await db.prepare("SELECT include_networth FROM member_private_live_keys WHERE player_id = ? AND faction_id = ? AND share_with_faction = 1")
+        .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID).first<{ include_networth: number }>()
+      if (!key) return jsonResponse({ error: "Enable private live sharing with your saved portal key before refreshing." }, 404, origin)
+      const apiKey = await savedKey(env, session.player_id)
+      if (!apiKey) return jsonResponse({ error: "Your saved portal API key is missing. Sign in again with your Torn key." }, 409, origin)
+      const now = new Date().toISOString()
+      if (!await claimPrivateLiveRequest(env, session.player_id)) {
+        return jsonResponse({ error: "A private live Torn request was made recently. Please wait 30 seconds before refreshing again." }, 429, origin, { "retry-after": "30" })
+      }
+      await db.prepare("UPDATE member_private_live_keys SET last_attempt_at = ?, last_error = NULL, updated_at = ? WHERE player_id = ?")
+        .bind(now, now, session.player_id).run()
+      try {
+        const live = await fetchPrivateLiveBase(env, apiKey)
+        let includeNetworth = Number(key.include_networth) === 1
+        let networth: ReturnType<typeof parsePrivateLiveNetworth> | null = null
+        let networthSourceTimestamp: number | null = null
+        let networthWarning: string | null = null
+        if (includeNetworth) {
+          try {
+            const networthPayload = await fetchPrivateLiveSelection(env, apiKey, "networth")
+            networth = parsePrivateLiveNetworth(networthPayload)
+            if (isRecord(networthPayload) && typeof networthPayload.timestamp === "number" && Number.isFinite(networthPayload.timestamp)) {
+              networthSourceTimestamp = networthPayload.timestamp
+            }
+          } catch (error) {
+            if (error instanceof TornApiClientError && error.code === 16) {
+              includeNetworth = false
+              networthWarning = "The key no longer has networth access. Bars and cooldowns remain connected; optional detailed networth was switched off."
+            } else throw error
+          }
+        }
+        const capturedAt = new Date().toISOString()
+        await db.prepare("INSERT INTO faction_member_private_live_snapshots (player_id, faction_id, captured_at, bars_json, cooldowns_json, networth_json, source_timestamps_json) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET faction_id = excluded.faction_id, captured_at = excluded.captured_at, bars_json = excluded.bars_json, cooldowns_json = excluded.cooldowns_json, networth_json = excluded.networth_json, source_timestamps_json = excluded.source_timestamps_json")
+          .bind(session.player_id, NAUGHTY_SOULS_FACTION_ID, capturedAt, asJson(live.bars), asJson(live.cooldowns), networth ? asJson(networth) : null, asJson({ capturedAt, networthSourceTimestamp })).run()
+        await db.prepare("UPDATE member_private_live_keys SET include_networth = ?, last_validated_at = ?, last_collected_at = ?, last_error = NULL, updated_at = ? WHERE player_id = ?")
+          .bind(includeNetworth ? 1 : 0, capturedAt, capturedAt, capturedAt, session.player_id).run()
+        return jsonResponse({ refreshed: true, capturedAt, includeNetworth, warning: networthWarning }, 200, origin)
+      } catch (error) {
+        const safe = privateLiveSafeError(error)
+        if (privateLiveKeyMustBeRevoked(error)) {
+          await db.prepare("DELETE FROM faction_member_private_live_snapshots WHERE player_id = ?").bind(session.player_id).run()
+          await db.prepare("DELETE FROM member_private_live_keys WHERE player_id = ?").bind(session.player_id).run()
+          return jsonResponse({ connected: false, error: safe.message + " The saved private live key was disconnected." }, safe.status, origin)
+        }
+        await db.prepare("UPDATE member_private_live_keys SET last_error = ?, updated_at = ? WHERE player_id = ?")
+          .bind(safe.message, new Date().toISOString(), session.player_id).run().catch(() => undefined)
+        return jsonResponse({ error: safe.message }, safe.status, origin)
+      }
+    }
+
+    if (url.pathname === "/api/me/private-live/key" && request.method === "DELETE") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      await requireDb(env).prepare("DELETE FROM faction_member_private_live_snapshots WHERE player_id = ?").bind(session.player_id).run()
+      await requireDb(env).prepare("DELETE FROM member_private_live_keys WHERE player_id = ?").bind(session.player_id).run()
+      return jsonResponse({ disconnected: true, factionSnapshotRemoved: true }, 200, origin)
+    }
+
+    if (url.pathname === "/api/me/halloween/key" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const row = await requireDb(env).prepare("SELECT last_four, access_level, consent_version, consented_at, last_validated_at, created_at, updated_at FROM halloween_historical_keys WHERE player_id = ?")
+        .bind(session.player_id).first<{ last_four: string; access_level: string; consent_version: string; consented_at: string; last_validated_at: string; created_at: string; updated_at: string }>()
+      return jsonResponse({ connected: Boolean(row), key: row ? { lastFour: row.last_four, accessLevel: row.access_level, consentVersion: row.consent_version, consentedAt: row.consented_at, lastValidatedAt: row.last_validated_at, updatedAt: row.updated_at } : null }, 200, origin)
+    }
+    if (url.pathname === "/api/me/halloween/key" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      try {
+        const body: unknown = await request.json().catch(() => null)
+        const apiKey = await savedKey(env, session.player_id) ?? ""
+        const consent = isRecord(body) && body.consent === true
+        const consentVersion = isRecord(body) && typeof body.consentVersion === "string" ? body.consentVersion : ""
+        if (!apiKey) return jsonResponse({ error: "Sign in with your single Naughty Family Portal Torn API key before enabling historical collection." }, 409, origin)
+        if (!consent || consentVersion !== "halloween-history-v1") return jsonResponse({ error: "Please review and accept the historical Halloween data-sharing terms before enabling collection." }, 400, origin)
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 12000)
+        let payload: unknown
+        let response: Response
+        try {
+          response = await fetch("https://api.torn.com/v2/key/info", {
+            headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+            signal: controller.signal,
+          })
+          payload = await response.json().catch(() => null)
+        } finally { clearTimeout(timeout) }
+        const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+        if (!response.ok || error) {
+          const code = typeof error?.code === "number" ? error.code : undefined
+          return jsonResponse({ error: code === 9 ? "Torn's API is temporarily unavailable or rate limited. Please retry later." : "Torn could not validate that API key. Check the key and try again." }, code === 9 ? 429 : 400, origin)
+        }
+        const root = isRecord(payload) && isRecord(payload.info) ? payload.info : null
+        const keyOwner = isRecord(root?.user) ? root.user.id : undefined
+        const access = isRecord(root?.access) ? root.access : null
+        const selections = isRecord(root?.selections) ? root.selections : null
+        const userSelections = Array.isArray(selections?.user) ? selections.user : []
+        if (String(keyOwner ?? "") !== session.player_id) return jsonResponse({ error: "Your saved portal key does not belong to this Torn account. Sign in again with your own key." }, 403, origin)
+        const accessType = typeof access?.type === "string" ? access.type : ""
+        const supportsCustomLog = (accessType === "Custom Access" || accessType === "Custom") && userSelections.includes("log")
+        if (accessType !== "Full Access" && !supportsCustomLog) return jsonResponse({ error: "Halloween historical collection needs either Full Access or a Custom Access key with the User → Log selection." }, 400, origin)
+        if (!userSelections.includes("log")) return jsonResponse({ error: "Your saved portal key is missing the User → Log selection required for historical Halloween collection." }, 400, origin)
+        const encrypted = await encryptKey(env, apiKey)
+        const now = new Date().toISOString()
+        await requireDb(env).prepare("INSERT INTO halloween_historical_keys (player_id, ciphertext, iv, last_four, access_level, consent_version, consented_at, last_validated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, access_level = excluded.access_level, consent_version = excluded.consent_version, consented_at = excluded.consented_at, last_validated_at = excluded.last_validated_at, updated_at = excluded.updated_at")
+          .bind(session.player_id, encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), accessType, "halloween-history-v1", now, now, now, now).run()
+        return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), accessLevel: accessType, consentedAt: now, lastValidatedAt: now }, 200, origin)
+      } catch (error) { return tornError(error, origin) }
+    }
+    if (url.pathname === "/api/me/halloween/key" && request.method === "DELETE") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      await requireDb(env).prepare("DELETE FROM halloween_historical_keys WHERE player_id = ?").bind(session.player_id).run()
+      await requireDb(env).prepare("UPDATE halloween_collection_jobs SET status = 'cancelled', last_error = ?, updated_at = ? WHERE player_id = ? AND status IN ('queued', 'running')")
+        .bind("The member disconnected their historical Full Access key.", new Date().toISOString(), session.player_id).run()
+      return jsonResponse({ deleted: true, historicalRecordsRetained: true }, 200, origin)
+    }
+    if (url.pathname === "/api/me/halloween/event-window" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const yearValue = Number(url.searchParams.get("year") || new Date().getUTCFullYear())
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
+      if (!personal) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
+      const db = requireDb(env)
+      const [job, snapshot, liveJob, log] = await Promise.all([
+        db.prepare("SELECT job_id FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ job_id: string }>(),
+        db.prepare("SELECT captured_at FROM halloween_live_snapshots WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ captured_at: string }>(),
+        db.prepare("SELECT job_id FROM halloween_live_snapshot_jobs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ job_id: string }>(),
+        db.prepare("SELECT log_id FROM halloween_event_logs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ log_id: string }>(),
+      ])
+      return jsonResponse({
+        event: { eventYear: personal.event.eventYear, calendarStartAt: personal.event.startAt, calendarEndAt: personal.event.endAt },
+        myWindow: personal.window,
+        locked: Boolean(job || snapshot || liveJob || log),
+        timeZone: "TCT (UTC)",
+      }, 200, origin)
+    }
+    if (url.pathname === "/api/me/halloween/event-window" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const body: unknown = await request.json().catch(() => null)
+      const yearValue = isRecord(body) ? Number(body.year) : Number.NaN
+      const startTime = isRecord(body) && typeof body.startTime === "string" ? body.startTime : ""
+      const timeMatch = startTime.match(/^(\d{2}):(\d{2})$/)
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100 || !timeMatch) return jsonResponse({ error: "Choose a valid event year and start time." }, 400, origin)
+      const startMinuteOfDay = Number(timeMatch[1]) * 60 + Number(timeMatch[2])
+      if (startMinuteOfDay < 600 || startMinuteOfDay > 960 || startMinuteOfDay % 15 !== 0) {
+        return jsonResponse({ error: "Start times must be between 10:00 and 16:00 TCT in 15-minute increments." }, 400, origin)
+      }
+      const db = requireDb(env)
+      const event = await db.prepare("SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt FROM halloween_event_windows WHERE event_year = ?")
+        .bind(yearValue).first<HalloweenEventDefinition>()
+      if (!event) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
+      let personalWindow: HalloweenMemberEventWindow
+      try { personalWindow = buildHalloweenMemberEventWindow(event, startMinuteOfDay) }
+      catch (error) { return jsonResponse({ error: error instanceof Error ? error.message : "The event window is invalid." }, 409, origin) }
+      const existingSlot = await db.prepare("SELECT start_minute_of_day AS startMinuteOfDay FROM halloween_member_event_slots WHERE player_id = ? AND event_year = ?")
+        .bind(session.player_id, yearValue).first<{ startMinuteOfDay: number }>()
+      const [job, snapshot, liveJob, log] = await Promise.all([
+        db.prepare("SELECT job_id FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ job_id: string }>(),
+        db.prepare("SELECT captured_at FROM halloween_live_snapshots WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ captured_at: string }>(),
+        db.prepare("SELECT job_id FROM halloween_live_snapshot_jobs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ job_id: string }>(),
+        db.prepare("SELECT log_id FROM halloween_event_logs WHERE player_id = ? AND event_year = ? LIMIT 1").bind(session.player_id, yearValue).first<{ log_id: string }>(),
+      ])
+      if (job || snapshot || liveJob || log) {
+        if (Number(existingSlot?.startMinuteOfDay) === startMinuteOfDay) return jsonResponse({ saved: true, locked: true, myWindow: personalWindow }, 200, origin)
+        return jsonResponse({ error: "Your event time is locked because collection or snapshot capture has already started. Contact an administrator to correct it safely." }, 409, origin)
+      }
+      const now = new Date().toISOString()
+      await db.prepare("INSERT INTO halloween_member_event_slots (event_year, player_id, start_minute_of_day, created_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(event_year, player_id) DO UPDATE SET start_minute_of_day = excluded.start_minute_of_day, updated_at = excluded.updated_at")
+        .bind(yearValue, session.player_id, startMinuteOfDay, now, now).run()
+      return jsonResponse({ saved: true, locked: false, myWindow: personalWindow }, 200, origin)
+    }
+    if (url.pathname === "/api/me/halloween/live" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const yearValue = Number(url.searchParams.get("year") || new Date().getUTCFullYear())
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      const db = requireDb(env)
+      const event = await db.prepare("SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt, live_collection_enabled AS liveCollectionEnabled FROM halloween_event_windows WHERE event_year = ?")
+        .bind(yearValue).first<{ eventYear: number; startAt: string; endAt: string; liveCollectionEnabled: number }>()
+      if (!event) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
+      const rows = await db.prepare(
+        "SELECT p.player_id AS playerId, p.player_name AS playerName, es.start_minute_of_day AS startMinuteOfDay, (SELECT s.treats_current FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsCurrent, (SELECT s.treats_total FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsTotal, (SELECT s.upgrades_json FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS upgradesJson, (SELECT s.captured_at FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS capturedAt, (SELECT s.snapshot_kind FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS snapshotKind, (SELECT s.source_timestamp FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS sourceTimestamp FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id LEFT JOIN halloween_member_event_slots es ON es.player_id = p.player_id AND es.event_year = ? WHERE p.faction_id = ? AND st.disabled_at IS NULL"
+      ).bind(yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
+      const leaderboard = (rows.results ?? []).map((row) => {
+        const memberWindow = row.startMinuteOfDay == null ? null : buildHalloweenMemberEventWindow(event, Number(row.startMinuteOfDay))
+        const snapshotMs = row.capturedAt == null ? Number.NaN : Date.parse(String(row.capturedAt))
+        const memberStartMs = memberWindow?.startAt ? Date.parse(memberWindow.startAt) : Number.NaN
+        const memberEndMs = memberWindow?.endAt ? Date.parse(memberWindow.endAt) : Number.NaN
+        // Opening and closing captures intentionally bracket the personal event
+        // window. Do not hide a valid closing snapshot merely because it was
+        // captured after the member's end boundary (for example, after queue
+        // recovery), or an opening snapshot taken just before the start.
+        const isOpeningSnapshot = row.snapshotKind === "opening" && Number.isFinite(memberStartMs) &&
+          snapshotMs >= memberStartMs - 5 * 60 * 1000 && snapshotMs <= memberStartMs + 5 * 60 * 1000
+        const isClosingSnapshot = row.snapshotKind === "closing" && Number.isFinite(memberEndMs) && snapshotMs >= memberEndMs
+        const isInEventWindow = Number.isFinite(memberStartMs) && Number.isFinite(memberEndMs) &&
+          snapshotMs >= memberStartMs && snapshotMs < memberEndMs
+        const hasSnapshotInWindow = Boolean(memberWindow?.startAt && memberWindow.endAt && Number.isFinite(snapshotMs) &&
+          (isInEventWindow || isOpeningSnapshot || isClosingSnapshot))
+        let upgrades: unknown[] | null = null
+        if (hasSnapshotInWindow && row.upgradesJson != null) {
+          try { const parsed = JSON.parse(String(row.upgradesJson)); upgrades = Array.isArray(parsed) ? parsed : null } catch { upgrades = null }
+        }
+        return {
+          playerId: String(row.playerId),
+          playerName: String(row.playerName),
+          eventWindowConfigured: Boolean(memberWindow),
+          startTime: memberWindow?.startTime ?? null,
+          eventStartAt: memberWindow?.startAt ?? null,
+          eventEndAt: memberWindow?.endAt ?? null,
+          currentTreats: hasSnapshotInWindow && row.treatsCurrent != null ? Number(row.treatsCurrent) : null,
+          totalTreats: hasSnapshotInWindow && row.treatsTotal != null ? Number(row.treatsTotal) : null,
+          upgradesUnlocked: upgrades === null ? null : upgrades.length,
+          upgrades,
+          capturedAt: hasSnapshotInWindow ? row.capturedAt : null,
+          snapshotKind: hasSnapshotInWindow ? row.snapshotKind : null,
+          sourceTimestamp: hasSnapshotInWindow && row.sourceTimestamp != null ? Number(row.sourceTimestamp) : null,
+          coverage: hasSnapshotInWindow ? "captured" : "not_collected",
+        }
+      }).sort((a, b) => (b.totalTreats ?? -1) - (a.totalTreats ?? -1) || a.playerName.localeCompare(b.playerName))
+      const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
+      return jsonResponse({ event, myWindow: personal?.window ?? null, leaderboard, mySnapshot: leaderboard.find((row) => row.playerId === session.player_id) ?? null }, 200, origin)
+    }
+    if (url.pathname === "/api/me/halloween/live-snapshot" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const body: unknown = await request.json().catch(() => null)
+      const yearValue = isRecord(body) ? Number(body.year) : new Date().getUTCFullYear()
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      try {
+        const snapshot = await runHalloweenLiveSnapshot(env, session.player_id, yearValue, "manual")
+        return jsonResponse({ captured: true, snapshot }, 200, origin)
+      } catch (error) { return jsonResponse({ error: error instanceof Error ? error.message : "Could not capture the Halloween summary." }, 409, origin) }
+    }
+    if (url.pathname === "/api/me/halloween/archive" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const db = requireDb(env)
+      const yearValue = Number(url.searchParams.get("year") || new Date().getUTCFullYear())
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      const event = await db.prepare("SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt FROM halloween_event_windows WHERE event_year = ?")
+        .bind(yearValue).first<{ eventYear: number; startAt: string; endAt: string }>()
+      if (!event) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
+      const members = await db.prepare(
+        "SELECT p.player_id AS playerId, p.player_name AS playerName, es.start_minute_of_day AS startMinuteOfDay, EXISTS(SELECT 1 FROM halloween_historical_keys k WHERE k.player_id = p.player_id) AS keyConnected, (SELECT j.status FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS collectionStatus, (SELECT j.pages_collected FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS pagesCollected, (SELECT COUNT(*) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedLogCount, (SELECT COALESCE(SUM(l.is_hit), 0) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedHitCount, (SELECT MAX(l.collected_at) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS lastCollectedAt FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id LEFT JOIN halloween_member_event_slots es ON es.player_id = p.player_id AND es.event_year = ? WHERE p.faction_id = ? AND st.disabled_at IS NULL"
+      ).bind(yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
+      const leaderboard = (members.results ?? []).map((row) => {
+        const status = typeof row.collectionStatus === "string" ? row.collectionStatus : null
+        const statusText = status ?? (row.keyConnected ? "ready" : "not_collected")
+        const complete = statusText === "complete"
+        return {
+          playerId: String(row.playerId),
+          playerName: String(row.playerName),
+          eventWindowConfigured: row.startMinuteOfDay != null,
+          startTime: row.startMinuteOfDay == null ? null : formatHalloweenStartTime(Number(row.startMinuteOfDay)),
+          keyConnected: row.keyConnected === 1,
+          collectionStatus: statusText,
+          pagesCollected: Number(row.pagesCollected ?? 0),
+          logsCollected: Number(row.storedLogCount ?? 0),
+          totalHits: complete ? Number(row.storedHitCount ?? 0) : null,
+          lastCollectedAt: row.lastCollectedAt ?? null,
+          coverage: complete ? "complete" : statusText === "running" || statusText === "queued" ? "collecting" : statusText === "failed" && Number(row.storedLogCount ?? 0) > 0 ? "partial" : "not_collected",
+        }
+      }).sort((a, b) => (b.totalHits ?? -1) - (a.totalHits ?? -1) || a.playerName.localeCompare(b.playerName))
+      const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
+      return jsonResponse({ event, myWindow: personal?.window ?? null, leaderboard, myCollection: leaderboard.find((row) => row.playerId === session.player_id) ?? null }, 200, origin)
+    }
+    const halloweenMemberMatch = url.pathname.match(/^\/api\/me\/halloween\/members\/(\d+)$/)
+    if (halloweenMemberMatch && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const targetId = halloweenMemberMatch[1]
+      const yearValue = Number(url.searchParams.get("year") || new Date().getUTCFullYear())
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      const db = requireDb(env)
+      const member = await db.prepare("SELECT player_id AS playerId, player_name AS playerName FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.player_id = ? AND p.faction_id = ? AND st.disabled_at IS NULL")
+        .bind(targetId, NAUGHTY_SOULS_FACTION_ID).first<{ playerId: string; playerName: string }>()
+      if (!member) return jsonResponse({ error: "That member is not currently verified as a Naughty Souls member." }, 404, origin)
+      const [job, logs, daily] = await Promise.all([
+        db.prepare("SELECT status, logs_collected AS logsCollected, pages_collected AS pagesCollected, last_error AS lastError, updated_at AS updatedAt, completed_at AS completedAt FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? ORDER BY updated_at DESC LIMIT 1")
+          .bind(targetId, yearValue).first<Record<string, unknown>>(),
+        db.prepare("SELECT log_id AS logId, event_timestamp AS timestamp, log_type_id AS logTypeId, category, title, labels_json AS labelsJson, is_hit AS isHit, log_json AS logJson, collected_at AS collectedAt FROM halloween_event_logs WHERE player_id = ? AND event_year = ? ORDER BY event_timestamp DESC, log_id DESC LIMIT 250")
+          .bind(targetId, yearValue).all<Record<string, unknown>>(),
+        db.prepare("SELECT date(event_timestamp, 'unixepoch') AS eventDay, SUM(is_hit) AS totalHits, COUNT(*) AS relevantLogs FROM halloween_event_logs WHERE player_id = ? AND event_year = ? GROUP BY date(event_timestamp, 'unixepoch') ORDER BY eventDay")
+          .bind(targetId, yearValue).all<Record<string, unknown>>(),
+      ])
+      return jsonResponse({
+        member,
+        collection: job ? { ...job, coverage: job.status === "complete" ? "complete" : job.status === "failed" ? Number(job.logsCollected ?? 0) > 0 ? "partial" : "not_collected" : "collecting" } : { status: "not_collected", coverage: "not_collected" },
+        dailyActivity: daily.results ?? [],
+        logs: (logs.results ?? []).map((row) => {
+          let parsed: unknown = null
+          try { parsed = JSON.parse(String(row.logJson ?? "null")) } catch { parsed = null }
+          let labels: unknown = []
+          try { labels = JSON.parse(String(row.labelsJson ?? "[]")) } catch { labels = [] }
+          return { logId: row.logId, timestamp: row.timestamp, title: row.title, category: row.category, labels, isHit: row.isHit === 1, details: parsed }
+        }),
+      }, 200, origin)
+    }
+    if (url.pathname === "/api/me/halloween/collect" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const body: unknown = await request.json().catch(() => null)
+      const yearValue = isRecord(body) ? Number(body.year) : new Date().getUTCFullYear()
+      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      const db = requireDb(env)
+      const key = await db.prepare("SELECT player_id FROM halloween_historical_keys WHERE player_id = ?").bind(session.player_id).first<{ player_id: string }>()
+      const portalKey = await savedKey(env, session.player_id)
+      if (!key || !portalKey) return jsonResponse({ error: "Enable Halloween historical collection with your saved portal API key before collecting logs." }, 409, origin)
+      const event = await db.prepare("SELECT start_at AS startAt, end_at AS endAt, historical_collection_enabled AS enabled FROM halloween_event_windows WHERE event_year = ?")
+        .bind(yearValue).first<{ startAt: string; endAt: string; enabled: number }>()
+      if (!event || event.enabled !== 1) return jsonResponse({ error: "Historical collection is not enabled for that event year." }, 409, origin)
+      const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
+      if (!personal?.window.configured || !personal.window.startAt || !personal.window.endAt) return jsonResponse({ error: "Select your personal Trick or Treat start time before collecting historical logs." }, 409, origin)
+      const active = await db.prepare("SELECT job_id AS jobId, status, logs_collected AS logsCollected FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? AND status IN ('queued', 'running') ORDER BY updated_at DESC LIMIT 1")
+        .bind(session.player_id, yearValue).first<{ jobId: string; status: string; logsCollected: number }>()
+      if (active) return jsonResponse({ queued: true, jobId: active.jobId, status: active.status, logsCollected: Number(active.logsCollected ?? 0), resumed: true }, 200, origin)
+      const finished = await db.prepare("SELECT job_id AS jobId, status, logs_collected AS logsCollected FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? AND status = 'complete' ORDER BY updated_at DESC LIMIT 1")
+        .bind(session.player_id, yearValue).first<{ jobId: string; status: string; logsCollected: number }>()
+      if (finished) return jsonResponse({ queued: false, jobId: finished.jobId, status: "complete", logsCollected: Number(finished.logsCollected ?? 0), alreadyComplete: true }, 200, origin)
+      const jobId = crypto.randomUUID()
+      const cursorTs = Math.floor(Date.parse(personal.window.startAt) / 1000)
+      if (!Number.isFinite(cursorTs) || Date.parse(personal.window.endAt) <= Date.parse(personal.window.startAt)) return jsonResponse({ error: "The personal event window is invalid." }, 409, origin)
+      const now = new Date().toISOString()
+      await db.prepare("INSERT INTO halloween_collection_jobs (job_id, player_id, event_year, status, cursor_ts, window_start_at, window_end_at, created_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)")
+        .bind(jobId, session.player_id, yearValue, cursorTs, personal.window.startAt, personal.window.endAt, now, now).run()
+      try {
+        await sendHalloweenCollectionJob(env, jobId)
+      } catch {
+        await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+          .bind("The background collection queue is unavailable. Try again later.", new Date().toISOString(), jobId).run()
+        return jsonResponse({ error: "The background collection queue is unavailable. Try again later." }, 503, origin)
+      }
+      return jsonResponse({ queued: true, jobId, status: "queued", logsCollected: 0 }, 202, origin)
     }
     if (url.pathname === "/api/auth/company-key" && request.method === "POST") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       try {
         const body: unknown = await request.json().catch(() => null)
-        const apiKey = isRecord(body) && typeof body.apiKey === "string" ? body.apiKey.trim() : ""
-        if (!apiKey) return jsonResponse({ error: "A secondary company API key is required." }, 400, origin)
+        const submittedKey = isRecord(body) && typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+        const portalKey = await savedKey(env, session.player_id)
+        const isSecondary = Boolean(submittedKey && submittedKey !== portalKey)
+        const apiKey = submittedKey || portalKey || ""
+        if (!apiKey || apiKey.length > 256 || /\s/.test(apiKey)) {
+          return jsonResponse({ error: submittedKey ? "Enter a valid company API key." : "Your saved portal API key is missing. Sign in again with your Torn key." }, 409, origin)
+        }
+        // A secondary company key may belong to a different Torn player than
+        // the signed-in portal account. The company profile returned by Torn
+        // is the authority for this connection; persistence remains scoped to
+        // the authenticated portal player and the returned company ID.
         const validated = await validateCompanyKey(apiKey)
-        await saveCompanyApiKey(env, session.player_id, validated.companyId, apiKey, validated.profile)
+        await persistCompanyConnection(env, session.player_id, apiKey, validated, false, !isSecondary)
         const root = isRecord(validated.profile) && isRecord(validated.profile.company) ? validated.profile.company : isRecord(validated.profile) && isRecord(validated.profile.profile) ? validated.profile.profile : {}
         const type = isRecord(root.type) ? root.type : {}
-        return jsonResponse({ saved: true, companyId: validated.companyId, companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}`, companyType: typeof type.name === "string" ? type.name : null }, 200, origin)
+        return jsonResponse({
+          saved: true,
+          secondary: isSecondary,
+          companyId: validated.companyId,
+          companyName: typeof root.name === "string" ? root.name : `Company #${validated.companyId}`,
+          companyType: typeof type.name === "string" ? type.name : null,
+          lastFour: apiKey.slice(-4),
+        }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
     if (url.pathname === "/api/auth/company-key" && request.method === "DELETE") {
@@ -3139,27 +5297,31 @@ export default {
       const companyKey = await savedCompanyApiKey(env, session.player_id, companyId)
       if (!companyKey) return jsonResponse({ error: "No saved API key exists for this company." }, 404, origin)
       const loginKey = await savedKey(env, session.player_id)
-      if (loginKey && loginKey === companyKey) return jsonResponse({ error: "This company connection uses your login key. Replace your login key first if you want to disconnect this company." }, 409, origin)
-      const otherCompany = await db.prepare("SELECT company_id FROM company_api_keys WHERE player_id = ? AND company_id != ? LIMIT 1").bind(session.player_id, companyId).first<{ company_id: string }>()
-      if (!otherCompany && loginKey) {
+      if (loginKey && loginKey === companyKey) return jsonResponse({ error: "This company connection is your primary portal key, not a secondary key." }, 409, origin)
+      if (loginKey) {
         try {
           const loginCompany = await validateCompanyKey(loginKey)
-          if (String(loginCompany.companyId) === companyId) return jsonResponse({ error: "Your saved login key also connects to this company. Replace your login key first if you want to disconnect it." }, 409, origin)
-        } catch { /* A login key without company access cannot recreate this connection. */ }
+          if (String(loginCompany.companyId) === companyId) {
+            // Removing the secondary credential should fall back to the primary
+            // portal key if it can read this same company.
+            await saveCompanyApiKey(env, session.player_id, Number(companyId), loginKey, loginCompany.profile)
+            return jsonResponse({ deleted: true, companyId, companyDataRetained: true, companyKeySaved: true, portalKeyStillProvidesAccess: true }, 200, origin)
+          }
+        } catch { /* The primary portal key cannot access this company; remove only the selected secondary key. */ }
       }
       const legacyKey = await savedCompanyKey(env, session.player_id)
       if (legacyKey === companyKey) await db.prepare("DELETE FROM company_keys WHERE player_id = ?").bind(session.player_id).run()
       await db.prepare("DELETE FROM company_api_keys WHERE player_id = ? AND company_id = ?").bind(session.player_id, companyId).run()
       const keyMeta = await companyKeyMeta(env, session.player_id)
-      return jsonResponse({ deleted: true, companyId, companyDataRetained: true, companyKeySaved: keyMeta.saved }, 200, origin)
+      return jsonResponse({ deleted: true, companyId, companyDataRetained: true, companyKeySaved: keyMeta.saved, portalKeyStillProvidesAccess: false }, 200, origin)
     }
     if (url.pathname === "/api/auth/key" && request.method === "DELETE") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const previousPortalKey = await savedKey(env, session.player_id).catch(() => null)
+      await invalidateMemberKeyDependents(env, session.player_id, previousPortalKey)
       await requireDb(env).prepare("DELETE FROM api_keys WHERE player_id = ?").bind(session.player_id).run()
-      await requireDb(env).prepare("DELETE FROM company_keys WHERE player_id = ?").bind(session.player_id).run()
-      await requireDb(env).prepare("DELETE FROM company_api_keys WHERE player_id = ?").bind(session.player_id).run()
-      return jsonResponse({ deleted: true, companyDataRetained: true }, 200, origin)
+      return jsonResponse({ deleted: true, companyDataRetained: true, featureConnectionsReset: true }, 200, origin)
     }
     if (url.pathname === "/api/auth/sign-out-all" && request.method === "POST") {
       const session = await authenticate(request, env)
@@ -3175,7 +5337,7 @@ export default {
     if (url.pathname === "/api/dashboard-members" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
-      const rows = await requireDb(env).prepare("SELECT p.player_id AS playerId, p.player_name AS playerName, (SELECT c.company_name FROM companies c WHERE c.player_id = p.player_id ORDER BY c.fetched_at DESC LIMIT 1) AS companyName, (SELECT c.company_type FROM companies c WHERE c.player_id = p.player_id ORDER BY c.fetched_at DESC LIMIT 1) AS companyType, (SELECT c.profile_json FROM companies c WHERE c.player_id = p.player_id ORDER BY c.fetched_at DESC LIMIT 1) AS profileJson, (SELECT f.company_type_id FROM faction_member_cache f WHERE f.player_id = p.player_id AND f.is_director = 1 ORDER BY f.updated_at DESC LIMIT 1) AS cachedCompanyTypeId, (SELECT f.company_name FROM faction_member_cache f WHERE f.player_id = p.player_id AND f.is_director = 1 ORDER BY f.updated_at DESC LIMIT 1) AS cachedCompanyName, (SELECT f.company_type FROM faction_member_cache f WHERE f.player_id = p.player_id AND f.is_director = 1 ORDER BY f.updated_at DESC LIMIT 1) AS cachedCompanyType FROM players p ORDER BY p.player_name COLLATE NOCASE").all<Record<string, unknown>>()
+      const rows = await requireDb(env).prepare("SELECT p.player_id AS playerId, p.player_name AS playerName, p.faction_verified_at AS membershipVerifiedAt, (SELECT c.company_name FROM companies c WHERE c.player_id = p.player_id ORDER BY c.fetched_at DESC LIMIT 1) AS companyName, (SELECT c.company_type FROM companies c WHERE c.player_id = p.player_id ORDER BY c.fetched_at DESC LIMIT 1) AS companyType, (SELECT c.profile_json FROM companies c WHERE c.player_id = p.player_id ORDER BY c.fetched_at DESC LIMIT 1) AS profileJson, (SELECT f.company_type_id FROM faction_member_cache f WHERE f.player_id = p.player_id AND f.is_director = 1 ORDER BY f.updated_at DESC LIMIT 1) AS cachedCompanyTypeId, (SELECT f.company_name FROM faction_member_cache f WHERE f.player_id = p.player_id AND f.is_director = 1 ORDER BY f.updated_at DESC LIMIT 1) AS cachedCompanyName, (SELECT f.company_type FROM faction_member_cache f WHERE f.player_id = p.player_id AND f.is_director = 1 ORDER BY f.updated_at DESC LIMIT 1) AS cachedCompanyType FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL ORDER BY p.player_name COLLATE NOCASE").bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
       const members = (rows.results ?? []).map((row) => {
         let profile: unknown = null
         try { profile = typeof row.profileJson === "string" ? JSON.parse(row.profileJson) : row.profileJson } catch { profile = null }
@@ -3212,6 +5374,524 @@ export default {
       const now = new Date().toISOString()
       await db.prepare("INSERT INTO company_sharing_recipients (owner_player_id, recipient_player_id, share_financial_data, share_employee_data, share_trend_data, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(owner_player_id, recipient_player_id) DO UPDATE SET share_financial_data = excluded.share_financial_data, share_employee_data = excluded.share_employee_data, share_trend_data = excluded.share_trend_data, updated_at = excluded.updated_at").bind(session.player_id, recipientId, Number(permissions.shareFinancialData), Number(permissions.shareEmployeeData), Number(permissions.shareTrendData), now).run()
       return jsonResponse({ recipient: { playerId: recipientId, ...permissions }, updatedAt: now }, 200, origin)
+    }
+    if (url.pathname === "/api/faction/activity" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) {
+        return jsonResponse({ error: "Faction activity is available only to current Naughty Souls members." }, 403, origin)
+      }
+      const db = requireDb(env)
+      try {
+        type RosterRun = { runId: string; capturedAt: string; scheduledAt: string; memberCount: number }
+        type ActivityRosterRow = {
+          userId: string
+          name: string | null
+          position: string | null
+          level: number | null
+          lastActionStatus: string | null
+          statusDescription: string | null
+          statusDetails: string | null
+          statusState: string | null
+          statusUntil: string | null
+          reviveSetting: string | null
+          isOnWall: number | null
+          isInOc: number | null
+          hasEarlyDischarge: number | null
+        }
+        type MembershipChange = {
+          userId: string
+          memberName: string | null
+          firstSeenAt: string
+          leftObservedAt: string | null
+        }
+        type ActivityEvent = {
+          id: string
+          eventType: string
+          occurredAt: string
+          userId: string
+          memberName: string
+          detail: string
+          previousValue: string | null
+          currentValue: string | null
+        }
+
+        const rosterRuns = await db.prepare(
+          "SELECT s.run_id AS runId, s.captured_at AS capturedAt, s.scheduled_at AS scheduledAt, s.member_count AS memberCount FROM faction_roster_snapshots s JOIN faction_performance_collection_runs c ON c.run_id = s.run_id AND c.status = 'completed' WHERE s.faction_id = ? ORDER BY s.captured_at DESC, s.run_id DESC LIMIT 2"
+        ).bind(NAUGHTY_SOULS_FACTION_ID).all<RosterRun>()
+        const runs = rosterRuns.results ?? []
+        const latest = runs[0] ?? null
+        const previous = runs[1] ?? null
+        if (!latest) {
+          return jsonResponse({
+            factionId: NAUGHTY_SOULS_FACTION_ID,
+            generatedAt: new Date().toISOString(),
+            comparisonStatus: "waiting_for_roster",
+            latestCapturedAt: null,
+            previousCapturedAt: null,
+            events: [],
+            eventCount: 0,
+          }, 200, origin, { "cache-control": "private, max-age=30" })
+        }
+
+        const [latestRows, previousRows, intervalRows] = await Promise.all([
+          db.prepare(
+            "SELECT user_id AS userId, name, position, level, last_action_status AS lastActionStatus, status_description AS statusDescription, status_details AS statusDetails, status_state AS statusState, status_until AS statusUntil, revive_setting AS reviveSetting, is_on_wall AS isOnWall, is_in_oc AS isInOc, has_early_discharge AS hasEarlyDischarge FROM faction_member_roster_snapshots WHERE run_id = ? ORDER BY name COLLATE NOCASE, user_id"
+          ).bind(latest.runId).all<ActivityRosterRow>(),
+          previous ? db.prepare(
+            "SELECT user_id AS userId, name, position, level, last_action_status AS lastActionStatus, status_description AS statusDescription, status_details AS statusDetails, status_state AS statusState, status_until AS statusUntil, revive_setting AS reviveSetting, is_on_wall AS isOnWall, is_in_oc AS isInOc, has_early_discharge AS hasEarlyDischarge FROM faction_member_roster_snapshots WHERE run_id = ? ORDER BY name COLLATE NOCASE, user_id"
+          ).bind(previous.runId).all<ActivityRosterRow>() : Promise.resolve({ results: [] as ActivityRosterRow[] }),
+          previous ? db.prepare(
+            "SELECT user_id AS userId, member_name AS memberName, first_seen_at AS firstSeenAt, left_observed_at AS leftObservedAt FROM faction_membership_intervals WHERE faction_id = ? AND ((first_seen_at > ? AND first_seen_at <= ?) OR (left_observed_at > ? AND left_observed_at <= ?)) ORDER BY COALESCE(left_observed_at, first_seen_at) DESC, user_id"
+          ).bind(NAUGHTY_SOULS_FACTION_ID, previous.capturedAt, latest.capturedAt, previous.capturedAt, latest.capturedAt).all<MembershipChange>() : Promise.resolve({ results: [] as MembershipChange[] }),
+        ])
+
+        const events: ActivityEvent[] = []
+        const pushEvent = (
+          eventType: string,
+          occurredAt: string,
+          userId: string,
+          memberName: string | null,
+          detail: string,
+          previousValue: string | null = null,
+          currentValue: string | null = null,
+        ) => {
+          if (!occurredAt) return
+          events.push({
+            id: [eventType, userId, occurredAt].join(":"),
+            eventType,
+            occurredAt,
+            userId,
+            memberName: memberName || "Unknown member",
+            detail,
+            previousValue,
+            currentValue,
+          })
+        }
+        const normalizeBoolean = (value: unknown): string => value === 1 || value === true || value === "1"
+          ? "Yes"
+          : value === 0 || value === false || value === "0"
+            ? "No"
+            : "Unknown"
+        const displayValue = (value: unknown): string => value == null || String(value).trim() === ""
+          ? "Unknown"
+          : String(value)
+        const newByUser = new Map((latestRows.results ?? []).map(row => [String(row.userId), row]))
+        const oldByUser = new Map((previousRows.results ?? []).map(row => [String(row.userId), row]))
+
+        for (const interval of intervalRows.results ?? []) {
+          if (interval.firstSeenAt > previous!.capturedAt && interval.firstSeenAt <= latest.capturedAt) {
+            pushEvent("member_added", interval.firstSeenAt, String(interval.userId), interval.memberName,
+              "First observed in a completed faction roster.")
+          }
+          if (interval.leftObservedAt && interval.leftObservedAt > previous!.capturedAt && interval.leftObservedAt <= latest.capturedAt) {
+            pushEvent("member_removed", interval.leftObservedAt, String(interval.userId), interval.memberName,
+              "Departure observed by the faction roster collector.")
+          }
+        }
+
+        if (previous) {
+          for (const [userId, current] of newByUser) {
+            const old = oldByUser.get(userId)
+            if (!old) continue
+            const memberName = current.name || old.name
+            const oldActivity = displayValue(old.lastActionStatus)
+            const newActivity = displayValue(current.lastActionStatus)
+            if (oldActivity !== newActivity) {
+              pushEvent("activity_changed", latest.capturedAt, userId, memberName,
+                "Public last-action state changed.", oldActivity, newActivity)
+            }
+            const statusSummary = (row: ActivityRosterRow) =>
+              [row.statusDescription, row.statusState, row.statusDetails]
+                .map(value => value?.trim() || "")
+                .filter(Boolean)
+                .join(" · ") || "Unknown"
+            const oldStatus = statusSummary(old)
+            const newStatus = statusSummary(current)
+            if (oldStatus !== newStatus || displayValue(old.statusUntil) !== displayValue(current.statusUntil)) {
+              const oldTimer = displayValue(old.statusUntil)
+              const newTimer = displayValue(current.statusUntil)
+              const oldLabel = oldTimer === "Unknown" ? oldStatus : oldStatus + " · " + oldTimer
+              const newLabel = newTimer === "Unknown" ? newStatus : newStatus + " · " + newTimer
+              pushEvent("status_changed", latest.capturedAt, userId, memberName,
+                "Public member status or timer changed.", oldLabel, newLabel)
+            }
+            const flagChanges: Array<[string, string, unknown, unknown]> = [
+              ["wall_changed", "Wall status", old.isOnWall, current.isOnWall],
+              ["oc_changed", "Organized crime status", old.isInOc, current.isInOc],
+              ["early_discharge_changed", "Early-discharge status", old.hasEarlyDischarge, current.hasEarlyDischarge],
+            ]
+            for (const [eventType, label, from, to] of flagChanges) {
+              if (normalizeBoolean(from) !== normalizeBoolean(to)) {
+                pushEvent(eventType, latest.capturedAt, userId, memberName, label + " changed.",
+                  normalizeBoolean(from), normalizeBoolean(to))
+              }
+            }
+            const oldRevive = displayValue(old.reviveSetting)
+            const newRevive = displayValue(current.reviveSetting)
+            if (oldRevive !== newRevive) {
+              pushEvent("revive_setting_changed", latest.capturedAt, userId, memberName,
+                "Configured faction revive setting changed.", oldRevive, newRevive)
+            }
+            const oldPosition = displayValue(old.position)
+            const newPosition = displayValue(current.position)
+            if (oldPosition !== newPosition) {
+              pushEvent("position_changed", latest.capturedAt, userId, memberName,
+                "Faction position changed.", oldPosition, newPosition)
+            }
+          }
+        }
+
+        const orderedEvents = events.sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt) || a.id.localeCompare(b.id)).slice(0, 100)
+        const eventCounts = Object.fromEntries(Array.from(new Set(orderedEvents.map(event => event.eventType)))
+          .map(eventType => [eventType, orderedEvents.filter(event => event.eventType === eventType).length]))
+        return jsonResponse({
+          factionId: NAUGHTY_SOULS_FACTION_ID,
+          generatedAt: new Date().toISOString(),
+          comparisonStatus: previous ? "compared" : "waiting_for_previous_roster",
+          latestRoster: latest,
+          previousRoster: previous,
+          eventCount: orderedEvents.length,
+          eventCounts,
+          events: orderedEvents,
+        }, 200, origin, { "cache-control": "private, max-age=30" })
+      } catch {
+        return jsonResponse({ error: "Faction activity history is unavailable. Verify the completed roster snapshots and faction membership intervals." }, 503, origin)
+      }
+    }
+    if (url.pathname === "/api/faction/weekly-history" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) {
+        return jsonResponse({ error: "Faction weekly history is available only to current Naughty Souls members." }, 403, origin)
+      }
+      const db = requireDb(env)
+      try {
+        const weeks = url.searchParams.get("weekStart")
+        if (!weeks) {
+          const reports = await db.prepare(
+            "SELECT week_start_at AS weekStartAt, week_end_at AS weekEndAt, report_status AS status, member_count AS memberCount, complete_member_count AS completeMemberCount, stats_start_captured_at AS statsStartCapturedAt, stats_end_captured_at AS statsEndCapturedAt, gym_start_captured_at AS gymStartCapturedAt, gym_end_captured_at AS gymEndCapturedAt, summary_json AS summaryJson, finalized_at AS finalizedAt FROM faction_weekly_reports WHERE faction_id = ? ORDER BY week_start_at DESC LIMIT 26"
+          ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
+          return jsonResponse({
+            reports: (reports.results ?? []).map((row) => ({
+              weekStartAt: row.weekStartAt,
+              weekEndAt: row.weekEndAt,
+              status: row.status,
+              memberCount: row.memberCount,
+              completeMemberCount: row.completeMemberCount,
+              statsStartCapturedAt: row.statsStartCapturedAt,
+              statsEndCapturedAt: row.statsEndCapturedAt,
+              gymStartCapturedAt: row.gymStartCapturedAt,
+              gymEndCapturedAt: row.gymEndCapturedAt,
+              summary: parseStoredJson(row.summaryJson),
+              finalizedAt: row.finalizedAt,
+            })),
+          }, 200, origin, { "cache-control": "private, max-age=30" })
+        }
+
+        const weekStartMs = Date.parse(weeks)
+        if (!Number.isFinite(weekStartMs) || new Date(utcSundayStart(weekStartMs)).toISOString() !== weeks) {
+          return jsonResponse({ error: "Select a valid Sunday 00:00 UTC report boundary." }, 400, origin)
+        }
+        const metricParam = (url.searchParams.get("metric") || "xantaken").trim()
+        const allowedMetrics = [...WEEKLY_METRIC_NAMES, "gymEnergy"] as readonly string[]
+        const metric = allowedMetrics.includes(metricParam) ? metricParam as WeeklyRankingMetric : "xantaken"
+        const currentReport = await db.prepare(
+          "SELECT week_start_at AS weekStartAt, week_end_at AS weekEndAt, report_status AS status, member_count AS memberCount, complete_member_count AS completeMemberCount, summary_json AS summaryJson, finalized_at AS finalizedAt FROM faction_weekly_reports WHERE faction_id = ? AND week_start_at = ?"
+        ).bind(NAUGHTY_SOULS_FACTION_ID, weeks).first<Record<string, unknown>>()
+        if (!currentReport) return jsonResponse({ error: "That completed weekly report is not available." }, 404, origin)
+        const loadRows = async (weekStartAt: string) => db.prepare(
+          "SELECT user_id AS userId, member_name AS name, position, level, participation, result_status AS status, metrics_json AS metricsJson, starting_networth AS startingNetworth, ending_networth AS endingNetworth, gym_energy AS gymEnergy, known_metric_count AS knownMetricCount, anomaly_metrics_json AS anomalyMetricsJson, baseline_captured_at AS baselineCapturedAt, ending_captured_at AS endingCapturedAt, ending_is_boundary AS endingIsBoundary, baseline_snapshot_id AS baselineSnapshotId, ending_snapshot_id AS endingSnapshotId, gym_baseline_captured_at AS gymEnergyBaselineCapturedAt, gym_ending_captured_at AS gymEnergyEndingCapturedAt, gym_ending_is_boundary AS gymEnergyEndingIsBoundary FROM faction_weekly_member_results WHERE faction_id = ? AND week_start_at = ? ORDER BY member_name COLLATE NOCASE, user_id"
+        ).bind(NAUGHTY_SOULS_FACTION_ID, weekStartAt).all<Record<string, unknown>>()
+        const mapStoredMember = (row: Record<string, unknown>): WeeklyMemberResult => {
+          const rawMetrics = parseStoredJson(row.metricsJson)
+          const metrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map((name) => [
+            name,
+            isRecord(rawMetrics) && typeof rawMetrics[name] === "number" && Number.isFinite(rawMetrics[name]) ? rawMetrics[name] : null,
+          ])) as WeeklyMemberResult["metrics"]
+          const rawAnomalies = parseStoredJson(row.anomalyMetricsJson)
+          const anomalyMetrics = Array.isArray(rawAnomalies)
+            ? rawAnomalies.filter((value): value is WeeklyRankingMetric => typeof value === "string" && (value === "gymEnergy" || (WEEKLY_METRIC_NAMES as readonly string[]).includes(value)))
+            : []
+          const optionalNumber = (value: unknown) => value === null || value === undefined ? null : Number.isFinite(Number(value)) ? Number(value) : null
+          return {
+            userId: String(row.userId),
+            name: String(row.name ?? "Unknown member"),
+            position: typeof row.position === "string" ? row.position : null,
+            level: optionalNumber(row.level),
+            participation: row.participation === "full_week" || row.participation === "partial_week" ? row.participation : "unknown",
+            status: row.status === "complete" || row.status === "partial" || row.status === "incomplete" || row.status === "waiting_for_baseline" || row.status === "waiting_for_update" || row.status === "anomaly" ? row.status : "incomplete",
+            metrics,
+            startingNetworth: optionalNumber(row.startingNetworth),
+            endingNetworth: optionalNumber(row.endingNetworth),
+            gymEnergy: optionalNumber(row.gymEnergy),
+            knownMetricCount: Number(row.knownMetricCount ?? 0),
+            anomalyMetrics,
+            baselineCapturedAt: typeof row.baselineCapturedAt === "string" ? row.baselineCapturedAt : null,
+            endingCapturedAt: typeof row.endingCapturedAt === "string" ? row.endingCapturedAt : null,
+            baselineSnapshotId: optionalNumber(row.baselineSnapshotId),
+            endingSnapshotId: optionalNumber(row.endingSnapshotId),
+            endingIsBoundary: Number(row.endingIsBoundary) === 1,
+            gymEnergyBaselineCapturedAt: typeof row.gymEnergyBaselineCapturedAt === "string" ? row.gymEnergyBaselineCapturedAt : null,
+            gymEnergyEndingCapturedAt: typeof row.gymEnergyEndingCapturedAt === "string" ? row.gymEnergyEndingCapturedAt : null,
+            gymEnergyEndingIsBoundary: Number(row.gymEnergyEndingIsBoundary) === 1,
+          }
+        }
+        const currentRows = await loadRows(weeks)
+        const currentMembers = rankWeeklyMembers((currentRows.results ?? []).map(mapStoredMember), metric)
+        const compareTo = url.searchParams.get("compareTo")
+        let priorReport: Record<string, unknown> | null = null
+        let priorRanked = new Map<string, WeeklyMemberResult & { rank: number | null }>()
+        if (compareTo) {
+          const compareMs = Date.parse(compareTo)
+          if (!Number.isFinite(compareMs) || new Date(utcSundayStart(compareMs)).toISOString() !== compareTo || compareMs >= weekStartMs) {
+            return jsonResponse({ error: "Choose an earlier completed Sunday report to compare." }, 400, origin)
+          }
+          priorReport = await db.prepare(
+            "SELECT week_start_at AS weekStartAt, week_end_at AS weekEndAt, report_status AS status, finalized_at AS finalizedAt FROM faction_weekly_reports WHERE faction_id = ? AND week_start_at = ?"
+          ).bind(NAUGHTY_SOULS_FACTION_ID, compareTo).first<Record<string, unknown>>()
+          if (!priorReport) return jsonResponse({ error: "The comparison report is not available." }, 404, origin)
+          const previousRows = await loadRows(compareTo)
+          priorRanked = new Map(rankWeeklyMembers((previousRows.results ?? []).map(mapStoredMember), metric).map((member) => [member.userId, member]))
+        }
+        const members = currentMembers.map((member) => {
+          const previous = priorRanked.get(member.userId)
+          const metricValue = metric === "gymEnergy" ? member.gymEnergy : member.metrics[metric]
+          const previousValue = previous ? (metric === "gymEnergy" ? previous.gymEnergy : previous.metrics[metric]) : null
+          const hasValues = metricValue !== null && previousValue !== null
+          return {
+            ...member,
+            comparison: {
+              previousValue,
+              weeklyChange: hasValues ? metricValue - previousValue : null,
+              previousRank: previous?.rank ?? null,
+              rankMovement: member.rank !== null && previous?.rank !== null && previous?.rank !== undefined ? previous.rank - member.rank : null,
+            },
+          }
+        })
+        return jsonResponse({
+          report: {
+            weekStartAt: currentReport.weekStartAt,
+            weekEndAt: currentReport.weekEndAt,
+            status: currentReport.status,
+            memberCount: currentReport.memberCount,
+            completeMemberCount: currentReport.completeMemberCount,
+            summary: parseStoredJson(currentReport.summaryJson),
+            finalizedAt: currentReport.finalizedAt,
+          },
+          comparedReport: priorReport,
+          selectedMetric: metric,
+          members,
+        }, 200, origin, { "cache-control": "private, max-age=60" })
+      } catch {
+        return jsonResponse({ error: "Weekly history storage is unavailable. Apply migration 0021 and verify the weekly report finalizer." }, 503, origin)
+      }
+    }
+    if (url.pathname === "/api/faction/weekly-rankings" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) {
+        return jsonResponse({ error: "Faction weekly rankings are available only to current Naughty Souls members." }, 403, origin)
+      }
+      const db = requireDb(env)
+      try {
+        const nowMs = Date.now()
+        const week = utcSundayWindow(nowMs)
+        const requestedMetric = (url.searchParams.get("metric") || "xantaken").trim()
+        const allowedRankingMetrics = [...WEEKLY_METRIC_NAMES, "gymEnergy"] as readonly string[]
+        const selectedMetric = allowedRankingMetrics.includes(requestedMetric)
+          ? requestedMetric as WeeklyRankingMetric
+          : "xantaken"
+        const [membersRows, boundary, statRows, gymRows] = await Promise.all([
+          db.prepare(
+            "SELECT user_id AS userId, member_name AS name, position, level, estimated_joined_at AS estimatedJoinedAt, first_seen_at AS firstSeenAt, left_observed_at AS leftObservedAt FROM faction_membership_intervals WHERE faction_id = ? AND first_seen_at < ? AND (left_observed_at IS NULL OR left_observed_at > ?) ORDER BY member_name COLLATE NOCASE, user_id"
+          ).bind(NAUGHTY_SOULS_FACTION_ID, week.endAt, week.startAt).all<WeeklyMembership>(),
+          db.prepare(
+            "SELECT b.stats_run_id AS statsRunId, b.gym_energy_run_id AS gymEnergyRunId, sr.status AS statsStatus, gr.status AS gymEnergyStatus, sr.completed_at AS statsCompletedAt, gr.completed_at AS gymEnergyCompletedAt, (SELECT MIN(s.captured_at) FROM faction_member_stat_snapshots s WHERE s.run_id = b.stats_run_id) AS statsCapturedAt, (SELECT MIN(g.captured_at) FROM faction_gym_energy_snapshots g WHERE g.run_id = b.gym_energy_run_id) AS gymEnergyCapturedAt FROM faction_weekly_boundary_runs b LEFT JOIN faction_performance_collection_runs sr ON sr.run_id = b.stats_run_id LEFT JOIN faction_performance_collection_runs gr ON gr.run_id = b.gym_energy_run_id WHERE b.faction_id = ? AND b.boundary_at = ?"
+          ).bind(NAUGHTY_SOULS_FACTION_ID, week.startAt).first<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT snapshot_id AS snapshotId, run_id AS runId, user_id AS userId, captured_at AS capturedAt, scheduled_at AS scheduledAt, collection_status AS collectionStatus, xantaken, lsdtaken, drugsused, overdosed, alcoholused, boostersused, energydrinkused, refills, statenhancersused, networth, cantaken, exttaken, kettaken, opitaken, shrtaken, spetaken, pcptaken, victaken FROM faction_member_stat_snapshots WHERE faction_id = ? AND captured_at >= ? AND captured_at <= ? ORDER BY user_id, captured_at, snapshot_id"
+          ).bind(NAUGHTY_SOULS_FACTION_ID, week.startAt, week.generatedAt).all<WeeklySnapshot>(),
+          db.prepare(
+            "SELECT snapshot_id AS snapshotId, run_id AS runId, user_id AS userId, captured_at AS capturedAt, gym_energy_total AS gymEnergyTotal, collection_status AS collectionStatus FROM faction_gym_energy_snapshots WHERE faction_id = ? AND captured_at >= ? AND captured_at <= ? ORDER BY user_id, captured_at, snapshot_id"
+          ).bind(NAUGHTY_SOULS_FACTION_ID, week.startAt, week.generatedAt).all<WeeklySnapshot>(),
+        ])
+        const statSnapshots = statRows.results ?? []
+        const gymSnapshots = gymRows.results ?? []
+        const calculated = (membersRows.results ?? []).map((member) => calculateWeeklyMemberResult({
+          member,
+          statSnapshots,
+          gymSnapshots,
+          weekStart: week.startAt,
+          weekEnd: week.endAt,
+          now: week.generatedAt,
+          statsBoundaryRunId: boundary?.statsRunId == null ? null : String(boundary.statsRunId),
+          gymBoundaryRunId: boundary?.gymEnergyRunId == null ? null : String(boundary.gymEnergyRunId),
+        }))
+        const members = rankWeeklyMembers(calculated, selectedMetric)
+        const statSummary = Object.fromEntries(WEEKLY_METRIC_NAMES.map((metric) => {
+          const known = calculated.map((member) => member.metrics[metric]).filter((value): value is number => value !== null)
+          return [metric, { total: known.reduce((sum, value) => sum + value, 0), knownMembers: known.length }]
+        }))
+        const knownGymEnergy = calculated.map((member) => member.gymEnergy).filter((value): value is number => value !== null)
+        const summary = {
+          ...statSummary,
+          gymEnergy: { total: knownGymEnergy.reduce((sum, value) => sum + value, 0), knownMembers: knownGymEnergy.length },
+        }
+        return jsonResponse({
+          factionId: NAUGHTY_SOULS_FACTION_ID,
+          generatedAt: week.generatedAt,
+          week,
+          selectedMetric,
+          boundary: boundary ? (() => {
+            const statsCapturedAt = boundary.statsCapturedAt == null ? null : String(boundary.statsCapturedAt)
+            const gymEnergyCapturedAt = boundary.gymEnergyCapturedAt == null ? null : String(boundary.gymEnergyCapturedAt)
+            const statsTimingDeviationSeconds = statsCapturedAt ? Math.round((Date.parse(statsCapturedAt) - Date.parse(week.startAt)) / 1000) : null
+            const gymEnergyTimingDeviationSeconds = gymEnergyCapturedAt ? Math.round((Date.parse(gymEnergyCapturedAt) - Date.parse(week.startAt)) / 1000) : null
+            return {
+              scheduledAt: week.startAt,
+              statsStatus: boundary.statsStatus ?? "queued",
+              gymEnergyStatus: boundary.gymEnergyStatus ?? "queued",
+              statsCompletedAt: boundary.statsCompletedAt ?? null,
+              gymEnergyCompletedAt: boundary.gymEnergyCompletedAt ?? null,
+              statsCapturedAt,
+              gymEnergyCapturedAt,
+              statsTimingDeviationSeconds,
+              gymEnergyTimingDeviationSeconds,
+              statsLate: statsTimingDeviationSeconds === null ? null : statsTimingDeviationSeconds > 300,
+              gymEnergyLate: gymEnergyTimingDeviationSeconds === null ? null : gymEnergyTimingDeviationSeconds > 300,
+            }
+          })() : { scheduledAt: week.startAt, statsStatus: "not_scheduled", gymEnergyStatus: "not_scheduled", statsCompletedAt: null, gymEnergyCompletedAt: null, statsCapturedAt: null, gymEnergyCapturedAt: null, statsTimingDeviationSeconds: null, gymEnergyTimingDeviationSeconds: null, statsLate: null, gymEnergyLate: null },
+          summary,
+          completeMembers: calculated.filter((member) => member.status === "complete").length,
+          totalMembers: calculated.length,
+          members,
+        }, 200, origin, { "cache-control": "private, max-age=30" })
+      } catch {
+        return jsonResponse({ error: "Weekly ranking storage is not initialized or is temporarily unavailable. Apply the latest faction-performance migrations and verify the weekly boundary collector." }, 503, origin)
+      }
+    }
+    if (url.pathname === "/api/faction/performance" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) {
+        return jsonResponse({ error: "Faction performance is available only to current Naughty Souls members." }, 403, origin)
+      }
+      const db = requireDb(env)
+      try {
+        const [collectionRows, rosterHeader, rosterRows, statRows, gymRows, privateLiveRows] = await Promise.all([
+          db.prepare(
+            "SELECT collection_kind AS collectionKind, last_success_at AS lastSuccessAt, last_run_id AS lastRunId, last_error AS lastError, updated_at AS updatedAt FROM faction_performance_collection_state WHERE faction_id = ? ORDER BY collection_kind",
+          ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT s.run_id AS runId, s.captured_at AS capturedAt, s.scheduled_at AS scheduledAt, s.member_count AS memberCount FROM faction_roster_snapshots s JOIN faction_performance_collection_runs c ON c.run_id = s.run_id AND c.status = 'completed' WHERE s.faction_id = ? ORDER BY s.captured_at DESC LIMIT 1",
+          ).bind(NAUGHTY_SOULS_FACTION_ID).first<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT m.user_id AS userId, m.name, m.position, m.level, m.days_in_faction AS daysInFaction, m.captured_at AS rosterCapturedAt, m.last_action_status AS lastActionStatus, m.last_action_timestamp AS lastActionTimestamp, m.last_action_relative AS lastActionRelative, m.status_description AS statusDescription, m.status_details AS statusDetails, m.status_state AS statusState, m.status_until AS statusUntil, m.status_color AS statusColor, m.is_revivable AS isRevivable, m.revive_setting AS reviveSetting, m.is_on_wall AS isOnWall, m.is_in_oc AS isInOc, m.has_early_discharge AS hasEarlyDischarge FROM faction_member_roster_snapshots m JOIN faction_roster_snapshots r ON r.run_id = m.run_id JOIN faction_performance_collection_runs c ON c.run_id = r.run_id AND c.status = 'completed' WHERE r.faction_id = ? AND r.run_id = (SELECT s.run_id FROM faction_roster_snapshots s JOIN faction_performance_collection_runs cr ON cr.run_id = s.run_id AND cr.status = 'completed' WHERE s.faction_id = ? ORDER BY s.captured_at DESC LIMIT 1) ORDER BY m.name COLLATE NOCASE, m.user_id",
+          ).bind(NAUGHTY_SOULS_FACTION_ID, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT s.user_id AS userId, s.captured_at AS statsCapturedAt, s.collection_status AS statsCollectionStatus, s.xantaken, s.lsdtaken, s.drugsused, s.overdosed, s.alcoholused, s.boostersused, s.energydrinkused, s.refills, s.statenhancersused, s.networth, s.cantaken, s.exttaken, s.kettaken, s.opitaken, s.shrtaken, s.spetaken, s.pcptaken, s.victaken, s.missing_metrics_json AS missingMetricsJson FROM faction_member_stat_snapshots s WHERE s.faction_id = ? AND NOT EXISTS (SELECT 1 FROM faction_member_stat_snapshots newer WHERE newer.faction_id = s.faction_id AND newer.user_id = s.user_id AND (newer.captured_at > s.captured_at OR (newer.captured_at = s.captured_at AND newer.snapshot_id > s.snapshot_id)))",
+          ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT g.user_id AS userId, g.captured_at AS gymEnergyCapturedAt, g.gym_energy_total AS gymEnergyTotal, g.in_faction AS gymEnergyInFaction, g.collection_status AS gymEnergyCollectionStatus FROM faction_gym_energy_snapshots g WHERE g.faction_id = ? AND NOT EXISTS (SELECT 1 FROM faction_gym_energy_snapshots newer WHERE newer.faction_id = g.faction_id AND newer.user_id = g.user_id AND (newer.captured_at > g.captured_at OR (newer.captured_at = g.captured_at AND newer.snapshot_id > g.snapshot_id)))",
+          ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT s.player_id AS userId, s.captured_at AS privateCapturedAt, s.bars_json AS barsJson, s.cooldowns_json AS cooldownsJson, s.networth_json AS networthJson, s.source_timestamps_json AS sourceTimestampsJson, k.include_networth AS includeNetworth, k.last_error AS lastError FROM faction_member_private_live_snapshots s JOIN member_private_live_keys k ON k.player_id = s.player_id AND k.faction_id = s.faction_id AND k.share_with_faction = 1 LEFT JOIN dashboard_member_status st ON st.player_id = s.player_id WHERE s.faction_id = ? AND st.disabled_at IS NULL",
+          ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>(),
+        ])
+        const statsByUser = new Map((statRows.results ?? []).map((row) => [String(row.userId), row]))
+        const gymByUser = new Map((gymRows.results ?? []).map((row) => [String(row.userId), row]))
+        const privateLiveByUser = new Map((privateLiveRows.results ?? []).map((row) => [String(row.userId), row]))
+        const members = (rosterRows.results ?? []).map((roster) => {
+          const userId = String(roster.userId)
+          let missingMetrics: unknown = []
+          const stats = statsByUser.get(userId) ?? null
+          if (stats?.missingMetricsJson) {
+            try { missingMetrics = JSON.parse(String(stats.missingMetricsJson)) as unknown } catch { missingMetrics = [] }
+          }
+          return {
+            ...roster,
+            isRevivable: roster.isRevivable == null ? null : roster.isRevivable === 1,
+            isOnWall: roster.isOnWall == null ? null : roster.isOnWall === 1,
+            isInOc: roster.isInOc == null ? null : roster.isInOc === 1,
+            hasEarlyDischarge: roster.hasEarlyDischarge == null ? null : roster.hasEarlyDischarge === 1,
+            stats: stats ? { ...stats, missingMetrics } : null,
+            gymEnergy: gymByUser.get(userId) ?? null,
+            privateLive: (() => {
+              const live = privateLiveByUser.get(userId)
+              if (!live) return null
+              return {
+                capturedAt: String(live.privateCapturedAt ?? ""),
+                bars: parseStoredJson(live.barsJson),
+                cooldowns: parseStoredJson(live.cooldownsJson),
+                networth: Number(live.includeNetworth) === 1 ? parseStoredJson(live.networthJson) : null,
+                sourceTimestamps: parseStoredJson(live.sourceTimestampsJson),
+              }
+            })(),
+          }
+        })
+        const collection = (collectionRows.results ?? []).map((row) => ({
+          collectionKind: String(row.collectionKind),
+          lastSuccessAt: row.lastSuccessAt == null ? null : String(row.lastSuccessAt),
+          lastRunId: row.lastRunId == null ? null : String(row.lastRunId),
+          lastError: row.lastError == null ? null : String(row.lastError),
+          updatedAt: String(row.updatedAt ?? ""),
+        }))
+        return jsonResponse({
+          factionId: NAUGHTY_SOULS_FACTION_ID,
+          generatedAt: new Date().toISOString(),
+          roster: rosterHeader ?? null,
+          collection,
+          members,
+        }, 200, origin, { "cache-control": "private, max-age=30" })
+      } catch {
+        return jsonResponse({
+          error: "Faction performance storage is not initialized or is temporarily unavailable. Apply migration 0019 and verify the collection worker.",
+        }, 503, origin)
+      }
+    }
+
+    if (url.pathname === "/api/faction/stats" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (session.faction_id !== NAUGHTY_SOULS_FACTION_ID) {
+        return jsonResponse({ error: "Faction stats are available only to current Naughty Souls members." }, 403, origin)
+      }
+      const db = requireDb(env)
+      try {
+        const [snapshot, state] = await Promise.all([
+          db.prepare(
+            "SELECT run_id AS runId, captured_at AS capturedAt, scheduled_at AS scheduledAt, collection_status AS status, stats_json AS statsJson, missing_stat_names_json AS missingStatNamesJson, unexpected_stat_names_json AS unexpectedStatNamesJson, returned_stat_count AS returnedStatCount FROM faction_stats_snapshots WHERE faction_id = ? ORDER BY captured_at DESC, snapshot_id DESC LIMIT 1"
+          ).bind(NAUGHTY_SOULS_FACTION_ID).first<Record<string, unknown>>(),
+          db.prepare(
+            "SELECT last_success_at AS lastSuccessAt, last_run_id AS lastRunId, last_error AS lastError, updated_at AS updatedAt FROM faction_stats_collection_state WHERE faction_id = ?"
+          ).bind(NAUGHTY_SOULS_FACTION_ID).first<Record<string, unknown>>(),
+        ])
+        return jsonResponse({
+          factionId: NAUGHTY_SOULS_FACTION_ID,
+          generatedAt: new Date().toISOString(),
+          snapshot: snapshot ? {
+            runId: String(snapshot.runId),
+            capturedAt: String(snapshot.capturedAt),
+            scheduledAt: String(snapshot.scheduledAt),
+            status: String(snapshot.status),
+            returnedStatCount: Number(snapshot.returnedStatCount),
+          } : null,
+          stats: snapshot ? parseStoredJson(snapshot.statsJson) ?? [] : [],
+          missingStatNames: snapshot ? parseStoredJson(snapshot.missingStatNamesJson) ?? [] : [],
+          unexpectedStatNames: snapshot ? parseStoredJson(snapshot.unexpectedStatNamesJson) ?? [] : [],
+          collection: state ? {
+            lastSuccessAt: state.lastSuccessAt == null ? null : String(state.lastSuccessAt),
+            lastRunId: state.lastRunId == null ? null : String(state.lastRunId),
+            lastError: state.lastError == null ? null : String(state.lastError),
+            updatedAt: String(state.updatedAt ?? ""),
+          } : null,
+        }, 200, origin, { "cache-control": "private, max-age=30" })
+      } catch {
+        return jsonResponse({
+          error: "Faction stats storage is not initialized or is temporarily unavailable. Apply migration 0022 and verify the faction stats collector.",
+        }, 503, origin)
+      }
     }
     if (url.pathname === "/api/faction/shared-company-data" && request.method === "GET") {
       const session = await authenticate(request, env)
@@ -3513,11 +6193,29 @@ export default {
     if (url.pathname === "/api/me/companies" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
-      const rows = await requireDb(env).prepare("SELECT company_id, company_name, company_type, fetched_at FROM companies WHERE player_id = ? ORDER BY fetched_at DESC").bind(session.player_id).all<Record<string, unknown>>()
-      const keys = await requireDb(env).prepare("SELECT company_id, company_name, company_type, last_four, updated_at FROM company_api_keys WHERE player_id = ? ORDER BY updated_at DESC").bind(session.player_id).all<Record<string, unknown>>()
+      const db = requireDb(env)
+      const rows = await db.prepare("SELECT company_id, company_name, company_type, fetched_at FROM companies WHERE player_id = ? ORDER BY fetched_at DESC").bind(session.player_id).all<Record<string, unknown>>()
+      const keys = await db.prepare("SELECT company_id, company_name, company_type, last_four, updated_at FROM company_api_keys WHERE player_id = ? ORDER BY updated_at DESC").bind(session.player_id).all<Record<string, unknown>>()
+      const portalKey = await savedKey(env, session.player_id)
       const merged = new Map<string, Record<string, unknown>>()
       for (const row of rows.results ?? []) merged.set(String(row.company_id), row)
-      for (const row of keys.results ?? []) { const id = String(row.company_id); const current = merged.get(id); merged.set(id, { company_id: id, company_name: current?.company_name ?? row.company_name, company_type: current?.company_type ?? row.company_type, fetched_at: current?.fetched_at ?? row.updated_at, has_api_key: true, key_last_four: row.last_four, key_updated_at: row.updated_at }) }
+      for (const row of keys.results ?? []) {
+        const id = String(row.company_id)
+        const current = merged.get(id)
+        const companyKey = await savedCompanyApiKey(env, session.player_id, id)
+        const usesPortalKey = Boolean(portalKey && companyKey === portalKey)
+        merged.set(id, {
+          company_id: id,
+          company_name: current?.company_name ?? row.company_name,
+          company_type: current?.company_type ?? row.company_type,
+          fetched_at: current?.fetched_at ?? row.updated_at,
+          has_api_key: true,
+          key_last_four: row.last_four,
+          key_updated_at: row.updated_at,
+          uses_portal_key: usesPortalKey,
+          can_remove_key: !usesPortalKey,
+        })
+      }
       return jsonResponse({ companies: Array.from(merged.values()).sort((a, b) => String(b.fetched_at ?? "").localeCompare(String(a.fetched_at ?? ""))) }, 200, origin)
     }
     const savedMatch = url.pathname.match(/^\/api\/me\/companies\/(\d+)$/)
@@ -3545,9 +6243,11 @@ export default {
       try {
         const refreshBody: unknown = await request.json().catch(() => null)
         const requestedId = isRecord(refreshBody) && (typeof refreshBody.companyId === "string" || typeof refreshBody.companyId === "number") ? String(refreshBody.companyId) : ""
-        let apiKey = requestedId ? await savedCompanyApiKey(env, session.player_id, requestedId) : null
-        if (!apiKey && !requestedId) apiKey = await savedCompanyKey(env, session.player_id)
-        if (!apiKey) return jsonResponse({ error: requestedId ? "No saved API key for that company. Add its authorized company key first." : "No saved company API key is available. Add an authorized company key first." }, 409, origin)
+        const companySpecificKey = requestedId
+          ? await savedCompanyApiKey(env, session.player_id, requestedId)
+          : null
+        const apiKey = companySpecificKey || await savedKey(env, session.player_id)
+        if (!apiKey) return jsonResponse({ error: requestedId ? "No portal or secondary company key is available for this company. Add a company-specific key in Account Settings." : "Your saved portal API key is missing. Sign in again with your own Torn key." }, 409, origin)
         const client = new TornApiClient({ apiKey })
         const { profile, employees, stock } = await client.getCompanySelections()
         const companyId = companyIdFromPayload(profile)
