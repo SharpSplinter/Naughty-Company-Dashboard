@@ -5109,7 +5109,19 @@ export default {
       const leaderboard = (rows.results ?? []).map((row) => {
         const memberWindow = row.startMinuteOfDay == null ? null : buildHalloweenMemberEventWindow(event, Number(row.startMinuteOfDay))
         const snapshotMs = row.capturedAt == null ? Number.NaN : Date.parse(String(row.capturedAt))
-        const hasSnapshotInWindow = Boolean(memberWindow?.startAt && memberWindow.endAt && Number.isFinite(snapshotMs) && snapshotMs >= Date.parse(memberWindow.startAt) && snapshotMs < Date.parse(memberWindow.endAt))
+        const memberStartMs = memberWindow?.startAt ? Date.parse(memberWindow.startAt) : Number.NaN
+        const memberEndMs = memberWindow?.endAt ? Date.parse(memberWindow.endAt) : Number.NaN
+        // Opening and closing captures intentionally bracket the personal event
+        // window. Do not hide a valid closing snapshot merely because it was
+        // captured after the member's end boundary (for example, after queue
+        // recovery), or an opening snapshot taken just before the start.
+        const isOpeningSnapshot = row.snapshotKind === "opening" && Number.isFinite(memberStartMs) &&
+          snapshotMs >= memberStartMs - 5 * 60 * 1000 && snapshotMs <= memberStartMs + 5 * 60 * 1000
+        const isClosingSnapshot = row.snapshotKind === "closing" && Number.isFinite(memberEndMs) && snapshotMs >= memberEndMs
+        const isInEventWindow = Number.isFinite(memberStartMs) && Number.isFinite(memberEndMs) &&
+          snapshotMs >= memberStartMs && snapshotMs < memberEndMs
+        const hasSnapshotInWindow = Boolean(memberWindow?.startAt && memberWindow.endAt && Number.isFinite(snapshotMs) &&
+          (isInEventWindow || isOpeningSnapshot || isClosingSnapshot))
         let upgrades: unknown[] | null = null
         if (hasSnapshotInWindow && row.upgradesJson != null) {
           try { const parsed = JSON.parse(String(row.upgradesJson)); upgrades = Array.isArray(parsed) ? parsed : null } catch { upgrades = null }
