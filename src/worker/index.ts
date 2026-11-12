@@ -2237,8 +2237,8 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
       } else if (body.kind === "halloween-log-collection" && halloweenJobId) {
         await requireDb(env).prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ? AND status NOT IN ('complete', 'cancelled')")
           .bind("Historical collection exhausted its queue retries. Check the saved Full Access key and retry.", new Date().toISOString(), halloweenJobId).run()
-      } else if (body.kind === FACTION_DIRECTOR_ADMIN_QUEUE_KIND && halloweenJobId) {
-        await markAdminFactionDirectoryRefreshFailed(env, halloweenJobId, "Faction directory refresh exhausted its background queue retries.")
+      } else if (body.kind === "manual-snapshot-recovery" && runId) {
+        await markManualSnapshotRecoveryFailed(env, runId, "Manual snapshot recovery exhausted its queue retries.")
       } else if (body.kind === "manual-snapshot-recovery" && runId) {
         await markManualSnapshotRecoveryFailed(env, runId, "Manual snapshot recovery exhausted its queue retries.")
       } else if (runId) {
