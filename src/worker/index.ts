@@ -2550,20 +2550,34 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
   const memberPayload = await client.getFactionMembers()
   const rawMembers = Array.isArray(memberPayload.members) ? memberPayload.members : isRecord(memberPayload.members) ? Object.values(memberPayload.members) : []
   const db = requireDb(env)
+  const cachedRows = await db.prepare("SELECT player_id, checked_at FROM faction_member_cache WHERE faction_id = '8317'").all<{ player_id: string; checked_at: string | null }>()
+  const checkedAtByPlayer = new Map((cachedRows.results ?? []).map((row) => [row.player_id, row.checked_at]))
+  const members = rawMembers.flatMap((item) => {
+    if (!isRecord(item)) return []
+    const id = positiveId(item.id ?? item.user_id)
+    return id ? [{ item, id }] : []
+  })
+  const checkedAtForPlayer = (id: number): number => {
+    const checkedAt = checkedAtByPlayer.get(String(id))
+    const timestamp = checkedAt ? Date.parse(checkedAt) : 0
+    return Number.isFinite(timestamp) ? timestamp : 0
+  }
+  // Always continue with never-checked/oldest-checked members first. Forced manual
+  // refreshes use a short de-duplication window so repeated 35-member batches
+  // advance through the roster instead of restarting at its first page.
+  members.sort((left, right) => checkedAtForPlayer(left.id) - checkedAtForPlayer(right.id))
   const now = Date.now()
+  const freshnessWindowMs = forceRefresh ? 15 * 60 * 1000 : 12 * 60 * 60 * 1000
   let processed = 0
   let pending = 0
-  for (const item of rawMembers) {
-    if (!isRecord(item)) continue
-    const id = positiveId(item.id ?? item.user_id)
-    if (!id) continue
+  for (const { item, id } of members) {
     const name = typeof item.name === "string" ? item.name : `Player #${id}`
-    const cached = await db.prepare("SELECT checked_at FROM faction_member_cache WHERE player_id = ?").bind(id).first<{ checked_at: string | null }>()
-    const checked = cached?.checked_at ? Date.parse(cached.checked_at) : 0
-    if (!forceRefresh && checked && now - checked < 12 * 60 * 60 * 1000) continue
+    const checked = checkedAtForPlayer(id)
+    if (checked && now - checked < freshnessWindowMs) continue
     if (processed >= limit) { pending += 1; continue }
     processed += 1
     const checkedAt = new Date().toISOString()
+    checkedAtByPlayer.set(String(id), checkedAt)
     try {
       const jobPayload = await client.getUserJobFor(id)
       const job = isRecord(jobPayload.job) ? jobPayload.job : {}
@@ -2590,7 +2604,7 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
       await db.prepare("INSERT INTO faction_member_cache (player_id, player_name, faction_id, checked_at, is_director, company_id, company_name, company_type, company_type_id, company_rating, daily_income, weekly_income, job_json, profile_json, updated_at) VALUES (?, ?, '8317', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, faction_id = excluded.faction_id, checked_at = excluded.checked_at, is_director = 1, company_id = excluded.company_id, company_name = excluded.company_name, company_type = excluded.company_type, company_type_id = excluded.company_type_id, company_rating = excluded.company_rating, daily_income = excluded.daily_income, weekly_income = excluded.weekly_income, job_json = excluded.job_json, profile_json = COALESCE(excluded.profile_json, faction_member_cache.profile_json), updated_at = excluded.updated_at")
         .bind(id, name, checkedAt, companyId, companyName, companyType, companyTypeId, rating, dailyIncome, weeklyIncome, asJson(jobPayload), profile === null ? null : asJson(profile), checkedAt).run()
     } catch {
-      await db.prepare("INSERT INTO faction_member_cache (player_id, player_name, faction_id, checked_at, is_director, updated_at) VALUES (?, ?, '8317', ?, 0, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, checked_at = excluded.checked_at, updated_at = excluded.updated_at")
+      await db.prepare("INSERT INTO faction_member_cache (player_id, player_name, faction_id, checked_at, is_director, updated_at) VALUES (?, ?, '8317', ?, 0, ?) ON CONFLICT(player_id) DO UPDATE SET player_name = excluded.player_name, faction_id = excluded.faction_id, checked_at = excluded.checked_at, updated_at = excluded.updated_at")
         .bind(id, name, checkedAt, checkedAt).run()
     }
   }
