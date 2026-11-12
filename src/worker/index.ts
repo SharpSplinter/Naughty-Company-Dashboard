@@ -2551,7 +2551,8 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
   const rawMembers = Array.isArray(memberPayload.members) ? memberPayload.members : isRecord(memberPayload.members) ? Object.values(memberPayload.members) : []
   const db = requireDb(env)
   const cachedRows = await db.prepare("SELECT player_id, checked_at FROM faction_member_cache WHERE faction_id = '8317'").all<{ player_id: string; checked_at: string | null }>()
-  const checkedAtByPlayer = new Map((cachedRows.results ?? []).map((row) => [row.player_id, row.checked_at]))
+  const checkedAtByPlayer = new Map<string, string | null>()
+  for (const row of cachedRows.results ?? []) checkedAtByPlayer.set(row.player_id, row.checked_at)
   const members = rawMembers.flatMap((item) => {
     if (!isRecord(item)) return []
     const id = positiveId(item.id ?? item.user_id)
