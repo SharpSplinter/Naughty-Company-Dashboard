@@ -100,6 +100,21 @@ export function reportedCompanyProfit(profile: unknown, period: "daily" | "weekl
   return candidates.find((value): value is number => typeof value === "number" && Number.isFinite(value)) ?? null
 }
 
+/** Prefer a current cost-based daily calculation over a possibly stale imported profit value. */
+export function resolveDisplayedDailyProfit(
+  historicalProfit: number | null | undefined,
+  dailyIncome: number | null | undefined,
+  dailyCosts: number | null | undefined,
+): number | null {
+  const completeLiveCosts =
+    typeof dailyIncome === "number" && Number.isFinite(dailyIncome) &&
+    typeof dailyCosts === "number" && Number.isFinite(dailyCosts)
+  if (completeLiveCosts) return dailyIncome - dailyCosts
+  return typeof historicalProfit === "number" && Number.isFinite(historicalProfit)
+    ? historicalProfit
+    : null
+}
+
 export function estimateWeeklyProfit(
   weeklyIncome: number | null | undefined,
   dailyRecurringCosts: number | null | undefined,
