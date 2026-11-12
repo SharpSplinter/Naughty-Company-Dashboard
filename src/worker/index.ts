@@ -1446,6 +1446,7 @@ async function ensureGlobalRankingRefreshSchema(env: WorkerEnv): Promise<void> {
 }
 
 async function fetchGlobalCompanyTypeCatalog(apiKey: string): Promise<GlobalCompanyType[]> {
+  // A complete, validated type catalog is required before creating a durable cache-refresh run.
   const response = await fetch("https://api.torn.com/v2/torn/companies", {
     headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
     signal: AbortSignal.timeout(12000),
