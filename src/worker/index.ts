@@ -2558,8 +2558,8 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
     const id = positiveId(item.id ?? item.user_id)
     return id ? [{ item, id }] : []
   })
-  const checkedAtForPlayer = (id: number): number => {
-    const checkedAt = checkedAtByPlayer.get(String(id))
+  const checkedAtForPlayer = (id: string): number => {
+    const checkedAt = checkedAtByPlayer.get(id)
     const timestamp = checkedAt ? Date.parse(checkedAt) : 0
     return Number.isFinite(timestamp) ? timestamp : 0
   }
