@@ -49,7 +49,7 @@ const REFRESH_ENDPOINT_OPTIONS: Array<{ value: AdminRefreshEndpoint; label: stri
   { value: "company-employees", label: "Employees", endpoint: "GET /company/employees", description: "Current employee roster and employee details.", userScoped: true },
   { value: "company-stock", label: "Stock and financial data", endpoint: "GET /company/stock", description: "Current stock quantities and available financial fields.", userScoped: true },
   { value: "global-company-rankings", label: "Shared global company rankings", endpoint: "GET /company/{typeId}/companies", description: "Refresh the shared live rankings cache from company-type lists. Does not create history.", userScoped: false },
-  { value: "faction-directory", label: "Faction and director directory", endpoint: "GET /faction/members + /user/{id}/job", description: "Refresh the shared faction/director directory batch.", userScoped: false },
+  { value: "faction-directory", label: "Faction and director directory", endpoint: "GET /faction/members + /user/{id}/job", description: "Refresh the shared faction/director directory across all 35-member batches.", userScoped: false },
 ]
 type AutomationInsights = { totalRuns: number; succeededRuns: number; failedRuns: number; partialRuns: number; runningRuns: number; completedRuns: number; successRate: number | null; avgDurationSeconds: number | null; companiesFailed: number; alertsCreated: number; latestRunAt?: string | null; recurringFailures: Array<{ errorSummary: string; occurrences: number }> }
 type AuditEvent = { id: number; actorPlayerId: string; actorPlayerName: string; action: string; targetType?: string | null; targetId?: string | null; outcome: string; summary: string; createdAt: string; details?: unknown }
