@@ -1048,6 +1048,11 @@ try {
   await test("global rankings use type-specific company lists at 18:10 UTC and official snapshot only verifies at 00:10 UTC", () => {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     const wranglerSource = readFileSync(join(root, "wrangler.toml"), "utf8")
+    assert.match(workerSource, /TORN_API_KEY_FULL_ACCESS\?: string/, "the worker must expose its dedicated Full Access service credential")
+    const catalogBody = workerSource.slice(workerSource.indexOf("async function fetchGlobalCompanyTypeCatalog"), workerSource.indexOf("async function getGlobalRankingApiKey"))
+    assert.match(catalogBody, /isRecord\(payload\) && isRecord\(payload\.error\)/, "Torn API error payloads must be surfaced even when HTTP status is successful")
+    const rankingKeyBody = workerSource.slice(workerSource.indexOf("async function getGlobalRankingApiKey"), workerSource.indexOf("async function startGlobalRankingRefresh"))
+    assert.match(rankingKeyBody, /TORN_API_KEY_FULL_ACCESS[\s\S]*TORN_API_KEY_CUSTOM/, "the service Full Access key must be preferred, with Custom Access as fallback")
     const configuredCrons = wranglerSource.match(/crons\s*=\s*\[([^\]]*)\]/)?.[1]
       .match(/"([^"]+)"/g)?.map((value) => value.slice(1, -1)) ?? []
     assert.ok(configuredCrons.includes("10 18 * * *"), "the daily ranking capture schedule must remain configured")

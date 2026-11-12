@@ -33,7 +33,7 @@ type D1Database = {
 type QueueProducer = { send(message: unknown): Promise<unknown> }
 type QueueMessage = { body: unknown; attempts?: number; ack(): void; retry(options?: { delaySeconds?: number }): void }
 type TornFixtureBinding = { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> }
-type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; TORN_FACTION_API_KEY?: string; TORN_API_KEY_CUSTOM?: string; TORN_API_BASE_URL?: string; TORN_API_FIXTURE?: TornFixtureBinding; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
+type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; TORN_FACTION_API_KEY?: string; TORN_API_KEY_FULL_ACCESS?: string; TORN_API_KEY_CUSTOM?: string; TORN_API_BASE_URL?: string; TORN_API_FIXTURE?: TornFixtureBinding; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
 type Session = { player_id: string; player_name: string; is_admin: number; faction_id?: string | null; faction_verified_at?: string | null; membership_check_attempted_at?: string | null; membership_check_status?: string | null }
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }
@@ -1458,6 +1458,14 @@ async function fetchGlobalCompanyTypeCatalog(apiKey: string): Promise<GlobalComp
   }
   let payload: unknown
   try { payload = JSON.parse(body) } catch { throw Object.assign(new Error("Torn returned malformed company type metadata."), { status: 502 }) }
+  // Torn may return an API error object with HTTP 200. Detect it before treating
+  // an empty error payload as a malformed company-type catalog.
+  if (isRecord(payload) && isRecord(payload.error)) {
+    const message = typeof payload.error.error === "string" && payload.error.error.trim()
+      ? payload.error.error
+      : "Torn rejected the global company type catalog request."
+    throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : 502 })
+  }
   const root = isRecord(payload)
     ? (Array.isArray(payload.companies) || isRecord(payload.companies) ? payload.companies
       : Array.isArray(payload.company_types) || isRecord(payload.company_types) ? payload.company_types : payload)
@@ -1478,10 +1486,13 @@ async function fetchGlobalCompanyTypeCatalog(apiKey: string): Promise<GlobalComp
 
 async function getGlobalRankingApiKey(env: WorkerEnv, preferredKey?: string): Promise<string> {
   if (preferredKey) return preferredKey
-  // Use the dedicated service-owned Custom Access key for public global-company
-  // directory/ranking data. Never borrow an arbitrary member's login credential.
-  const configured = env.TORN_API_KEY_CUSTOM?.trim()
-  if (configured) return configured
+  // Use the dedicated service-owned Full Access key for Torn's public global-company
+  // directory/ranking data. The Custom Access binding previously failed Torn's
+  // public-access check. Keep it as a fallback, and never borrow a member key.
+  const fullAccess = env.TORN_API_KEY_FULL_ACCESS?.trim()
+  if (fullAccess) return fullAccess
+  const customAccess = env.TORN_API_KEY_CUSTOM?.trim()
+  if (customAccess) return customAccess
   const row = await requireDb(env).prepare("SELECT player_id FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string }>()
   const key = row ? await savedKey(env, row.player_id) : null
   if (!key) throw Object.assign(new Error("No saved Torn API key is available to refresh the global company rankings cache."), { status: 503 })
