@@ -1,7 +1,7 @@
 import { money, numberLabel, countChangeLabel } from "./formatting.mjs";
 import { parseCommandRoute } from "./command-routing.mjs";
 import { isDuringQuietHours, severityRank } from "./alert-delivery.mjs";
-import { buildCostBreakdown, estimateDailyProfit, estimateWeeklyProfit, findAdvertisingBudget, knownWageSummary, stockInventorySummary, stockOrderExpenses, stockQuantityDeltaForReportingDays, summarizeMonthToDate } from "./financials.mjs";
+import { buildCostBreakdown, estimateDailyProfit, estimateWeeklyProfit, resolveDisplayedProfit, findAdvertisingBudget, knownWageSummary, stockInventorySummary, stockOrderExpenses, stockQuantityDeltaForReportingDays, summarizeMonthToDate } from "./financials.mjs";
 import { buildDailySummaryMessage, isDailySummaryDue, previousReportingDay, reportingDayAt, summaryMetricValues } from "./daily-summary.mjs";
 import { buildDashboardPanelComponents, isDashboardPanelView, parseDashboardPanelCustomId } from "./dashboard-panel.mjs";
 
@@ -736,12 +736,13 @@ async function replyFor(i, env) {
         const estimatedDaily = estimateDailyProfit(dailyIncome, costBreakdown);
         const estimatedWeekly = estimateWeeklyProfit(weeklyIncome, costBreakdown);
         const monthToDate = summarizeMonthToDate(history);
-        const dailyProfitText = dailyProfit !== undefined
-          ? moneyValue(dailyProfit) + " (reported)"
-          : estimatedDaily === null ? "Not available" : moneyValue(estimatedDaily);
-        const weeklyProfitText = weeklyProfit !== undefined
-          ? moneyValue(weeklyProfit) + " (reported)"
-          : estimatedWeekly === null ? "Not available" : moneyValue(estimatedWeekly);
+        const displayedDailyProfit = resolveDisplayedProfit(dailyProfit, estimatedDaily);
+        const displayedWeeklyProfit = resolveDisplayedProfit(weeklyProfit, estimatedWeekly);
+        const formatDisplayedProfit = choice => choice.value === null
+          ? "Not available"
+          : moneyValue(choice.value) + (choice.source === "calculated" ? " (calculated from listed costs)" : " (reported; cost breakdown incomplete)");
+        const dailyProfitText = formatDisplayedProfit(displayedDailyProfit);
+        const weeklyProfitText = formatDisplayedProfit(displayedWeeklyProfit);
         const reportedCostLines = Object.entries(expenses).filter(([key, value]) => /cost|wage|advert|expense/i.test(key) && typeof value === "number" && Number.isFinite(value))
           .slice(0, 6).map(([key, value]) => safeText(key, 50) + ": " + moneyValue(value));
         return privateReply("**Company profit | " + companyName + "**\nDaily income: " + moneyValue(dailyIncome) +
@@ -838,8 +839,14 @@ async function replyFor(i, env) {
       const costBreakdown = buildCostBreakdown({ advertisingBudget, wages: wageInfo.available ? wageInfo.total : null, stockSummary: stockOrderSummary });
       const estimatedDaily = estimateDailyProfit(dailyIncome, costBreakdown);
       const estimatedWeekly = estimateWeeklyProfit(weeklyIncome, costBreakdown);
-      const dailyProfit = reportedDailyProfit !== undefined ? money(reportedDailyProfit) + " (reported)" : estimatedDaily === null ? "Not available" : money(estimatedDaily);
-      const weeklyProfit = reportedWeeklyProfit !== undefined ? money(reportedWeeklyProfit) + " (reported)" : estimatedWeekly === null ? "Not available" : money(estimatedWeekly);
+      const displayedDailyProfit = resolveDisplayedProfit(reportedDailyProfit, estimatedDaily);
+      const displayedWeeklyProfit = resolveDisplayedProfit(reportedWeeklyProfit, estimatedWeekly);
+      const dailyProfit = displayedDailyProfit.value === null
+        ? "Not available"
+        : money(displayedDailyProfit.value) + (displayedDailyProfit.source === "calculated" ? " (calculated from listed costs)" : " (reported; cost breakdown incomplete)");
+      const weeklyProfit = displayedWeeklyProfit.value === null
+        ? "Not available"
+        : money(displayedWeeklyProfit.value) + (displayedWeeklyProfit.source === "calculated" ? " (calculated from listed costs)" : " (reported; cost breakdown incomplete)");
       const safeName = String(data.companyName || company.company_name || "Your company").replace(/@/g, "@\u200b").slice(0, 90);
       const findMetric = (source, keys, depth = 0) => {
         if (!source || typeof source !== "object" || depth > 5) return undefined;

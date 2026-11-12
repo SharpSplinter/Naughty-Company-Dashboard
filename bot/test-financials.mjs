@@ -3,6 +3,7 @@ import {
   buildCostBreakdown,
   estimateDailyProfit,
   estimateWeeklyProfit,
+  resolveDisplayedProfit,
   findAdvertisingBudget,
   knownWageSummary,
   stockOrderExpenses,
@@ -60,6 +61,18 @@ const breakdown = buildCostBreakdown({ advertisingBudget: 5200000, wages: wages.
 assert.equal(breakdown.total, 83400000);
 assert.equal(estimateDailyProfit(119465920, breakdown), 36065920);
 assert.equal(estimateWeeklyProfit(850324992, breakdown), 850324992 - (5200000 + 78200000) * 7);
+assert.deepEqual(resolveDisplayedProfit(57573280, 30090542), {
+  value: 30090542,
+  source: "calculated"
+}, "a complete cost calculation must override a conflicting Torn-reported profit");
+assert.deepEqual(resolveDisplayedProfit(57573280, null), {
+  value: 57573280,
+  source: "reported"
+}, "Torn-reported profit is only a fallback when the cost breakdown is incomplete");
+assert.deepEqual(resolveDisplayedProfit(undefined, null), {
+  value: null,
+  source: "unavailable"
+}, "profit must remain unavailable when neither a calculation nor reported value exists");
 
 const monthHistory = [
   { day: "2026-10-01", fetchedAt: "2026-10-01T20:00:00.000Z", dailyIncome: 100, advertisingBudget: 10, employeeWages: 20, stockOrderExpense: 3 },

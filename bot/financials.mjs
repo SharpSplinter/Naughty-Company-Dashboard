@@ -196,6 +196,17 @@ export function estimateWeeklyProfit(weeklyIncome, breakdown) {
     : null;
 }
 
+/**
+ * Prefer the independently calculated figure whenever the full cost breakdown
+ * is available. Torn's reported profit can disagree with its displayed income
+ * and costs, so it is only a fallback when the local calculation is incomplete.
+ */
+export function resolveDisplayedProfit(reportedProfit, calculatedProfit) {
+  if (isNumber(calculatedProfit)) return { value: calculatedProfit, source: "calculated" };
+  if (isNumber(reportedProfit)) return { value: reportedProfit, source: "reported" };
+  return { value: null, source: "unavailable" };
+}
+
 
 export function summarizeMonthToDate(history, now = new Date()) {
   const timestamp = now instanceof Date ? now.getTime() : typeof now === "number" ? now : Date.parse(now);
