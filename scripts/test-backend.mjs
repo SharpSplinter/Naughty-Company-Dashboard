@@ -83,7 +83,7 @@ try {
   const worker = require(join(temp, "worker/index.js")).default
   const { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } = require(join(temp, "worker/snapshot-provenance.js"))
   const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
-  const { estimateWeeklyProfit, financialCosts, reportedCompanyProfit, stockCostTotal } = require(join(temp, "components/floor/financial-utils.js"))
+  const { estimateWeeklyProfit, financialCosts, reportedCompanyProfit, resolveDisplayedDailyProfit, stockCostTotal } = require(join(temp, "components/floor/financial-utils.js"))
   const { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isWithinQuietHours, normalizeWebhookUrl, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } = require(join(temp, "lib/automation/rules.js"))
   const { evaluateDiscordPollHealth } = require(join(temp, "lib/automation/discord-poll-monitoring.js"))
 
@@ -795,6 +795,12 @@ try {
     assert.equal(complete.wages, 300)
     assert.equal(complete.stockCosts, 20)
     assert.equal(complete.dailyCosts, 820)
+    assert.equal(resolveDisplayedDailyProfit(57_573_280, 117_835_312, 87_744_770), 30_090_542,
+      "the current cost-based profit must override a conflicting imported Torn-reported value")
+    assert.equal(resolveDisplayedDailyProfit(57_573_280, 117_835_312, null), 57_573_280,
+      "historical profit is only a fallback when current cost inputs are incomplete")
+    assert.equal(resolveDisplayedDailyProfit(null, 117_835_312, null), null,
+      "profit must remain unavailable when neither current costs nor historical profit are available")
     const missingWage = financialCosts(
       { advertising_budget: 500 },
       { Tealight: { cost: 4, in_stock: 1000, on_order: 5 } },
