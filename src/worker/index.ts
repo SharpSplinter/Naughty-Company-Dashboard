@@ -2221,16 +2221,11 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
       const halloweenJobId = typeof body.jobId === "string" ? body.jobId : ""
       const liveSnapshotJobId = typeof body.jobId === "string" ? body.jobId : ""
       if (body.kind === FACTION_DIRECTOR_ADMIN_QUEUE_KIND && halloweenJobId) {
-      try {
-        await continueAdminFactionDirectoryRefresh(env, halloweenJobId)
+        await markAdminFactionDirectoryRefreshFailed(env, halloweenJobId, "Faction directory refresh exhausted its background queue retries.")
         message.ack()
-      } catch {
-        const attempts = Math.max(1, Number(message.attempts ?? 1))
-        message.retry({ delaySeconds: Math.min(120, attempts * 30) })
+        continue
       }
-      continue
-    }
-    if (body.kind === FACTION_STATS_QUEUE_KIND && runId) {
+      if (body.kind === FACTION_STATS_QUEUE_KIND && runId) {
         await markFactionStatsRunFailed(env, runId, new Error("Faction stats collection exhausted its queue retries."))
       } else if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
         await markFactionPerformanceRunFailed(env, runId, new Error("Faction performance collection exhausted its queue retries."))
@@ -2258,6 +2253,18 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
     const runId = typeof body.runId === "string" ? body.runId : ""
     const halloweenJobId = typeof body.jobId === "string" ? body.jobId : ""
     const liveSnapshotJobId = typeof body.jobId === "string" ? body.jobId : ""
+    if (body.kind === FACTION_DIRECTOR_ADMIN_QUEUE_KIND && halloweenJobId) {
+      try {
+        await continueAdminFactionDirectoryRefresh(env, halloweenJobId)
+        message.ack()
+      } catch {
+        // Keep retry handling inside the queue; exhausted attempts reach the DLQ,
+        // where the associated admin job is marked failed.
+        const attempts = Math.max(1, Number(message.attempts ?? 1))
+        message.retry({ delaySeconds: Math.min(120, attempts * 30) })
+      }
+      continue
+    }
     if (body.kind === FACTION_STATS_QUEUE_KIND && runId) {
       try {
         await runFactionStatsCollection(env, runId)
