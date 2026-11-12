@@ -9,7 +9,7 @@ import { placement } from "./ranking-utils"
 import { AdminPanel } from "./admin-panel"
 import { InsightsWorkspace } from "./insights-workspace"
 import { AlertsPanel, NotificationSettingsPanel } from "./alerts-panel"
-import { companyTypeIdFromProfile, estimateWeeklyProfit, financialCosts, formatMoney, formatNumber, getObject, pretty, reportedCompanyProfit, stockPriceRows } from "./financial-utils"
+import { companyTypeIdFromProfile, estimateWeeklyProfit, financialCosts, formatMoney, formatNumber, getObject, pretty, reportedCompanyProfit, resolveDisplayedDailyProfit, stockPriceRows } from "./financial-utils"
 import { AccountSettingsWorkspace, FactionWorkspacePlaceholder, HalloweenWorkspace, PortalHome } from "../portal/workspaces"
 import "../portal/workspaces.css"
 
@@ -549,7 +549,11 @@ export function FloorApp() {
     void loadOfficialStockHistory()
     return () => { cancelled = true }
   }, [sessionToken, demoMode, model?.company.id, model?.fetchedAt, result?.model.company.id])
-  const dailyProfit = currentChartCompany?.history.at(-1)?.dailyProfit ?? (model?.company.dailyIncome == null || costs?.dailyCosts == null ? null : model.company.dailyIncome - costs.dailyCosts)
+  const dailyProfit = resolveDisplayedDailyProfit(
+    currentChartCompany?.history.at(-1)?.dailyProfit,
+    model?.company.dailyIncome,
+    costs?.dailyCosts,
+  )
   const allDailySamples = (result?.incomeHistory ?? []).filter((item) => item.dailyIncome !== null && new Date(item.fetchedAt) <= utcNow)
   const dedupedSamples = Array.from(new Map(allDailySamples.map((item) => [new Date(new Date(item.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10), item])).values())
   const weekStart = periodStart("week")
