@@ -30,7 +30,7 @@ type D1Database = {
   prepare(sql: string): D1Statement
   batch?(statements: D1Statement[]): Promise<D1Result[]>
 }
-type QueueProducer = { send(message: unknown): Promise<unknown> }
+type QueueProducer = { send(message: unknown, options?: { delaySeconds?: number }): Promise<unknown> }
 type QueueMessage = { body: unknown; attempts?: number; ack(): void; retry(options?: { delaySeconds?: number }): void }
 type TornFixtureBinding = { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> }
 type WorkerEnv = { ALLOWED_ORIGIN?: string; DB?: D1Database; KEY_ENCRYPTION_SECRET?: string; TORN_FACTION_API_KEY?: string; TORN_API_KEY_FULL_ACCESS?: string; TORN_API_KEY_CUSTOM?: string; TORN_API_BASE_URL?: string; TORN_API_FIXTURE?: TornFixtureBinding; GLOBAL_RANKINGS_QUEUE?: QueueProducer }
@@ -40,6 +40,10 @@ const jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-
 const DAY = 86400
 const ADMIN_PLAYER_ID = "351311"
 const NAUGHTY_SOULS_FACTION_ID = "8317"
+const FACTION_DIRECTOR_ADMIN_QUEUE_KIND = "faction-director-admin-refresh"
+const ADMIN_FACTION_DIRECTORY_BATCH_SIZE = 35
+const ADMIN_FACTION_DIRECTORY_MAX_BATCHES = 6
+const ADMIN_FACTION_DIRECTORY_BATCH_DELAY_SECONDS = 60
 
 function jsonResponse(body: unknown, status = 200, origin = "null", extraHeaders: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...jsonHeaders, "access-control-allow-origin": origin, "access-control-allow-methods": "GET, POST, DELETE, OPTIONS", "access-control-allow-headers": "Authorization, Content-Type, X-Admin-Confirm-Restore", vary: "Origin", ...extraHeaders } })
@@ -1568,9 +1572,11 @@ async function completeLinkedAdminRankingJob(env: WorkerEnv, run: GlobalRankingR
     result.failedEndpointCalls = Number(result.failedEndpointCalls ?? 0) + 1
     result.successfulEndpointCalls = Math.max(0, Number(result.successfulEndpointCalls ?? 0) - 1)
   }
+  const pendingFactionDirectory = typeof result.pendingFactionDirectoryJobId === "string"
   const now = new Date().toISOString()
-  await db.prepare("UPDATE admin_jobs SET status = 'completed', finished_at = ?, result_json = ?, error_message = NULL WHERE job_id = ? AND status = 'running'")
-    .bind(now, asJson(result), run.admin_job_id).run()
+  const update = await db.prepare("UPDATE admin_jobs SET status = ?, finished_at = ?, result_json = ?, error_message = NULL WHERE job_id = ? AND status = 'running'")
+    .bind(pendingFactionDirectory ? "running" : "completed", pendingFactionDirectory ? null : now, asJson(result), run.admin_job_id).run()
+  if (pendingFactionDirectory || (update.meta?.changes ?? 0) === 0) return
   const actor: Session = { player_id: ADMIN_PLAYER_ID, player_name: "SharpSplinter", is_admin: 1 }
   await writeAdminAudit(env, actor, "job.completed", "job", run.admin_job_id, succeeded ? "succeeded" : "failed",
     succeeded ? "Administrative endpoint refresh completed, including resumable global company rankings." : "Administrative endpoint refresh completed with a failed global company ranking endpoint.",
@@ -2119,6 +2125,94 @@ async function enqueueScheduledHalloweenSnapshots(env: WorkerEnv, scheduledTime:
   return queued
 }
 
+async function markAdminFactionDirectoryRefreshFailed(env: WorkerEnv, jobId: string, reason: string): Promise<void> {
+  const db = requireDb(env)
+  const job = await db.prepare("SELECT job_type, status FROM admin_jobs WHERE job_id = ?").bind(jobId)
+    .first<{ job_type: string; status: string }>()
+  if (!job || job.job_type !== "endpoint-refresh" || job.status !== "running") return
+  const message = reason.slice(0, 220)
+  const updated = await db.prepare("UPDATE admin_jobs SET status = 'failed', finished_at = ?, error_message = ? WHERE job_id = ? AND status = 'running'")
+    .bind(new Date().toISOString(), message, jobId).run()
+  if ((updated.meta?.changes ?? 0) === 0) return
+  const actor: Session = { player_id: ADMIN_PLAYER_ID, player_name: "SharpSplinter", is_admin: 1 }
+  await writeAdminAudit(env, actor, "job.failed", "job", jobId, "failed",
+    "Faction directory refresh could not finish after repeated queue attempts.", { jobType: "endpoint-refresh", error: message })
+}
+
+async function continueAdminFactionDirectoryRefresh(env: WorkerEnv, jobId: string): Promise<void> {
+  const db = requireDb(env)
+  const job = await db.prepare("SELECT job_type, status, job_payload_json AS jobPayloadJson, result_json AS resultJson FROM admin_jobs WHERE job_id = ?")
+    .bind(jobId).first<{ job_type: string; status: string; jobPayloadJson: string | null; resultJson: string | null }>()
+  if (!job || job.job_type !== "endpoint-refresh" || job.status !== "running") return
+
+  const config = parseStoredJson(job.jobPayloadJson)
+  if (!isRecord(config) || !Array.isArray(config.endpoints) || !config.endpoints.includes("faction-directory")) {
+    throw new Error("The saved administrator job does not include the faction directory endpoint.")
+  }
+  const rawResult = parseStoredJson(job.resultJson)
+  if (!isRecord(rawResult)) throw new Error("The saved administrator job result is unavailable.")
+  const globalResults = isRecord(rawResult.globalResults) ? { ...rawResult.globalResults } : {}
+  const previous = isRecord(globalResults["faction-directory"]) ? globalResults["faction-directory"] : {}
+  const previousBatches = Number(previous.batches ?? 1)
+  const row = await db.prepare("SELECT player_id, ciphertext, iv FROM api_keys ORDER BY updated_at DESC LIMIT 1")
+    .first<{ player_id: string; ciphertext: string; iv: string }>()
+  if (!row) throw new Error("No saved Torn API key is available for the faction-directory refresh.")
+  const apiKey = await decryptKey(env, row.ciphertext, row.iv)
+  const batch = await syncFactionDirectorDirectory(env, apiKey, ADMIN_FACTION_DIRECTORY_BATCH_SIZE, true)
+  const batches = Math.max(1, Number.isSafeInteger(previousBatches) ? previousBatches : 1) + 1
+  const processed = Math.max(0, Number(previous.processed) || 0) + batch.processed
+  const safetyLimitReached = batch.pending > 0 && batches >= ADMIN_FACTION_DIRECTORY_MAX_BATCHES
+  const summary = {
+    ...batch,
+    processed,
+    pending: batch.pending,
+    batchSize: ADMIN_FACTION_DIRECTORY_BATCH_SIZE,
+    batches,
+    complete: batch.pending === 0,
+    ...(safetyLimitReached ? { safetyLimitReached: true } : {}),
+  }
+  globalResults["faction-directory"] = summary
+  const result: Record<string, unknown> = { ...rawResult, globalResults }
+
+  if (batch.pending > 0 && !safetyLimitReached) {
+    if (!env.GLOBAL_RANKINGS_QUEUE) throw new Error("The background queue is unavailable to continue the faction-directory refresh.")
+    await db.prepare("UPDATE admin_jobs SET status = 'running', result_json = ?, error_message = NULL WHERE job_id = ? AND status = 'running'")
+      .bind(asJson(result), jobId).run()
+    await env.GLOBAL_RANKINGS_QUEUE.send({ kind: FACTION_DIRECTOR_ADMIN_QUEUE_KIND, jobId }, { delaySeconds: ADMIN_FACTION_DIRECTORY_BATCH_DELAY_SECONDS })
+    return
+  }
+
+  delete result.pendingFactionDirectoryJobId
+  if (safetyLimitReached) {
+    result.partialFailure = true
+    const endpoints: Record<string, unknown> = isRecord(result.endpoints) ? { ...result.endpoints } : {}
+    const stats: Record<string, unknown> = isRecord(endpoints["faction-directory"]) ? { ...endpoints["faction-directory"] } : { attempted: 1, succeeded: 1, failed: 0 }
+    stats.succeeded = Math.max(0, Number(stats.succeeded ?? 1) - 1)
+    stats.failed = Number(stats.failed ?? 0) + 1
+    endpoints["faction-directory"] = stats
+    result.endpoints = endpoints
+    result.globalSuccesses = Math.max(0, Number(result.globalSuccesses ?? 0) - 1)
+    result.globalFailures = Number(result.globalFailures ?? 0) + 1
+    result.failedEndpointCalls = Number(result.failedEndpointCalls ?? 0) + 1
+    result.successfulEndpointCalls = Math.max(0, Number(result.successfulEndpointCalls ?? 0) - 1)
+    const failures = Array.isArray(result.failures) ? result.failures.slice() : []
+    failures.push({ endpoint: "faction-directory", error: `Safety limit reached after ${ADMIN_FACTION_DIRECTORY_MAX_BATCHES} batches; ${batch.pending} members remain pending.` })
+    result.failures = failures.slice(0, 30)
+  }
+
+  const waitingForRankings = typeof result.pendingGlobalRankingRunId === "string"
+  const update = await db.prepare("UPDATE admin_jobs SET status = ?, finished_at = ?, result_json = ?, error_message = NULL WHERE job_id = ? AND status = 'running'")
+    .bind(waitingForRankings ? "running" : "completed", waitingForRankings ? null : new Date().toISOString(), asJson(result), jobId).run()
+  if (waitingForRankings || (update.meta?.changes ?? 0) === 0) return
+
+  const actor: Session = { player_id: ADMIN_PLAYER_ID, player_name: "SharpSplinter", is_admin: 1 }
+  await writeAdminAudit(env, actor, "job.completed", "job", jobId, result.partialFailure === true ? "failed" : "succeeded",
+    result.partialFailure === true
+      ? "Administrative endpoint refresh completed with a partial faction-directory result."
+      : "Administrative endpoint refresh completed, including all faction-directory batches.",
+    { jobType: "endpoint-refresh", factionDirectoryBatches: batches, factionDirectoryPending: batch.pending })
+}
+
 async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; queue?: string }, env: WorkerEnv): Promise<void> {
   if (batch.queue?.endsWith("-dlq")) {
     for (const message of batch.messages) {
@@ -2126,7 +2220,17 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
       const runId = typeof body.runId === "string" ? body.runId : ""
       const halloweenJobId = typeof body.jobId === "string" ? body.jobId : ""
       const liveSnapshotJobId = typeof body.jobId === "string" ? body.jobId : ""
-      if (body.kind === FACTION_STATS_QUEUE_KIND && runId) {
+      if (body.kind === FACTION_DIRECTOR_ADMIN_QUEUE_KIND && halloweenJobId) {
+      try {
+        await continueAdminFactionDirectoryRefresh(env, halloweenJobId)
+        message.ack()
+      } catch {
+        const attempts = Math.max(1, Number(message.attempts ?? 1))
+        message.retry({ delaySeconds: Math.min(120, attempts * 30) })
+      }
+      continue
+    }
+    if (body.kind === FACTION_STATS_QUEUE_KIND && runId) {
         await markFactionStatsRunFailed(env, runId, new Error("Faction stats collection exhausted its queue retries."))
       } else if (body.kind === FACTION_PERFORMANCE_QUEUE_KIND && runId) {
         await markFactionPerformanceRunFailed(env, runId, new Error("Faction performance collection exhausted its queue retries."))
@@ -2138,6 +2242,8 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
       } else if (body.kind === "halloween-log-collection" && halloweenJobId) {
         await requireDb(env).prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ? AND status NOT IN ('complete', 'cancelled')")
           .bind("Historical collection exhausted its queue retries. Check the saved Full Access key and retry.", new Date().toISOString(), halloweenJobId).run()
+      } else if (body.kind === FACTION_DIRECTOR_ADMIN_QUEUE_KIND && halloweenJobId) {
+        await markAdminFactionDirectoryRefreshFailed(env, halloweenJobId, "Faction directory refresh exhausted its background queue retries.")
       } else if (body.kind === "manual-snapshot-recovery" && runId) {
         await markManualSnapshotRecoveryFailed(env, runId, "Manual snapshot recovery exhausted its queue retries.")
       } else if (runId) {
@@ -3358,6 +3464,7 @@ async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefr
   let globalFailures = 0
   let pendingGlobalRankingRunId: string | null = null
   let dispatchGlobalRankingRun = false
+  let pendingFactionDirectoryJobId: string | null = null
 
   for (const endpoint of config.endpoints.filter((item) => item === "global-company-rankings" || item === "faction-directory")) {
     try {
@@ -3383,7 +3490,18 @@ async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefr
         const row = await db.prepare("SELECT player_id, ciphertext, iv FROM api_keys ORDER BY updated_at DESC LIMIT 1").first<{ player_id: string; ciphertext: string; iv: string }>()
         if (!row) throw new Error("No saved Torn API key is available for the faction-directory refresh.")
         const apiKey = await decryptKey(env, row.ciphertext, row.iv)
-        globalResults[endpoint] = await syncFactionDirectorDirectory(env, apiKey, 35, true)
+        const directoryBatch = await syncFactionDirectorDirectory(env, apiKey, ADMIN_FACTION_DIRECTORY_BATCH_SIZE, true)
+        globalResults[endpoint] = {
+          ...directoryBatch,
+          batchSize: ADMIN_FACTION_DIRECTORY_BATCH_SIZE,
+          batches: 1,
+          complete: directoryBatch.pending === 0,
+        }
+        if (directoryBatch.pending > 0) {
+          if (!adminJobId) throw new Error("The faction-directory refresh cannot continue without its administrator job ID.")
+          if (!env.GLOBAL_RANKINGS_QUEUE) throw new Error("The background queue is unavailable to continue the faction-directory refresh.")
+          pendingFactionDirectoryJobId = adminJobId
+        }
       }
       endpointStats[endpoint].attempted += 1
       endpointStats[endpoint].succeeded += 1
@@ -3502,6 +3620,7 @@ async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefr
     partialFailure: failedCalls > 0 || globalFailures > 0 || (userEndpoints.length > 0 && connections.length === 0) || selectedWithoutConnection > 0,
     globalSuccesses,
     ...(pendingGlobalRankingRunId ? { pendingGlobalRankingRunId, dispatchGlobalRankingRun } : {}),
+    ...(pendingFactionDirectoryJobId ? { pendingFactionDirectoryJobId } : {}),
   }
 }
 
@@ -3539,15 +3658,21 @@ async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
         ? Array.from(new Set(rawConfig.targetPlayerIds.filter((item): item is string => typeof item === "string" && /^\d+$/.test(item))))
         : []
       result = await runAdminEndpointRefresh(env, { endpoints, scope: rawConfig.scope, targetPlayerIds }, jobId)
-      if (typeof result.pendingGlobalRankingRunId === "string") {
+      const pendingGlobalRankingRunId = typeof result.pendingGlobalRankingRunId === "string" ? result.pendingGlobalRankingRunId : null
+      const pendingFactionDirectoryJobId = typeof result.pendingFactionDirectoryJobId === "string" ? result.pendingFactionDirectoryJobId : null
+      if (pendingGlobalRankingRunId || pendingFactionDirectoryJobId) {
         await db.prepare("UPDATE admin_jobs SET status = 'running', result_json = ?, error_message = NULL WHERE job_id = ?")
           .bind(asJson(result), jobId).run()
-        if (result.dispatchGlobalRankingRun === true) {
-          try { await env.GLOBAL_RANKINGS_QUEUE?.send({ runId: result.pendingGlobalRankingRunId }) }
-          catch (dispatchError) {
-            await markGlobalRankingRunFailed(env, result.pendingGlobalRankingRunId, dispatchError)
-            return
-          }
+        if (pendingGlobalRankingRunId && result.dispatchGlobalRankingRun === true) {
+          try { await env.GLOBAL_RANKINGS_QUEUE?.send({ runId: pendingGlobalRankingRunId }) }
+          catch (dispatchError) { await markGlobalRankingRunFailed(env, pendingGlobalRankingRunId, dispatchError) }
+        }
+        if (pendingFactionDirectoryJobId) {
+          if (!env.GLOBAL_RANKINGS_QUEUE) throw new Error("The background queue is unavailable to continue the faction-directory refresh.")
+          await env.GLOBAL_RANKINGS_QUEUE.send(
+            { kind: FACTION_DIRECTOR_ADMIN_QUEUE_KIND, jobId: pendingFactionDirectoryJobId },
+            { delaySeconds: ADMIN_FACTION_DIRECTORY_BATCH_DELAY_SECONDS },
+          )
         }
         return
       }
