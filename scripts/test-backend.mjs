@@ -1258,6 +1258,14 @@ try {
     assert.match(rankingBody, /if \(sourceSnapshotAt\) \{\s*const fetchedAt = sourceSnapshotAt\.toISOString\(\)/)
     assert.match(workerSource, /refreshRankingProfiles\(env, false\)/, "legacy global admin refresh must not append ranking history")
     assert.match(workerSource, /refreshFactionDirectoryFromAnyKey\(env, 35, true\)/, "legacy global admin refresh must force a live directory batch without history")
+    const directorSyncStart = workerSource.indexOf("async function syncFactionDirectorDirectory")
+    const directorSyncEnd = workerSource.indexOf("async function captureWeeklyFactionStarCounts", directorSyncStart)
+    const directorSync = workerSource.slice(directorSyncStart, directorSyncEnd)
+    assert.match(directorSync, /SELECT player_id, checked_at FROM faction_member_cache WHERE faction_id = '8317'/)
+    assert.match(directorSync, /members\.sort\(\(left, right\) => checkedAtForPlayer\(left\.id\) - checkedAtForPlayer\(right\.id\)\)/,
+      "faction directory batches must prioritize never-checked and oldest-checked members")
+    assert.match(directorSync, /forceRefresh \? 15 \* 60 \* 1000 : 12 \* 60 \* 60 \* 1000/,
+      "repeated forced batches must skip members checked in the last 15 minutes and make forward progress")
     assert.match(uiSource, /REFRESH_ENDPOINT_OPTIONS/)
     assert.match(uiSource, /setRefreshScope\("selected"\)/)
     assert.match(uiSource, /setRefreshSelectedUserIds/)
