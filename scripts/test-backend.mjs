@@ -81,6 +81,12 @@ try {
     assert.equal(rolling[6].weeklyProfit, 280, "Nov 6-12 should sum the first seven daily values")
     assert.equal(rolling[7].weeklyProfit, 350, "Nov 7-13 should roll forward one reporting day")
     assert.equal(rolling[7].weeklyProfitSource, "reconstructed")
+    const productionDaily = [70721954, 40294390, 72525960, 31973754, 40804848, 38051382, 29890542, 19285945].map((dailyProfit, index) => ({
+      day: new Date(start + index * 86400000).toISOString().slice(0, 10), dailyProfit,
+    }))
+    const productionRolling = withRollingWeeklyProfit(productionDaily)
+    assert.equal(productionRolling[6].weeklyProfit, 324262830, "production Nov 6-12 total must reconcile")
+    assert.equal(productionRolling[7].weeklyProfit, 272826821, "production Nov 7-13 total must reconcile")
     const missingDay = withRollingWeeklyProfit(complete.filter((point) => point.day !== "2026-11-09"))
     assert.equal(missingDay.find((point) => point.day === "2026-11-12")?.weeklyProfit, null,
       "a missing reporting day must not be silently skipped")
