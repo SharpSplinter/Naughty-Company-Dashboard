@@ -290,6 +290,9 @@ try {
       treatExchangeEnergyGained: 75,
       successfulAttackEnergyUsed: 25,
       successfulAttacks: 2,
+      revitalizeProcs: 0,
+      revitalizeAttacksReviewed: 0,
+      revitalizeChanceCounts: {},
     })
     assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
   })
