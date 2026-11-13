@@ -758,3 +758,150 @@ th.numeric-cell {
   .breadcrumbs { display: none; }
   .user-company-label, .user-company-label strong, .user-company-label small { max-width: 48px; }
 }
+
+
+/* Company workspace uses the same portal frame, navigation language, and surfaces as Faction. */
+.company-module .app-shell {
+  width: 100%;
+  max-width: 1140px;
+  min-height: 0;
+  margin: 0 auto;
+  color: var(--portal-text, #f2f6f8);
+  background: transparent;
+}
+.company-module .sidebar { display: none !important; }
+.company-module .main-area { min-width: 0; min-height: 0; margin-left: 0; }
+.company-module .module-topbar {
+  width: 100%;
+  height: 78px;
+  max-width: 1140px;
+  margin: 0 auto;
+  padding: 0;
+  background: transparent;
+}
+.company-module .topbar-leading { min-width: 0; gap: 14px; }
+.company-module .company-module-return {
+  min-height: 38px;
+  border: 1px solid #405364;
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: #dce9ee;
+  background: #152331;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.company-module .topbar-right {
+  min-width: 0;
+  flex: 0 1 auto;
+  gap: 10px;
+}
+.company-module .environment-pill {
+  border-color: #405364;
+  background: #152331;
+  color: #a6b9c2;
+}
+.company-module .page-content {
+  width: 100%;
+  max-width: 1140px;
+  margin: 0 auto;
+  padding: 0 0 24px;
+}
+.company-module .module-heading {
+  width: 100%;
+  max-width: 1140px;
+  margin: 0 auto;
+  padding: 48px 0 24px;
+}
+.company-module .module-heading h1 {
+  font-size: clamp(38px, 5vw, 58px);
+  line-height: 1.04;
+  letter-spacing: -.055em;
+}
+.company-module .module-heading > div > p {
+  max-width: 760px;
+  color: #a1b2bf;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.company-module .company-workspace-groups,
+.company-module .company-workspace-views {
+  max-width: 1140px;
+  margin: 0 auto;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #3a5b59 transparent;
+  -webkit-overflow-scrolling: touch;
+}
+.company-module .company-workspace-groups button,
+.company-module .company-workspace-views button {
+  min-height: 42px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.company-module .company-workspace-views {
+  margin-top: 0;
+  border-bottom-color: #ffffff12;
+}
+.company-module .panel {
+  border-color: #38444a;
+  border-radius: 13px;
+  background: linear-gradient(145deg, #1c252b, #111a23);
+  box-shadow: none;
+}
+.company-module .metric-card {
+  border-color: #38444a;
+  border-radius: 11px;
+  background: linear-gradient(145deg, #172a30, #111d26);
+  box-shadow: none;
+}
+.company-module .page-footer {
+  border-top-color: #ffffff17;
+  color: #718692;
+}
+.company-module .user-company-label { max-width: 260px; }
+.company-module .user-company-label small { max-width: 260px; }
+
+@media (max-width: 760px) {
+  .company-module .module-topbar {
+    height: auto;
+    min-height: 66px;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 9px 0;
+  }
+  .company-module .topbar-leading {
+    width: 100%;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .company-module .company-module-return {
+    min-height: 42px;
+    padding-inline: 13px;
+  }
+  .company-module .topbar-right {
+    width: 100%;
+    max-width: 100%;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .company-module .user-company-label { max-width: min(220px, 48vw); }
+  .company-module .user-company-label small { max-width: min(220px, 48vw); }
+  .company-module .module-heading { padding: 35px 0 20px; }
+  .company-module .module-heading h1 { font-size: clamp(34px, 8vw, 47px); }
+  .company-module .page-content { padding-top: 4px; }
+  .company-module .company-workspace-groups { margin-top: 5px; }
+  .company-module .company-workspace-views { margin-top: 0; }
+}
+@media (max-width: 520px) {
+  .company-module .company-workspace-groups button,
+  .company-module .company-workspace-views button { padding: 11px 12px; font-size: 9px; }
+  .company-module .company-workspace-groups,
+  .company-module .company-workspace-views { scroll-snap-type: x proximity; }
+  .company-module .company-workspace-groups button,
+  .company-module .company-workspace-views button { scroll-snap-align: start; }
+  .company-module .environment-pill { display: none; }
+  .company-module .user-company-label { max-width: 170px; }
+  .company-module .user-company-label small { max-width: 170px; }
+}
