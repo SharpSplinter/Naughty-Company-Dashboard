@@ -389,7 +389,7 @@ async function validateTornKey(apiKey: string): Promise<{ id: string; name: stri
       const error = isRecord(factionPayload) && isRecord(factionPayload.error) ? factionPayload.error : null
       const code = typeof error?.code === "number" ? error.code : undefined
       const status = code === 2 ? 401 : code === 3 ? 403 : code === 5 || code === 8 || code === 14 ? 429 : code === 9 ? 503 : factionResponse.status >= 500 ? 502 : 502
-      throw Object.assign(new Error(code === 3 ? "The API key needs faction access so Naughty Souls membership can be verified. Use a limited-access key that includes faction access." : code === 5 || code === 8 || code === 14 ? "Torn rate limit reached. Try again shortly." : code === 9 ? "Torn rate limit reached while checking faction membership. Try again shortly." : "We could not verify your Naughty Souls membership with Torn. Please check your key permissions and try again."), { status })
+      throw Object.assign(new Error(code === 3 ? "The API key needs faction access so Naughty Souls membership can be verified. Use a limited-access key that includes faction access." : code === 5 || code === 8 || code === 14 ? "Torn request limit reached. Retry after the limit resets." : code === 9 ? "Torn's API is currently disabled. Please retry when service is restored." : "We could not verify your Naughty Souls membership with Torn. Please check your key permissions and try again."), { status })
     }
     const faction = isRecord(factionPayload) && isRecord(factionPayload.faction) ? factionPayload.faction : null
     const factionId = faction?.id ?? (isRecord(factionPayload) ? factionPayload.faction_id : undefined)
@@ -473,7 +473,7 @@ async function fetchPrivateLiveSelection(env: WorkerEnv, apiKey: string, selecti
     if (!response.ok || error) {
       const code = typeof error?.code === "number" ? error.code : undefined
       const status = code === 2 || code === 18 ? 401
-        : code === 5 || code === 14 ? 429
+        : code === 5 || code === 8 || code === 14 ? 429
         : code === 7 || code === 10 || code === 13 || code === 16 ? 403
         : code === 9 || code === 17 ? 503
         : code === 3 || code === 4 || code === 6 ? 400
@@ -487,7 +487,7 @@ async function fetchPrivateLiveSelection(env: WorkerEnv, apiKey: string, selecti
         : code === 14 ? "Torn's daily API read limit has been reached. Your key and last successful snapshot were retained."
         : code === 16 ? "This key does not have permission for the requested private Torn selection."
         : code === 18 ? "This Torn API key has been paused by its owner."
-        : code === 9 ? "Torn's API is temporarily unavailable. Try again shortly."
+        : code === 9 ? "Torn's API is currently disabled. Try again when service is restored."
         : code === 17 ? "Torn reported a temporary backend error. Your last successful snapshot was retained."
         : "Torn could not provide the requested private live data."
       throw new TornApiClientError(message, { status, code })
