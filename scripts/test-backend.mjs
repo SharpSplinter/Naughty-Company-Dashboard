@@ -205,7 +205,7 @@ try {
         logTypeId: 2535,
         title: "Item use halloween basket",
         category: "Halloween basket",
-        logJson: JSON.stringify({ data: { items: { "366": 2, "367": 3, "368": 1, "473": 2, "530": 4, "987": 1, "818": 2 } } }),
+        logJson: JSON.stringify({ data: { items: { "366": 2, "367": 3, "368": 1, "473": 2, "530": 4, "561": 1, "563": 1, "987": 1, "818": 2 } } }),
       },
       {
         logTypeId: 2190,
@@ -230,6 +230,12 @@ try {
         title: "Item use erotic dvd",
         category: "Item use",
         logJson: JSON.stringify({ data: { item: 366 } }),
+      },
+      {
+        logTypeId: 2030,
+        title: "Item use book of carols",
+        category: "Item use",
+        logJson: JSON.stringify({ data: { item: 561 } }),
       },
       {
         logTypeId: 2547,
