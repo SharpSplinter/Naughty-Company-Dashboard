@@ -116,7 +116,14 @@ export function FloorApp() {
   const [factionSyncProgress, setFactionSyncProgress] = useState("")
   const [selectedRankingType, setSelectedRankingType] = useState("")
   const [snapshotHistory, setSnapshotHistory] = useState<SnapshotHistoryCompany[]>([])
-  const [officialStockHistory, setOfficialStockHistory] = useState<{ day: string; stockQuantity: number | null }[]>([])
+  const [officialStockHistory, setOfficialStockHistory] = useState<{
+    day: string
+    stockQuantity: number | null
+    advertisingBudget: number | null
+    employeeWages: number | null
+    stockOrderExpense: number | null
+    fetchedAt?: string
+  }[]>([])
   const [snapshotSourceCreatedAt, setSnapshotSourceCreatedAt] = useState("")
   const [snapshotHistoryLoading, setSnapshotHistoryLoading] = useState(true)
   const [snapshotHistoryError, setSnapshotHistoryError] = useState("")
@@ -535,11 +542,18 @@ export function FloorApp() {
         const rows = history.flatMap((item) => {
           if (!item || typeof item !== "object" || Array.isArray(item)) return []
           const record = item as Record<string, unknown>
+          const numberOrNull = (value: unknown) =>
+            typeof value === "number" && Number.isFinite(value) ? value : null
           const day = typeof record.day === "string" ? record.day : ""
-          const stockQuantity = typeof record.stockQuantity === "number" && Number.isFinite(record.stockQuantity)
-            ? record.stockQuantity
-            : null
-          return /^\d{4}-\d{2}-\d{2}$/.test(day) ? [{ day, stockQuantity }] : []
+          const fetchedAt = typeof record.fetchedAt === "string" ? record.fetchedAt : undefined
+          return /^\d{4}-\d{2}-\d{2}$/.test(day) ? [{
+            day,
+            stockQuantity: numberOrNull(record.stockQuantity),
+            advertisingBudget: numberOrNull(record.advertisingBudget),
+            employeeWages: numberOrNull(record.employeeWages),
+            stockOrderExpense: numberOrNull(record.stockOrderExpense),
+            ...(fetchedAt ? { fetchedAt } : {}),
+          }] : []
         })
         if (!cancelled) setOfficialStockHistory(rows)
       } catch {
@@ -569,9 +583,8 @@ export function FloorApp() {
   const weeklyIncome = model?.company.weeklyIncome ?? null
   const latestReportedWeeklyProfit = archivedWeekPoints.filter((point) => point.weeklyProfit !== null).at(-1)?.weeklyProfit ?? null
   const archivedMonthProfit = archivedMonthPoints.filter((point) => point.dailyProfit !== null)
-  const dailyExpenses = costs?.dailyCosts ?? null
   const reportedWeeklyProfit = reportedCompanyProfit(result?.profile, "weekly")
-  const estimatedWeeklyProfit = estimateWeeklyProfit(weeklyIncome, dailyExpenses)
+  const estimatedWeeklyProfit = estimateWeeklyProfit(weeklyIncome, officialStockHistory)
   const weeklyProfit = estimatedWeeklyProfit ?? reportedWeeklyProfit ?? latestReportedWeeklyProfit
   const monthlyProfit = archivedMonthProfit.length
     ? archivedMonthProfit.reduce((sum, point) => sum + (point.dailyProfit ?? 0), 0)
