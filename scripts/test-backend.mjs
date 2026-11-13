@@ -113,14 +113,15 @@ try {
       ["oil-a", 1, 1], ["tv-a", 2, 1], ["oil-b", 3, 2],
     ])
     const factionRows = buildFactionCompanyRankSnapshots([
-      { playerId: "101", playerName: "A", factionId: "8317", companyId: "oil-b", isDirector: 1 },
-      { playerId: "102", playerName: "B", factionId: "8317", companyId: "oil-a", isDirector: 1 },
-      { playerId: "103", playerName: "C", factionId: "8317", companyId: "missing-company", isDirector: 1 },
-      { playerId: "104", playerName: "D", factionId: "8317", companyId: "tv-a", isDirector: 0 },
-    ], companies, metadata)
+      { playerId: "101", playerName: "A", factionId: "8317", companyId: "oil-b", companyName: "Oil B", companyType: "Oil Rig", companyTypeId: 28, companyRating: 10, dailyIncome: 30, weeklyIncome: 200, memberCheckedAt: "2026-11-13T17:00:00.000Z", isDirector: 1 },
+      { playerId: "102", playerName: "B", factionId: "8317", companyId: "oil-a", companyName: "Oil A", companyType: "Oil Rig", companyTypeId: 28, companyRating: 10, dailyIncome: 50, weeklyIncome: 300, memberCheckedAt: "2026-11-13T17:00:00.000Z", isDirector: 1 },
+      { playerId: "103", playerName: "C", factionId: "8317", companyId: "not-in-global-list", companyName: "Faction TV", companyType: "Television Network", companyTypeId: 5, companyRating: 9, dailyIncome: 40, weeklyIncome: 250, memberCheckedAt: "2026-11-13T17:00:00.000Z", isDirector: 1 },
+      { playerId: "104", playerName: "D", factionId: "8317", companyId: "tv-a", companyName: "TV A", companyType: "Television Network", companyTypeId: 5, companyRating: 9, dailyIncome: 40, weeklyIncome: 250, memberCheckedAt: "2026-11-13T17:00:00.000Z", isDirector: 0 },
+    ], metadata)
     assert.deepEqual(factionRows.map((row) => [row.companyId, row.factionRank, row.typeRank]), [
-      ["oil-a", 1, 1], ["oil-b", 2, 2],
+      ["oil-a", 1, 1], ["not-in-global-list", 2, 1], ["oil-b", 3, 2],
     ])
+    assert.equal(factionRows[0].memberCheckedAt, "2026-11-13T17:00:00.000Z")
     assert.equal(factionRows.every((row) => row.factionId === "8317"), true)
   })
   await test("administrator password hash generator passes Node syntax validation without running", () => {
