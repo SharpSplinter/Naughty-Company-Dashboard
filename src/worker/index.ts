@@ -1,7 +1,7 @@
 import { TornApiClient, TornApiClientError } from "../lib/torn/client"
 import { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } from "./snapshot-provenance"
 import { withRollingWeeklyProfit, type DailyProfitHistoryPoint } from "./company-history"
-import { buildFactionCompanyRankSnapshots, buildGlobalCompanyRankSnapshots, type FactionDirectorRankingInput, type RankingCompanyInput } from "./ranking-snapshots"
+import { buildFactionCompanyRankSnapshots, buildGlobalCompanyRankSnapshots, isFactionDirectorySnapshotEligible, type FactionDirectorRankingInput, type RankingCompanyInput } from "./ranking-snapshots"
 import { validateAdminPassword } from "../lib/admin-password-policy.js"
 import { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isSnapshotStale, normalizeWebhookUrl, normalizeAlertThreshold, normalizeCooldownHours } from "../lib/automation/rules"
 
@@ -1232,7 +1232,7 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
   const complete = memberCount > 0 && pendingCount === 0 && invalidMemberCount === 0
   const syncCompletedAt = new Date().toISOString()
   if (memberCount > 0 && invalidMemberCount === 0) {
-    const currentMemberIds = rawMembers.flatMap((item) => isRecord(item) ? [positiveId(item.id ?? item.user_id)] : []).filter((id): id is number => id !== null).map(String)
+    const currentMemberIds = rawMembers.flatMap((item) => isRecord(item) ? [positiveId(item.id ?? item.user_id)] : []).filter((id): id is string => id !== null)
     await db.prepare("UPDATE faction_member_cache SET is_director = 0, company_id = NULL, company_name = NULL, company_type = NULL, company_type_id = NULL, company_rating = NULL, daily_income = NULL, weekly_income = NULL, profile_json = NULL WHERE faction_id = '8317' AND player_id NOT IN (SELECT value FROM json_each(?))")
       .bind(asJson(currentMemberIds)).run()
   }
