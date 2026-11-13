@@ -1,10 +1,11 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 
-const [worker, migration, workspace] = await Promise.all([
+const [worker, migration, workspace, metrics] = await Promise.all([
   readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8"),
   readFile(new URL("../migrations/auth/0024_halloween_custom_key_support.sql", import.meta.url), "utf8"),
   readFile(new URL("../src/components/portal/workspaces.tsx", import.meta.url), "utf8"),
+  readFile(new URL("../src/lib/halloween/metrics.ts", import.meta.url), "utf8"),
 ])
 
 assert.ok(migration.includes("CREATE TABLE halloween_historical_keys_new"))
@@ -23,7 +24,8 @@ assert.ok(worker.includes("body.consent === true"))
 assert.ok(worker.includes('consentVersion !== "halloween-history-v2"'))
 assert.ok(worker.includes('key.consentVersion !== "halloween-history-v2"'))
 assert.ok(worker.includes('https://api.torn.com/v2/user/attacks'))
-assert.ok(worker.includes('finishing_hit_effects'))
+assert.ok(metrics.includes('effect?.name !== "revitalize"'))
+assert.ok(metrics.includes("revitalizeChanceCounts"))
 assert.ok(worker.includes("DELETE FROM halloween_historical_keys WHERE player_id = ?"))
 assert.ok(worker.includes("historicalRecordsRetained: true"))
 assert.ok(workspace.includes("Data Sharing"))
