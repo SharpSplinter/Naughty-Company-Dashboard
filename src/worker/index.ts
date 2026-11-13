@@ -21,7 +21,7 @@ import {
   type WeeklySnapshot,
 } from "../lib/faction-performance/weekly"
 import { PERSONAL_STATS_HISTORICAL_NAMES } from "../lib/torn/personalstats"
-import { calculateHalloweenEventMetrics, emptyHalloweenEventMetrics, sumHalloweenEventMetrics, type HalloweenEventMetrics } from "../lib/halloween/metrics"
+import { calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, emptyHalloweenEventMetrics, sumHalloweenEventMetrics, type HalloweenAttackMetric, type HalloweenEventMetrics } from "../lib/halloween/metrics"
 import { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } from "../lib/faction-performance/private-live"
 import { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } from "./snapshot-provenance"
 import { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isSnapshotStale, normalizeWebhookUrl, normalizeAlertThreshold, normalizeCooldownHours } from "../lib/automation/rules"
@@ -1820,6 +1820,7 @@ async function purgeHalloweenMemberData(env: WorkerEnv, playerId: string): Promi
   const db = requireDb(env)
   await db.prepare("DELETE FROM halloween_historical_keys WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM halloween_event_logs WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM halloween_attack_metrics_jobs WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM halloween_live_snapshots WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM halloween_collection_jobs WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM halloween_live_snapshot_jobs WHERE player_id = ?").bind(playerId).run()
@@ -1942,6 +1943,31 @@ async function loadHalloweenEventMetricsForPlayers(db: D1Database, eventYear: nu
       metrics.successfulAttackEnergyUsed = Number(summary.energy ?? 0)
       metrics.successfulAttacks = Number(summary.successfulAttacks ?? 0)
     }
+  }
+  const attackRows = await db.prepare(
+    `SELECT player_id AS playerId, attacks_reviewed AS attacksReviewed, revitalize_procs AS revitalizeProcs, revitalize_chances_json AS chancesJson
+     FROM halloween_attack_metrics_jobs
+     WHERE event_year = ? AND status = 'complete' AND player_id IN (${placeholders})`
+  ).bind(eventYear, ...playerIds).all<{
+    playerId: string
+    attacksReviewed: number
+    revitalizeProcs: number
+    chancesJson: string
+  }>()
+  for (const row of attackRows.results ?? []) {
+    const metrics = metricsByPlayer.get(row.playerId)
+    if (!metrics) continue
+    metrics.revitalizeAttacksReviewed = Number(row.attacksReviewed ?? 0)
+    metrics.revitalizeProcs = Number(row.revitalizeProcs ?? 0)
+    try {
+      const chances = JSON.parse(String(row.chancesJson ?? "{}"))
+      if (isRecord(chances)) {
+        metrics.revitalizeChanceCounts = Object.fromEntries(
+          Object.entries(chances).filter(([chance, count]) =>
+            /^\\d+$/.test(chance) && typeof count === "number" && Number.isFinite(count) && count >= 0)
+        ) as Record<string, number>
+      }
+    } catch { metrics.revitalizeChanceCounts = {} }
   }
   return metricsByPlayer
 }
