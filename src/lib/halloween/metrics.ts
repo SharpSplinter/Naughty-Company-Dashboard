@@ -21,7 +21,7 @@ const GREEN_EGG_ITEM_IDS = new Set(["473"])
 const ENERGY_CAN_ITEM_IDS = new Set(["530", "532", "533", "553", "554", "555", "985", "986", "987"])
 const SIX_PACK_ITEM_ID = "818"
 
-function emptyMetrics(): HalloweenEventMetrics {
+export function emptyHalloweenEventMetrics(): HalloweenEventMetrics {
   return {
     boosters: 0,
     energyCans: 0,
@@ -78,7 +78,7 @@ function parseLogJson(value: string | null): Record<string, unknown> | null {
 }
 
 export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetricLogRow[]): HalloweenEventMetrics {
-  const metrics = emptyMetrics()
+  const metrics = emptyHalloweenEventMetrics()
   const basketItemTotals = new Map<string, number>()
 
   for (const row of rows) {
@@ -135,5 +135,5 @@ export function sumHalloweenEventMetrics(values: readonly HalloweenEventMetrics[
     treatExchangeEnergyGained: total.treatExchangeEnergyGained + value.treatExchangeEnergyGained,
     successfulAttackEnergyUsed: total.successfulAttackEnergyUsed + value.successfulAttackEnergyUsed,
     successfulAttacks: total.successfulAttacks + value.successfulAttacks,
-  }), emptyMetrics())
+  }), emptyHalloweenEventMetrics())
 }
