@@ -810,14 +810,22 @@ try {
     assert.equal(missingWage.dailyCosts, null)
   })
 
-  await test("weekly profit subtracts seven days of full daily expenses before reported fallback", () => {
-    const profile = { company: { income: { weekly: 897615035 }, profit: { daily: 62692205, weekly: 240001645 } } }
+  await test("weekly profit sums seven consecutive days of saved advertising, wages, and stock-order expenses", () => {
+    const profile = { company: { income: { weekly: 10000 }, profit: { daily: 62692205, weekly: 240001645 } } }
     assert.equal(reportedCompanyProfit(profile, "weekly"), 240001645)
     assert.equal(reportedCompanyProfit({ profile: { weekly_profit: 240001645 } }, "weekly"), 240001645)
     assert.equal(reportedCompanyProfit({ company: { profit: { daily: 62692205 } } }, "weekly"), null)
-    const dailyExpenses = 13200000 + 80744770 + 2500000
-    assert.equal(estimateWeeklyProfit(897615035, dailyExpenses), 222501645)
-    assert.equal(estimateWeeklyProfit(897615035, null), null)
+    const history = Array.from({ length: 7 }, (_, index) => ({
+      day: `2026-11-${String(index + 1).padStart(2, "0")}`,
+      advertisingBudget: 100 + index * 10,
+      employeeWages: 300,
+      stockOrderExpense: index * 5,
+    })).reverse()
+    assert.equal(estimateWeeklyProfit(10000, history), 6885)
+    assert.equal(estimateWeeklyProfit(10000, history.slice(1)), null, "six days must not be presented as a weekly calculation")
+    assert.equal(estimateWeeklyProfit(10000, history.map((point, index) => index === 3 ? { ...point, stockOrderExpense: null } : point)), null, "unknown daily costs must not be treated as zero")
+    assert.equal(estimateWeeklyProfit(10000, history.map((point, index) => index === 3 ? { ...point, day: "2026-11-10" } : point)), null, "a gap in reporting days must not be skipped")
+    assert.equal(estimateWeeklyProfit(10000, null), null)
   })
 
   await test("handles quiet hours that cross midnight and all-day quiet windows", () => {
