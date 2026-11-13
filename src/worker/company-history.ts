@@ -19,7 +19,7 @@ export function withRollingWeeklyProfit<T extends DailyProfitHistoryPoint>(
   points: readonly T[],
 ): Array<T & RollingWeeklyProfitPoint> {
   const ordered = [...points].sort((a, b) => a.day.localeCompare(b.day))
-  const byDay = new Map(ordered.map((point) => [point.day, point]))
+  const byDay = new Map<string, T>(ordered.map((point): [string, T] => [point.day, point]))
   return ordered.map((point) => {
     const end = Date.parse(point.day + "T00:00:00.000Z")
     const window: T[] = []
