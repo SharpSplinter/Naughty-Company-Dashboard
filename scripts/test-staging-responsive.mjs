@@ -74,8 +74,9 @@ try {
 
   const response = await page.goto(baseUrl, { waitUntil: "networkidle", timeout: 30000 });
   assert.ok(response?.ok(), "Staging portal returned HTTP " + response?.status());
-  await page.getByText("Staging Private History Member", { exact: true }).waitFor({ state: "visible", timeout: 20000 });
-  await page.getByRole("button", { name: /Company Dashboard/ }).click();
+  const companyWorkspaceCard = page.getByRole("button", { name: /Company Dashboard/ });
+  await companyWorkspaceCard.waitFor({ state: "visible", timeout: 20000 });
+  await companyWorkspaceCard.click();
   await page.locator(".company-module").waitFor({ state: "visible", timeout: 15000 });
 
   const primaryNav = page.getByRole("navigation", { name: "Company dashboard categories" });
