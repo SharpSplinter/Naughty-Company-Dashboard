@@ -1153,7 +1153,7 @@ async function persistFactionDirectorSnapshot(
   await db.prepare("INSERT INTO faction_director_snapshots (player_id, company_id, snapshot_day, profile_json, stock_json, fetched_at, snapshot_kind) VALUES (?, ?, ?, ?, ?, ?, 'lock-in') ON CONFLICT(player_id, company_id, snapshot_day) DO UPDATE SET profile_json = excluded.profile_json, stock_json = excluded.stock_json, fetched_at = excluded.fetched_at, snapshot_kind = excluded.snapshot_kind WHERE faction_director_snapshots.snapshot_kind IN ('legacy', 'initialization')")
     .bind(playerId, companyId, day, asJson(profile), stock === null || stock === undefined ? null : asJson(stock), fetchedAt).run()
 }
-async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20, forceRefresh = false): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[] }> {
+async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20, forceRefresh = false): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[]; memberCount: number; invalidMemberCount: number; complete: boolean }> {
   const client = new TornApiClient({ apiKey })
   const memberPayload = await client.getFactionMembers()
   const rawMembers = Array.isArray(memberPayload.members) ? memberPayload.members : isRecord(memberPayload.members) ? Object.values(memberPayload.members) : []
@@ -1161,10 +1161,11 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
   const now = Date.now()
   let processed = 0
   let pending = 0
+  let invalidMemberCount = 0
   for (const item of rawMembers) {
-    if (!isRecord(item)) continue
+    if (!isRecord(item)) { invalidMemberCount += 1; continue }
     const id = positiveId(item.id ?? item.user_id)
-    if (!id) continue
+    if (!id) { invalidMemberCount += 1; continue }
     const name = typeof item.name === "string" ? item.name : `Player #${id}`
     const cached = await db.prepare("SELECT checked_at FROM faction_member_cache WHERE player_id = ?").bind(id).first<{ checked_at: string | null }>()
     const checked = cached?.checked_at ? Date.parse(cached.checked_at) : 0
@@ -1202,8 +1203,16 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
         .bind(id, name, checkedAt, checkedAt).run()
     }
   }
+  const pendingCount = Math.max(pending, 0)
+  const memberCount = rawMembers.length - invalidMemberCount
+  const complete = pendingCount === 0 && invalidMemberCount === 0
+  const syncCompletedAt = new Date().toISOString()
+  await db.prepare("CREATE TABLE IF NOT EXISTS faction_directory_sync_state (faction_id TEXT PRIMARY KEY, checked_at TEXT NOT NULL, member_count INTEGER NOT NULL, processed_count INTEGER NOT NULL, pending_count INTEGER NOT NULL, invalid_member_count INTEGER NOT NULL DEFAULT 0, complete INTEGER NOT NULL CHECK (complete IN (0, 1)))").run()
+  await db.prepare("INSERT INTO faction_directory_sync_state (faction_id, checked_at, member_count, processed_count, pending_count, invalid_member_count, complete) VALUES ('8317', ?, ?, ?, ?, ?, ?) ON CONFLICT(faction_id) DO UPDATE SET checked_at = excluded.checked_at, member_count = excluded.member_count, processed_count = excluded.processed_count, pending_count = excluded.pending_count, invalid_member_count = excluded.invalid_member_count, complete = excluded.complete")
+    .bind(syncCompletedAt, memberCount, processed, pendingCount, invalidMemberCount, complete ? 1 : 0).run()
+  await persistCompleteFactionRankingSnapshot(db).catch(() => false)
   const rows = await db.prepare("SELECT player_id AS playerId, player_name AS directorName, company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, company_rating AS starRating, daily_income AS dailyIncome, weekly_income AS weeklyIncome, updated_at AS fetchedAt FROM faction_member_cache WHERE faction_id = '8317' AND is_director = 1 ORDER BY company_type ASC, weekly_income DESC").all()
-  return { processed, pending: Math.max(pending, 0), directors: rows.results ?? [] }
+  return { processed, pending: pendingCount, directors: rows.results ?? [], memberCount, invalidMemberCount, complete }
 }
 
 async function captureWeeklyFactionStarCounts(env: WorkerEnv, capturedAt = new Date().toISOString()): Promise<void> {
