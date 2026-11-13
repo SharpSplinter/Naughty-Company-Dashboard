@@ -19,7 +19,7 @@ export type HalloweenEventMetricLogRow = {
   logJson: string | null
 }
 
-const BOOSTER_ITEM_IDS = new Set(["366", "368", "561", "563"])
+const BOOSTER_ITEM_IDS = new Set(["366", "368"])
 const FHC_ITEM_IDS = new Set(["367"])
 const GREEN_EGG_ITEM_IDS = new Set(["473"])
 const ENERGY_CAN_ITEM_IDS = new Set(["530", "532", "533", "553", "554", "555", "985", "986", "987"])
@@ -106,8 +106,7 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
     if (category.toLowerCase() === "item use" || title.toLowerCase().startsWith("item use ")) {
       const itemId = data.item === undefined || data.item === null ? "" : String(data.item)
       const itemTitle = title.toLowerCase()
-      if (BOOSTER_ITEM_IDS.has(itemId) || itemTitle.includes("erotic dvd") || itemTitle.includes("lawyer business card") ||
-        itemTitle.includes("book of carols") || itemTitle.includes("gift card")) metrics.boostersUsed += 1
+      if (BOOSTER_ITEM_IDS.has(itemId) || itemTitle.includes("erotic dvd") || itemTitle.includes("lawyer business card")) metrics.boostersUsed += 1
       if (ENERGY_CAN_ITEM_IDS.has(itemId)) metrics.energyCansUsed += 1
       if (itemId === SIX_PACK_ITEM_ID) metrics.energyCansUsed += 6
       if (FHC_ITEM_IDS.has(itemId) || itemTitle.includes("feathery hotel coupon")) metrics.fhcsUsed += 1
