@@ -5760,37 +5760,92 @@ export default {
       const yearValue = isRecord(body) ? Number(body.year) : new Date().getUTCFullYear()
       if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
       const db = requireDb(env)
-      const key = await db.prepare("SELECT player_id, consent_version AS consentVersion FROM halloween_historical_keys WHERE player_id = ?").bind(session.player_id).first<{ player_id: string; consentVersion: string }>()
+      const key = await db.prepare("SELECT player_id, consent_version AS consentVersion FROM halloween_historical_keys WHERE player_id = ?")
+        .bind(session.player_id).first<{ player_id: string; consentVersion: string }>()
       const portalKey = await savedKey(env, session.player_id)
       if (!key || !portalKey) return jsonResponse({ error: "Enable Halloween historical collection with your saved portal API key before collecting logs." }, 409, origin)
-      if (key.consentVersion !== "halloween-history-v2") return jsonResponse({ error: "Review the updated Halloween collection terms and enable User → Attacks access before collecting Revitalize data." }, 409, origin)
+      if (key.consentVersion !== "halloween-history-v2") {
+        return jsonResponse({ error: "Review the updated Halloween collection terms and enable User → Attacks access before collecting Revitalize data." }, 409, origin)
+      }
+
       const event = await db.prepare("SELECT start_at AS startAt, end_at AS endAt, historical_collection_enabled AS enabled FROM halloween_event_windows WHERE event_year = ?")
         .bind(yearValue).first<{ startAt: string; endAt: string; enabled: number }>()
-      if (!event || event.enabled !== 1) return jsonResponse({ error: "Historical collection is not enabled for that event year." }, 409, origin)
+      if (!event || event.enabled !== 1) return jsonResponse({ error: "Historical collection is not enabled for this event year." }, 409, origin)
       const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
-      if (!personal?.window.configured || !personal.window.startAt || !personal.window.endAt) return jsonResponse({ error: "Select your personal Trick or Treat start time before collecting historical logs." }, 409, origin)
-      const active = await db.prepare("SELECT job_id AS jobId, status, logs_collected AS logsCollected FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? AND status IN ('queued', 'running') ORDER BY updated_at DESC LIMIT 1")
-        .bind(session.player_id, yearValue).first<{ jobId: string; status: string; logsCollected: number }>()
-      if (active) return jsonResponse({ queued: true, jobId: active.jobId, status: active.status, logsCollected: Number(active.logsCollected ?? 0), resumed: true }, 200, origin)
-      const finished = await db.prepare("SELECT job_id AS jobId, status, logs_collected AS logsCollected FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? AND status = 'complete' ORDER BY updated_at DESC LIMIT 1")
-        .bind(session.player_id, yearValue).first<{ jobId: string; status: string; logsCollected: number }>()
-      if (finished) return jsonResponse({ queued: false, jobId: finished.jobId, status: "complete", logsCollected: Number(finished.logsCollected ?? 0), alreadyComplete: true }, 200, origin)
-      const jobId = crypto.randomUUID()
-      const cursorTs = Math.floor(Date.parse(personal.window.startAt) / 1000)
-      if (!Number.isFinite(cursorTs) || Date.parse(personal.window.endAt) <= Date.parse(personal.window.startAt)) return jsonResponse({ error: "The personal event window is invalid." }, 409, origin)
-      const now = new Date().toISOString()
-      await db.prepare("INSERT INTO halloween_collection_jobs (job_id, player_id, event_year, status, cursor_ts, window_start_at, window_end_at, created_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)")
-        .bind(jobId, session.player_id, yearValue, cursorTs, personal.window.startAt, personal.window.endAt, now, now).run()
-      try {
-        await sendHalloweenCollectionJob(env, jobId)
-      } catch {
-        await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
-          .bind("The background collection queue is unavailable. Try again later.", new Date().toISOString(), jobId).run()
-        return jsonResponse({ error: "The background collection queue is unavailable. Try again later." }, 503, origin)
+      if (!personal?.window.configured || !personal.window.startAt || !personal.window.endAt) {
+        return jsonResponse({ error: "Select your personal Trick or Treat start time before collecting historical logs." }, 409, origin)
       }
-      return jsonResponse({ queued: true, jobId, status: "queued", logsCollected: 0 }, 202, origin)
+      const cursorTs = Math.floor(Date.parse(personal.window.startAt) / 1000)
+      if (!Number.isFinite(cursorTs) || Date.parse(personal.window.endAt) <= Date.parse(personal.window.startAt)) {
+        return jsonResponse({ error: "The personal event window is invalid." }, 409, origin)
+      }
+      const now = new Date().toISOString()
+
+      // Event logs and detailed attacks have independent permissions, cursors
+      // and retry states. A previously completed log archive must not prevent
+      // a newly added Revitalize collection from running.
+      const [activeLog, finishedLog, existingAttack] = await Promise.all([
+        db.prepare("SELECT job_id AS jobId, status, logs_collected AS logsCollected FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? AND status IN ('queued', 'running') ORDER BY updated_at DESC LIMIT 1")
+          .bind(session.player_id, yearValue).first<{ jobId: string; status: string; logsCollected: number }>(),
+        db.prepare("SELECT job_id AS jobId, status, logs_collected AS logsCollected FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? AND status = 'complete' ORDER BY updated_at DESC LIMIT 1")
+          .bind(session.player_id, yearValue).first<{ jobId: string; status: string; logsCollected: number }>(),
+        db.prepare("SELECT job_id AS jobId, status, attacks_reviewed AS attacksReviewed FROM halloween_attack_metrics_jobs WHERE player_id = ? AND event_year = ? LIMIT 1")
+          .bind(session.player_id, yearValue).first<{ jobId: string; status: string; attacksReviewed: number }>(),
+      ])
+
+      let logJobId = activeLog?.jobId ?? finishedLog?.jobId ?? ""
+      let logStatus = activeLog?.status ?? finishedLog?.status ?? "not_started"
+      let logQueueError = ""
+      if (!activeLog && !finishedLog) {
+        logJobId = crypto.randomUUID()
+        logStatus = "queued"
+        await db.prepare("INSERT INTO halloween_collection_jobs (job_id, player_id, event_year, status, cursor_ts, window_start_at, window_end_at, created_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)")
+          .bind(logJobId, session.player_id, yearValue, cursorTs, personal.window.startAt, personal.window.endAt, now, now).run()
+        try {
+          await sendHalloweenCollectionJob(env, logJobId)
+        } catch {
+          logStatus = "failed"
+          logQueueError = "The Halloween event-log collection queue is unavailable."
+          await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+            .bind("The background collection queue is unavailable. Try again later.", new Date().toISOString(), logJobId).run()
+        }
+      }
+
+      let attackJobId = existingAttack?.jobId ?? ""
+      let attackStatus = existingAttack?.status ?? "not_started"
+      let attackQueueError = ""
+      if (!existingAttack || ["failed", "cancelled"].includes(existingAttack.status)) {
+        attackJobId = existingAttack?.jobId ?? crypto.randomUUID()
+        attackStatus = "queued"
+        if (existingAttack) {
+          await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'queued', cursor_url = NULL, window_start_at = ?, window_end_at = ?, pages_collected = 0, attacks_reviewed = 0, revitalize_procs = 0, revitalize_chances_json = '{}', last_error = NULL, completed_at = NULL, updated_at = ? WHERE job_id = ?")
+            .bind(personal.window.startAt, personal.window.endAt, now, attackJobId).run()
+        } else {
+          await db.prepare("INSERT INTO halloween_attack_metrics_jobs (job_id, player_id, event_year, status, window_start_at, window_end_at, created_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)")
+            .bind(attackJobId, session.player_id, yearValue, personal.window.startAt, personal.window.endAt, now, now).run()
+        }
+        try {
+          await sendHalloweenAttackMetricsJob(env, attackJobId)
+        } catch {
+          attackStatus = "failed"
+          attackQueueError = "The detailed attack collection queue is unavailable."
+          await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+            .bind("The detailed attack collection queue is unavailable. Try again later.", new Date().toISOString(), attackJobId).run()
+        }
+      }
+
+      const errors = [logQueueError, attackQueueError].filter(Boolean)
+      const alreadyComplete = logStatus === "complete" && attackStatus === "complete"
+      return jsonResponse({
+        queued: !alreadyComplete && errors.length === 0,
+        resumed: Boolean(activeLog || (existingAttack && ["queued", "running"].includes(existingAttack.status))),
+        alreadyComplete,
+        logCollection: { jobId: logJobId || null, status: logStatus, logsCollected: Number(activeLog?.logsCollected ?? finishedLog?.logsCollected ?? 0) },
+        attackCollection: { jobId: attackJobId || null, status: attackStatus, attacksReviewed: Number(existingAttack?.attacksReviewed ?? 0) },
+        error: errors.length ? errors.join(" ") : undefined,
+      }, errors.length ? 503 : alreadyComplete ? 200 : 202, origin)
     }
-    if (url.pathname === "/api/auth/company-key" && request.method === "POST") {
+        if (url.pathname === "/api/auth/company-key" && request.method === "POST") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       try {
