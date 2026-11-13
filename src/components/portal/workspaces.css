@@ -606,3 +606,57 @@
   white-space: normal;
   overflow-wrap: anywhere;
 }
+
+
+/* Historical faction activity and member-level inactivity trends. */
+.faction-inactivity-workspace {
+  max-width: 1140px; margin: 18px auto 0; padding: 21px;
+  border: 1px solid #344b4c; border-radius: 13px;
+  background: linear-gradient(145deg, #17292d, #111b24);
+}
+.faction-inactivity-heading { display:flex; justify-content:space-between; align-items:flex-end; gap:18px; }
+.faction-inactivity-heading h2 { margin:12px 0 6px; font:600 22px 'Space Grotesk',sans-serif; }
+.faction-inactivity-heading p { max-width:600px; margin:0; color:#9badb7; font-size:10px; line-height:1.65; }
+.faction-inactivity-controls { display:flex; gap:9px; align-items:flex-end; }
+.faction-inactivity-controls label { display:flex; flex-direction:column; gap:6px; color:#8fa7a8; font-size:8px; letter-spacing:.08em; font-weight:700; }
+.faction-inactivity-controls select { min-width:145px; max-width:230px; padding:9px 10px; border:1px solid #40565a; border-radius:7px; background:#0e191f; color:#e2ece8; font-size:9px; }
+.faction-inactivity-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:9px; margin-top:18px; }
+.faction-inactivity-summary article { padding:12px 13px; border:1px solid #ffffff18; border-radius:8px; background:#101b23; }
+.faction-inactivity-summary small,.faction-inactivity-summary strong { display:block; }
+.faction-inactivity-summary small { color:#8fa4aa; font-size:8px; letter-spacing:.12em; font-weight:700; }
+.faction-inactivity-summary strong { margin-top:7px; color:#e3eee8; font:600 20px 'Space Grotesk',sans-serif; }
+.faction-inactivity-summary .inactive_24h strong { color:#efc27c; }
+.faction-inactivity-summary .inactive_72h strong { color:#ff9c9c; }
+.faction-inactivity-summary .unknown strong { color:#9aa9ae; }
+.faction-inactivity-trend { margin-top:13px; padding:16px; border:1px solid #ffffff18; border-radius:9px; background:#0e181f; }
+.faction-inactivity-trend-heading { display:flex; align-items:center; justify-content:space-between; gap:14px; padding-bottom:12px; border-bottom:1px solid #ffffff15; }
+.faction-inactivity-trend-heading small,.faction-inactivity-trend-heading strong,.faction-inactivity-trend-heading span { display:block; }
+.faction-inactivity-trend-heading small { color:#829a9e; font-size:8px; letter-spacing:.12em; font-weight:700; }
+.faction-inactivity-trend-heading strong { margin-top:5px; color:#e0eee7; font:600 14px 'Space Grotesk',sans-serif; }
+.faction-inactivity-trend-heading span { margin-top:4px; color:#9cb0b2; font-size:9px; }
+.faction-inactivity-points { display:flex; flex-direction:column; gap:10px; margin:15px 0 0; padding:0; list-style:none; }
+.faction-inactivity-points li { display:grid; grid-template-columns:minmax(125px,1.2fr) minmax(80px,1fr) minmax(115px,.8fr); align-items:center; gap:12px; }
+.faction-inactivity-point-time { color:#91a7ab; font-size:8px; }
+.faction-inactivity-point-track { height:7px; overflow:hidden; border-radius:99px; background:#26383e; }
+.faction-inactivity-point-track i { display:block; height:100%; border-radius:99px; background:#69bba0; }
+.faction-inactivity-points li.inactive_24h .faction-inactivity-point-track i { background:#d6a65c; }
+.faction-inactivity-points li.inactive_72h .faction-inactivity-point-track i { background:#d96e75; }
+.faction-inactivity-points li.unknown .faction-inactivity-point-track i { background:#75848a; }
+.faction-inactivity-point-value { display:flex; justify-content:space-between; gap:8px; }
+.faction-inactivity-point-value strong { color:#dce8e2; font-size:9px; white-space:nowrap; }
+.faction-inactivity-point-value span { color:#9aadb0; font-size:8px; text-align:right; }
+.faction-inactivity-points li.inactive_24h .faction-inactivity-point-value span { color:#efc27c; }
+.faction-inactivity-points li.inactive_72h .faction-inactivity-point-value span { color:#ff9c9c; }
+.faction-inactivity-footnote,.faction-inactivity-provenance { margin:12px 0 0; color:#82999f; font-size:8px; line-height:1.6; }
+.faction-activity-panel .faction-inactivity-footnote { padding-top:10px; }
+@media (max-width:760px) {
+ .faction-inactivity-workspace { padding:16px; }
+ .faction-inactivity-heading,.faction-inactivity-trend-heading { align-items:stretch; flex-direction:column; }
+ .faction-inactivity-controls { width:100%; flex-direction:column; align-items:stretch; }
+ .faction-inactivity-controls label,.faction-inactivity-controls select { width:100%; max-width:none; }
+ .faction-inactivity-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+ .faction-inactivity-points li { grid-template-columns:minmax(0,1fr) auto; gap:6px 10px; }
+ .faction-inactivity-point-time { grid-column:1 / -1; }
+ .faction-inactivity-point-track { grid-column:1; }
+ .faction-inactivity-point-value { grid-column:2; min-width:110px; }
+}

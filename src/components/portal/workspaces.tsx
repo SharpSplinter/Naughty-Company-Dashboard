@@ -1135,14 +1135,48 @@ type FactionActivityEvent = {
   currentValue: string | null
 }
 
+type FactionInactivityBand = "normal" | "inactive_24h" | "inactive_72h" | "unknown"
+type FactionInactivityMember = {
+  userId: string
+  name: string
+  position: string | null
+  lastActionStatus: string | null
+  lastActionAt: string | null
+  elapsedSeconds: number | null
+  classification: FactionInactivityBand
+}
+type FactionInactivityTrendPoint = {
+  capturedAt: string
+  lastActionAt: string | null
+  lastActionStatus: string | null
+  elapsedSeconds: number | null
+  classification: FactionInactivityBand
+}
+
 type FactionActivityPayload = {
   generatedAt: string
   comparisonStatus: "compared" | "waiting_for_roster" | "waiting_for_previous_roster"
   latestRoster: { runId: string; capturedAt: string; scheduledAt: string; memberCount: number } | null
   previousRoster: { runId: string; capturedAt: string; scheduledAt: string; memberCount: number } | null
+  historyRangeDays: 7 | 30 | 90
+  samplingIntervalHours: number
+  sampledSnapshotCount: number
+  oldestSampledAt: string | null
+  historyTruncated: boolean
   eventCount: number
+  totalObservedEventCount: number
+  eventsTruncated: boolean
   eventCounts: Record<string, number>
   events: FactionActivityEvent[]
+  inactivityCounts: Record<FactionInactivityBand, number>
+  inactivityMembers: FactionInactivityMember[]
+  memberTrend: {
+    memberId: string | null
+    memberName: string | null
+    sampleCount: number
+    knownSampleCount: number
+    points: FactionInactivityTrendPoint[]
+  }
 }
 
 type FactionActivityFilter = "all" | "membership" | "status" | "flags" | "settings" | "position"
@@ -1167,10 +1201,30 @@ function factionActivityCategory(type: FactionActivityEvent["eventType"]): Exclu
   return "position"
 }
 
+function factionInactivityLabel(classification: FactionInactivityBand): string {
+  if (classification === "inactive_72h") return "72H+ inactive"
+  if (classification === "inactive_24h") return "24H+ inactive"
+  if (classification === "normal") return "Normal"
+  return "Unknown"
+}
+
+function factionElapsedDuration(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds)) return "Unknown"
+  const safe = Math.max(0, Math.floor(seconds))
+  const days = Math.floor(safe / 86400)
+  const hours = Math.floor((safe % 86400) / 3600)
+  const minutes = Math.floor((safe % 3600) / 60)
+  if (days > 0) return days + "d " + hours + "h"
+  if (hours > 0) return hours + "h " + minutes + "m"
+  return minutes + "m"
+}
+
 function FactionActivityFeed({ playerName, onNavigate, apiBase, sessionToken }: FactionWorkspaceProps) {
   const [payload, setPayload] = useState<FactionActivityPayload | null>(null)
   const [filter, setFilter] = useState<FactionActivityFilter>("all")
   const [search, setSearch] = useState("")
+  const [rangeDays, setRangeDays] = useState<7 | 30 | 90>(30)
+  const [selectedMemberId, setSelectedMemberId] = useState("")
   const [busy, setBusy] = useState(true)
   const [error, setError] = useState("")
 
@@ -1178,12 +1232,15 @@ function FactionActivityFeed({ playerName, onNavigate, apiBase, sessionToken }: 
     setBusy(true)
     setError("")
     try {
-      const response = await fetch(apiBase + "/api/faction/activity", {
+      const query = "?days=" + rangeDays + (selectedMemberId ? "&memberId=" + encodeURIComponent(selectedMemberId) : "")
+      const response = await fetch(apiBase + "/api/faction/activity" + query, {
         headers: { Authorization: "Bearer " + sessionToken },
       })
       const result = await response.json() as { error?: string } & Partial<FactionActivityPayload>
       if (!response.ok) throw new Error(result.error || "Could not load faction activity.")
-      if (!Array.isArray(result.events) || !result.comparisonStatus) throw new Error("The faction activity response is incomplete.")
+      if (!Array.isArray(result.events) || !result.comparisonStatus || !result.memberTrend || !Array.isArray(result.inactivityMembers)) {
+        throw new Error("The faction activity response is incomplete.")
+      }
       setPayload(result as FactionActivityPayload)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not load faction activity.")
@@ -1191,7 +1248,7 @@ function FactionActivityFeed({ playerName, onNavigate, apiBase, sessionToken }: 
     } finally { setBusy(false) }
   }
 
-  useEffect(() => { void load() }, [apiBase, sessionToken])
+  useEffect(() => { void load() }, [apiBase, sessionToken, rangeDays, selectedMemberId])
 
   const formatAt = (value: string) => {
     const date = new Date(value)
@@ -1207,22 +1264,25 @@ function FactionActivityFeed({ playerName, onNavigate, apiBase, sessionToken }: 
     return matchesSearch && (filter === "all" || factionActivityCategory(event.eventType) === filter)
   })
   const comparisonLabel = payload?.comparisonStatus === "compared"
-    ? "Two completed roster snapshots compared"
+    ? "Sampled completed rosters compared"
     : payload?.comparisonStatus === "waiting_for_previous_roster"
       ? "Waiting for a second completed roster"
       : "Waiting for the first completed roster"
   const typeCount = (type: FactionActivityEvent["eventType"]) => payload?.eventCounts[type] || 0
+  const selectedMember = payload?.inactivityMembers.find(member => member.userId === (selectedMemberId || payload.memberTrend.memberId)) ?? null
+  const trendPoints = payload?.memberTrend.points.slice(-24) ?? []
+  const trendMaximum = Math.max(1, ...trendPoints.map(point => point.elapsedSeconds ?? 0))
 
   return (
     <main className="module-page faction-module faction-activity-module">
       <header className="module-topbar"><a className="portal-brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("/") }}><span className="portal-brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>FACTION WORKSPACE</small></span></a><button type="button" onClick={() => onNavigate("/")}>← Return to portal</button></header>
-      <section className="module-heading"><div className="portal-eyebrow"><span /> NAUGHTY SOULS · ROSTER CHANGES</div><h1>Faction <em>Activity</em></h1><p>Changes observed between the two latest completed public faction rosters. This feed reports what the collector observed, not an inferred minute-by-minute audit trail.</p></section>
+      <section className="module-heading"><div className="portal-eyebrow"><span /> NAUGHTY SOULS · MEMBER ACTIVITY HISTORY</div><h1>Faction <em>Activity</em></h1><p>Changes observed across completed public faction rosters. Events are dated when the collector first observed a change, not when it necessarily happened. Inactivity is calculated from Torn's public last-action timestamp.</p></section>
       {error && <p className="settings-feedback error" role="alert">{error}</p>}
       <section className="faction-activity-freshness">
         <div><small>LATEST COMPLETED ROSTER</small><strong>{payload?.latestRoster ? formatAt(payload.latestRoster.capturedAt) : "—"}</strong></div>
-        <div><small>PREVIOUS COMPLETED ROSTER</small><strong>{payload?.previousRoster ? formatAt(payload.previousRoster.capturedAt) : "—"}</strong></div>
+        <div><small>OLDEST SAMPLED ROSTER</small><strong>{payload?.oldestSampledAt ? formatAt(payload.oldestSampledAt) : "—"}</strong></div>
         <div><small>COMPARISON</small><strong>{comparisonLabel}</strong></div>
-        <div><small>OBSERVED CHANGES</small><strong>{payload?.eventCount ?? "—"}</strong></div>
+        <div><small>OBSERVED CHANGES</small><strong>{payload?.eventCount ?? "—"}{payload?.eventsTruncated ? "+" : ""}</strong></div>
         <button type="button" onClick={() => void load()} disabled={busy}>{busy ? "Refreshing…" : "Refresh ↻"}</button>
       </section>
       <section className="faction-activity-summary">
@@ -1232,9 +1292,34 @@ function FactionActivityFeed({ playerName, onNavigate, apiBase, sessionToken }: 
         <article><small>WALL / OC CHANGES</small><strong>{typeCount("wall_changed") + typeCount("oc_changed")}</strong></article>
         <article><small>REVIVE-SETTING CHANGES</small><strong>{typeCount("revive_setting_changed")}</strong></article>
       </section>
+      <section className="faction-inactivity-workspace">
+        <div className="faction-inactivity-heading">
+          <div><div className="halloween-status"><i /> PUBLIC LAST-ACTION HISTORY</div><h2>Member inactivity trends</h2><p>Current roster counts and the selected member's recorded last-action age at each sampled snapshot.</p></div>
+          <div className="faction-inactivity-controls">
+            <label>History range<select aria-label="Activity history range" value={rangeDays} onChange={event => setRangeDays(Number(event.target.value) as 7 | 30 | 90)}><option value={7}>7 days · hourly</option><option value={30}>30 days · every 4h</option><option value={90}>90 days · daily</option></select></label>
+            <label>Member trend<select aria-label="Select member inactivity trend" value={selectedMemberId || payload?.memberTrend.memberId || ""} onChange={event => setSelectedMemberId(event.target.value)}><option value="" disabled>Select member</option>{(payload?.inactivityMembers || []).map(member => <option key={member.userId} value={member.userId}>{member.name} · #{member.userId}</option>)}</select></label>
+          </div>
+        </div>
+        <div className="faction-inactivity-summary">
+          <article className="normal"><small>NORMAL</small><strong>{payload?.inactivityCounts.normal ?? "—"}</strong></article>
+          <article className="inactive_24h"><small>24H+ INACTIVE</small><strong>{payload?.inactivityCounts.inactive_24h ?? "—"}</strong></article>
+          <article className="inactive_72h"><small>72H+ INACTIVE</small><strong>{payload?.inactivityCounts.inactive_72h ?? "—"}</strong></article>
+          <article className="unknown"><small>UNKNOWN</small><strong>{payload?.inactivityCounts.unknown ?? "—"}</strong></article>
+        </div>
+        <div className="faction-inactivity-trend">
+          <div className="faction-inactivity-trend-heading"><div><small>SELECTED MEMBER</small><strong>{selectedMember?.name || payload?.memberTrend.memberName || "No member available"}</strong><span>{selectedMember ? "#" + selectedMember.userId + " · " + factionInactivityLabel(selectedMember.classification) + " · " + factionElapsedDuration(selectedMember.elapsedSeconds) + " since last action" : "Waiting for public last-action samples"}</span></div><div><small>KNOWN SAMPLES</small><strong>{payload ? payload.memberTrend.knownSampleCount + " / " + payload.memberTrend.sampleCount : "—"}</strong></div></div>
+          {trendPoints.length ? <ol className="faction-inactivity-points">{trendPoints.map(point => <li key={point.capturedAt} className={point.classification}>
+            <div className="faction-inactivity-point-time">{formatAt(point.capturedAt)}</div>
+            <div className="faction-inactivity-point-track" aria-hidden="true"><i style={{ width: (point.elapsedSeconds === null ? 0 : Math.max(3, point.elapsedSeconds / trendMaximum * 100)) + "%" }} /></div>
+            <div className="faction-inactivity-point-value"><strong>{factionElapsedDuration(point.elapsedSeconds)}</strong><span>{factionInactivityLabel(point.classification)}</span></div>
+          </li>)}</ol> : <div className="historical-empty"><strong>No sampled last-action history for this member.</strong><span>Unknown timestamps remain unknown. The next completed public roster will add another observation.</span></div>}
+          <p className="faction-inactivity-footnote">Showing the latest {trendPoints.length} of {payload?.memberTrend.sampleCount ?? 0} sampled observations. Last-action age is recalculated at each snapshot; a missing timestamp is never counted as inactivity.</p>
+        </div>
+        <p className="faction-inactivity-provenance">Range: {payload?.historyRangeDays ?? rangeDays} days · sample spacing: {payload?.samplingIntervalHours ?? (rangeDays === 7 ? 1 : rangeDays === 30 ? 4 : 24)} hour(s) · {payload?.sampledSnapshotCount ?? 0} completed roster samples{payload?.historyTruncated ? " · oldest samples omitted at the history cap" : ""}.</p>
+      </section>
       <section className="halloween-panel faction-activity-panel">
         <div className="faction-directory-heading">
-          <div><div className="halloween-status"><i /> SNAPSHOT-TO-SNAPSHOT CHANGES</div><h2>Recent faction activity</h2><p>Membership and public roster changes only. Up to 100 most recent events per comparison.</p></div>
+          <div><div className="halloween-status"><i /> SAMPLED SNAPSHOT-TO-SNAPSHOT CHANGES</div><h2>Faction activity timeline</h2><p>Membership and public roster changes across the selected range. Up to 500 recent events are returned.</p></div>
           <div className="faction-activity-controls">
             <input aria-label="Search faction activity" placeholder="Search member or change…" value={search} onChange={event => setSearch(event.target.value)} />
             <select aria-label="Filter faction activity" value={filter} onChange={event => setFilter(event.target.value as FactionActivityFilter)}>
@@ -1242,7 +1327,7 @@ function FactionActivityFeed({ playerName, onNavigate, apiBase, sessionToken }: 
             </select>
           </div>
         </div>
-        {busy && !payload ? <p className="historical-key-muted">Comparing completed roster snapshots…</p> : events.length ? (
+        {busy && !payload ? <p className="historical-key-muted">Loading sampled faction history…</p> : events.length ? (
           <ol className="faction-activity-list">
             {events.map(event => <li key={event.id} className={"faction-activity-event " + event.eventType}>
               <div className="faction-activity-event-marker" aria-hidden="true" />
@@ -1254,9 +1339,10 @@ function FactionActivityFeed({ playerName, onNavigate, apiBase, sessionToken }: 
               </div>
             </li>)}
           </ol>
-        ) : <div className="historical-empty"><strong>{payload?.comparisonStatus === "compared" ? (payload.events.length ? "No changes match this filter." : "No changes observed between these rosters.") : "Activity comparison is preparing."}</strong><span>{payload?.comparisonStatus === "compared" ? "The feed only includes changes visible between completed roster snapshots." : "A second completed roster is required before snapshot-to-snapshot changes can be reported."}</span></div>}
+        ) : <div className="historical-empty"><strong>{payload?.comparisonStatus === "compared" ? (payload.events.length ? "No changes match this filter." : "No changes observed in this sampled range.") : "Activity comparison is preparing."}</strong><span>{payload?.comparisonStatus === "compared" ? "The feed includes changes visible between sampled completed roster snapshots." : "A second completed roster is required before snapshot-to-snapshot changes can be reported."}</span></div>}
+        {payload?.eventsTruncated && <p className="faction-inactivity-footnote">The timeline reached its 500-event response cap. Narrow the range or filter by member to focus the view.</p>}
       </section>
-      <footer className="module-footer"><span>FACTION ACTIVITY FEED</span><span>Signed in as {playerName} · Public roster history only</span></footer>
+      <footer className="module-footer"><span>FACTION ACTIVITY TIMELINE</span><span>Signed in as {playerName} · Public roster history only</span></footer>
     </main>
   )
 }
