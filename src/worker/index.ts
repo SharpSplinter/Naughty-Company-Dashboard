@@ -1,4 +1,5 @@
 import { TornApiClient, TornApiClientError } from "../lib/torn/client"
+import type { TornRequestOutcome, TornRequestTelemetryEvent } from "../lib/torn/types"
 import {
   FACTION_PUBLIC_STAT_COLUMNS,
   parseFactionGymEnergyResponse,
@@ -44,6 +45,90 @@ const FACTION_DIRECTOR_ADMIN_QUEUE_KIND = "faction-director-admin-refresh"
 const ADMIN_FACTION_DIRECTORY_BATCH_SIZE = 35
 const ADMIN_FACTION_DIRECTORY_MAX_BATCHES = 6
 const ADMIN_FACTION_DIRECTORY_BATCH_DELAY_SECONDS = 60
+
+function logTornApiRequest(event: TornRequestTelemetryEvent): void {
+  console.info(JSON.stringify({
+    event: "torn_api_request",
+    observedAt: new Date().toISOString(),
+    endpoint: event.endpoint,
+    method: event.method,
+    workload: event.workload ?? "unspecified",
+    ...(event.playerId ? { playerId: event.playerId } : {}),
+    upstreamStatus: event.upstreamStatus,
+    status: event.status,
+    ...(event.errorCode === undefined ? {} : { errorCode: event.errorCode }),
+    outcome: event.outcome,
+    durationMs: event.durationMs,
+    ...(event.retryAfter ? { retryAfter: event.retryAfter } : {}),
+  }))
+}
+
+function normalizedTornEndpoint(input: RequestInfo | URL): string {
+  const raw = input instanceof Request ? input.url : String(input)
+  let path = raw
+  try { path = new URL(raw).pathname } catch { path = raw.split("?")[0] }
+  return path.split("/").map((segment) => segment.length > 0 && [...segment].every((char) => char >= "0" && char <= "9") ? ":id" : segment).join("/")
+}
+
+function tornResponseClassification(upstreamStatus: number, errorCode?: number): { status: number; outcome: TornRequestOutcome } {
+  if (errorCode === 5 || errorCode === 8 || errorCode === 14 || upstreamStatus === 429) return { status: 429, outcome: "rate_limited" }
+  if (errorCode === 9) return { status: 503, outcome: "api_disabled" }
+  if (errorCode === 2) return { status: 401, outcome: "invalid_key" }
+  if ([3, 7, 16, 18].includes(errorCode ?? -1) || upstreamStatus === 403) return { status: 403, outcome: "permission_denied" }
+  if ([10, 13].includes(errorCode ?? -1)) return { status: 403, outcome: "account_restricted" }
+  if ([4, 6].includes(errorCode ?? -1)) return { status: 400, outcome: "invalid_request" }
+  if (errorCode === 15 || errorCode === 17 || upstreamStatus >= 500) return { status: 502, outcome: "upstream_error" }
+  if (upstreamStatus < 400) return { status: upstreamStatus, outcome: "success" }
+  return { status: upstreamStatus, outcome: "http_error" }
+}
+
+async function trackedTornFetch(workload: string, input: RequestInfo | URL, init?: RequestInit, fetcher: typeof fetch = fetch, playerId?: string): Promise<Response> {
+  const startedAt = Date.now()
+  let upstreamStatus: number | null = null
+  let status: number | null = null
+  let errorCode: number | undefined
+  let retryAfter: string | undefined
+  let outcome: TornRequestOutcome = "network_error"
+  try {
+    const response = await fetcher(input, init)
+    upstreamStatus = response.status
+    retryAfter = response.headers.get("Retry-After") ?? undefined
+    const payload: unknown = await response.clone().json().catch(() => null)
+    const apiError = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+    errorCode = typeof apiError?.code === "number" ? apiError.code : undefined
+    const classification = tornResponseClassification(upstreamStatus, errorCode)
+    status = classification.status
+    outcome = apiError ? classification.outcome : response.ok ? "success" : classification.outcome
+    logTornApiRequest({
+      endpoint: normalizedTornEndpoint(input), method: "GET", workload,
+      ...(playerId ? { playerId } : {}), upstreamStatus, status,
+      ...(errorCode === undefined ? {} : { errorCode }), outcome,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      ...(retryAfter ? { retryAfter } : {}),
+    })
+    return response
+  } catch (error) {
+    status = error instanceof Error && error.name === "AbortError" ? 504 : 502
+    outcome = error instanceof Error && error.name === "AbortError" ? "timeout" : "network_error"
+    logTornApiRequest({
+      endpoint: normalizedTornEndpoint(input), method: "GET", workload,
+      ...(playerId ? { playerId } : {}), upstreamStatus, status, outcome,
+      durationMs: Math.max(0, Date.now() - startedAt),
+    })
+    throw error
+  }
+}
+
+function createTornApiClient(env: WorkerEnv, apiKey: string, workload: string, playerId?: string): TornApiClient {
+  return new TornApiClient({
+    apiKey,
+    baseUrl: env.TORN_API_BASE_URL,
+    fetcher: env.TORN_API_FIXTURE?.fetch.bind(env.TORN_API_FIXTURE),
+    workload,
+    playerId,
+    onRequest: logTornApiRequest,
+  })
+}
 
 function jsonResponse(body: unknown, status = 200, origin = "null", extraHeaders: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...jsonHeaders, "access-control-allow-origin": origin, "access-control-allow-methods": "GET, POST, DELETE, OPTIONS", "access-control-allow-headers": "Authorization, Content-Type, X-Admin-Confirm-Restore", vary: "Origin", ...extraHeaders } })
@@ -678,11 +763,7 @@ async function runFactionStatsCollection(env: WorkerEnv, runId: string): Promise
   await db.prepare(
     "UPDATE faction_stats_collection_runs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
   ).bind(startedAt, startedAt, runId).run()
-  const client = new TornApiClient({
-    apiKey,
-    baseUrl: env.TORN_API_BASE_URL,
-    fetcher: env.TORN_API_FIXTURE?.fetch.bind(env.TORN_API_FIXTURE),
-  })
+  const client = createTornApiClient(env, apiKey, "faction-stats-collection")
   const parsed = parseFactionStatsResponse(await client.getFactionStats())
   const capturedAt = new Date().toISOString()
   const snapshot = db.prepare(
@@ -1078,13 +1159,7 @@ async function runFactionPerformanceCollection(env: WorkerEnv, runId: string): P
   await db.prepare(
     "UPDATE faction_performance_collection_runs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
   ).bind(now, now, runId).run()
-  const client = new TornApiClient({
-    apiKey,
-    baseUrl: env.TORN_API_BASE_URL,
-    // The staging acceptance test routes the Torn client through an isolated
-    // Service Binding to deterministic fixture responses, never public Torn.
-    fetcher: env.TORN_API_FIXTURE?.fetch.bind(env.TORN_API_FIXTURE),
-  })
+  const client = createTornApiClient(env, apiKey, "faction-performance-collection")
 
   if (run.collectionKind === "roster") {
     await runFactionRosterCollection(env, run, client)
@@ -1182,7 +1257,7 @@ async function ensurePrimaryCompanyConnection(env: WorkerEnv, playerId: string):
     if (snapshot) return { saved: true, companyId: existing.company_id }
     const existingKey = await savedCompanyApiKey(env, playerId, existing.company_id)
     if (existingKey) {
-      const validated = await validateCompanyKey(existingKey)
+      const validated = await validateCompanyKey(env, existingKey, playerId)
       await persistCompanyConnection(env, playerId, existingKey, validated)
       return { saved: true, companyId: String(validated.companyId) }
     }
@@ -1191,7 +1266,7 @@ async function ensurePrimaryCompanyConnection(env: WorkerEnv, playerId: string):
   if (director?.is_director !== 1) return { saved: false }
   const apiKey = await savedKey(env, playerId)
   if (!apiKey) return { saved: false }
-  const validated = await validateCompanyKey(apiKey)
+  const validated = await validateCompanyKey(env, apiKey, playerId)
   await persistCompanyConnection(env, playerId, apiKey, validated)
   return { saved: true, companyId: String(validated.companyId) }
 }
@@ -1206,8 +1281,8 @@ async function companyKeyMeta(env: WorkerEnv, playerId: string): Promise<{ saved
   const row = perCompany ?? legacy
   return row ? { saved: true, lastFour: row.last_four, updatedAt: row.updated_at } : { saved: false }
 }
-async function validateCompanyKey(apiKey: string): Promise<{ companyId: number; profile: unknown; employees: unknown; stock: unknown; sourceTimestamp: number | null }> {
-  const client = new TornApiClient({ apiKey })
+async function validateCompanyKey(env: WorkerEnv, apiKey: string, playerId?: string): Promise<{ companyId: number; profile: unknown; employees: unknown; stock: unknown; sourceTimestamp: number | null }> {
+  const client = createTornApiClient(env, apiKey, "company-key-validation", playerId)
   let profile: unknown, employees: unknown = null, stock: unknown = null
   let sourceTimestamp: number | null = null
   try {
@@ -1229,9 +1304,9 @@ async function validateCompanyKey(apiKey: string): Promise<{ companyId: number; 
   if (!companyId) throw Object.assign(new Error("That key did not return a valid company profile. Use a key with company profile access."), { status: 403 })
   return { companyId, profile, employees, stock, sourceTimestamp }
 }
-async function inspectDirectorKey(apiKey: string, playerId: string): Promise<{ isDirector: boolean; profile?: unknown }> {
+async function inspectDirectorKey(env: WorkerEnv, apiKey: string, playerId: string): Promise<{ isDirector: boolean; profile?: unknown }> {
   try {
-    const client = new TornApiClient({ apiKey })
+    const client = createTornApiClient(env, apiKey, "director-key-validation", playerId)
     const jobPayload = await client.getUserJob()
     const job = isRecord(jobPayload) && isRecord(jobPayload.job) ? jobPayload.job : {}
     const position = typeof job.position === "string" ? job.position.trim().toLowerCase() : ""
@@ -2659,7 +2734,7 @@ async function persistFactionDirectorSnapshot(
     .bind(playerId, companyId, day, asJson(profile), stock === null || stock === undefined ? null : asJson(stock), fetchedAt).run()
 }
 async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20, forceRefresh = false): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[] }> {
-  const client = new TornApiClient({ apiKey })
+  const client = createTornApiClient(env, apiKey, "faction-directory-refresh")
   const memberPayload = await client.getFactionMembers()
   const rawMembers = Array.isArray(memberPayload.members) ? memberPayload.members : isRecord(memberPayload.members) ? Object.values(memberPayload.members) : []
   const db = requireDb(env)
@@ -2775,7 +2850,7 @@ async function refreshRankingProfiles(env: WorkerEnv, captureHistory = false, sn
   for (const keyRow of work) {
     try {
       const apiKey = await decryptKey(env, keyRow.ciphertext, keyRow.iv)
-      const client = new TornApiClient({ apiKey })
+      const client = createTornApiClient(env, apiKey, "scheduled-company-snapshot", keyRow.player_id)
       const { profile, employees: employeePayload, stock, timestamp: sourceTimestamp } = await client.getCompanySelections()
       const companyId = companyIdFromPayload(profile)
       if (!companyId || (keyRow.company_id && String(companyId) !== keyRow.company_id)) continue
@@ -3543,7 +3618,7 @@ async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefr
     let client: TornApiClient | null = null
     try {
       const apiKey = await decryptKey(env, keyRow.ciphertext, keyRow.iv)
-      client = new TornApiClient({ apiKey })
+      client = createTornApiClient(env, apiKey, "admin-company-endpoint-refresh", keyRow.player_id)
     } catch (error) {
       for (const endpoint of userEndpoints) {
         endpointStats[endpoint].attempted += 1
@@ -3645,7 +3720,7 @@ async function runAdminJob(env: WorkerEnv, jobId: string): Promise<void> {
       if (!apiKey) apiKey = await savedCompanyKey(env, job.target_player_id)
       if (!apiKey) apiKey = await savedKey(env, job.target_player_id)
       if (!apiKey) throw new Error("No saved credential is available for this company.")
-      const validated = await validateCompanyKey(apiKey)
+      const validated = await validateCompanyKey(env, apiKey, job.target_player_id)
       if (String(validated.companyId) !== job.target_company_id) throw new Error("The saved credential returned a different company ID. No data was changed.")
       await persistCompanyConnection(env, job.target_player_id, apiKey, validated, false)
       const root = companyProfileRoot(validated.profile)
@@ -4721,7 +4796,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
       if (!apiKey && !requestedCompanyId) apiKey = await savedCompanyKey(env, targetId)
       if (!apiKey) apiKey = await savedKey(env, targetId)
       if (!apiKey) return jsonResponse({ error: "No saved credential is available for this account. Ask the member to reconnect; never request their key in chat." }, 409, origin)
-      const validated = await validateCompanyKey(apiKey)
+      const validated = await validateCompanyKey(env, apiKey, targetId)
       if (requestedCompanyId && String(validated.companyId) !== requestedCompanyId) throw new Error("The saved credential returned a different company ID. No data was changed.")
       if (isRepair) await persistCompanyConnection(env, targetId, apiKey, validated, false)
       const root = companyProfileRoot(validated.profile)
@@ -5433,7 +5508,7 @@ export default {
         // the signed-in portal account. The company profile returned by Torn
         // is the authority for this connection; persistence remains scoped to
         // the authenticated portal player and the returned company ID.
-        const validated = await validateCompanyKey(apiKey)
+        const validated = await validateCompanyKey(env, apiKey, session.player_id)
         await persistCompanyConnection(env, session.player_id, apiKey, validated, false, !isSecondary)
         const root = isRecord(validated.profile) && isRecord(validated.profile.company) ? validated.profile.company : isRecord(validated.profile) && isRecord(validated.profile.profile) ? validated.profile.profile : {}
         const type = isRecord(root.type) ? root.type : {}
@@ -5459,7 +5534,7 @@ export default {
       if (loginKey && loginKey === companyKey) return jsonResponse({ error: "This company connection is your primary portal key, not a secondary key." }, 409, origin)
       if (loginKey) {
         try {
-          const loginCompany = await validateCompanyKey(loginKey)
+          const loginCompany = await validateCompanyKey(env, loginKey, session.player_id)
           if (String(loginCompany.companyId) === companyId) {
             // Removing the secondary credential should fall back to the primary
             // portal key if it can read this same company.
@@ -6407,7 +6482,7 @@ export default {
           : null
         const apiKey = companySpecificKey || await savedKey(env, session.player_id)
         if (!apiKey) return jsonResponse({ error: requestedId ? "No portal or secondary company key is available for this company. Add a company-specific key in Account Settings." : "Your saved portal API key is missing. Sign in again with your own Torn key." }, 409, origin)
-        const client = new TornApiClient({ apiKey })
+        const client = createTornApiClient(env, apiKey, "authenticated-company-refresh", session.player_id)
         const { profile, employees, stock } = await client.getCompanySelections()
         const companyId = companyIdFromPayload(profile)
         if (!companyId) return jsonResponse({ error: "Torn did not return a valid company ID for this API key's company profile." }, 502, origin)
@@ -6431,7 +6506,7 @@ export default {
       const apiKey = request.headers.get("Authorization")?.match(/^ApiKey\s+(.+)$/i)?.[1]?.trim() ?? ""
       if (!apiKey) return jsonResponse({ error: "A Torn API key is required." }, 401, origin)
       try {
-        const client = new TornApiClient({ apiKey })
+        const client = createTornApiClient(env, apiKey, "legacy-company-read")
         const data = legacyRoute[1] === "profile" ? await client.getCompanyProfile() : legacyRoute[1] === "employees" ? await client.getCompanyEmployees() : await client.getCompanyStock()
         return jsonResponse(data, 200, origin, { "cache-control": "private, no-store" })
       } catch (error) { return tornError(error, origin) }
