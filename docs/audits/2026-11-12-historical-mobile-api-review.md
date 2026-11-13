@@ -3,7 +3,7 @@
 **Review date:** 12 November 2026 (America/New_York)  
 **Repository baseline reviewed:** `main` at `c1a104aff63c66cd3c7ea23fb5c1601ec6418337`  
 **Primary audit tracker:** [Issue #117](https://github.com/SharpSplinter/Naughty-Company-Dashboard/issues/117)  
-**Review mode:** Read-only source and recorded-evidence review. No production database query, production deployment, or live mobile-device test was performed for this report.
+**Review mode:** Read-only review of production evidence and the `main` source baseline. A later, separately dispatched acceptance run deployed only to the isolated staging Worker, D1, and Pages project; no production database query or production deployment was performed. The browser viewport matrix did not complete.
 
 ## Executive assessment
 
@@ -107,7 +107,7 @@ The application includes a viewport meta tag and a responsive navigation/layout 
 - Charts are placed in horizontally scrollable containers.
 - Tables are placed in scroll containers rather than forcing their full width into the phone viewport.
 
-This is a solid responsive foundation, but this was a CSS/React source review only. No real device, browser viewport, keyboard, or screen-reader test was run.
+This is a solid responsive foundation. The subsequent isolated staging run brought up the staging Worker and Pages app, passed health/encryption/CORS checks, and launched Playwright at 390 × 844. The responsive script then stopped before its viewport loop because it looked for “Historical Trends” inside a navigation region named “Company pages”; the current UI correctly labels that region “Insights pages”. The later “Faction Rankings” step had the same stale-region problem. No viewport overflow assertions completed and no screenshots were produced. The test selectors have since been corrected on the portal draft branch, but the staging workflow was not dispatched a second time.
 
 ### 2.2 Narrow-screen pressure points
 
@@ -154,6 +154,8 @@ The shared `TornApiClient` currently maps code 9 to HTTP 429 and leaves code 5 o
 
 The client does preserve the upstream `Retry-After` header in `TornApiClientError`, but its generic request method throws immediately rather than implementing bounded retry/backoff.
 
+**Follow-up on the draft portal branch:** PR #152 now maps Torn code 5 to HTTP 429 and code 9 to a distinct HTTP 503 API-disabled outcome, with separate regression tests. Its latest dashboard Quality Gates and dedicated Discord Bot Quality Gates passed. This remediation remains in an open Draft PR and is not part of the `main` baseline cited by this report.
+
 **Priority: high.** Correct the mapping before adding automated rate-limit retries or using 429 counts as a trustworthy budget signal:
 
 1. Map code 5 to the rate-limit path (429).
@@ -168,7 +170,7 @@ The repository does not expose a complete per-upstream-request counter in the ad
 
 | Workload | Source-derived request shape | Budget implication |
 |---|---|---|
-| Scheduled company capture | One combined `/company?selections=timestamp,profile,stock,employees` request per saved company key, per scheduled capture | Approximately `2 × connected company keys` requests per day across the two daily cron windows |
+| Scheduled company capture | One combined `/company?selections=timestamp,profile,stock,employees` request per saved company key during the 18:10 UTC daily company-history capture | Approximately `1 × connected company keys` requests per day for this capture; the 00:10 UTC window performs separate faction-directory and official global-ranking verification work, not another company-history capture |
 | Faction directory | One `/faction/members` request, then up to the processing limit of `/user/:id/job` lookups; confirmed directors can require an additional `/company/:id/profile` call | A batch of 35 is not 35 raw requests; director profile lookups add to the member/job calls |
 | User-triggered faction refresh | POST route uses a 20-member processing limit and a 12-hour cache; admin refresh uses a forced batch of 35 | Forced admin refreshes can deliberately bypass the normal per-member freshness cache |
 | Global rankings | Fetch the company-type catalog, then paginate type-specific company lists at 100 rows/page | Production queue processes up to three pages per Worker invocation, serializes the consumer at concurrency 1, and requeues remaining pages |
@@ -187,6 +189,8 @@ The Trends screen currently loads the same company history endpoint twice when o
 - `loadComparison()` separately requests a 30-, 90-, or 365-day range.
 
 These are authenticated Worker/D1 reads, not Torn requests. The history handler reads the selected company's daily profile rows, canonical stock/provenance rows, and daily financial stock rows. The duplicate fetch therefore repeats Worker and D1 work and transfers overlapping history data.
+
+**Follow-up on the draft portal branch:** PR #152 now requests the largest range needed once and derives both the chart window and period comparison from the same history response. The regression suite verifies one shared request. The change is included in the green dashboard Quality Gates run but remains unmerged.
 
 **Priority: medium.** Request the largest range needed once, derive the selected chart and comparison periods from that response, and reuse it for the current view. Preserve the separate range controls at the UI level.
 
@@ -218,7 +222,7 @@ The 60–70% warning level is a recommended internal safety threshold, not a Tor
 ## 5. Scope and confidence notes
 
 - Historical figures above are copied from the recorded October 19–20 production audit in Issue #117; they were not re-queried from production during this review.
-- Mobile findings are based on CSS/React source inspection only, not a device/browser test.
+- Mobile findings combine CSS/React source inspection with a staging-browser smoke attempt. Staging health, encryption readiness, CORS, Pages shell, and API-base checks passed; the viewport test stopped at a stale navigation selector before collecting viewport measurements or screenshots. No physical-device or screen-reader test was performed.
 - API request counts are source-derived workload shapes, not observed usage or quota percentages.
 - No production database, Worker, Pages, Discord bot, Torn API credential, or user data was changed as part of this review.
 - The separate seven-day weekly-profit changes in PRs #152 and #153 remain draft work and are not part of the reviewed `main` baseline cited at the top of this report.
