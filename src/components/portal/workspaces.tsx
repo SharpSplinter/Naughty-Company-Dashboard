@@ -1391,7 +1391,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [eventWindowError, setEventWindowError] = useState("")
   const [eventWindowNotice, setEventWindowNotice] = useState("")
   const [historicalConsent, setHistoricalConsent] = useState(false)
-  const [historicalKeyStatus, setHistoricalKeyStatus] = useState<{ connected: boolean; key: { lastFour: string; accessLevel: string; consentedAt: string; lastValidatedAt: string } | null } | null>(null)
+  const [historicalKeyStatus, setHistoricalKeyStatus] = useState<{ connected: boolean; key: { lastFour: string; accessLevel: string; consentVersion: string; consentedAt: string; lastValidatedAt: string } | null } | null>(null)
   const [historicalKeyBusy, setHistoricalKeyBusy] = useState(false)
   const [historicalKeyMessage, setHistoricalKeyMessage] = useState("")
   const [historicalKeyError, setHistoricalKeyError] = useState("")
@@ -1399,7 +1399,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [liveBusy, setLiveBusy] = useState(true)
   const [liveCaptureBusy, setLiveCaptureBusy] = useState(false)
   const [liveError, setLiveError] = useState("")
-  const [archive, setArchive] = useState<{ event: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard: Array<{ playerId: string; playerName: string; eventWindowConfigured?: boolean; startTime?: string | null; keyConnected: boolean; collectionStatus: string; pagesCollected: number; logsCollected: number; totalHits: number | null; lastCollectedAt: string | null; coverage: string }>; myCollection: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null; eventTotals: (HalloweenEventMetrics & { coveredMembers: number }) | null } | null>(null)
+  const [archive, setArchive] = useState<{ event: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard: Array<{ playerId: string; playerName: string; eventWindowConfigured?: boolean; startTime?: string | null; keyConnected: boolean; collectionStatus: string; attackMetricsStatus?: string; pagesCollected: number; logsCollected: number; totalHits: number | null; lastCollectedAt: string | null; coverage: string }>; myCollection: { playerId: string; collectionStatus: string; attackMetricsStatus?: string; coverage: string; totalHits: number | null } | null; eventTotals: (HalloweenEventMetrics & { coveredMembers: number; revitalizeCoveredMembers: number }) | null } | null>(null)
   const [archiveBusy, setArchiveBusy] = useState(false)
   const [archiveError, setArchiveError] = useState("")
   const [collectBusy, setCollectBusy] = useState(false)
@@ -1411,7 +1411,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const loadHistoricalKeyStatus = async () => {
     try {
       const response = await fetch(apiBase + "/api/me/halloween/key", { headers: { Authorization: "Bearer " + sessionToken } })
-      const payload = await response.json() as { error?: string; connected?: boolean; key?: { lastFour: string; accessLevel: string; consentedAt: string; lastValidatedAt: string } | null }
+      const payload = await response.json() as { error?: string; connected?: boolean; key?: { lastFour: string; accessLevel: string; consentVersion: string; consentedAt: string; lastValidatedAt: string } | null }
       if (!response.ok) throw new Error(payload.error || "Could not load your Halloween key status.")
       setHistoricalKeyStatus({ connected: payload.connected === true, key: payload.key ?? null })
     } catch (caught) { setHistoricalKeyError(caught instanceof Error ? caught.message : "Could not load your Halloween key status.") }
@@ -1421,7 +1421,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     setArchiveBusy(true); setArchiveError("")
     try {
       const response = await fetch(apiBase + "/api/me/halloween/archive?year=" + eventYear, { headers: { Authorization: "Bearer " + sessionToken } })
-      const payload = await response.json() as { error?: string; event?: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard?: typeof archive extends infer T ? T extends { leaderboard: infer L } ? L : never : never; myCollection?: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null; eventTotals?: (HalloweenEventMetrics & { coveredMembers: number }) | null }
+      const payload = await response.json() as { error?: string; event?: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard?: typeof archive extends infer T ? T extends { leaderboard: infer L } ? L : never : never; myCollection?: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null; eventTotals?: (HalloweenEventMetrics & { coveredMembers: number; revitalizeCoveredMembers: number }) | null }
       if (!response.ok) throw new Error(payload.error || "Could not load the faction Halloween archive.")
       if (!payload.event) throw new Error("This Halloween event year is not configured yet.")
       setArchive({ event: payload.event, myWindow: payload.myWindow ?? null, leaderboard: (payload.leaderboard || []) as NonNullable<typeof archive>["leaderboard"], myCollection: payload.myCollection ?? null, eventTotals: payload.eventTotals ?? null })
@@ -1502,12 +1502,12 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
       const response = await fetch(apiBase + "/api/me/halloween/key", {
         method: "POST",
         headers: { Authorization: "Bearer " + sessionToken, "Content-Type": "application/json" },
-        body: JSON.stringify({ consent: true, consentVersion: "halloween-history-v1" }),
+        body: JSON.stringify({ consent: true, consentVersion: "halloween-history-v2" }),
       })
       const payload = await response.json() as { error?: string; saved?: boolean }
       if (!response.ok) throw new Error(payload.error || "Could not enable historical collection with your portal key.")
       setHistoricalConsent(false)
-      setHistoricalKeyMessage("Historical collection is enabled using your saved portal API key.")
+      setHistoricalKeyMessage("Updated historical logs and Revitalize attack collection are enabled using your saved portal API key.")
       await Promise.all([loadHistoricalKeyStatus(), loadArchive()])
     } catch (caught) { setHistoricalKeyError(caught instanceof Error ? caught.message : "Could not enable historical collection with your portal key.") }
     finally { setHistoricalKeyBusy(false) }
@@ -1535,9 +1535,9 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
         headers: { Authorization: "Bearer " + sessionToken, "Content-Type": "application/json" },
         body: JSON.stringify({ year: eventYear }),
       })
-      const payload = await response.json() as { error?: string; queued?: boolean; alreadyComplete?: boolean; status?: string }
+      const payload = await response.json() as { error?: string; queued?: boolean; alreadyComplete?: boolean; logCollection?: { status: string; logsCollected: number }; attackCollection?: { status: string; attacksReviewed: number } }
       if (!response.ok) throw new Error(payload.error || "Could not start historical collection.")
-      setCollectMessage(payload.alreadyComplete ? "Your historical collection is already complete." : "Your historical log collection is queued. It will continue in the background.")
+      setCollectMessage(payload.alreadyComplete ? "Your historical logs and detailed attack metrics are already complete." : "Historical event logs and detailed attacks are queued independently. Revitalize procs will appear when attack collection completes.")
       await loadArchive()
     } catch (caught) { setArchiveError(caught instanceof Error ? caught.message : "Could not start historical collection.") }
     finally { setCollectBusy(false) }
@@ -1567,6 +1567,9 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const nowMs = Date.now()
   const personalEventPhase = !personalWindow?.configured ? "TIME SLOT REQUIRED" : nowMs < personalStartMs ? "UPCOMING FOR YOU" : nowMs < personalEndMs ? "ACTIVE FOR YOU" : "YOUR EVENT WINDOW CONCLUDED"
   const canCapturePersonalSnapshot = Boolean(personalWindow?.configured && nowMs >= personalStartMs && nowMs < personalEndMs)
+  const historicalConsentCurrent = Boolean(historicalKeyStatus?.connected && historicalKeyStatus.key?.consentVersion === "halloween-history-v2")
+  const revitalizeMetricsReady = (archive?.eventTotals?.revitalizeCoveredMembers ?? 0) > 0
+  const revitalizeChanceLabel = Object.keys(archive?.eventTotals?.revitalizeChanceCounts ?? {}).sort((a, b) => Number(a) - Number(b)).map(chance => chance + "%").join(" · ") || "—"
   const eventMetricsReady = (archive?.eventTotals?.coveredMembers ?? 0) > 0
   const eventMetric = (value: number | undefined) => eventMetricsReady && value !== undefined ? value.toLocaleString() : "—"
 
@@ -1640,20 +1643,20 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
         <section className="halloween-panel">
           <div className="halloween-status historical"><i /> FACTION ARCHIVE · {eventYear}</div>
           <h2>Historical event records</h2>
-          <p>Historical log collection reuses your single portal API key. Full Access or Custom Access with User → Log is supported. Collected event history is shared with authenticated Naughty Souls members only after you opt in.</p>
+          <p>Historical log and detailed attack collection reuse your single portal API key. Full Access or Custom Access with both User → Log and User → Attacks is supported. Collected event history and Revitalize proc totals are shared with authenticated Naughty Souls members only after you opt in.</p>
           <div className="historical-key-notice"><strong>Your own key. Your own records. Shared faction history.</strong><span>Your sign-in key is already encrypted and associated with your Torn player ID. Enable historical collection below to authorize its use for your own event logs. Other members can browse the shared faction archive without connecting a key. If you leave Naughty Souls, your saved key and contributed Halloween records are purged.</span></div>
           <section className="historical-key-card">
-            <div className="historical-key-heading"><div><small>YOUR HISTORICAL COLLECTION KEY</small><strong>{historicalKeyStatus?.connected ? "Enabled · •••• " + (historicalKeyStatus.key?.lastFour || "••••") : "Not connected"}</strong></div><span className={historicalKeyStatus?.connected ? "key-status connected" : "key-status"}><i /> {historicalKeyStatus?.connected ? (historicalKeyStatus.key?.accessLevel || "PORTAL KEY") + " VERIFIED" : "OPT-IN REQUIRED"}</span></div>
-            {historicalKeyStatus?.connected ? <div className="historical-key-connected"><p>Your saved portal key will be reused for historical collection. Last validation: {historicalKeyStatus.key?.lastValidatedAt ? new Date(historicalKeyStatus.key.lastValidatedAt).toLocaleString() : "Not available"}.</p><button type="button" disabled={historicalKeyBusy} onClick={removeHistoricalKey}>Disable historical collection</button></div> : <form className="historical-key-form" onSubmit={saveHistoricalKey}>
-              <p>Your saved portal API key will be used. No second API key is required.</p>
+            <div className="historical-key-heading"><div><small>YOUR HISTORICAL COLLECTION KEY</small><strong>{historicalConsentCurrent ? "Enabled · •••• " + (historicalKeyStatus?.key?.lastFour || "••••") : historicalKeyStatus?.connected ? "Updated consent required · •••• " + (historicalKeyStatus.key?.lastFour || "••••") : "Not connected"}</strong></div><span className={historicalConsentCurrent ? "key-status connected" : "key-status"}><i /> {historicalConsentCurrent ? (historicalKeyStatus?.key?.accessLevel || "PORTAL KEY") + " VERIFIED" : historicalKeyStatus?.connected ? "UPDATED CONSENT REQUIRED" : "OPT-IN REQUIRED"}</span></div>
+            {historicalConsentCurrent ? <div className="historical-key-connected"><p>Your saved portal key is enabled for historical logs and detailed attack effects. Last validation: {historicalKeyStatus?.key?.lastValidatedAt ? new Date(historicalKeyStatus.key.lastValidatedAt).toLocaleString() : "Not available"}.</p><button type="button" disabled={historicalKeyBusy} onClick={removeHistoricalKey}>Disable historical collection</button></div> : <form className="historical-key-form" onSubmit={saveHistoricalKey}>
+              <p>{historicalKeyStatus?.connected ? "Review the expanded data use and confirm User → Attacks collection. Your existing encrypted portal key will be reused. No second API key is required." : "Your saved portal API key will be used. No second API key is required."}</p>
               <div className="historical-tos"><strong>Historical Halloween data use</strong><table><tbody>
                 <tr><th>Data Storage</th><td>Persistent, until account deletion or faction change. Disconnecting the key does not erase records already contributed.</td></tr>
                 <tr><th>Data Sharing</th><td>All authenticated Naughty Souls faction members.</td></tr>
-                <tr><th>Purpose of Use</th><td>Halloween event analytics, personal event history, and faction-wide leaderboard/archive.</td></tr>
+                <tr><th>Purpose of Use</th><td>Halloween event analytics, personal event history, faction-wide leaderboard/archive, and Revitalize finishing-hit proc counts and weapon chance.</td></tr>
                 <tr><th>Key Storage & Sharing</th><td>Stored remotely encrypted; used only by this service's historical collection workflows. The raw key is not shared with faction members.</td></tr>
-                <tr><th>Key Access Level</th><td>Full Access, or Custom Access with the User → Log selection. Category restrictions must include the event records you want to contribute.</td></tr>
+                <tr><th>Key Access Level</th><td>Full Access, or Custom Access with both User → Log and User → Attacks selections. Log category restrictions must include Halloween records.</td></tr>
               </tbody></table></div>
-              <label className="historical-consent"><input type="checkbox" checked={historicalConsent} onChange={event => setHistoricalConsent(event.target.checked)} disabled={historicalKeyBusy} /><span>I have reviewed the data-use terms and consent to using my saved portal API key for historical log collection and sharing the collected Halloween event records with authenticated Naughty Souls faction members.</span></label>
+              <label className="historical-consent"><input type="checkbox" checked={historicalConsent} onChange={event => setHistoricalConsent(event.target.checked)} disabled={historicalKeyBusy} /><span>I have reviewed the data-use terms and consent to using my saved portal API key for Halloween event-log and detailed attack collection, including Revitalize finishing-hit proc counts and weapon chance, and sharing these event metrics with authenticated Naughty Souls faction members.</span></label>
               <button className="historical-connect-button" type="submit" disabled={historicalKeyBusy || !historicalConsent}>{historicalKeyBusy ? "Enabling…" : "Enable historical collection with portal key"}</button>
             </form>}
             {historicalKeyError && <p className="historical-key-error" role="alert">{historicalKeyError}</p>}
@@ -1677,7 +1680,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
           </section>}
           {archiveError && <p className="historical-key-error" role="alert">{archiveError}</p>}
           {collectMessage && <p className="historical-key-message" role="status">{collectMessage}</p>}
-          {archive?.myCollection?.coverage !== "complete" && historicalKeyStatus?.connected && <div className="historical-collect-banner"><div><strong>Contribute your historical event logs</strong><span>Collection follows your saved personal window, from your selected October 25 start time through November 1 at the same TCT time.</span></div><button type="button" onClick={startHistoricalCollection} disabled={collectBusy || archive?.myCollection?.coverage === "collecting" || !personalWindow?.configured}>{collectBusy ? "Queueing…" : archive?.myCollection?.coverage === "collecting" ? "Collection running…" : !personalWindow?.configured ? "Set event time above" : "Collect my history"}</button></div>}
+          {(archive?.myCollection?.coverage !== "complete" || archive?.myCollection?.attackMetricsStatus !== "complete") && historicalConsentCurrent && <div className="historical-collect-banner"><div><strong>Contribute historical logs and Revitalize data</strong><span>Collection follows your saved personal window, from your selected October 25 start time through November 1 at the same TCT time. Detailed attacks are collected separately and will add finishing-hit Revitalize procs and weapon chance.</span></div><button type="button" onClick={startHistoricalCollection} disabled={collectBusy || archive?.myCollection?.coverage === "collecting" || archive?.myCollection?.attackMetricsStatus === "queued" || archive?.myCollection?.attackMetricsStatus === "running" || !personalWindow?.configured}>{collectBusy ? "Queueing…" : archive?.myCollection?.coverage === "collecting" || archive?.myCollection?.attackMetricsStatus === "queued" || archive?.myCollection?.attackMetricsStatus === "running" ? "Collection running…" : !personalWindow?.configured ? "Set event time above" : "Collect / refresh event history"}</button></div>}
           <div className="historical-leaderboard">
             {!archive && archiveBusy ? <p className="historical-key-muted">Loading faction archive…</p> : archive?.leaderboard.length ? <table><thead><tr><th>RANK</th><th>MEMBER</th><th>TOTAL HITS</th><th>LOGS</th><th>COVERAGE</th></tr></thead><tbody>
               {archive.leaderboard.map((member, index) => <tr key={member.playerId} className={selectedMember?.playerId === member.playerId ? "selected" : ""}>
