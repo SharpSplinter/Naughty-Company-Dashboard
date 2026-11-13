@@ -350,7 +350,11 @@ async function seedClosedWeekFixtures(queueId) {
     [FACTION_ID],
   )
   const currentWeekMs = Date.parse(sundayStartIso())
-  const floorAt = new Date(currentWeekMs - 25 * 7 * 24 * 60 * 60 * 1000).toISOString()
+  // Staging D1 is persistent across retries. Keep the fixture idempotent by
+  // searching a wider historical window for a three-boundary gap rather than
+  // assuming the last 24 weeks remain unused after previous integration runs.
+  const fixtureLookbackWeeks = 104
+  const floorAt = new Date(currentWeekMs - fixtureLookbackWeeks * 7 * 24 * 60 * 60 * 1000).toISOString()
   const [usedBoundaries, usedReports] = await Promise.all([
     d1Query("SELECT boundary_at FROM faction_weekly_boundary_runs WHERE faction_id = ? AND boundary_at >= ?", [FACTION_ID, floorAt]),
     d1Query("SELECT week_start_at FROM faction_weekly_reports WHERE faction_id = ? AND week_start_at >= ?", [FACTION_ID, floorAt]),
@@ -359,7 +363,7 @@ async function seedClosedWeekFixtures(queueId) {
   const occupiedReports = new Set(usedReports.map((row) => row.week_start_at))
   let weekAStartMs = null
   let weekBStartMs = null
-  for (let offset = 1; offset <= 24; offset++) {
+  for (let offset = 1; offset < fixtureLookbackWeeks; offset++) {
     const candidateB = currentWeekMs - offset * 7 * 24 * 60 * 60 * 1000
     const candidateA = candidateB - 7 * 24 * 60 * 60 * 1000
     const candidateC = candidateB + 7 * 24 * 60 * 60 * 1000
@@ -672,10 +676,22 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
       signal: AbortSignal.timeout(30000),
     })
     const historyList = await historyListResponse.json().catch(() => null)
+    const historyReportCountRows = await d1Query(
+      "SELECT COUNT(*) AS count FROM faction_weekly_reports WHERE faction_id = ?",
+      [FACTION_ID],
+    )
+    const historyReportCount = Number(historyReportCountRows[0]?.count ?? 0)
+    const listedWeeks = Array.isArray(historyList?.reports)
+      ? historyList.reports.map((report) => report.weekStartAt)
+      : []
+    const listingIsSortedAndCapped = listedWeeks.length <= 26 &&
+      listedWeeks.every((week, index) => index === 0 || week <= listedWeeks[index - 1])
+    const fixtureReportsShouldBeListed = historyReportCount <= 26
     if (!historyListResponse.ok || !Array.isArray(historyList?.reports) ||
-        !historyList.reports.some((report) => report.weekStartAt === historyFixture.weekBStart) ||
-        !historyList.reports.some((report) => report.weekStartAt === historyFixture.weekAStart)) {
-      throw new Error("Weekly history API did not list both finalized fixture reports.")
+        !listingIsSortedAndCapped ||
+        (fixtureReportsShouldBeListed &&
+          (!listedWeeks.includes(historyFixture.weekBStart) || !listedWeeks.includes(historyFixture.weekAStart)))) {
+      throw new Error("Weekly history API did not return the newest 26 finalized reports in descending Sunday order.")
     }
 
     const comparisonResponse = await fetch(
