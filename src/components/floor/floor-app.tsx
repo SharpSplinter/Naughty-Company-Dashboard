@@ -3,7 +3,7 @@ import positionsData from "../../lib/company/positions.json"
 import { runEngine } from "../../lib/company/engine"
 import type { CompanyDashboardModel, CompanyPositionCatalog } from "../../lib/company/types"
 import { buildChartSeriesFor, LineChart } from "./chart-utils"
-import type { ChartSeries, SnapshotHistoryCompany, SnapshotMetric } from "./chart-utils"
+import type { ChartSeries, OfficialCompanyHistoryPoint, SnapshotHistoryCompany, SnapshotMetric } from "./chart-utils"
 import { createDemoData } from "./demo-data"
 import { placement } from "./ranking-utils"
 import { AdminPanel } from "./admin-panel"
@@ -145,6 +145,7 @@ export function FloorApp() {
     stockOrderExpense: number | null
     fetchedAt?: string
   }[]>([])
+  const [officialCompanyHistory, setOfficialCompanyHistory] = useState<OfficialCompanyHistoryPoint[]>([])
   const [snapshotSourceCreatedAt, setSnapshotSourceCreatedAt] = useState("")
   const [snapshotHistoryLoading, setSnapshotHistoryLoading] = useState(true)
   const [snapshotHistoryError, setSnapshotHistoryError] = useState("")
@@ -542,51 +543,75 @@ export function FloorApp() {
     return boundary
   }
   const currentChartCompany = snapshotHistory.find((company) => company.companyId === String(model?.company.id ?? result?.model.company.id ?? ""))
-  // The stock-difference widget uses live saved reporting records, not the imported chart archive.
+  // Canonical saved reporting points feed charts, profit summaries and stock-cost history.
   useEffect(() => {
     const companyId = String(model?.company.id ?? result?.model.company.id ?? "")
     if (!sessionToken || demoMode || !companyId) {
       setOfficialStockHistory([])
+      setOfficialCompanyHistory([])
       return
     }
     let cancelled = false
-    async function loadOfficialStockHistory() {
+    async function loadOfficialCompanyHistory() {
       try {
-        const response = await fetch(`${API_BASE}/api/me/companies/${encodeURIComponent(companyId)}/history?days=7`, {
+        const response = await fetch(`${API_BASE}/api/me/companies/${encodeURIComponent(companyId)}/history?days=all`, {
           headers: { Authorization: `Bearer ${sessionToken}` },
         })
-        if (!response.ok) throw new Error("Could not load saved daily stock history.")
+        if (!response.ok) throw new Error("Could not load saved daily company history.")
         const payload = await response.json() as { history?: unknown[] }
         const history = Array.isArray(payload.history) ? payload.history : []
-        const rows = history.flatMap((item) => {
+        const numberOrNull = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : null
+        const companyRows = history.flatMap((item): OfficialCompanyHistoryPoint[] => {
           if (!item || typeof item !== "object" || Array.isArray(item)) return []
           const record = item as Record<string, unknown>
-          const numberOrNull = (value: unknown) =>
-            typeof value === "number" && Number.isFinite(value) ? value : null
           const day = typeof record.day === "string" ? record.day : ""
+          if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(day)) return []
+          const point: OfficialCompanyHistoryPoint = {
+            day,
+            dailyIncome: numberOrNull(record.dailyIncome),
+            weeklyIncome: numberOrNull(record.weeklyIncome),
+            dailyProfit: numberOrNull(record.dailyProfit),
+            weeklyProfit: numberOrNull(record.weeklyProfit),
+            stockQuantity: numberOrNull(record.stockQuantity),
+            rating: numberOrNull(record.rating),
+          }
+          if (typeof record.companyRank === "number" && Number.isFinite(record.companyRank)) point.companyRank = record.companyRank
+          return [point]
+        })
+        const stockRows = history.flatMap((item) => {
+          if (!item || typeof item !== "object" || Array.isArray(item)) return []
+          const record = item as Record<string, unknown>
+          const day = typeof record.day === "string" ? record.day : ""
+          if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(day)) return []
           const fetchedAt = typeof record.fetchedAt === "string" ? record.fetchedAt : undefined
-          return /^\d{4}-\d{2}-\d{2}$/.test(day) ? [{
+          return [{
             day,
             stockQuantity: numberOrNull(record.stockQuantity),
             advertisingBudget: numberOrNull(record.advertisingBudget),
             employeeWages: numberOrNull(record.employeeWages),
             stockOrderExpense: numberOrNull(record.stockOrderExpense),
             ...(fetchedAt ? { fetchedAt } : {}),
-          }] : []
+          }]
         })
-        if (!cancelled) setOfficialStockHistory(rows)
+        if (!cancelled) {
+          setOfficialStockHistory(stockRows)
+          setOfficialCompanyHistory(companyRows)
+        }
       } catch {
-        if (!cancelled) setOfficialStockHistory([])
+        if (!cancelled) {
+          setOfficialStockHistory([])
+          setOfficialCompanyHistory([])
+        }
       }
     }
-    void loadOfficialStockHistory()
+    void loadOfficialCompanyHistory()
     return () => { cancelled = true }
   }, [sessionToken, demoMode, model?.company.id, model?.fetchedAt, result?.model.company.id])
-  const dailyProfit = resolveDisplayedDailyProfit(
-    currentChartCompany?.history.at(-1)?.dailyProfit,
-    model?.company.dailyIncome,
-    costs?.dailyCosts,
-  )
+  const currentReportingDay = new Date(Date.now() - 18 * 3600000).toISOString().slice(0, 10)
+  const currentOfficialProfitPoint = officialCompanyHistory.find((point) => point.day === currentReportingDay)
+  const dailyProfit = currentOfficialProfitPoint
+    ? currentOfficialProfitPoint.dailyProfit ?? null
+    : resolveDisplayedDailyProfit(currentChartCompany?.history.at(-1)?.dailyProfit, model?.company.dailyIncome, costs?.dailyCosts)
   const allDailySamples = (result?.incomeHistory ?? []).filter((item) => item.dailyIncome !== null && new Date(item.fetchedAt) <= utcNow)
   const dedupedSamples = Array.from(new Map(allDailySamples.map((item) => [new Date(new Date(item.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10), item])).values())
   const weekStart = periodStart("week")
@@ -604,7 +629,7 @@ export function FloorApp() {
   const archivedMonthProfit = archivedMonthPoints.filter((point) => point.dailyProfit !== null)
   const reportedWeeklyProfit = reportedCompanyProfit(result?.profile, "weekly")
   const estimatedWeeklyProfit = estimateWeeklyProfit(weeklyIncome, officialStockHistory)
-  const weeklyProfit = estimatedWeeklyProfit ?? reportedWeeklyProfit ?? latestReportedWeeklyProfit
+  const weeklyProfit = currentOfficialProfitPoint ? currentOfficialProfitPoint.weeklyProfit ?? null : estimatedWeeklyProfit ?? reportedWeeklyProfit ?? latestReportedWeeklyProfit
   const monthlyProfit = archivedMonthProfit.length
     ? archivedMonthProfit.reduce((sum, point) => sum + (point.dailyProfit ?? 0), 0)
     : monthlyIncome === null || costs?.dailyRecurringCosts == null || costs?.stockCosts == null || Math.max(monthSamples.length, archivedMonthPoints.length) === 0 ? null : monthlyIncome - costs.dailyRecurringCosts * Math.max(monthSamples.length, archivedMonthPoints.length) - costs.stockCosts
@@ -627,7 +652,7 @@ export function FloorApp() {
     : rankByIncome(company, companyPeerRows)
   const currentGlobalCompanyRank = currentRankingCompany ? rankByIncome(currentRankingCompany, companyPeerRows) : null
   const chartSeriesFor = (metric: SnapshotMetric): ChartSeries[] => {
-    const series = buildChartSeriesFor(metric, currentChartCompany, ownCompareData, result, model, selectedComparePlayerId, compareData, currentGlobalCompanyRank, currentStar)
+    const series = buildChartSeriesFor(metric, currentChartCompany, ownCompareData, result, model, selectedComparePlayerId, compareData, currentGlobalCompanyRank, currentStar, officialCompanyHistory)
     // Current stock comes from the saved company refresh; only plot it after the official daily boundary.
     if (metric === "stockQuantity" && currentStockQuantity !== null && model?.fetchedAt) {
       const reportingDay = new Date(Date.now() - 18 * 3600000).toISOString().slice(0, 10)

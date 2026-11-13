@@ -23,6 +23,8 @@ const sourceFiles = [
   "src/lib/torn/types.ts",
   "src/worker/index.ts",
   "src/worker/snapshot-provenance.ts",
+  "src/worker/company-history.ts",
+  "src/worker/ranking-snapshots.ts",
   "src/components/floor/ranking-utils.ts",
   "src/components/floor/financial-utils.ts",
 ].map((file) => resolve(root, file))
@@ -84,6 +86,8 @@ try {
   ]
   const worker = require(join(temp, "worker/index.js")).default
   const { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } = require(join(temp, "worker/snapshot-provenance.js"))
+  const { withRollingWeeklyProfit } = require(join(temp, "worker/company-history.js"))
+  const { buildFactionCompanyRankSnapshots, buildGlobalCompanyRankSnapshots, isFactionDirectorySnapshotEligible } = require(join(temp, "worker/ranking-snapshots.js"))
   const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
   const { estimateWeeklyProfit, financialCosts, reportedCompanyProfit, resolveDisplayedDailyProfit, stockCostTotal } = require(join(temp, "components/floor/financial-utils.js"))
   const { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isWithinQuietHours, normalizeWebhookUrl, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } = require(join(temp, "lib/automation/rules.js"))
@@ -95,6 +99,56 @@ try {
     passed += 1
     console.log("PASS", name)
   }
+
+  await test("rolling weekly profit requires seven consecutive complete daily-profit records", () => {
+    const start = Date.parse("2026-11-06T00:00:00.000Z")
+    const complete = Array.from({ length: 8 }, (_, index) => ({ day: new Date(start + index * 86400000).toISOString().slice(0, 10), dailyProfit: (index + 1) * 10, reportedWeeklyProfit: null }))
+    const rolling = withRollingWeeklyProfit(complete)
+    assert.equal(rolling[5].weeklyProfit, null)
+    assert.equal(rolling[6].weeklyProfit, 280)
+    assert.equal(rolling[7].weeklyProfit, 350)
+    assert.equal(rolling[7].weeklyProfitSource, "reconstructed")
+    const productionDaily = [70721954,40294390,72525960,31973754,40804848,38051382,29890542,19285945].map((dailyProfit,index)=>({day:new Date(start+index*86400000).toISOString().slice(0,10),dailyProfit}))
+    const productionRolling = withRollingWeeklyProfit(productionDaily)
+    assert.equal(productionRolling[6].weeklyProfit,324262830)
+    assert.equal(productionRolling[7].weeklyProfit,272826821)
+    const missingDay=withRollingWeeklyProfit(complete.filter(point=>point.day!=="2026-11-09"))
+    assert.equal(missingDay.find(point=>point.day==="2026-11-12")?.weeklyProfit,null)
+    const missingProfit=withRollingWeeklyProfit(complete.map(point=>point.day==="2026-11-09"?{...point,dailyProfit:null}:point))
+    assert.equal(missingProfit.find(point=>point.day==="2026-11-12")?.weeklyProfit,null)
+    const reconciled=withRollingWeeklyProfit(complete.map(point=>point.day==="2026-11-12"?{...point,reportedWeeklyProfit:300}:point))
+    assert.equal(reconciled[6].weeklyProfitReconciliationDelta,20)
+  })
+
+  await test("faction rank snapshots require a complete, recent directory sync", () => {
+    const complete={checkedAt:"2026-11-13T18:11:20.000Z",pendingCount:0,invalidMemberCount:0,complete:1}
+    assert.equal(isFactionDirectorySnapshotEligible(complete,"2026-11-13T18:11:01.000Z"),true)
+    assert.equal(isFactionDirectorySnapshotEligible({...complete,pendingCount:1},"2026-11-13T18:11:01.000Z"),false)
+    assert.equal(isFactionDirectorySnapshotEligible({...complete,invalidMemberCount:1},"2026-11-13T18:11:01.000Z"),false)
+    assert.equal(isFactionDirectorySnapshotEligible({...complete,complete:0},"2026-11-13T18:11:01.000Z"),false)
+    assert.equal(isFactionDirectorySnapshotEligible(complete,"2026-11-13T17:00:00.000Z"),false)
+    assert.equal(isFactionDirectorySnapshotEligible(null,"2026-11-13T18:11:01.000Z"),false)
+  })
+
+  await test("global and faction ranking snapshots preserve overall and same-type ranks", () => {
+    const companies=[
+      {companyId:"oil-a",companyName:"Oil A",companyType:"Oil Rig",companyTypeId:28,starRating:10,weeklyIncome:300,dailyIncome:50,averageDailyIncome:300/7,directorName:"A"},
+      {companyId:"tv-a",companyName:"TV A",companyType:"Television Network",companyTypeId:5,starRating:9,weeklyIncome:250,dailyIncome:40,averageDailyIncome:250/7,directorName:"B"},
+      {companyId:"oil-b",companyName:"Oil B",companyType:"Oil Rig",companyTypeId:28,starRating:10,weeklyIncome:200,dailyIncome:30,averageDailyIncome:200/7,directorName:"C"}
+    ]
+    const metadata={reportingDay:"2026-11-13",sourceFetchedAt:"2026-11-13T18:10:00.000Z",capturedAt:"2026-11-13T18:11:00.000Z",source:"scheduled"}
+    const globalRows=buildGlobalCompanyRankSnapshots(companies,metadata)
+    assert.deepEqual(globalRows.map(row=>[row.companyId,row.globalRank,row.typeRank]),[["oil-a",1,1],["tv-a",2,1],["oil-b",3,2]])
+    const factionRows=buildFactionCompanyRankSnapshots([
+      {playerId:"101",playerName:"A",factionId:"8317",companyId:"oil-b",companyName:"Oil B",companyType:"Oil Rig",companyTypeId:28,companyRating:10,dailyIncome:30,weeklyIncome:200,memberCheckedAt:"2026-11-13T17:00:00.000Z",isDirector:1},
+      {playerId:"102",playerName:"B",factionId:"8317",companyId:"oil-a",companyName:"Oil A",companyType:"Oil Rig",companyTypeId:28,companyRating:10,dailyIncome:50,weeklyIncome:300,memberCheckedAt:"2026-11-13T17:00:00.000Z",isDirector:1},
+      {playerId:"103",playerName:"C",factionId:"8317",companyId:"not-in-global-list",companyName:"Faction TV",companyType:"Television Network",companyTypeId:5,companyRating:9,dailyIncome:40,weeklyIncome:250,memberCheckedAt:"2026-11-13T17:00:00.000Z",isDirector:1},
+      {playerId:"104",playerName:"D",factionId:"8317",companyId:"tv-a",companyName:"TV A",companyType:"Television Network",companyTypeId:5,companyRating:9,dailyIncome:40,weeklyIncome:250,memberCheckedAt:"2026-11-13T17:00:00.000Z",isDirector:0}
+    ],metadata)
+    assert.deepEqual(factionRows.map(row=>[row.companyId,row.factionRank,row.typeRank]),[["oil-a",1,1],["not-in-global-list",2,1],["oil-b",3,2]])
+    assert.equal(factionRows[0].memberCheckedAt,"2026-11-13T17:00:00.000Z")
+    assert.equal(factionRows.every(row=>row.factionId==="8317"),true)
+  })
 
   await test("faction-wide stats parser validates the enum and reports missing/future fields explicitly", () => {
     const parsed = parseFactionStatsResponse({ stats: [
@@ -1332,7 +1386,8 @@ try {
     assert.match(workerSource, /runFiveMinuteScheduledJobs\(env, controller\.scheduledTime\)/, "the five-minute scheduler must run bounded membership and Halloween maintenance")
     assert.ok(workerSource.includes("https://api.torn.com/v2/company/\u0024{type.id}/companies?offset=\u0024{offset}&limit=\u0024{pageSize}"))
     assert.ok(workerSource.includes("https://api.torn.com/v2/company/snapshot"))
-    assert.ok(workerSource.includes('source: "Daily cached Torn API v2 /company/{typeId}/companies lists"'))
+    assert.match(workerSource,/let rankingSource = "Daily cached Torn API v2 \/company\/{typeId}\/companies lists"/)
+    assert.match(workerSource,/source: rankingSource/)
     assert.match(workerSource, /controller\.cron\.trim\(\) === "10 18 \* \* \*"/)
     assert.match(workerSource, /controller\.cron\.trim\(\) === "10 0 \* \* \*"/)
     assert.match(workerSource, /if \(isRankingCaptureWindow\) tasks\.push\(refreshGlobalRankingCache\(env, undefined, true\)\)/)
@@ -1563,7 +1618,7 @@ try {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     assert.match(workerSource, /PARTITION BY date\(fetched_at, '-18 hours'\)/)
     assert.match(workerSource, /fetchedAtMs - 18 \* 60 \* 60 \* 1000/)
-    assert.ok(uiSource.includes("/api/me/companies/\u0024{encodeURIComponent(companyId)}/history?days=7"))
+    assert.ok(uiSource.includes("/api/me/companies/\u0024{encodeURIComponent(companyId)}/history?days=all"))
     assert.match(uiSource, /const officialStockSnapshots = officialStockHistory/)
     assert.match(uiSource, /const stockDifference = currentOfficialStockSnapshot\?\.stockQuantity != null && previousStockSnapshot\?\.stockQuantity != null/)
     assert.match(uiSource, /missingStockSnapshotDays\.join\(" and "\)/)
