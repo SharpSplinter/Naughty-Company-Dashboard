@@ -50,3 +50,15 @@ CREATE INDEX IF NOT EXISTS idx_faction_company_rank_snapshots_company_day
 
 CREATE INDEX IF NOT EXISTS idx_faction_company_rank_snapshots_day_faction_rank
   ON faction_company_rank_snapshots (reporting_day, faction_id, faction_rank);
+
+-- Record whether the faction directory was fully traversed for a given sync.
+-- Rank snapshots are canonical only when complete=1 and the sync is recent.
+CREATE TABLE IF NOT EXISTS faction_directory_sync_state (
+  faction_id TEXT PRIMARY KEY,
+  checked_at TEXT NOT NULL,
+  member_count INTEGER NOT NULL CHECK (member_count >= 0),
+  processed_count INTEGER NOT NULL CHECK (processed_count >= 0),
+  pending_count INTEGER NOT NULL CHECK (pending_count >= 0),
+  invalid_member_count INTEGER NOT NULL DEFAULT 0 CHECK (invalid_member_count >= 0),
+  complete INTEGER NOT NULL CHECK (complete IN (0, 1))
+);
