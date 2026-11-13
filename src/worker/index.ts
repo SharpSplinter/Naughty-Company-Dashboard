@@ -21,6 +21,7 @@ import {
   type WeeklySnapshot,
 } from "../lib/faction-performance/weekly"
 import { PERSONAL_STATS_HISTORICAL_NAMES } from "../lib/torn/personalstats"
+import { calculateHalloweenEventMetrics, emptyHalloweenEventMetrics, sumHalloweenEventMetrics, type HalloweenEventMetrics } from "../lib/halloween/metrics"
 import { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } from "../lib/faction-performance/private-live"
 import { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } from "./snapshot-provenance"
 import { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isSnapshotStale, normalizeWebhookUrl, normalizeAlertThreshold, normalizeCooldownHours } from "../lib/automation/rules"
@@ -1880,6 +1881,69 @@ function classifyHalloweenLog(row: Record<string, unknown>): { labels: string[];
   if (title.includes("item use") || title.includes("items use")) labels.add("item_use")
   const isHit = labels.has("attack_leave") || labels.has("attack_mug") || labels.has("attack_hospitalize")
   return { labels: Array.from(labels), isHit, relevant: labels.size > 0 }
+}
+
+async function loadHalloweenEventMetricsForPlayers(db: D1Database, eventYear: number, playerIds: string[]): Promise<Map<string, HalloweenEventMetrics>> {
+  const metricsByPlayer = new Map<string, HalloweenEventMetrics>()
+  for (const playerId of playerIds) metricsByPlayer.set(playerId, emptyHalloweenEventMetrics())
+  if (playerIds.length === 0) return metricsByPlayer
+
+  const placeholders = playerIds.map(() => "?").join(", ")
+  const basketRows = await db.prepare(
+    `SELECT player_id AS playerId, log_type_id AS logTypeId, title, category, log_json AS logJson
+     FROM halloween_event_logs
+     WHERE event_year = ? AND log_type_id = 2535 AND player_id IN (${placeholders})`
+  ).bind(eventYear, ...playerIds).all<{ playerId: string; logTypeId: number; title: string | null; category: string | null; logJson: string | null }>()
+  const basketsByPlayer = new Map<string, Array<{ logTypeId: number; title: string | null; category: string | null; logJson: string | null }>>()
+  for (const row of basketRows.results ?? []) {
+    const list = basketsByPlayer.get(row.playerId) ?? []
+    list.push(row)
+    basketsByPlayer.set(row.playerId, list)
+  }
+  for (const [playerId, rows] of basketsByPlayer) {
+    metricsByPlayer.set(playerId, calculateHalloweenEventMetrics(rows))
+  }
+
+  // Keep high-volume attack logs inside SQL aggregation. The archive can span
+  // the entire faction, so fetching every individual attack row would be
+  // wasteful and risks the D1 result-size ceiling.
+  const summaries = await db.prepare(
+    `SELECT player_id AS playerId, 'treat_exchange' AS metricType,
+            COALESCE(SUM(CAST(json_extract(log_json, '$.data.energy_increased') AS REAL)), 0) AS energy,
+            0 AS successfulAttacks
+     FROM halloween_event_logs
+     WHERE event_year = ? AND log_type_id = 2547 AND player_id IN (${placeholders})
+     GROUP BY player_id
+     UNION ALL
+     SELECT player_id AS playerId, 'successful_attacks' AS metricType,
+            COALESCE(SUM(CAST(json_extract(log_json, '$.data.energy_used') AS REAL)), 0) AS energy,
+            COUNT(*) AS successfulAttacks
+     FROM halloween_event_logs
+     WHERE event_year = ? AND category = 'Attacking'
+       AND title IN ('Attack leave', 'Attack mug', 'Attack hospitalize')
+       AND json_extract(log_json, '$.params.color') = 'green'
+       AND json_type(log_json, '$.data.energy_used') IN ('integer', 'real')
+       AND CAST(json_extract(log_json, '$.data.energy_used') AS REAL) >= 0
+       AND player_id IN (${placeholders})
+     GROUP BY player_id`
+  ).bind(eventYear, ...playerIds, eventYear, ...playerIds).all<{
+    playerId: string
+    metricType: string
+    energy: number | null
+    successfulAttacks: number | null
+  }>()
+
+  for (const summary of summaries.results ?? []) {
+    const metrics = metricsByPlayer.get(summary.playerId)
+    if (!metrics) continue
+    if (summary.metricType === "treat_exchange") {
+      metrics.treatExchangeEnergyGained = Number(summary.energy ?? 0)
+    } else if (summary.metricType === "successful_attacks") {
+      metrics.successfulAttackEnergyUsed = Number(summary.energy ?? 0)
+      metrics.successfulAttacks = Number(summary.successfulAttacks ?? 0)
+    }
+  }
+  return metricsByPlayer
 }
 
 async function throttleHalloweenRequest(env: WorkerEnv, playerId: string): Promise<void> {
@@ -5454,8 +5518,14 @@ export default {
           coverage: complete ? "complete" : statusText === "running" || statusText === "queued" ? "collecting" : statusText === "failed" && Number(row.storedLogCount ?? 0) > 0 ? "partial" : "not_collected",
         }
       }).sort((a, b) => (b.totalHits ?? -1) - (a.totalHits ?? -1) || a.playerName.localeCompare(b.playerName))
+      const completeMemberIds = leaderboard.filter((member) => member.coverage === "complete").map((member) => member.playerId)
+      const metricsByPlayer = await loadHalloweenEventMetricsForPlayers(db, yearValue, completeMemberIds)
+      const eventTotals = {
+        ...sumHalloweenEventMetrics(Array.from(metricsByPlayer.values())),
+        coveredMembers: completeMemberIds.length,
+      }
       const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
-      return jsonResponse({ event, myWindow: personal?.window ?? null, leaderboard, myCollection: leaderboard.find((row) => row.playerId === session.player_id) ?? null }, 200, origin)
+      return jsonResponse({ event, myWindow: personal?.window ?? null, leaderboard, myCollection: leaderboard.find((row) => row.playerId === session.player_id) ?? null, eventTotals }, 200, origin)
     }
     const halloweenMemberMatch = url.pathname.match(/^\/api\/me\/halloween\/members\/(\d+)$/)
     if (halloweenMemberMatch && request.method === "GET") {
@@ -5476,10 +5546,14 @@ export default {
         db.prepare("SELECT date(event_timestamp, 'unixepoch') AS eventDay, SUM(is_hit) AS totalHits, COUNT(*) AS relevantLogs FROM halloween_event_logs WHERE player_id = ? AND event_year = ? GROUP BY date(event_timestamp, 'unixepoch') ORDER BY eventDay")
           .bind(targetId, yearValue).all<Record<string, unknown>>(),
       ])
+      const metrics = job?.status === "complete"
+        ? (await loadHalloweenEventMetricsForPlayers(db, yearValue, [targetId])).get(targetId) ?? null
+        : null
       return jsonResponse({
         member,
         collection: job ? { ...job, coverage: job.status === "complete" ? "complete" : job.status === "failed" ? Number(job.logsCollected ?? 0) > 0 ? "partial" : "not_collected" : "collecting" } : { status: "not_collected", coverage: "not_collected" },
         dailyActivity: daily.results ?? [],
+        metrics,
         logs: (logs.results ?? []).map((row) => {
           let parsed: unknown = null
           try { parsed = JSON.parse(String(row.logJson ?? "null")) } catch { parsed = null }
