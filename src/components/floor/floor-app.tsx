@@ -31,6 +31,31 @@ function formatLastSeenElapsed(timestamp: number | null, now = Date.now()): stri
 }
 const dashboardViews = ["overview", "employees", "catalog", "dashboard-members", "connect", "type-rankings", "faction-rankings", "charts", "data-transfer", "data-sharing", "executive", "health", "trends", "member-insights", "roster-insights", "performance-insights", "layout", "alerts", "admin"] as const
 type DashboardView = typeof dashboardViews[number]
+type CompanyNavigationGroup = { key: string; label: string; views: Array<{ view: DashboardView; label: string }> }
+const COMPANY_WORKSPACE_GROUPS: CompanyNavigationGroup[] = [
+  { key: "company", label: "Company", views: [
+    { view: "overview", label: "Overview" }, { view: "employees", label: "Employees" },
+    { view: "charts", label: "Trends & Charts" }, { view: "roster-insights", label: "Roster Insights" },
+    { view: "executive", label: "Executive Overview" }, { view: "layout", label: "Customize Layout" },
+  ] },
+  { key: "rankings", label: "Rankings", views: [
+    { view: "type-rankings", label: "Company Rankings" }, { view: "faction-rankings", label: "Faction Rankings" },
+  ] },
+  { key: "insights", label: "Insights", views: [
+    { view: "trends", label: "Historical Trends" }, { view: "performance-insights", label: "Performance Insights" },
+    { view: "catalog", label: "Position Catalog" }, { view: "dashboard-members", label: "Member Directory" },
+    { view: "member-insights", label: "Member Activity" },
+  ] },
+  { key: "settings", label: "Settings", views: [
+    { view: "connect", label: "Connections" }, { view: "data-sharing", label: "Data Sharing" },
+    { view: "data-transfer", label: "Import / Export" }, { view: "health", label: "API Health" },
+    { view: "alerts", label: "Automation Center" },
+  ] },
+  { key: "administration", label: "Administration", views: [
+    { view: "admin", label: "Admin Panel" },
+  ] },
+]
+
 type DashboardPreferences = { density: "comfortable" | "compact"; contentWidth: "standard" | "wide" }
 const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferences = { density: "comfortable", contentWidth: "standard" }
 type TransferPageKey = "company" | "employees" | "charts" | "rankings" | "references" | "settings" | "master"
@@ -622,7 +647,12 @@ export function FloorApp() {
     return series
   }
   const activePageTitle = activeView === "executive" ? "Executive Overview" : activeView === "health" ? "API Health & Data Freshness" : activeView === "trends" ? "Historical Trends and Comparisons" : activeView === "member-insights" ? "Member Activity" : activeView === "roster-insights" ? "Roster Insights" : activeView === "performance-insights" ? "Performance & Staffing Insights" : activeView === "layout" ? "Customizable Dashboard Layout" : activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "dashboard-members" ? "Dashboard Members" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : activeView === "data-sharing" ? "Data Sharing" : activeView === "alerts" ? "Automation Center" : activeView === "admin" ? "Administration" : "Settings"
-  const activePageGroup = activeView === "member-insights" || activeView === "dashboard-members" || activeView === "catalog" || activeView === "trends" || activeView === "performance-insights" ? "References" : activeView === "roster-insights" || activeView === "overview" || activeView === "employees" || activeView === "charts" || activeView === "executive" || activeView === "layout" ? "Company" : activeView === "alerts" || activeView === "health" || activeView === "connect" || activeView === "data-transfer" || activeView === "data-sharing" ? "Settings" : activeView === "type-rankings" || activeView === "faction-rankings" ? "Rankings" : activeView === "admin" ? "Administration" : "Workspace"
+  const activePageGroup = activeView === "member-insights" || activeView === "dashboard-members" || activeView === "catalog" || activeView === "trends" || activeView === "performance-insights" ? "Insights" : activeView === "roster-insights" || activeView === "overview" || activeView === "employees" || activeView === "charts" || activeView === "executive" || activeView === "layout" ? "Company" : activeView === "alerts" || activeView === "health" || activeView === "connect" || activeView === "data-transfer" || activeView === "data-sharing" ? "Settings" : activeView === "type-rankings" || activeView === "faction-rankings" ? "Rankings" : activeView === "admin" ? "Administration" : "Workspace"
+  const companyNavigationGroups = COMPANY_WORKSPACE_GROUPS.map((group) => ({
+    ...group,
+    views: group.views.filter((item) => isAdmin || !["dashboard-members", "member-insights", "admin"].includes(item.view)),
+  })).filter((group) => group.views.length > 0)
+  const activeCompanyGroup = companyNavigationGroups.find((group) => group.views.some((item) => item.view === activeView)) ?? companyNavigationGroups[0]
   const liveProfileRecord = getObject(result?.profile)
   const liveCompanyProfile = getObject(liveProfileRecord?.company) ?? getObject(liveProfileRecord?.profile) ?? liveProfileRecord ?? {}
   const rawCompanyFunds = liveCompanyProfile.funds ?? liveCompanyProfile.company_funds ?? liveCompanyProfile.companyFunds
@@ -943,6 +973,7 @@ export function FloorApp() {
   if (routePath === "/admin" && !isAdmin) return <main className="module-page"><section className="module-placeholder"><div className="portal-eyebrow"><span /> RESTRICTED WORKSPACE</div><h1>Administrator access required</h1><p>This workspace is available only to accounts with an active administrator role.</p><button type="button" className="portal-primary-button" onClick={() => navigateToPath("/")}>Return to portal →</button></section></main>
 
   return (
+    <main className="module-page faction-module company-module">
     <div className={`app-shell dashboard-density-${dashboardPreferences.density} dashboard-width-${dashboardPreferences.contentWidth}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <a className="brand" href="/" onClick={(event) => { event.preventDefault(); navigateToPath("/") }}>
@@ -967,15 +998,27 @@ export function FloorApp() {
 
       <main className="main-area">
         {demoMode && <div className="demo-banner"><strong>DEMO MODE</strong><span>All player, company, employee and income data below is fictional. Live Torn connections are disabled.</span><button type="button" onClick={exitDemo}>Exit demo ×</button></div>}
-        <header className="topbar">
-          <div className="topbar-leading"><button className="sidebar-toggle" type="button" onClick={() => setSidebarCollapsed((collapsed) => !collapsed)} aria-label={sidebarCollapsed ? "Expand navigation sidebar" : "Minimize navigation sidebar"} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? "Expand navigation" : "Minimize navigation"}><span aria-hidden="true">{sidebarCollapsed ? "☰" : "‹"}</span></button><div className="breadcrumbs">Workspace <span>/</span> {activePageGroup} <span>/</span> <strong>{activePageTitle}</strong></div></div>
+        <header className="module-topbar company-module-topbar">
+          <div className="topbar-leading company-module-brand"><a className="portal-brand" href="/" onClick={(event) => { event.preventDefault(); navigateToPath("/") }}><span className="portal-brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>COMPANY OPERATIONS</small></span></a><button type="button" className="company-module-return" onClick={() => navigateToPath("/")}>← Portal</button></div>
           <div className="topbar-right">{isAdmin && !demoMode && <span className="admin-role-indicator">ADMINISTRATOR</span>}<span className="environment-pill"><i /> {demoMode ? "DEMO DATA" : "CLOUDFLARE WORKER"}</span><div className="user-company-switcher"><button className="user-company-trigger" type="button" aria-expanded={showCompanySelector} onClick={() => setShowCompanySelector((open) => !open)}><span className="avatar">{playerName.slice(0, 2).toUpperCase() || "NC"}</span><span className="user-company-label"><strong>{playerName || "Connected user"}</strong><small>Torn ID {playerId || "—"} · {result?.model.company.name || "No company loaded"} · {result?.model.company.typeName || "No company type"}</small></span><span className="switch-chevron">⌄</span></button>{showCompanySelector && <div className="company-switcher-menu"><div className="company-switcher-menu-heading"><strong>Choose a company</strong><button type="button" className="company-connect-plus" onClick={() => { setShowCompanySelector(false); setActiveView("connect") }} aria-label="Connect company" title="Connect company">＋</button></div>{savedCompanies.length ? savedCompanies.map((company) => <button key={company.company_id} type="button" className={selectedCompanyId === company.company_id ? "company-switcher-option selected" : "company-switcher-option"} onClick={() => void loadSavedCompany(company.company_id)}><span>{company.company_name || `Company #${company.company_id}`}</span><small>{company.company_type || "Company"} · #{company.company_id}</small></button>) : <p>No saved companies yet. Connect a company key to add one.</p>}</div>}</div></div>
         </header>
 
         <div className="page-content">
-          <section className="welcome-row">
-            <div><div className="eyebrow"><span className="eyebrow-line" /> COMPANY INTELLIGENCE</div><h1>{activeView === "executive" ? "Executive Overview" : activeView === "health" ? "API Health & Data Freshness" : activeView === "trends" ? "Historical Trends and Comparisons" : activeView === "member-insights" ? "Member Activity" : activeView === "roster-insights" ? "Roster Insights" : activeView === "performance-insights" ? "Performance & Staffing Insights" : activeView === "layout" ? "Customizable Dashboard Layout" : activeView === "alerts" ? "Automation Center" : activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "dashboard-members" ? "Dashboard Members" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : activeView === "data-sharing" ? "Data Sharing" : activeView === "admin" ? "Administration" : "Settings"}</h1><p className="subtitle">{activeView === "executive" ? "A decision-ready summary of performance, operational health, staffing, alerts, and competitive context." : activeView === "health" ? "Worker availability, database connectivity, and company data freshness in one place." : activeView === "trends" ? "Compare income, star rating, and roster size across historical snapshots." : activeView === "performance-insights" ? "Find material performance changes, evidence-based staffing reviews, and track follow-through." : activeView === "member-insights" ? "Dashboard account activity and saved company-data coverage." : activeView === "roster-insights" ? "Workforce capacity, role mix, employee skills, wages, and tenure for the selected company." : activeView === "layout" ? "Customize the dashboard-wide reading experience and separately arrange Executive Overview widgets." : activeView === "overview" ? "A focused view of company performance, income, and star-level progress." : activeView === "employees" ? "Employee details, role fit, and position projections in one dedicated workspace." : activeView === "catalog" ? "Explore role requirements across the Torn company ecosystem." : activeView === "dashboard-members" ? "Directory of dashboard accounts and their latest saved Torn company details." : activeView === "type-rankings" ? "Compare companies within the same Torn company type, ranked by weekly income." : activeView === "faction-rankings" ? "See all confirmed faction directors, including members who do not use this dashboard." : activeView === "charts" ? "Track daily income, profit, stock levels, and historical company performance." : activeView === "data-transfer" ? "Import legacy company history or export page-by-page JSON backups of your saved dashboard data." : activeView === "data-sharing" ? "Choose exactly which dashboard members can see your trends, financial details, and employee data." : activeView === "admin" ? "Restricted administration for dashboard operations, data maintenance, and access management." : "Manage your Torn API connection and saved company keys."}</p></div>
+          <section className="module-heading company-module-heading">
+            <div><div className="portal-eyebrow"><span /> COMPANY INTELLIGENCE</div><h1>{activeView === "executive" ? "Executive Overview" : activeView === "health" ? "API Health & Data Freshness" : activeView === "trends" ? "Historical Trends and Comparisons" : activeView === "member-insights" ? "Member Activity" : activeView === "roster-insights" ? "Roster Insights" : activeView === "performance-insights" ? "Performance & Staffing Insights" : activeView === "layout" ? "Customizable Dashboard Layout" : activeView === "alerts" ? "Automation Center" : activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "dashboard-members" ? "Dashboard Members" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : activeView === "data-sharing" ? "Data Sharing" : activeView === "admin" ? "Administration" : "Settings"}</h1><p className="subtitle">{activeView === "executive" ? "A decision-ready summary of performance, operational health, staffing, alerts, and competitive context." : activeView === "health" ? "Worker availability, database connectivity, and company data freshness in one place." : activeView === "trends" ? "Compare income, star rating, and roster size across historical snapshots." : activeView === "performance-insights" ? "Find material performance changes, evidence-based staffing reviews, and track follow-through." : activeView === "member-insights" ? "Dashboard account activity and saved company-data coverage." : activeView === "roster-insights" ? "Workforce capacity, role mix, employee skills, wages, and tenure for the selected company." : activeView === "layout" ? "Customize the dashboard-wide reading experience and separately arrange Executive Overview widgets." : activeView === "overview" ? "A focused view of company performance, income, and star-level progress." : activeView === "employees" ? "Employee details, role fit, and position projections in one dedicated workspace." : activeView === "catalog" ? "Explore role requirements across the Torn company ecosystem." : activeView === "dashboard-members" ? "Directory of dashboard accounts and their latest saved Torn company details." : activeView === "type-rankings" ? "Compare companies within the same Torn company type, ranked by weekly income." : activeView === "faction-rankings" ? "See all confirmed faction directors, including members who do not use this dashboard." : activeView === "charts" ? "Track daily income, profit, stock levels, and historical company performance." : activeView === "data-transfer" ? "Import legacy company history or export page-by-page JSON backups of your saved dashboard data." : activeView === "data-sharing" ? "Choose exactly which dashboard members can see your trends, financial details, and employee data." : activeView === "admin" ? "Restricted administration for dashboard operations, data maintenance, and access management." : "Manage your Torn API connection and saved company keys."}</p></div>
           </section>
+
+          <nav className="faction-workspace-tabs company-workspace-groups" aria-label="Company dashboard categories">
+            {companyNavigationGroups.map((group) => {
+              const selected = activeCompanyGroup?.key === group.key
+              return <button key={group.key} type="button" className={selected ? "active" : ""} aria-current={selected ? "page" : undefined} onClick={() => setActiveView(group.views[0].view)}>{group.label}</button>
+            })}
+          </nav>
+          {activeCompanyGroup && activeCompanyGroup.views.length > 1 && (
+            <nav className="faction-workspace-tabs company-workspace-views" aria-label={activeCompanyGroup.label + " pages"}>
+              {activeCompanyGroup.views.map((item) => <button key={item.view} type="button" className={activeView === item.view ? "active" : ""} aria-current={activeView === item.view ? "page" : undefined} onClick={() => setActiveView(item.view)}>{item.label}</button>)}
+            </nav>
+          )}
 
           {activeView === "alerts" && !demoMode ? (
             <AlertsPanel apiBase={API_BASE} sessionToken={sessionToken} companies={savedCompanies} selectedCompanyId={selectedCompanyId} demoMode={demoMode} onNavigateCharts={() => setActiveView("charts")} />
@@ -1085,5 +1128,6 @@ export function FloorApp() {
         </div>
       </main>
     </div>
+    </main>
   )
 }
