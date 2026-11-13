@@ -1178,6 +1178,8 @@ async function persistCompleteFactionRankingSnapshot(db: D1Database, expectedSou
 async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20, forceRefresh = false): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[]; memberCount: number; invalidMemberCount: number; complete: boolean }> {
   const client = new TornApiClient({ apiKey })
   const memberPayload = await client.getFactionMembers()
+  const hasRosterPayload = Array.isArray(memberPayload.members) || isRecord(memberPayload.members)
+  if (!hasRosterPayload) throw new Error("Torn did not return a valid faction member roster.")
   const rawMembers = Array.isArray(memberPayload.members) ? memberPayload.members : isRecord(memberPayload.members) ? Object.values(memberPayload.members) : []
   const db = requireDb(env)
   const now = Date.now()
@@ -1227,8 +1229,13 @@ async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limi
   }
   const pendingCount = Math.max(pending, 0)
   const memberCount = rawMembers.length - invalidMemberCount
-  const complete = pendingCount === 0 && invalidMemberCount === 0
+  const complete = memberCount > 0 && pendingCount === 0 && invalidMemberCount === 0
   const syncCompletedAt = new Date().toISOString()
+  if (memberCount > 0 && invalidMemberCount === 0) {
+    const currentMemberIds = rawMembers.flatMap((item) => isRecord(item) ? [positiveId(item.id ?? item.user_id)] : []).filter((id): id is number => id !== null).map(String)
+    await db.prepare("UPDATE faction_member_cache SET is_director = 0, company_id = NULL, company_name = NULL, company_type = NULL, company_type_id = NULL, company_rating = NULL, daily_income = NULL, weekly_income = NULL, profile_json = NULL WHERE faction_id = '8317' AND player_id NOT IN (SELECT value FROM json_each(?))")
+      .bind(asJson(currentMemberIds)).run()
+  }
   await db.prepare("CREATE TABLE IF NOT EXISTS faction_directory_sync_state (faction_id TEXT PRIMARY KEY, checked_at TEXT NOT NULL, member_count INTEGER NOT NULL, processed_count INTEGER NOT NULL, pending_count INTEGER NOT NULL, invalid_member_count INTEGER NOT NULL DEFAULT 0, complete INTEGER NOT NULL CHECK (complete IN (0, 1)))").run()
   await db.prepare("INSERT INTO faction_directory_sync_state (faction_id, checked_at, member_count, processed_count, pending_count, invalid_member_count, complete) VALUES ('8317', ?, ?, ?, ?, ?, ?) ON CONFLICT(faction_id) DO UPDATE SET checked_at = excluded.checked_at, member_count = excluded.member_count, processed_count = excluded.processed_count, pending_count = excluded.pending_count, invalid_member_count = excluded.invalid_member_count, complete = excluded.complete")
     .bind(syncCompletedAt, memberCount, processed, pendingCount, invalidMemberCount, complete ? 1 : 0).run()
