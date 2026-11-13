@@ -1667,16 +1667,22 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
           {archive?.eventTotals && <section className="halloween-panel halloween-event-metrics">
             <div className="halloween-status historical"><i /> EVENT PERIOD TOTALS · {eventYear}</div>
             <h3>Items and energy activity</h3>
-            <p>Totals from completed personal event-log collections for {archive.eventTotals.coveredMembers} faction members. Energy-can counts include the six cans represented by each Six-Pack of Energy Drink reward.</p>
+            <p>Totals from completed personal event-log collections for {archive.eventTotals.coveredMembers} faction members. Energy cans include single cans plus six cans only when a Six-Pack of Energy Drink was opened. Unopened Energy Drink and Alcohol six-packs stay separate.</p>
             <div className="coverage-grid">
               <div><small>BOOSTERS RECEIVED</small><strong>{eventMetric(archive.eventTotals.boosters)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.boostersUsed) + " used" : "Used: —"}</span></div>
-              <div><small>ENERGY CANS RECEIVED</small><strong>{eventMetric(archive.eventTotals.energyCans)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.energyCansUsed) + " used · six-packs count as 6" : "Used: —"}</span></div>
+              <div><small>ENERGY CANS RECEIVED / OPENED</small><strong>{eventMetric(archive.eventTotals.energyCans)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.energyCansUsed) + " cans used · opened energy packs add 6" : "Used: —"}</span></div>
+              <div><small>SIX-PACKS OF ENERGY DRINK</small><strong>{eventMetric(archive.eventTotals.energyDrinkSixPacks)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.energyDrinkSixPacksUsed) + " opened" : "Opened: —"}</span></div>
+              <div><small>SIX-PACKS OF ALCOHOL</small><strong>{eventMetric(archive.eventTotals.alcoholSixPacks)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.alcoholSixPacksUsed) + " opened · separate from energy cans" : "Opened: —"}</span></div>
               <div><small>FEATHERY HOTEL COUPONS</small><strong>{eventMetric(archive.eventTotals.fhcs)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.fhcsUsed) + " used" : "Used: —"}</span></div>
               <div><small>GREEN EASTER EGGS</small><strong>{eventMetric(archive.eventTotals.greenEggs)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.greenEggsUsed) + " used" : "Used: —"}</span></div>
               <div><small>ENERGY FROM TREAT EXCHANGES</small><strong>{eventMetricsReady ? eventMetric(archive.eventTotals.treatExchangeEnergyGained) : "—"}</strong><span>Energy restored by Halloween basket rewards</span></div>
               <div><small>ENERGY USED IN SUCCESSFUL ATTACKS</small><strong>{eventMetricsReady ? eventMetric(archive.eventTotals.successfulAttackEnergyUsed) : "—"}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.successfulAttacks) + " successful attacks" : "Awaiting completed event logs"}</span></div>
+              <div><small>REVITALIZE WEAPON PROC CHANCE</small><strong>{revitalizeMetricsReady ? revitalizeChanceLabel : "—"}</strong><span>{revitalizeMetricsReady ? "Weapon chance reported by Torn on actual procs" : "Awaiting detailed attack collection"}</span></div>
+              <div><small>SUCCESSFUL REVITALIZE PROCS</small><strong>{revitalizeMetricsReady ? eventMetric(archive.eventTotals.revitalizeProcs) : "—"}</strong><span>{revitalizeMetricsReady ? eventMetric(archive.eventTotals.revitalizeAttacksReviewed) + " eligible outgoing attacks reviewed" : "Awaiting detailed attack collection"}</span></div>
             </div>
-            {!eventMetricsReady && <p className="historical-key-muted">These totals will appear after at least one faction member completes historical event-log collection. Uncollected members are not counted as zero.</p>}
+            {!eventMetricsReady && <p className="historical-key-muted">Item and event-energy totals appear after at least one faction member completes historical event-log collection. Uncollected members are not counted as zero.</p>}
+            {eventMetricsReady && !revitalizeMetricsReady && <p className="historical-key-muted">Revitalize chance and proc totals are separate from event logs. They appear when detailed attack collection completes. Custom keys need User → Attacks access.</p>}
+            {revitalizeMetricsReady && <p className="historical-key-muted">Revitalize chance is the weapon percentage Torn reports on attacks where the finishing-hit effect actually procced. This is the weapon's chance value, not the measured proc frequency.</p>}
           </section>}
           {archiveError && <p className="historical-key-error" role="alert">{archiveError}</p>}
           {collectMessage && <p className="historical-key-message" role="status">{collectMessage}</p>}
