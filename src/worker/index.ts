@@ -713,22 +713,11 @@ async function finalizeGlobalRankingRefresh(env: WorkerEnv, run: GlobalRankingRu
       row.sourceFetchedAt, row.capturedAt, row.source,
     ])
     await db.prepare("INSERT OR IGNORE INTO global_company_rank_snapshots (reporting_day, company_id, company_name, company_type, company_type_id, global_rank, type_rank, star_rating, weekly_income, daily_income, average_daily_income, director_name, source_fetched_at, captured_at, source) SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]'), json_extract(value, '$[3]'), json_extract(value, '$[4]'), json_extract(value, '$[5]'), json_extract(value, '$[6]'), json_extract(value, '$[7]'), json_extract(value, '$[8]'), json_extract(value, '$[9]'), json_extract(value, '$[10]'), json_extract(value, '$[11]'), json_extract(value, '$[12]'), json_extract(value, '$[13]'), json_extract(value, '$[14]') FROM json_each(?)").bind(asJson(globalTuples)).run()
-    const memberRows = await db.prepare("SELECT player_id AS playerId, player_name AS playerName, faction_id AS factionId, company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, company_rating AS companyRating, daily_income AS dailyIncome, weekly_income AS weeklyIncome, checked_at AS memberCheckedAt, is_director AS isDirector FROM faction_member_cache WHERE is_director = 1 AND company_id IS NOT NULL AND faction_id IS NOT NULL ORDER BY company_type ASC, weekly_income DESC, player_id ASC")
-      .all<FactionDirectorRankingInput>()
-    const factionRankSnapshots = buildFactionCompanyRankSnapshots(memberRows.results ?? [], metadata)
-    if (factionRankSnapshots.length) {
-      const factionTuples = factionRankSnapshots.map((row) => [
-        row.reportingDay, row.factionId, String(row.companyId), row.playerId, row.memberCheckedAt, row.directorName,
-        row.companyName, row.companyType, row.companyTypeId === null ? null : Number(row.companyTypeId),
-        row.factionRank, row.typeRank, row.starRating, row.weeklyIncome, row.dailyIncome,
-        row.sourceFetchedAt, row.capturedAt, row.source,
-      ])
-      await db.prepare("INSERT OR IGNORE INTO faction_company_rank_snapshots (reporting_day, faction_id, company_id, player_id, member_checked_at, director_name, company_name, company_type, company_type_id, faction_rank, type_rank, star_rating, weekly_income, daily_income, source_fetched_at, captured_at, source) SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]'), json_extract(value, '$[3]'), json_extract(value, '$[4]'), json_extract(value, '$[5]'), json_extract(value, '$[6]'), json_extract(value, '$[7]'), json_extract(value, '$[8]'), json_extract(value, '$[9]'), json_extract(value, '$[10]'), json_extract(value, '$[11]'), json_extract(value, '$[12]'), json_extract(value, '$[13]'), json_extract(value, '$[14]'), json_extract(value, '$[15]'), json_extract(value, '$[16]') FROM json_each(?)").bind(asJson(factionTuples)).run()
-    }
   }
   await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_cache (cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1), companies_json TEXT NOT NULL, fetched_at TEXT NOT NULL)").run()
   await db.prepare("INSERT INTO global_rankings_cache (cache_id, companies_json, fetched_at) VALUES (1, ?, ?) ON CONFLICT(cache_id) DO UPDATE SET companies_json = excluded.companies_json, fetched_at = excluded.fetched_at")
     .bind(asJson(companies), run.snapshot_fetched_at).run()
+  if (run.source === "scheduled") await persistCompleteFactionRankingSnapshot(db, run.snapshot_fetched_at)
   const now = new Date().toISOString()
   await db.prepare("UPDATE global_rankings_refresh_runs SET status = 'completed', lease_until = 0, finished_at = ?, updated_at = ?, error_message = NULL WHERE run_id = ? AND status = 'running'")
     .bind(now, now, run.run_id).run()
@@ -1153,6 +1142,39 @@ async function persistFactionDirectorSnapshot(
   await db.prepare("INSERT INTO faction_director_snapshots (player_id, company_id, snapshot_day, profile_json, stock_json, fetched_at, snapshot_kind) VALUES (?, ?, ?, ?, ?, ?, 'lock-in') ON CONFLICT(player_id, company_id, snapshot_day) DO UPDATE SET profile_json = excluded.profile_json, stock_json = excluded.stock_json, fetched_at = excluded.fetched_at, snapshot_kind = excluded.snapshot_kind WHERE faction_director_snapshots.snapshot_kind IN ('legacy', 'initialization')")
     .bind(playerId, companyId, day, asJson(profile), stock === null || stock === undefined ? null : asJson(stock), fetchedAt).run()
 }
+async function persistCompleteFactionRankingSnapshot(db: D1Database, expectedSourceFetchedAt?: string): Promise<boolean> {
+  await db.prepare("CREATE TABLE IF NOT EXISTS faction_directory_sync_state (faction_id TEXT PRIMARY KEY, checked_at TEXT NOT NULL, member_count INTEGER NOT NULL, processed_count INTEGER NOT NULL, pending_count INTEGER NOT NULL, invalid_member_count INTEGER NOT NULL DEFAULT 0, complete INTEGER NOT NULL CHECK (complete IN (0, 1)))").run()
+  await db.prepare("CREATE TABLE IF NOT EXISTS global_rankings_cache (cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1), companies_json TEXT NOT NULL, fetched_at TEXT NOT NULL)").run()
+  const cached = await db.prepare("SELECT fetched_at AS fetchedAt FROM global_rankings_cache WHERE cache_id = 1")
+    .first<{ fetchedAt: string }>()
+  if (!cached?.fetchedAt || (expectedSourceFetchedAt && cached.fetchedAt !== expectedSourceFetchedAt)) return false
+  const fetchedAtMs = Date.parse(cached.fetchedAt)
+  if (!Number.isFinite(fetchedAtMs)) return false
+  const state = await db.prepare("SELECT checked_at AS checkedAt, pending_count AS pendingCount, invalid_member_count AS invalidMemberCount, complete FROM faction_directory_sync_state WHERE faction_id = '8317'")
+    .first<{ checkedAt: string; pendingCount: number; invalidMemberCount: number; complete: number }>()
+  if (!isFactionDirectorySnapshotEligible(state, cached.fetchedAt)) return false
+
+  const memberRows = await db.prepare("SELECT player_id AS playerId, player_name AS playerName, faction_id AS factionId, company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, company_rating AS companyRating, daily_income AS dailyIncome, weekly_income AS weeklyIncome, checked_at AS memberCheckedAt, is_director AS isDirector FROM faction_member_cache WHERE faction_id = '8317' AND is_director = 1 AND company_id IS NOT NULL ORDER BY company_type ASC, weekly_income DESC, player_id ASC")
+    .all<FactionDirectorRankingInput>()
+  const metadata = {
+    reportingDay: new Date(fetchedAtMs - 18 * 60 * 60 * 1000).toISOString().slice(0, 10),
+    sourceFetchedAt: cached.fetchedAt,
+    capturedAt: new Date().toISOString(),
+    source: "scheduled-faction-directory-complete",
+  }
+  const snapshots = buildFactionCompanyRankSnapshots(memberRows.results ?? [], metadata)
+  if (!snapshots.length) return false
+  const tuples = snapshots.map((row) => [
+    row.reportingDay, row.factionId, String(row.companyId), row.playerId, row.memberCheckedAt,
+    row.directorName, row.companyName, row.companyType,
+    row.companyTypeId === null ? null : Number(row.companyTypeId),
+    row.factionRank, row.typeRank, row.starRating, row.weeklyIncome, row.dailyIncome,
+    row.sourceFetchedAt, row.capturedAt, row.source,
+  ])
+  await db.prepare("INSERT OR IGNORE INTO faction_company_rank_snapshots (reporting_day, faction_id, company_id, player_id, member_checked_at, director_name, company_name, company_type, company_type_id, faction_rank, type_rank, star_rating, weekly_income, daily_income, source_fetched_at, captured_at, source) SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]'), json_extract(value, '$[3]'), json_extract(value, '$[4]'), json_extract(value, '$[5]'), json_extract(value, '$[6]'), json_extract(value, '$[7]'), json_extract(value, '$[8]'), json_extract(value, '$[9]'), json_extract(value, '$[10]'), json_extract(value, '$[11]'), json_extract(value, '$[12]'), json_extract(value, '$[13]'), json_extract(value, '$[14]'), json_extract(value, '$[15]'), json_extract(value, '$[16]') FROM json_each(?)").bind(asJson(tuples)).run()
+  return true
+}
+
 async function syncFactionDirectorDirectory(env: WorkerEnv, apiKey: string, limit = 20, forceRefresh = false): Promise<{ processed: number; pending: number; directors: Record<string, unknown>[]; memberCount: number; invalidMemberCount: number; complete: boolean }> {
   const client = new TornApiClient({ apiKey })
   const memberPayload = await client.getFactionMembers()
