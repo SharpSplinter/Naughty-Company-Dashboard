@@ -5090,6 +5090,58 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
     const recent = await db.prepare("SELECT id, actor_player_id AS actorPlayerId, actor_player_name AS actorPlayerName, action, target_type AS targetType, target_id AS targetId, outcome, summary, created_at AS createdAt FROM admin_audit_log ORDER BY id DESC LIMIT 8").all<Record<string, unknown>>()
     return jsonResponse({ metrics: metrics ?? {}, maintenanceMode: await readAdminBoolean(env, "maintenanceMode", false), recentActivity: recent.results ?? [], generatedAt: new Date().toISOString() }, 200, origin)
   }
+  if (url.pathname === "/api/admin/private-live" && request.method === "GET") {
+    // Admins receive operational metadata only. Private bars, cooldowns,
+    // networth values, Torn keys and encryption material remain owner-only.
+    const rows = await db.prepare(
+      `SELECT k.player_id AS playerId, p.player_name AS playerName,
+              k.include_networth AS includeNetworth,
+              k.last_validated_at AS lastValidatedAt,
+              k.last_attempt_at AS lastAttemptAt,
+              k.last_collected_at AS lastCollectedAt,
+              k.last_error AS lastError,
+              s.captured_at AS snapshotCapturedAt
+       FROM member_private_live_keys k
+       JOIN players p ON p.player_id = k.player_id
+       LEFT JOIN faction_member_private_live_snapshots s
+         ON s.player_id = k.player_id AND s.faction_id = k.faction_id
+       WHERE k.faction_id = ? AND k.share_with_faction = 1
+       ORDER BY COALESCE(k.last_attempt_at, k.last_collected_at, k.updated_at) DESC,
+                p.player_name COLLATE NOCASE
+       LIMIT 201`
+    ).bind(NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
+    const nowMs = Date.now()
+    const connections = (rows.results ?? []).slice(0, 200).map((row) => {
+      const capturedAt = row.snapshotCapturedAt == null ? null : String(row.snapshotCapturedAt)
+      const capturedMs = capturedAt ? Date.parse(capturedAt) : Number.NaN
+      const ageMinutes = Number.isFinite(capturedMs) ? Math.max(0, Math.floor((nowMs - capturedMs) / 60000)) : null
+      const freshness = ageMinutes === null ? "no_capture"
+        : ageMinutes <= 15 ? "fresh"
+          : ageMinutes <= 60 ? "ageing" : "stale"
+      const lastError = row.lastError == null ? null : String(row.lastError).slice(0, 240)
+      return {
+        playerId: String(row.playerId), playerName: String(row.playerName),
+        includeNetworth: Number(row.includeNetworth) === 1,
+        lastValidatedAt: row.lastValidatedAt == null ? null : String(row.lastValidatedAt),
+        lastAttemptAt: row.lastAttemptAt == null ? null : String(row.lastAttemptAt),
+        lastCollectedAt: row.lastCollectedAt == null ? null : String(row.lastCollectedAt),
+        snapshotCapturedAt: capturedAt, ageMinutes, freshness, lastError,
+      }
+    })
+    const summary = {
+      connectedCount: connections.length,
+      freshCount: connections.filter((row) => row.freshness === "fresh").length,
+      ageingCount: connections.filter((row) => row.freshness === "ageing").length,
+      staleCount: connections.filter((row) => row.freshness === "stale").length,
+      noCaptureCount: connections.filter((row) => row.freshness === "no_capture").length,
+      errorCount: connections.filter((row) => Boolean(row.lastError)).length,
+    }
+    return jsonResponse({
+      generatedAt: new Date().toISOString(), collectionMode: "owner_triggered",
+      freshnessPolicy: { freshThroughMinutes: 15, ageingThroughMinutes: 60 },
+      summary, connections, truncated: (rows.results?.length ?? 0) > 200,
+    }, 200, origin, { "cache-control": "private, no-store" })
+  }
   if (url.pathname === "/api/admin/members" && request.method === "GET") {
     const q = (url.searchParams.get("q") ?? "").trim().slice(0, 100)
     const like = `%${q}%`
@@ -6077,6 +6129,9 @@ export default {
             eventCount: 0, totalObservedEventCount: 0, eventsTruncated: false, eventCounts: {}, events: [],
             inactivityCounts: { normal: 0, inactive_24h: 0, inactive_72h: 0, unknown: 0 },
             inactivityMembers: [],
+            memberProfile: null,
+            memberEvents: [],
+            memberEventsTruncated: false,
             memberTrend: { memberId: null, memberName: null, sampleCount: 0, knownSampleCount: 0, points: [] },
           }, 200, origin, { "cache-control": "private, max-age=30" })
         }
@@ -6226,8 +6281,13 @@ export default {
           const assessment = classifyFactionInactivity(timestamp, generatedAt)
           return {
             userId: String(member.userId), name: member.name || "Unknown member", position: member.position,
-            lastActionStatus: member.lastActionStatus, lastActionAt: assessment.lastActionAt,
+            level: member.level, lastActionStatus: member.lastActionStatus, lastActionAt: assessment.lastActionAt,
             elapsedSeconds: assessment.elapsedSeconds, classification: assessment.classification,
+            statusDescription: member.statusDescription, statusDetails: member.statusDetails,
+            statusState: member.statusState, statusUntil: member.statusUntil, reviveSetting: member.reviveSetting,
+            isOnWall: member.isOnWall == null ? null : Number(member.isOnWall) === 1,
+            isInOc: member.isInOc == null ? null : Number(member.isInOc) === 1,
+            hasEarlyDischarge: member.hasEarlyDischarge == null ? null : Number(member.hasEarlyDischarge) === 1,
           }
         }).sort((a, b) => (b.elapsedSeconds ?? -1) - (a.elapsedSeconds ?? -1) || a.name.localeCompare(b.name))
         const inactivityCounts = {
@@ -6268,6 +6328,24 @@ export default {
             sampleCount: points.length, knownSampleCount: points.filter(point => point.classification !== "unknown").length, points,
           }
         }
+        const allSelectedMemberEvents = selectedMember
+          ? events.filter((event) => event.userId === selectedMember.userId)
+          : []
+        const memberEvents = allSelectedMemberEvents.slice(0, 10)
+        const memberEventsTruncated = allSelectedMemberEvents.length > memberEvents.length || eventScanTruncated
+        const memberInterval = selectedMember ? await db.prepare(
+          "SELECT estimated_joined_at AS estimatedJoinedAt, first_seen_at AS firstSeenAt, left_observed_at AS leftObservedAt FROM faction_membership_intervals WHERE faction_id = ? AND user_id = ? ORDER BY first_seen_at DESC LIMIT 1"
+        ).bind(NAUGHTY_SOULS_FACTION_ID, selectedMember.userId).first<Record<string, unknown>>() : null
+        const memberProfile = selectedMember ? {
+          ...selectedMember,
+          rosterCapturedAt: latest.capturedAt,
+          estimatedJoinedAt: memberInterval?.estimatedJoinedAt == null ? null : String(memberInterval.estimatedJoinedAt),
+          firstSeenAt: memberInterval?.firstSeenAt == null ? null : String(memberInterval.firstSeenAt),
+          leftObservedAt: memberInterval?.leftObservedAt == null ? null : String(memberInterval.leftObservedAt),
+          observedChangeCount: allSelectedMemberEvents.length,
+          lastObservedChangeAt: memberEvents[0]?.occurredAt ?? null,
+          memberEventsTruncated,
+        } : null
         return jsonResponse({
           factionId: NAUGHTY_SOULS_FACTION_ID, generatedAt,
           comparisonStatus: previous ? "compared" : "waiting_for_previous_roster",
@@ -6278,6 +6356,7 @@ export default {
           eventsTruncated: events.length > orderedEvents.length || eventScanTruncated,
           eventScanTruncated,
           eventCounts, events: orderedEvents, inactivityCounts, inactivityMembers, memberTrend,
+          memberProfile, memberEvents, memberEventsTruncated,
         }, 200, origin, { "cache-control": "private, max-age=30" })
       } catch {
         return jsonResponse({ error: "Faction activity history is unavailable. Verify the completed roster snapshots and faction membership intervals." }, 503, origin)

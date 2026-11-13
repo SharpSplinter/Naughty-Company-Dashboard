@@ -689,7 +689,20 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
         !activity.events.some((event) => event.userId === activityMemberId && event.eventType === "position_changed")) {
       throw new Error("The longer faction timeline did not report sampled activity and position changes for the synthetic member.")
     }
-    console.log("PASS authenticated faction activity API returns a sampled 7-day timeline, member-specific inactivity trend, exact 24h/72h bands and explicit unknown timestamps.")
+    if (activity.memberProfile?.userId !== activityMemberId ||
+        activity.memberProfile.level !== 77 ||
+        activity.memberProfile.reviveSetting !== "Everyone" ||
+        activity.memberProfile.position !== "Leader" ||
+        activity.memberProfile.firstSeenAt == null ||
+        !Array.isArray(activity.memberEvents) ||
+        !activity.memberEvents.some((event) => event.eventType === "position_changed") ||
+        activity.memberProfile.observedChangeCount < activity.memberEvents.length) {
+      throw new Error("Faction activity member drilldown did not include roster context, observed membership, and member-specific sampled changes: " + JSON.stringify({
+        profile: activity.memberProfile ?? null,
+        memberEvents: activity.memberEvents ?? null,
+      }))
+    }
+    console.log("PASS authenticated faction activity API returns a sampled 7-day timeline, member-specific inactivity trend, detailed public member profile and recent member changes.")
 
     const weeklyResponse = await fetch(`${WORKER_URL}/api/faction/weekly-rankings?metric=xantaken`, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
@@ -790,6 +803,13 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
       throw new Error("Historical reports did not preserve negative networth movement and ending-boundary provenance.")
     }
     console.log("PASS weekly history API lists immutable reports and compares member deltas/rank movement across two completed Sundays.")
+    const nonAdminPrivateLive = await fetch(WORKER_URL + "/api/admin/private-live", {
+      headers: { Authorization: "Bearer " + token, Accept: "application/json" },
+      signal: AbortSignal.timeout(30000),
+    })
+    if (nonAdminPrivateLive.status !== 403) {
+      throw new Error("A regular faction member must not access administrator private-live diagnostics.")
+    }
     const nonAdminDiagnostics = await fetch(WORKER_URL + "/api/admin/faction/weekly-boundaries?limit=3", {
       headers: { Authorization: "Bearer " + token, Accept: "application/json" },
       signal: AbortSignal.timeout(30000),
@@ -801,6 +821,37 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
       "INSERT INTO administrators (player_id, granted_by, granted_at, revoked_by, revoked_at) VALUES (?, ?, ?, NULL, NULL)",
       [playerId, playerId, new Date().toISOString()],
     )
+    const privateLiveCapturedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+    const privateLiveAttemptAt = new Date(Date.now() - 15 * 60 * 1000).toISOString()
+    await d1Query(
+      "INSERT INTO member_private_live_keys (player_id, faction_id, ciphertext, iv, last_four, include_networth, share_with_faction, consent_version, consented_at, last_validated_at, last_attempt_at, last_collected_at, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [playerId, FACTION_ID, "synthetic-encrypted-credential-placeholder", "synthetic-iv-placeholder", "1234", "faction-private-live-v1", privateLiveCapturedAt, privateLiveCapturedAt, privateLiveAttemptAt, privateLiveCapturedAt, "Synthetic private-live refresh error.", privateLiveCapturedAt, privateLiveAttemptAt],
+    )
+    await d1Query(
+      "INSERT INTO faction_member_private_live_snapshots (player_id, faction_id, captured_at, bars_json, cooldowns_json, networth_json, source_timestamps_json) VALUES (?, ?, ?, ?, ?, NULL, ?)",
+      [playerId, FACTION_ID, privateLiveCapturedAt, JSON.stringify({ energy: { current: 17, maximum: 100 } }), JSON.stringify({ drug: 120 }), JSON.stringify({ capturedAt: privateLiveCapturedAt })],
+    )
+    const privateLiveResponse = await fetch(WORKER_URL + "/api/admin/private-live", {
+      headers: { Authorization: "Bearer " + token, Accept: "application/json" },
+      signal: AbortSignal.timeout(30000),
+    })
+    const privateLivePayload = await privateLiveResponse.json().catch(() => null)
+    const privateLiveFixture = privateLivePayload?.connections?.find((connection) => connection.playerId === playerId)
+    const forbiddenPrivateFields = ["bars", "cooldowns", "networth", "ciphertext", "iv", "lastFour", "apiKey"]
+    if (!privateLiveResponse.ok || !privateLiveFixture ||
+        privateLiveFixture.freshness !== "stale" ||
+        privateLiveFixture.lastError !== "Synthetic private-live refresh error." ||
+        privateLiveFixture.includeNetworth !== false ||
+        privateLivePayload.summary?.staleCount < 1 ||
+        privateLivePayload.summary?.errorCount < 1 ||
+        forbiddenPrivateFields.some((field) => Object.hasOwn(privateLiveFixture, field))) {
+      throw new Error("Private-live admin diagnostics did not expose only the expected stale/error metadata: " + JSON.stringify({
+        httpStatus: privateLiveResponse.status,
+        summary: privateLivePayload?.summary ?? null,
+        row: privateLiveFixture ?? null,
+      }))
+    }
+    console.log("PASS admin private-live diagnostics show opt-in, last-success freshness and sanitized error metadata, while excluding private resource values and credential material.")
     const diagnosticsResponse = await fetch(WORKER_URL + "/api/admin/faction/weekly-boundaries?limit=3", {
       headers: { Authorization: "Bearer " + token, Accept: "application/json" },
       signal: AbortSignal.timeout(30000),
@@ -869,6 +920,8 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
     }
     console.log("PASS admin weekly boundary diagnostics identify failed captures, retry a frozen Sunday run through Queues, audit the action, and refuse to rewrite finalized reports.")
   } finally {
+    await d1Query("DELETE FROM faction_member_private_live_snapshots WHERE player_id = ?", [playerId]).catch(() => undefined)
+    await d1Query("DELETE FROM member_private_live_keys WHERE player_id = ?", [playerId]).catch(() => undefined)
     for (const runId of activityRunIds) {
       await d1Query("DELETE FROM faction_member_roster_snapshots WHERE run_id = ?", [runId]).catch(() => undefined)
       await d1Query("DELETE FROM faction_roster_snapshots WHERE run_id = ?", [runId]).catch(() => undefined)

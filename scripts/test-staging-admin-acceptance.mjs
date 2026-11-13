@@ -24,6 +24,7 @@ const adminEndpoints = [
   "/api/admin/faction/weekly-boundaries?limit=2",
   "/api/admin/automation/runs?limit=5&days=7",
   "/api/admin/member-activity?days=7",
+  "/api/admin/private-live",
 ];
 
 async function apiRequest(path, token, method = "GET", body = undefined) {
@@ -56,6 +57,7 @@ assert.equal(anonymous.response.status, 401, "Anonymous administration requests 
 
 const deniedChecks = [
   ["/api/admin/overview", "GET"],
+  ["/api/admin/private-live", "GET"],
   ["/api/admin/members?limit=5", "GET"],
   ["/api/admin/settings", "GET"],
   ["/api/admin/administrators", "GET"],
@@ -150,6 +152,7 @@ try {
   const sectionNames = [
     ["Overview", "System overview"],
     ["Members", "Member management"],
+    ["Private Live", "Private-live diagnostics"],
     ["Administrators", "Administrator management"],
     ["Operations", "Refresh and maintenance jobs"],
     ["History & Backups", "History and backups"],
@@ -195,10 +198,10 @@ try {
   for (const item of browserRequests) counts[item.path] = (counts[item.path] || 0) + 1;
   const nonGetRequests = browserRequests.filter(item => item.method !== "GET");
   assert.equal(nonGetRequests.length, 0, "Read-only admin walkthrough must not issue any admin mutations.");
-  assert.ok(browserRequests.length <= 14, "Admin tab walkthrough exceeded the 14-request UI read budget: " + browserRequests.length);
+  assert.ok(browserRequests.length <= 15, "Admin tab walkthrough exceeded the 15-request UI read budget: " + browserRequests.length);
   assert.ok((counts["/api/admin/members?limit=50"] || 0) <= 2, "Member list was fetched more than twice.");
   assert.ok((counts["/api/admin/history/summary"] || 0) <= 1, "History summary should only be loaded once during the walkthrough.");
-  console.log("PASS admin UI: all eight sections opened; active nav is announced; grants and refresh actions stay disabled; " + browserRequests.length + " GETs, zero mutations.");
+  console.log("PASS admin UI: all nine sections opened; active nav is announced; grants and refresh actions stay disabled; " + browserRequests.length + " GETs, zero mutations.");
 
   const allViolations = accessibility.flatMap(result => result.violations.map(violation => ({
     view: result.view,

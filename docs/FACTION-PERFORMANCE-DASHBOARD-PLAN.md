@@ -905,3 +905,11 @@ The project is not complete until all of the following are implemented and teste
 ---
 
 **Scope rule:** This plan is additive to the existing portal and Halloween work. Do not remove existing Company, Faction, Account Settings, Admin or individualized Halloween event-time features while implementing the faction-performance system. If an API field is unavailable, permission-restricted or changes in the current schema, document that and adapt based on the official contract rather than inventing a field or silently dropping a requirement.
+
+## Member drilldowns and private-live operations visibility
+
+- The member activity drilldown combines the latest public roster context (level, position, activity/status, wall/OC/early-discharge flags and configured revive setting), the member's sampled last-action trend, and up to ten recent observed changes in the selected range.
+- Membership dates are labelled as first observed and estimated join separately; neither is presented as an exact join event. Change timestamps represent when a completed roster first showed the change.
+- Administrator-only `/api/admin/private-live` reports opted-in connection metadata, latest successful snapshot age, last attempt/validation timestamps and sanitized last errors. Freshness bands are fresh (15 minutes or less), ageing (over 15 through 60 minutes), stale (over 60 minutes), and no snapshot.
+- Private-live refresh remains member-triggered. The admin endpoint never returns bars, cooldowns, networth values, Torn credentials, encryption fields or private snapshot JSON. Staleness is a diagnostic age, not proof that a scheduled collector failed.
+- The staging integration exercises rich member profile/event serialization, non-admin denial, stale/error diagnostics, and confirms private-resource and credential fields are absent from the admin response.

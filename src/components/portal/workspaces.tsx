@@ -1140,10 +1140,28 @@ type FactionInactivityMember = {
   userId: string
   name: string
   position: string | null
+  level: number | null
   lastActionStatus: string | null
   lastActionAt: string | null
   elapsedSeconds: number | null
   classification: FactionInactivityBand
+  statusDescription: string | null
+  statusDetails: string | null
+  statusState: string | null
+  statusUntil: string | null
+  reviveSetting: string | null
+  isOnWall: boolean | null
+  isInOc: boolean | null
+  hasEarlyDischarge: boolean | null
+}
+type FactionActivityMemberProfile = FactionInactivityMember & {
+  rosterCapturedAt: string
+  estimatedJoinedAt: string | null
+  firstSeenAt: string | null
+  leftObservedAt: string | null
+  observedChangeCount: number
+  lastObservedChangeAt: string | null
+  memberEventsTruncated: boolean
 }
 type FactionInactivityTrendPoint = {
   capturedAt: string
@@ -1170,6 +1188,9 @@ type FactionActivityPayload = {
   events: FactionActivityEvent[]
   inactivityCounts: Record<FactionInactivityBand, number>
   inactivityMembers: FactionInactivityMember[]
+  memberProfile: FactionActivityMemberProfile | null
+  memberEvents: FactionActivityEvent[]
+  memberEventsTruncated: boolean
   memberTrend: {
     memberId: string | null
     memberName: string | null
@@ -1317,6 +1338,34 @@ function FactionActivityFeed({ playerName, onNavigate, apiBase, sessionToken }: 
           <p className="faction-inactivity-footnote">Showing the latest {trendPoints.length} of {payload?.memberTrend.sampleCount ?? 0} sampled observations. Last-action age is recalculated at each snapshot; a missing timestamp is never counted as inactivity.</p>
         </div>
         <p className="faction-inactivity-provenance">Range: {payload?.historyRangeDays ?? rangeDays} days · sample spacing: {payload?.samplingIntervalHours ?? (rangeDays === 7 ? 1 : rangeDays === 30 ? 4 : 24)} hour(s) · {payload?.sampledSnapshotCount ?? 0} completed roster samples{payload?.historyTruncated ? " · oldest samples omitted at the history cap" : ""}.</p>
+      </section>
+      <section className="halloween-panel faction-activity-panel faction-member-drilldown" aria-label="Selected faction member profile">
+        <div className="faction-directory-heading">
+          <div><div className="halloween-status"><i /> PUBLIC MEMBER PROFILE</div><h2>Member drilldown</h2><p>Latest public roster context, recorded membership observations and this member's sampled changes.</p></div>
+        </div>
+        {payload?.memberProfile ? <>
+          <div className="faction-weekly-member-meta">
+            <article><small>MEMBER</small><strong>{payload.memberProfile.name}</strong><span>#{payload.memberProfile.userId} · Level {payload.memberProfile.level ?? "—"}</span></article>
+            <article><small>POSITION</small><strong>{payload.memberProfile.position || "Unavailable"}</strong><span>Observed in roster {formatAt(payload.memberProfile.rosterCapturedAt)}</span></article>
+            <article><small>LAST ACTION</small><strong>{payload.memberProfile.elapsedSeconds === null ? "Unknown" : factionElapsedDuration(payload.memberProfile.elapsedSeconds) + " ago"}</strong><span>{payload.memberProfile.lastActionAt ? formatAt(payload.memberProfile.lastActionAt) : "Timestamp unavailable"} · {factionInactivityLabel(payload.memberProfile.classification)}</span></article>
+            <article><small>PUBLIC ACTIVITY STATE</small><strong>{payload.memberProfile.lastActionStatus || "Unknown"}</strong><span>Status: {payload.memberProfile.statusDescription || payload.memberProfile.statusState || "Unknown"}</span></article>
+            <article><small>MEMBERSHIP OBSERVED</small><strong>{payload.memberProfile.firstSeenAt ? formatAt(payload.memberProfile.firstSeenAt) : "Unavailable"}</strong><span>{payload.memberProfile.estimatedJoinedAt ? "Estimated join: " + formatAt(payload.memberProfile.estimatedJoinedAt) : "No estimated join date recorded"}</span></article>
+            <article><small>STATUS DETAILS</small><strong>{payload.memberProfile.statusDetails || payload.memberProfile.statusDescription || "Unknown"}</strong><span>{payload.memberProfile.statusUntil ? "Status timer: " + payload.memberProfile.statusUntil : "No status timer recorded"}</span></article>
+            <article><small>FACTION FLAGS</small><strong>{payload.memberProfile.isOnWall === null && payload.memberProfile.isInOc === null && payload.memberProfile.hasEarlyDischarge === null ? "Unknown" : [payload.memberProfile.isOnWall === true ? "Wall" : null, payload.memberProfile.isInOc === true ? "Organized crime" : null, payload.memberProfile.hasEarlyDischarge === true ? "Early discharge" : null].filter(Boolean).join(" · ") || "None reported"}</strong><span>Missing flags remain unknown in the source snapshot.</span></article>
+            <article><small>REVIVE SETTING</small><strong>{payload.memberProfile.reviveSetting || "Unknown"}</strong><span>{payload.memberProfile.observedChangeCount} changes observed in this range{payload.memberProfile.lastObservedChangeAt ? " · latest " + formatAt(payload.memberProfile.lastObservedChangeAt) : ""}</span></article>
+          </div>
+          <div className="faction-weekly-member-capture">
+            <span>Last-action trend: <strong>{payload.memberTrend.knownSampleCount} known / {payload.memberTrend.sampleCount} samples</strong></span>
+            <span>Latest roster: <strong>{formatAt(payload.memberProfile.rosterCapturedAt)}</strong></span>
+            {payload.memberProfile.leftObservedAt && <span>Departure observed: <strong>{formatAt(payload.memberProfile.leftObservedAt)}</strong></span>}
+          </div>
+          <h3>Recent sampled changes</h3>
+          {payload.memberEvents.length ? <ol className="faction-activity-list">{payload.memberEvents.map(event => <li key={event.id} className={"faction-activity-event " + event.eventType}>
+            <div className="faction-activity-event-marker" aria-hidden="true" />
+            <div className="faction-activity-event-main"><div className="faction-activity-event-top"><span>{factionActivityLabels[event.eventType]}</span><time dateTime={event.occurredAt}>{formatAt(event.occurredAt)}</time></div><p>{event.detail}</p>{(event.previousValue !== null || event.currentValue !== null) && <div className="faction-activity-transition"><span>{event.previousValue ?? "Unknown"}</span><b>→</b><span>{event.currentValue ?? "Unknown"}</span></div>}</div>
+          </li>)}</ol> : <p className="field-hint">No sampled changes for this member in the selected range.</p>}
+          {payload.memberProfile.memberEventsTruncated && <p className="faction-inactivity-footnote">The member change list is capped at the 10 most recent observations or the upstream history scan limit.</p>}
+        </> : <div className="historical-empty"><strong>No member profile is available.</strong><span>Select a member in the inactivity trend control after a completed roster has been captured.</span></div>}
       </section>
       <section className="halloween-panel faction-activity-panel">
         <div className="faction-directory-heading">

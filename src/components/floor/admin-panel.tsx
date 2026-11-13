@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 
-type AdminTab = "overview" | "members" | "administrators" | "operations" | "history" | "settings" | "weekly-boundaries" | "audit"
+type AdminTab = "overview" | "members" | "private-live" | "administrators" | "operations" | "history" | "settings" | "weekly-boundaries" | "audit"
 type AdminSettings = { maintenanceMode: boolean; manualRefreshEnabled: boolean; historyImportEnabled: boolean }
 type AdminWeeklyRunDiagnostic = {
   runId: string
@@ -54,6 +54,27 @@ const REFRESH_ENDPOINT_OPTIONS: Array<{ value: AdminRefreshEndpoint; label: stri
 type AutomationInsights = { totalRuns: number; succeededRuns: number; failedRuns: number; partialRuns: number; runningRuns: number; completedRuns: number; successRate: number | null; avgDurationSeconds: number | null; companiesFailed: number; alertsCreated: number; latestRunAt?: string | null; recurringFailures: Array<{ errorSummary: string; occurrences: number }> }
 type AuditEvent = { id: number; actorPlayerId: string; actorPlayerName: string; action: string; targetType?: string | null; targetId?: string | null; outcome: string; summary: string; createdAt: string; details?: unknown }
 type MemberDetail = { member: AdminMember & { disabledAt?: string | null }; connections: { companies: Array<{ companyId: string; companyName?: string | null; companyType?: string | null; lastFour?: string; keyUpdatedAt?: string; fetchedAt?: string | null }>; loginKeySaved: boolean; legacyCompanyKeySaved: boolean }; history: { companySnapshots: number; directorSnapshots: number; pageRecords: number; financialRecords: number } }
+type AdminPrivateLiveFreshness = "fresh" | "ageing" | "stale" | "no_capture"
+type AdminPrivateLiveConnection = {
+  playerId: string
+  playerName: string
+  includeNetworth: boolean
+  lastValidatedAt: string | null
+  lastAttemptAt: string | null
+  lastCollectedAt: string | null
+  snapshotCapturedAt: string | null
+  ageMinutes: number | null
+  freshness: AdminPrivateLiveFreshness
+  lastError: string | null
+}
+type AdminPrivateLivePayload = {
+  generatedAt: string
+  collectionMode: "owner_triggered"
+  freshnessPolicy: { freshThroughMinutes: number; ageingThroughMinutes: number }
+  summary: { connectedCount: number; freshCount: number; ageingCount: number; staleCount: number; noCaptureCount: number; errorCount: number }
+  connections: AdminPrivateLiveConnection[]
+  truncated: boolean
+}
 
 type Props = { apiBase: string; sessionToken: string; playerId: string; playerName: string }
 
@@ -121,6 +142,9 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   const [memberSearch, setMemberSearch] = useState("")
   const [selectedMemberId, setSelectedMemberId] = useState("")
   const [memberDetail, setMemberDetail] = useState<MemberDetail | null>(null)
+  const [privateLiveDiagnostics, setPrivateLiveDiagnostics] = useState<AdminPrivateLivePayload | null>(null)
+  const [privateLiveDiagnosticsLoading, setPrivateLiveDiagnosticsLoading] = useState(false)
+  const [privateLiveDiagnosticsError, setPrivateLiveDiagnosticsError] = useState("")
   const [jobs, setJobs] = useState<AdminJob[]>([])
   const [refreshEndpoints, setRefreshEndpoints] = useState<AdminRefreshEndpoint[]>(["company-profile", "company-employees", "company-stock"])
   const [refreshScope, setRefreshScope] = useState<AdminRefreshScope>("all")
@@ -223,6 +247,7 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
 
   useEffect(() => { void refreshAll() }, [refreshAll])
   useEffect(() => { if (tab === "administrators") void loadAdministrators() }, [tab])
+  useEffect(() => { if (tab === "private-live") void loadPrivateLiveDiagnostics() }, [tab, loadPrivateLiveDiagnostics])
   useEffect(() => { if (tab === "weekly-boundaries") void loadWeeklyBoundaries() }, [tab])
   useEffect(() => { if (tab === "operations") void loadAutomationRuns() }, [tab, loadAutomationRuns])
   useEffect(() => { if (tab === "operations") void loadRefreshCandidates(refreshMemberSearch, refreshMemberOffset) }, [tab, loadRefreshCandidates, refreshMemberSearch, refreshMemberOffset])
@@ -415,6 +440,17 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
       setAdministrators(payload.administrators || [])
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load administrator roles.") }
   }
+  const loadPrivateLiveDiagnostics = useCallback(async () => {
+    setPrivateLiveDiagnosticsLoading(true)
+    setPrivateLiveDiagnosticsError("")
+    try {
+      const payload = await adminFetch<AdminPrivateLivePayload>(apiBase, sessionToken, "/api/admin/private-live")
+      setPrivateLiveDiagnostics(payload)
+    } catch (caught) {
+      setPrivateLiveDiagnosticsError(caught instanceof Error ? caught.message : "Could not load private-live diagnostics.")
+      setPrivateLiveDiagnostics(null)
+    } finally { setPrivateLiveDiagnosticsLoading(false) }
+  }, [apiBase, sessionToken])
 
   async function changeAdministratorRole(action: "grant" | "revoke", target?: Administrator) {
     if (!actionsArmed || administratorBusy) return
@@ -439,7 +475,7 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   const historyStats = (historySummary?.stats || {}) as Record<string, unknown>
   const filteredAutomationRuns = useMemo(() => automationStatusFilter === "all" ? automationRuns : automationRuns.filter((run) => run.status === automationStatusFilter), [automationRuns, automationStatusFilter])
   const tabItems: Array<{ key: AdminTab; label: string; icon: string }> = [
-    { key: "overview", label: "Overview", icon: "◫" }, { key: "members", label: "Members", icon: "♙" }, { key: "administrators", label: "Administrators", icon: "♛" },
+    { key: "overview", label: "Overview", icon: "◫" }, { key: "members", label: "Members", icon: "♙" }, { key: "private-live", label: "Private Live", icon: "◉" }, { key: "administrators", label: "Administrators", icon: "♛" },
     { key: "operations", label: "Operations", icon: "↻" }, { key: "history", label: "History & Backups", icon: "▤" },
     { key: "settings", label: "Global Settings", icon: "⚙" }, { key: "weekly-boundaries", label: "Weekly Boundaries", icon: "◷" }, { key: "audit", label: "Audit Log", icon: "≡" },
   ]
@@ -473,6 +509,42 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
       </div>
     </div>}
 
+    {tab === "private-live" && <div className="admin-section-stack">
+      <div className="admin-section-heading"><div><h2>Private-live diagnostics</h2><p>Operational freshness and sanitized errors for members who explicitly opted in to faction sharing. Refreshes are owner-triggered, not scheduled.</p></div><button type="button" className="secondary-button" onClick={() => void loadPrivateLiveDiagnostics()} disabled={privateLiveDiagnosticsLoading}>{privateLiveDiagnosticsLoading ? "Loading…" : "Refresh diagnostics ↻"}</button></div>
+      {privateLiveDiagnosticsError && <div className="error-banner" role="alert">{privateLiveDiagnosticsError}</div>}
+      <p className="admin-readonly-note"><strong>Privacy boundary.</strong> This view contains timestamps, consented selection flags and sanitized errors only. Private bars, cooldowns, networth values and API credentials remain owner-only.</p>
+      {privateLiveDiagnostics && <div className="admin-metric-grid">
+        {[
+          ["Connected opt-ins", privateLiveDiagnostics.summary.connectedCount],
+          ["Fresh · 15m or less", privateLiveDiagnostics.summary.freshCount],
+          ["Ageing · 15–60m", privateLiveDiagnostics.summary.ageingCount],
+          ["Stale · over 60m", privateLiveDiagnostics.summary.staleCount],
+          ["No successful snapshot", privateLiveDiagnostics.summary.noCaptureCount],
+          ["Last error recorded", privateLiveDiagnostics.summary.errorCount],
+        ].map(([label, value]) => <article className="admin-metric-card" key={String(label)}><small>{String(label)}</small><strong>{Number(value ?? 0).toLocaleString()}</strong></article>)}
+      </div>}
+      <section className="panel admin-subpanel">
+        <div className="panel-heading"><div><h3>Opted-in member connections</h3><p>Freshness is measured from the most recent successful private-live snapshot. Age alone does not indicate a failed collector.</p></div><span className="count-chip">{privateLiveDiagnostics?.summary.connectedCount ?? 0} connected</span></div>
+        {privateLiveDiagnosticsLoading && !privateLiveDiagnostics ? <div className="empty-state">Loading private-live connection metadata…</div> : privateLiveDiagnostics?.connections.length ? <div className="table-scroll" tabIndex={0} role="region" aria-label="Scrollable private-live diagnostics table"><table className="admin-table">
+          <thead><tr><th>MEMBER</th><th>SNAPSHOT FRESHNESS</th><th>LAST ATTEMPT</th><th>LAST VALIDATED</th><th>NETWORTH OPT-IN</th><th>LAST ERROR</th></tr></thead>
+          <tbody>{privateLiveDiagnostics.connections.map(connection => {
+            const statusClass = connection.freshness === "fresh" ? "good" : connection.freshness === "ageing" ? "warning" : connection.freshness === "stale" ? "danger" : "neutral"
+            const statusLabel = connection.freshness === "fresh" ? "Fresh" : connection.freshness === "ageing" ? "Ageing" : connection.freshness === "stale" ? "Stale" : "No snapshot"
+            const ageLabel = connection.ageMinutes === null ? "No successful capture" : connection.ageMinutes < 1 ? "Under 1 minute" : formatDuration(connection.ageMinutes * 60) + " ago"
+            return <tr key={connection.playerId}>
+              <td><strong>{connection.playerName}</strong><small>#{connection.playerId}</small></td>
+              <td><span className={"admin-status " + statusClass}>{statusLabel}</span><small>{ageLabel}</small><small>{prettyDate(connection.snapshotCapturedAt)}</small></td>
+              <td>{prettyDate(connection.lastAttemptAt)}</td>
+              <td>{prettyDate(connection.lastValidatedAt)}</td>
+              <td><span className={"admin-status " + (connection.includeNetworth ? "good" : "neutral")}>{connection.includeNetworth ? "Enabled" : "Off"}</span></td>
+              <td>{connection.lastError ? <><span className="admin-status danger">Error</span><small>{connection.lastError}</small></> : <span className="field-hint">No recorded error</span>}</td>
+            </tr>
+          })}</tbody>
+        </table></div> : <div className="empty-state">No current faction members have opted in to private-live sharing.</div>}
+        {privateLiveDiagnostics?.truncated && <p className="field-hint">Showing the 200 most recently attempted connections. Narrowing by member is not available in this read-only summary.</p>}
+        {privateLiveDiagnostics && <p className="field-hint">Generated {prettyDate(privateLiveDiagnostics.generatedAt)} · freshness thresholds: fresh through {privateLiveDiagnostics.freshnessPolicy.freshThroughMinutes} minutes, ageing through {privateLiveDiagnostics.freshnessPolicy.ageingThroughMinutes} minutes. Collection mode: member-triggered.</p>}
+      </section>
+    </div>}
     {tab === "administrators" && <div className="admin-section-stack">
       <div className="admin-section-heading"><div><h2>Administrator management</h2><p>Privileges are attached to a verified Torn player ID and checked by the Worker on every administration request.</p></div><button type="button" className="secondary-button" onClick={() => void loadAdministrators()}>Refresh roles ↻</button></div>
       <section className="panel admin-subpanel">
