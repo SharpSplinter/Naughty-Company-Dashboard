@@ -44,6 +44,9 @@ jobs:
           npm run typecheck
           npm test
           npm run build
+          node --check scripts/seed-staging-private-history.mjs
+          node --check scripts/cleanup-staging-private-history.mjs
+          node --check scripts/test-staging-responsive.mjs
 
       - name: Verify every deployment target is isolated staging
         shell: bash
@@ -171,10 +174,24 @@ jobs:
           npm install --no-save --package-lock=false playwright
           npx playwright install --with-deps chromium
 
-      - name: Run Company Dashboard responsive checks on staging
+      - name: Seed isolated authenticated private-history fixtures
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 6c03b978ed9a59adc3f61c715bdad45c
+        run: node scripts/seed-staging-private-history.mjs
+
+      - name: Run authenticated Company Dashboard responsive checks on staging
         env:
           STAGING_PAGES_URL: https://naughtyfamily-staging.pages.dev
+          STAGING_API_URL: https://naughtyfamily-api-staging.kboone801.workers.dev
         run: node scripts/test-staging-responsive.mjs
+
+      - name: Remove synthetic private-history fixtures from staging D1
+        if: always()
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 6c03b978ed9a59adc3f61c715bdad45c
+        run: node scripts/cleanup-staging-private-history.mjs
 
       - name: Upload staging viewport screenshots
         if: always()
