@@ -107,7 +107,9 @@ function apiErrorOutcome(code: number | undefined, status: number): TornRequestO
 }
 
 function normalizedEndpoint(path: string): string {
-  return path.split("?")[0].replace(/\\/\\d+(?=\\/|$)/g, "/:id")
+  return path.split("?")[0].split("/").map((segment) =>
+    segment.length > 0 && [...segment].every((character) => character >= "0" && character <= "9") ? ":id" : segment
+  ).join("/")
 }
 
 export class TornApiClient {
