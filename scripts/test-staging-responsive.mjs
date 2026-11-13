@@ -163,6 +163,50 @@ try {
     await page.screenshot({ path: "test-results/staging-responsive/" + viewport.label + ".png", fullPage: true });
   }
 
+  // Account Settings must fit the viewport without forcing document-level horizontal scrolling.
+  const settingsPage = await context.newPage();
+  await settingsPage.goto(baseUrl + "/settings", { waitUntil: "networkidle", timeout: 30000 });
+  const settingsModule = settingsPage.locator(".settings-module");
+  await settingsModule.waitFor({ state: "visible", timeout: 20000 });
+  const settingsGrid = settingsModule.locator(".settings-grid");
+  await settingsGrid.waitFor({ state: "visible", timeout: 10000 });
+  for (const viewport of viewports) {
+    await settingsPage.setViewportSize({ width: viewport.width, height: viewport.height });
+    await settingsPage.waitForTimeout(80);
+    const metrics = await settingsPage.evaluate(() => {
+      const root = document.documentElement;
+      const module = document.querySelector(".settings-module");
+      const grid = document.querySelector(".settings-module .settings-grid");
+      const cards = [...document.querySelectorAll(".settings-module .settings-card")];
+      const bounds = element => {
+        const box = element.getBoundingClientRect();
+        return { left: Math.round(box.left), right: Math.round(box.right), width: Math.round(box.width) };
+      };
+      return {
+        viewportWidth: window.innerWidth,
+        documentWidth: root.scrollWidth,
+        bodyWidth: document.body.scrollWidth,
+        module: bounds(module),
+        grid: bounds(grid),
+        rowGap: parseFloat(getComputedStyle(grid).rowGap) || 0,
+        cards: cards.map(bounds),
+      };
+    });
+    const withinViewport = metrics.documentWidth <= viewport.width + 1
+      && metrics.bodyWidth <= viewport.width + 1
+      && metrics.module.left >= -1
+      && metrics.module.right <= viewport.width + 1
+      && metrics.grid.left >= -1
+      && metrics.grid.right <= viewport.width + 1
+      && metrics.cards.every(card => card.left >= -1 && card.right <= viewport.width + 1);
+    console.log((withinViewport ? "PASS " : "FAIL ") + "settings-" + viewport.label + ": " + JSON.stringify(metrics));
+    assert.ok(withinViewport, "Account Settings overflowed or a card exceeded the viewport at " + viewport.label);
+    assert.ok(metrics.rowGap >= 8, "Account Settings cards are too tightly spaced at " + viewport.label);
+    await settingsPage.screenshot({ path: "test-results/staging-responsive/settings-" + viewport.label + ".png", fullPage: true });
+  }
+  await settingsPage.close();
+  console.log("PASS Account Settings viewport bounds and card spacing at " + viewports.length + " viewports.");
+
   // Confirm a narrow screen can switch to another top-level area without losing the Company shell.
   await page.setViewportSize({ width: 390, height: 844 });
   await primaryNav.getByRole("button", { name: "Rankings", exact: true }).click();
