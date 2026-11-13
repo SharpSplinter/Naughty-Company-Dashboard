@@ -358,8 +358,7 @@ const factionStatsLabels: Record<string, string> = {
   "attacksdamaging": "Damaging attacks",
   "attacksrunaway": "Attacks escaped",
   "highestterritories": "Highest territories held",
-  "territoryrespect": "Territory respect",
-  "membersamount": "Faction members"
+  "territoryrespect": "Territory respect"
 }
 const factionStatsGroups = [
   {
@@ -422,8 +421,7 @@ const factionStatsGroups = [
       "traveltime",
       "hunting",
       "hosptimegiven",
-      "hosptimereceived",
-      "membersamount"
+      "hosptimereceived"
     ]
   }
 ]
@@ -455,6 +453,8 @@ function FactionStatsOverview({ onNavigate, apiBase, sessionToken }: FactionWork
   useEffect(() => { void load() }, [apiBase, sessionToken])
 
   const values = new Map((payload?.stats ?? []).map(stat => [stat.name, stat.value]))
+  // Older snapshots treated membersamount as a missing field; it is not a Torn /faction/stats counter.
+  const missingStatNames = (payload?.missingStatNames ?? []).filter(name => name !== "membersamount")
   const number = (value: number | undefined) => value === undefined
     ? "—"
     : new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value)
@@ -468,7 +468,7 @@ function FactionStatsOverview({ onNavigate, apiBase, sessionToken }: FactionWork
       <section className="module-heading"><div className="portal-eyebrow"><span /> NAUGHTY SOULS · FACTION INTELLIGENCE</div><h1>Faction <em>Lifetime Totals</em></h1><p>Faction-wide counters returned by Torn's /faction/stats endpoint. These aggregate totals are separate from individual members' personal statistics and weekly rankings.</p></section>
       {error && <p className="settings-feedback error" role="alert">{error}</p>}
       <section className="faction-stats-toolbar">
-        <div><small>FACTION STATS SNAPSHOT</small><strong>{capturedAt}</strong><span>{payload?.snapshot ? payload.snapshot.returnedStatCount + " recognized counters captured" : "No saved snapshot yet"}{payload?.missingStatNames.length ? " · " + payload.missingStatNames.length + " fields not returned" : ""}</span></div>
+        <div><small>FACTION STATS SNAPSHOT</small><strong>{capturedAt}</strong><span>{payload?.snapshot ? payload.snapshot.returnedStatCount + " recognized counters captured" : "No saved snapshot yet"}{missingStatNames.length ? " · " + missingStatNames.length + " fields not returned" : ""}</span></div>
         <button type="button" onClick={() => void load()} disabled={busy}>{busy ? "Refreshing…" : "Refresh ↻"}</button>
       </section>
       {busy && !payload ? <p className="historical-key-muted">Loading the latest faction-wide totals…</p> : payload?.snapshot ? (
@@ -477,14 +477,14 @@ function FactionStatsOverview({ onNavigate, apiBase, sessionToken }: FactionWork
             <section className="halloween-panel faction-stats-group" key={group.title}>
               <div className="faction-directory-heading"><div><div className="halloween-status"><i /> FACTION AGGREGATES</div><h2>{group.title}</h2><p>Latest successful capture. A dash means Torn did not return that field.</p></div></div>
               <div className="faction-stats-grid">
-                {group.names.map(name => <article key={name}><small>{factionStatsLabels[name] || name}</small><strong>{number(values.get(name))}</strong><span>{name}</span></article>)}
+                {group.names.map(name => <article key={name}><small>{factionStatsLabels[name] || name}</small><strong>{number(values.get(name))}</strong></article>)}
               </div>
             </section>
           ))}
-          {(payload.missingStatNames.length > 0 || payload.unexpectedStatNames.length > 0) && (
+          {(missingStatNames.length > 0 || payload.unexpectedStatNames.length > 0) && (
             <section className="historical-empty faction-stats-schema-note">
               <strong>API field coverage</strong>
-              <span>{payload.missingStatNames.length ? "Not included in this capture: " + payload.missingStatNames.join(", ") + ". " : ""}{payload.unexpectedStatNames.length ? "New, unrecognized Torn fields: " + payload.unexpectedStatNames.join(", ") + "." : ""}</span>
+              <span>{missingStatNames.length ? "Not included in this capture: " + missingStatNames.join(", ") + ". " : ""}{payload.unexpectedStatNames.length ? "New, unrecognized Torn fields: " + payload.unexpectedStatNames.join(", ") + "." : ""}</span>
             </section>
           )}
         </>
