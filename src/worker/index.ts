@@ -1997,10 +1997,10 @@ async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Pro
   let response: Response
   let payload: unknown
   try {
-    response = await fetch(parsedUrl.toString(), {
+    response = await trackedTornFetch("halloween-historical-log", parsedUrl.toString(), {
       headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
       signal: controller.signal,
-    })
+    }, fetch, job.player_id)
     payload = await response.json().catch(() => null)
   } finally { clearTimeout(timeout) }
   const apiError = isRecord(payload) && isRecord(payload.error) ? payload.error : null
@@ -2011,7 +2011,7 @@ async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Pro
         .bind("Torn rejected the saved Full Access key. Reconnect a valid Full Access key with user log access.", new Date().toISOString(), jobId).run()
       return
     }
-    throw new Error(code === 5 ? "Torn rate limit reached during historical collection." : "Torn historical log request failed.")
+    throw new Error(code === 5 || code === 8 || code === 14 ? "Torn rate limit reached during historical collection." : code === 9 ? "Torn's API is currently disabled." : "Torn historical log request failed.")
   }
   if (!isRecord(payload) || !Array.isArray(payload.log)) throw new Error("Torn returned an unexpected user log response.")
   const collectedAt = new Date().toISOString()
@@ -2089,7 +2089,7 @@ async function runHalloweenLiveSnapshot(env: WorkerEnv, playerId: string, eventY
   const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
   if (!response.ok || error) {
     const code = typeof error?.code === "number" ? error.code : undefined
-    throw new Error(code === 9 ? "Torn rate limit reached while collecting Halloween summary." : code === 3 ? "The saved login key does not have the Minimal Access Halloween selection." : "Torn's Halloween summary endpoint is temporarily unavailable.")
+    throw new Error(code === 5 || code === 8 || code === 14 ? "Torn rate limit reached while collecting the Halloween summary." : code === 9 ? "Torn's API is currently disabled." : code === 3 ? "The saved login key does not have the Minimal Access Halloween selection." : "Torn's Halloween summary endpoint is temporarily unavailable.")
   }
   const halloween = isRecord(payload) && isRecord(payload.halloween) ? payload.halloween : null
   const treats = isRecord(halloween?.treats) ? halloween.treats : null
@@ -5238,13 +5238,14 @@ export default {
           response = await trackedTornFetch("scheduled-key-owner-validation", "https://api.torn.com/v2/key/info", {
             headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
             signal: controller.signal,
-          }, fetch, playerId)
+          }, fetch, session.player_id)
           payload = await response.json().catch(() => null)
         } finally { clearTimeout(timeout) }
         const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
         if (!response.ok || error) {
           const code = typeof error?.code === "number" ? error.code : undefined
-          return jsonResponse({ error: code === 9 ? "Torn's API is temporarily unavailable or rate limited. Please retry later." : "Torn could not validate that API key. Check the key and try again." }, code === 9 ? 429 : 400, origin)
+          const rateLimited = code === 5 || code === 8 || code === 14
+          return jsonResponse({ error: rateLimited ? "Torn request limit reached. Please retry after the limit resets." : code === 9 ? "Torn's API is currently disabled." : "Torn could not validate that API key. Check the key and try again." }, rateLimited ? 429 : code === 9 ? 503 : 400, origin)
         }
         const root = isRecord(payload) && isRecord(payload.info) ? payload.info : null
         const keyOwner = isRecord(root?.user) ? root.user.id : undefined
