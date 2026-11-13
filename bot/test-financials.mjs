@@ -3,7 +3,8 @@ import {
   buildCostBreakdown,
   estimateDailyProfit,
   estimateWeeklyProfit,
-  resolveDisplayedProfit,
+  resolveDisplayedDailyProfit,
+  resolveDisplayedWeeklyProfit,
   findAdvertisingBudget,
   knownWageSummary,
   stockOrderExpenses,
@@ -61,18 +62,30 @@ const breakdown = buildCostBreakdown({ advertisingBudget: 5200000, wages: wages.
 assert.equal(breakdown.total, 83400000);
 assert.equal(estimateDailyProfit(119465920, breakdown), 36065920);
 assert.equal(estimateWeeklyProfit(850324992, breakdown), 850324992 - (5200000 + 78200000) * 7);
-assert.deepEqual(resolveDisplayedProfit(57573280, 30090542), {
-  value: 30090542,
+assert.deepEqual(resolveDisplayedDailyProfit(57573280, 119465920, breakdown), {
+  value: 36065920,
   source: "calculated"
-}, "a complete cost calculation must override a conflicting Torn-reported profit");
-assert.deepEqual(resolveDisplayedProfit(57573280, null), {
+}, "daily profit must use current income and complete current costs ahead of history");
+assert.deepEqual(resolveDisplayedDailyProfit(57573280, 119465920, { ...breakdown, total: null }), {
   value: 57573280,
-  source: "reported"
-}, "Torn-reported profit is only a fallback when the cost breakdown is incomplete");
-assert.deepEqual(resolveDisplayedProfit(undefined, null), {
+  source: "historical"
+}, "daily profit must fall back to the latest saved historical value when live costs are incomplete");
+assert.deepEqual(resolveDisplayedDailyProfit(undefined, 119465920, { ...breakdown, total: null }), {
   value: null,
   source: "unavailable"
-}, "profit must remain unavailable when neither a calculation nor reported value exists");
+}, "daily profit stays unavailable without complete live costs or historical profit");
+assert.deepEqual(resolveDisplayedWeeklyProfit(57573280, 30090542, 41000000), {
+  value: 57573280,
+  source: "reported"
+}, "weekly profit must prefer Torn's reported value, matching the dashboard");
+assert.deepEqual(resolveDisplayedWeeklyProfit(undefined, 30090542, 41000000), {
+  value: 30090542,
+  source: "calculated"
+}, "weekly profit must use its cost-based estimate when no reported value exists");
+assert.deepEqual(resolveDisplayedWeeklyProfit(undefined, null, 41000000), {
+  value: 41000000,
+  source: "historical"
+}, "weekly profit must fall back to history when neither reported nor calculated values exist");
 
 const monthHistory = [
   { day: "2026-10-01", fetchedAt: "2026-10-01T20:00:00.000Z", dailyIncome: 100, advertisingBudget: 10, employeeWages: 20, stockOrderExpense: 3 },
