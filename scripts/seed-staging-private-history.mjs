@@ -15,6 +15,7 @@ const MEMBERS = [
   { id: "999999001", name: "Staging Private History Member", companyName: "Staging Private History Company", adBudget: 50000, wages: 100000, orderQuantity: 5, unitCost: 250, stockBase: 10000, stockStep: 100, incomeBase: 13500000, incomeStep: 125000 },
   { id: "999999002", name: "Staging Private History Other Member", companyName: "Other Member Private History Company", adBudget: 120000, wages: 230000, orderQuantity: 7, unitCost: 450, stockBase: 20000, stockStep: 250, incomeBase: 987650000, incomeStep: 250000 },
 ];
+const ADMIN = { id: "999999004", name: "Staging Private History Admin" };
 
 function sqlQuote(value) {
   return "'" + String(value).replace(/'/g, "''") + "'";
@@ -75,13 +76,16 @@ const now = new Date();
 const nowIso = now.toISOString();
 const expiresAt = Math.floor(now.getTime() / 1000) + 3600;
 const tokens = MEMBERS.map(() => randomBytes(32).toString("hex"));
+const adminToken = randomBytes(32).toString("hex");
 const tokenHashes = tokens.map(sha256);
+const adminTokenHash = sha256(adminToken);
 const incomeSeries = MEMBERS.map(member => Array.from({ length: 7 }, (_, index) => member.incomeBase + index * member.incomeStep));
 
 const statements = [
   "PRAGMA foreign_keys = ON;",
   // Only previously created fixture identities are removed. A colliding real member ID is never deleted.
-  "DELETE FROM players WHERE (player_id = " + sqlQuote(MEMBERS[0].id) + " AND player_name = " + sqlQuote(MEMBERS[0].name) + ") OR (player_id = " + sqlQuote(MEMBERS[1].id) + " AND player_name = " + sqlQuote(MEMBERS[1].name) + ");",
+  "DELETE FROM admin_audit_log WHERE actor_player_id IN (" + [MEMBERS[0].id, MEMBERS[1].id, ADMIN.id].map(sqlQuote).join(", ") + ");",
+  "DELETE FROM players WHERE (player_id = " + sqlQuote(MEMBERS[0].id) + " AND player_name = " + sqlQuote(MEMBERS[0].name) + ") OR (player_id = " + sqlQuote(MEMBERS[1].id) + " AND player_name = " + sqlQuote(MEMBERS[1].name) + ") OR (player_id = " + sqlQuote(ADMIN.id) + " AND player_name = " + sqlQuote(ADMIN.name) + ");",
 ];
 for (let index = 0; index < MEMBERS.length; index += 1) {
   const member = MEMBERS[index];
@@ -126,13 +130,27 @@ for (let index = 0; index < MEMBERS.length; index += 1) {
   );
 }
 
+statements.push(
+  "INSERT INTO players (player_id, player_name, created_at, updated_at, faction_id, faction_verified_at) VALUES (" +
+  [ADMIN.id, ADMIN.name, nowIso, nowIso, "8317", nowIso].map(sqlQuote).join(", ") + ");"
+);
+statements.push(
+  "INSERT INTO sessions (token_hash, player_id, expires_at, created_at) VALUES (" +
+  [adminTokenHash, ADMIN.id, expiresAt, nowIso].map(sqlQuote).join(", ") + ");"
+);
+statements.push(
+  "INSERT INTO administrators (player_id, granted_by, granted_at) VALUES (" +
+  [ADMIN.id, ADMIN.id, nowIso].map(sqlQuote).join(", ") + ");"
+);
+
 const tempDir = mkdtempSync(join(tmpdir(), "ncd-private-history-seed-"));
 const sqlPath = join(tempDir, "seed-private-history.sql");
 try {
   writeFileSync(sqlPath, statements.join("\n") + "\n", "utf8");
   console.log("::add-mask::" + tokens[0]);
   console.log("::add-mask::" + tokens[1]);
-  console.log("Seeding two synthetic member identities and seven private reporting dates in the isolated acceptance D1.");
+  console.log("::add-mask::" + adminToken);
+  console.log("Seeding two synthetic non-admin members, one synthetic administrator and seven private reporting dates in the isolated acceptance D1.");
   execFileSync(process.platform === "win32" ? "npx.cmd" : "npx", [
     "wrangler", "d1", "execute", DATABASE, "--remote", "--config", CONFIG, "--file", sqlPath,
   ], { stdio: "inherit", env: process.env });
@@ -140,6 +158,8 @@ try {
   const envValues = {
     STAGING_TEST_SESSION_TOKEN: tokens[0],
     STAGING_TEST_OTHER_SESSION_TOKEN: tokens[1],
+    STAGING_TEST_ADMIN_SESSION_TOKEN: adminToken,
+    STAGING_TEST_ADMIN_PLAYER_ID: ADMIN.id,
     STAGING_TEST_COMPANY_ID: COMPANY_ID,
     STAGING_TEST_PLAYER_ID: MEMBERS[0].id,
     STAGING_TEST_OTHER_PLAYER_ID: MEMBERS[1].id,

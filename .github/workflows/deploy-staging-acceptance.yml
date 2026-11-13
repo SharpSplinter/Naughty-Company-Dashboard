@@ -47,6 +47,7 @@ jobs:
           node --check scripts/seed-staging-private-history.mjs
           node --check scripts/cleanup-staging-private-history.mjs
           node --check scripts/test-staging-responsive.mjs
+          node --check scripts/test-staging-admin-acceptance.mjs
 
       - name: Verify every deployment target is isolated staging
         shell: bash
@@ -171,7 +172,7 @@ jobs:
 
       - name: Install Playwright Chromium for staging viewport checks
         run: |
-          npm install --no-save --package-lock=false playwright
+          npm install --no-save --package-lock=false playwright @axe-core/playwright
           npx playwright install --with-deps chromium
 
       - name: Seed isolated authenticated private-history fixtures
@@ -186,6 +187,12 @@ jobs:
           STAGING_API_URL: https://naughtyfamily-api-staging.kboone801.workers.dev
         run: node scripts/test-staging-responsive.mjs
 
+      - name: Run authenticated admin/non-admin, accessibility, and request-budget checks on staging
+        env:
+          STAGING_PAGES_URL: https://naughtyfamily-staging.pages.dev
+          STAGING_API_URL: https://naughtyfamily-api-staging.kboone801.workers.dev
+        run: node scripts/test-staging-admin-acceptance.mjs
+
       - name: Remove synthetic private-history fixtures from staging D1
         if: always()
         env:
@@ -197,6 +204,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: company-dashboard-staging-viewports
-          path: test-results/staging-responsive/
+          name: company-dashboard-staging-validation
+          path: test-results/
           if-no-files-found: ignore

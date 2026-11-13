@@ -3535,6 +3535,27 @@ async function ensureAdminJobPayloadSchema(env: WorkerEnv): Promise<void> {
   }
 }
 
+const adminRequestSchemaInitializations = new WeakMap<D1Database, Promise<void>>()
+
+async function ensureAdminRequestSchema(env: WorkerEnv): Promise<void> {
+  const db = requireDb(env)
+  const existing = adminRequestSchemaInitializations.get(db)
+  if (existing) return existing
+
+  const initialization = (async () => {
+    await ensureAdminJobPayloadSchema(env)
+    await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
+    await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
+  })()
+  adminRequestSchemaInitializations.set(db, initialization)
+  try {
+    await initialization
+  } catch (error) {
+    adminRequestSchemaInitializations.delete(db)
+    throw error
+  }
+}
+
 async function runAdminEndpointRefresh(env: WorkerEnv, config: AdminEndpointRefreshConfig, adminJobId?: string): Promise<Record<string, unknown>> {
   const db = requireDb(env)
   const userEndpoints = config.endpoints.filter((endpoint) => endpoint === "company-profile" || endpoint === "company-employees" || endpoint === "company-stock")
@@ -4358,9 +4379,7 @@ async function handleAdminRequest(request: Request, env: WorkerEnv, origin: stri
     return jsonResponse({ error: "Administrator access is required." }, 403, origin)
   }
   const db = requireDb(env)
-  await ensureAdminJobPayloadSchema(env)
-  await db.prepare("CREATE TABLE IF NOT EXISTS user_page_data (player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, page_key TEXT NOT NULL, data_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (player_id, page_key))").run()
-  await db.prepare("CREATE TABLE IF NOT EXISTS company_sharing_recipients (owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, recipient_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE, share_financial_data INTEGER NOT NULL DEFAULT 0 CHECK (share_financial_data IN (0, 1)), share_employee_data INTEGER NOT NULL DEFAULT 0 CHECK (share_employee_data IN (0, 1)), share_trend_data INTEGER NOT NULL DEFAULT 0 CHECK (share_trend_data IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (owner_player_id, recipient_player_id), CHECK (owner_player_id != recipient_player_id))").run()
+  await ensureAdminRequestSchema(env)
   if (url.pathname === "/api/admin/administrators" && request.method === "GET") {
     const rows = await db.prepare(
       "SELECT a.player_id AS playerId, p.player_name AS playerName, a.granted_by AS grantedBy, grantor.player_name AS grantedByName, a.granted_at AS grantedAt, a.revoked_by AS revokedBy, revoker.player_name AS revokedByName, a.revoked_at AS revokedAt FROM administrators a JOIN players p ON p.player_id = a.player_id LEFT JOIN players grantor ON grantor.player_id = a.granted_by LEFT JOIN players revoker ON revoker.player_id = a.revoked_by ORDER BY CASE WHEN a.revoked_at IS NULL THEN 0 ELSE 1 END, p.player_name COLLATE NOCASE"

@@ -8,7 +8,8 @@ const DATABASE = "naughtyfamily-acceptance-staging";
 const ACCOUNT_ID = "6c03b978ed9a59adc3f61c715bdad45c";
 const sql = [
   "PRAGMA foreign_keys = ON;",
-  "DELETE FROM players WHERE (player_id = '999999001' AND player_name = 'Staging Private History Member') OR (player_id = '999999002' AND player_name = 'Staging Private History Other Member');",
+  "DELETE FROM admin_audit_log WHERE actor_player_id IN ('999999001', '999999002', '999999004');",
+  "DELETE FROM players WHERE (player_id = '999999001' AND player_name = 'Staging Private History Member') OR (player_id = '999999002' AND player_name = 'Staging Private History Other Member') OR (player_id = '999999004' AND player_name = 'Staging Private History Admin');",
 ].join("\n") + "\n";
 
 if (!process.env.CLOUDFLARE_API_TOKEN) throw new Error("CLOUDFLARE_API_TOKEN is required for staging fixture cleanup.");
