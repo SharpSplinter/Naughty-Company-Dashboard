@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import type { HalloweenEventMetrics } from "../../lib/halloween/metrics"
 import { filterAndSortWeeklyMembers, type WeeklyLeaderboardDirection, type WeeklyLeaderboardParticipationFilter, type WeeklyLeaderboardSortKey, type WeeklyLeaderboardStatusFilter } from "../../lib/faction-performance/leaderboard"
 
 type SavedCompanySummary = {
@@ -1398,7 +1399,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [liveBusy, setLiveBusy] = useState(true)
   const [liveCaptureBusy, setLiveCaptureBusy] = useState(false)
   const [liveError, setLiveError] = useState("")
-  const [archive, setArchive] = useState<{ event: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard: Array<{ playerId: string; playerName: string; eventWindowConfigured?: boolean; startTime?: string | null; keyConnected: boolean; collectionStatus: string; pagesCollected: number; logsCollected: number; totalHits: number | null; lastCollectedAt: string | null; coverage: string }>; myCollection: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null } | null>(null)
+  const [archive, setArchive] = useState<{ event: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard: Array<{ playerId: string; playerName: string; eventWindowConfigured?: boolean; startTime?: string | null; keyConnected: boolean; collectionStatus: string; pagesCollected: number; logsCollected: number; totalHits: number | null; lastCollectedAt: string | null; coverage: string }>; myCollection: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null; eventTotals: (HalloweenEventMetrics & { coveredMembers: number }) | null } | null>(null)
   const [archiveBusy, setArchiveBusy] = useState(false)
   const [archiveError, setArchiveError] = useState("")
   const [collectBusy, setCollectBusy] = useState(false)
@@ -1420,10 +1421,10 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     setArchiveBusy(true); setArchiveError("")
     try {
       const response = await fetch(apiBase + "/api/me/halloween/archive?year=" + eventYear, { headers: { Authorization: "Bearer " + sessionToken } })
-      const payload = await response.json() as { error?: string; event?: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard?: typeof archive extends infer T ? T extends { leaderboard: infer L } ? L : never : never; myCollection?: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null }
+      const payload = await response.json() as { error?: string; event?: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard?: typeof archive extends infer T ? T extends { leaderboard: infer L } ? L : never : never; myCollection?: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null; eventTotals?: (HalloweenEventMetrics & { coveredMembers: number }) | null }
       if (!response.ok) throw new Error(payload.error || "Could not load the faction Halloween archive.")
       if (!payload.event) throw new Error("This Halloween event year is not configured yet.")
-      setArchive({ event: payload.event, myWindow: payload.myWindow ?? null, leaderboard: (payload.leaderboard || []) as NonNullable<typeof archive>["leaderboard"], myCollection: payload.myCollection ?? null })
+      setArchive({ event: payload.event, myWindow: payload.myWindow ?? null, leaderboard: (payload.leaderboard || []) as NonNullable<typeof archive>["leaderboard"], myCollection: payload.myCollection ?? null, eventTotals: payload.eventTotals ?? null })
       if (payload.myWindow) { setPersonalWindow(payload.myWindow); if (payload.myWindow.startTime) setPersonalStartTime(payload.myWindow.startTime) }
     } catch (caught) { setArchiveError(caught instanceof Error ? caught.message : "Could not load the faction Halloween archive.") }
     finally { setArchiveBusy(false) }
@@ -1566,6 +1567,8 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const nowMs = Date.now()
   const personalEventPhase = !personalWindow?.configured ? "TIME SLOT REQUIRED" : nowMs < personalStartMs ? "UPCOMING FOR YOU" : nowMs < personalEndMs ? "ACTIVE FOR YOU" : "YOUR EVENT WINDOW CONCLUDED"
   const canCapturePersonalSnapshot = Boolean(personalWindow?.configured && nowMs >= personalStartMs && nowMs < personalEndMs)
+  const eventMetricsReady = (archive?.eventTotals?.coveredMembers ?? 0) > 0
+  const eventMetric = (value: number | undefined) => eventMetricsReady && value !== undefined ? value.toLocaleString() : "—"
 
   return (
     <main className="module-page halloween-module">
@@ -1658,6 +1661,20 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
             {!historicalKeyStatus && <p className="historical-key-muted">Checking your saved key status…</p>}
           </section>
           <div className="historical-collection-toolbar"><div><small>FACTION HISTORICAL LEADERBOARD</small><strong>{archive?.leaderboard.length ?? 0} member accounts in the archive</strong></div><button type="button" onClick={() => { void loadArchive(); void loadHistoricalKeyStatus() }} disabled={archiveBusy}>{archiveBusy ? "Refreshing…" : "Refresh archive ↻"}</button></div>
+          {archive?.eventTotals && <section className="halloween-panel halloween-event-metrics">
+            <div className="halloween-status historical"><i /> EVENT PERIOD TOTALS · {eventYear}</div>
+            <h3>Items and energy activity</h3>
+            <p>Totals from completed personal event-log collections for {archive.eventTotals.coveredMembers} faction members. Energy-can counts include the six cans represented by each Six-Pack of Energy Drink reward.</p>
+            <div className="coverage-grid">
+              <div><small>BOOSTERS RECEIVED</small><strong>{eventMetric(archive.eventTotals.boosters)}</strong><span>Other booster rewards from Halloween baskets</span></div>
+              <div><small>ENERGY CANS RECEIVED</small><strong>{eventMetric(archive.eventTotals.energyCans)}</strong><span>Individual cans and six-pack equivalents</span></div>
+              <div><small>FEATHERY HOTEL COUPONS</small><strong>{eventMetric(archive.eventTotals.fhcs)}</strong><span>Received from Halloween basket exchanges</span></div>
+              <div><small>GREEN EASTER EGGS</small><strong>{eventMetric(archive.eventTotals.greenEggs)}</strong><span>Received from Halloween basket exchanges</span></div>
+              <div><small>ENERGY FROM TREAT EXCHANGES</small><strong>{eventMetricsReady ? eventMetric(archive.eventTotals.treatExchangeEnergyGained) : "—"}</strong><span>Energy restored by Halloween basket rewards</span></div>
+              <div><small>ENERGY USED IN SUCCESSFUL ATTACKS</small><strong>{eventMetricsReady ? eventMetric(archive.eventTotals.successfulAttackEnergyUsed) : "—"}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.successfulAttacks) + " successful attacks" : "Awaiting completed event logs"}</span></div>
+            </div>
+            {!eventMetricsReady && <p className="historical-key-muted">These totals will appear after at least one faction member completes historical event-log collection. Uncollected members are not counted as zero.</p>}
+          </section>}
           {archiveError && <p className="historical-key-error" role="alert">{archiveError}</p>}
           {collectMessage && <p className="historical-key-message" role="status">{collectMessage}</p>}
           {archive?.myCollection?.coverage !== "complete" && historicalKeyStatus?.connected && <div className="historical-collect-banner"><div><strong>Contribute your historical event logs</strong><span>Collection follows your saved personal window, from your selected October 25 start time through November 1 at the same TCT time.</span></div><button type="button" onClick={startHistoricalCollection} disabled={collectBusy || archive?.myCollection?.coverage === "collecting" || !personalWindow?.configured}>{collectBusy ? "Queueing…" : archive?.myCollection?.coverage === "collecting" ? "Collection running…" : !personalWindow?.configured ? "Set event time above" : "Collect my history"}</button></div>}
