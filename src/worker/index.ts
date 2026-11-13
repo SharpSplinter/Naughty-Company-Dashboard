@@ -2642,19 +2642,17 @@ async function handleUserInsightsRequest(request: Request, env: WorkerEnv, origi
       }
     }
     const orderedHistory = Array.from(byDay.values()).sort((a, b) => String(a.day).localeCompare(String(b.day)))
-    const factionIdentity = await db.prepare("SELECT faction_id AS factionId FROM faction_member_cache WHERE player_id = ? LIMIT 1")
-      .bind(session.player_id).first<{ factionId: string }>()
     const rankingCutoffDay = cutoff ? new Date(Date.parse(cutoff) - 18 * 60 * 60 * 1000).toISOString().slice(0, 10) : null
     const globalRankSql = "SELECT reporting_day AS day, global_rank AS globalRank, type_rank AS typeRank, (SELECT COUNT(*) FROM global_company_rank_snapshots total WHERE total.reporting_day = ranks.reporting_day AND total.company_type_id = ranks.company_type_id) AS companyRankTotal FROM global_company_rank_snapshots ranks WHERE company_id = ?" + (rankingCutoffDay ? " AND reporting_day >= ?" : "") + " ORDER BY reporting_day ASC"
     const globalRankQuery = db.prepare(globalRankSql)
     const globalRankRaw = await (rankingCutoffDay
       ? globalRankQuery.bind(companyId, rankingCutoffDay)
       : globalRankQuery.bind(companyId)).all<{ day: string; globalRank: number; typeRank: number; companyRankTotal: number }>()
-    const factionRankRows = factionIdentity?.factionId
-      ? await db.prepare("SELECT reporting_day AS day, faction_rank AS factionRank, type_rank AS typeRank FROM faction_company_rank_snapshots WHERE faction_id = ? AND company_id = ?" + (rankingCutoffDay ? " AND reporting_day >= ?" : "") + " ORDER BY reporting_day ASC")
-          .bind(...(rankingCutoffDay ? [factionIdentity.factionId, companyId, rankingCutoffDay] : [factionIdentity.factionId, companyId]))
-          .all<{ day: string; factionRank: number; typeRank: number }>()
-      : { results: [] as { day: string; factionRank: number; typeRank: number }[] }
+    const factionRankSql = "SELECT reporting_day AS day, faction_id AS factionId, faction_rank AS factionRank, type_rank AS typeRank FROM faction_company_rank_snapshots WHERE player_id = ? AND company_id = ?" + (rankingCutoffDay ? " AND reporting_day >= ?" : "") + " ORDER BY reporting_day ASC"
+    const factionRankQuery = db.prepare(factionRankSql)
+    const factionRankRows = await (rankingCutoffDay
+      ? factionRankQuery.bind(session.player_id, companyId, rankingCutoffDay)
+      : factionRankQuery.bind(session.player_id, companyId)).all<{ day: string; factionId: string; factionRank: number; typeRank: number }>()
     const globalRanksByDay = new Map((globalRankRaw.results ?? []).map((row) => [row.day, row]))
     const factionRanksByDay = new Map((factionRankRows.results ?? []).map((row) => [row.day, row]))
     for (const point of orderedHistory) {
@@ -3364,7 +3362,7 @@ export default {
         if (!snapshotCompanies.length) {
           const latest = await db.prepare("SELECT MAX(reporting_day) AS reportingDay FROM global_company_rank_snapshots").first<{ reportingDay: string | null }>()
           if (latest?.reportingDay) {
-            const fallbackRows = await db.prepare("SELECT company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, star_rating AS starRating, weekly_income AS weeklyIncome, daily_income AS dailyIncome, average_daily_income AS averageDailyIncome, director_name AS directorName, 'torn-global' AS playerId, source_fetched_at AS fetchedAt FROM global_company_rank_snapshots WHERE reporting_day = ? ORDER BY global_rank ASC")
+            const fallbackRows = await db.prepare("SELECT company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, star_rating AS starRating, weekly_income AS weeklyIncome, daily_income AS dailyIncome, average_daily_income AS averageDailyIncome, director_name AS directorName, global_rank AS globalRank, type_rank AS typeRank, 'torn-global' AS playerId, source_fetched_at AS fetchedAt FROM global_company_rank_snapshots WHERE reporting_day = ? ORDER BY global_rank ASC")
               .bind(latest.reportingDay).all<Record<string, unknown>>()
             snapshotCompanies = fallbackRows.results ?? []
             generatedAt = snapshotCompanies.map((company) => String(company.fetchedAt ?? "")).filter(Boolean).sort().at(-1) || ""
