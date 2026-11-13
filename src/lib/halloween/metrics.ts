@@ -109,6 +109,7 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
       if (BOOSTER_ITEM_IDS.has(itemId) || itemTitle.includes("erotic dvd") || itemTitle.includes("lawyer business card") ||
         itemTitle.includes("book of carols") || itemTitle.includes("gift card")) metrics.boostersUsed += 1
       if (ENERGY_CAN_ITEM_IDS.has(itemId)) metrics.energyCansUsed += 1
+      if (itemId === SIX_PACK_ITEM_ID) metrics.energyCansUsed += 6
       if (FHC_ITEM_IDS.has(itemId) || itemTitle.includes("feathery hotel coupon")) metrics.fhcsUsed += 1
       if (GREEN_EGG_ITEM_IDS.has(itemId) || itemTitle.includes("green easter egg")) metrics.greenEggsUsed += 1
     }
