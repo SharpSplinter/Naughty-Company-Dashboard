@@ -583,8 +583,9 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
     if (!factionStatsResponse.ok || !factionStats || factionStats.snapshot?.runId !== factionStatsRunId ||
         !Array.isArray(factionStats.stats) || aggregate?.value !== 123456789 ||
         !factionStats.missingStatNames.includes("caymaninterest") ||
+        !factionStats.unexpectedStatNames.includes("membersamount") ||
         factionStats.collection?.lastRunId !== factionStatsRunId) {
-      throw new Error(`Authenticated faction stats API returned HTTP ${factionStatsResponse.status} or omitted the aggregate snapshot, missing-field metadata or collection state.`)
+      throw new Error(`Authenticated faction stats API returned HTTP ${factionStatsResponse.status} or omitted the aggregate snapshot, missing/unexpected-field metadata or collection state.`)
     }
     console.log("PASS authenticated faction stats API returned faction-wide totals, capture time and missing-stat metadata.")
 
@@ -982,11 +983,14 @@ async function main() {
   )
   const savedFactionStats = factionStatsRows[0]
   const savedStats = JSON.parse(savedFactionStats?.stats_json ?? "[]")
+  const savedMissingStats = JSON.parse(savedFactionStats?.missing_stat_names_json ?? "[]")
+  const savedUnexpectedStats = JSON.parse(savedFactionStats?.unexpected_stat_names_json ?? "[]")
   if (!savedFactionStats || savedFactionStats.collection_status !== "complete" ||
-      Number(savedFactionStats.returned_stat_count) !== 5 ||
+      Number(savedFactionStats.returned_stat_count) !== 4 ||
       savedStats.find((stat) => stat.name === "organisedcrimemoney")?.value !== 123456789 ||
-      !JSON.parse(savedFactionStats.missing_stat_names_json).includes("caymaninterest")) {
-    throw new Error("Faction-wide stats were not durably persisted with typed values and missing-field metadata.")
+      !savedMissingStats.includes("caymaninterest") ||
+      !savedUnexpectedStats.includes("membersamount")) {
+    throw new Error("Faction-wide stats were not durably persisted with recognized typed values, missing fields, and unexpected-field metadata.")
   }
   const factionStatsState = await d1Query(
     "SELECT last_success_at, last_run_id FROM faction_stats_collection_state WHERE faction_id = ?",
