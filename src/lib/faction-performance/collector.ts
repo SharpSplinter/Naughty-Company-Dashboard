@@ -51,7 +51,6 @@ export const FACTION_STAT_NAMES = [
   "attacksrunaway",
   "highestterritories",
   "territoryrespect",
-  "membersamount",
 ] as const
 
 export type FactionStatName = (typeof FACTION_STAT_NAMES)[number]
