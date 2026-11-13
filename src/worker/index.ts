@@ -5509,7 +5509,7 @@ export default {
         const consent = isRecord(body) && body.consent === true
         const consentVersion = isRecord(body) && typeof body.consentVersion === "string" ? body.consentVersion : ""
         if (!apiKey) return jsonResponse({ error: "Sign in with your single Naughty Family Portal Torn API key before enabling historical collection." }, 409, origin)
-        if (!consent || consentVersion !== "halloween-history-v1") return jsonResponse({ error: "Please review and accept the historical Halloween data-sharing terms before enabling collection." }, 400, origin)
+        if (!consent || consentVersion !== "halloween-history-v2") return jsonResponse({ error: "Please review and accept the updated Halloween log and detailed attack data-sharing terms before enabling collection." }, 400, origin)
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 12000)
         let payload: unknown
@@ -5534,13 +5534,14 @@ export default {
         const userSelections = Array.isArray(selections?.user) ? selections.user : []
         if (String(keyOwner ?? "") !== session.player_id) return jsonResponse({ error: "Your saved portal key does not belong to this Torn account. Sign in again with your own key." }, 403, origin)
         const accessType = typeof access?.type === "string" ? access.type : ""
-        const supportsCustomLog = (accessType === "Custom Access" || accessType === "Custom") && userSelections.includes("log")
-        if (accessType !== "Full Access" && !supportsCustomLog) return jsonResponse({ error: "Halloween historical collection needs either Full Access or a Custom Access key with the User → Log selection." }, 400, origin)
+        const supportsCustomArchive = (accessType === "Custom Access" || accessType === "Custom") && userSelections.includes("log") && userSelections.includes("attacks")
+        if (accessType !== "Full Access" && !supportsCustomArchive) return jsonResponse({ error: "Halloween historical collection needs either Full Access or a Custom Access key with both User → Log and User → Attacks selections." }, 400, origin)
         if (!userSelections.includes("log")) return jsonResponse({ error: "Your saved portal key is missing the User → Log selection required for historical Halloween collection." }, 400, origin)
+        if (!userSelections.includes("attacks")) return jsonResponse({ error: "Your saved portal key is missing the User → Attacks selection required for Revitalize proc collection." }, 400, origin)
         const encrypted = await encryptKey(env, apiKey)
         const now = new Date().toISOString()
         await requireDb(env).prepare("INSERT INTO halloween_historical_keys (player_id, ciphertext, iv, last_four, access_level, consent_version, consented_at, last_validated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, access_level = excluded.access_level, consent_version = excluded.consent_version, consented_at = excluded.consented_at, last_validated_at = excluded.last_validated_at, updated_at = excluded.updated_at")
-          .bind(session.player_id, encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), accessType, "halloween-history-v1", now, now, now, now).run()
+          .bind(session.player_id, encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), accessType, "halloween-history-v2", now, now, now, now).run()
         return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), accessLevel: accessType, consentedAt: now, lastValidatedAt: now }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }
@@ -5704,9 +5705,14 @@ export default {
       }).sort((a, b) => (b.totalHits ?? -1) - (a.totalHits ?? -1) || a.playerName.localeCompare(b.playerName))
       const completeMemberIds = leaderboard.filter((member) => member.coverage === "complete").map((member) => member.playerId)
       const metricsByPlayer = await loadHalloweenEventMetricsForPlayers(db, yearValue, completeMemberIds)
+      const revitalizeCoverage = completeMemberIds.length
+        ? await db.prepare("SELECT COUNT(*) AS members FROM halloween_attack_metrics_jobs WHERE event_year = ? AND status = 'complete' AND player_id IN (" + completeMemberIds.map(() => "?").join(", ") + ")")
+          .bind(yearValue, ...completeMemberIds).first<{ members: number }>()
+        : { members: 0 }
       const eventTotals = {
         ...sumHalloweenEventMetrics(Array.from(metricsByPlayer.values())),
         coveredMembers: completeMemberIds.length,
+        revitalizeCoveredMembers: Number(revitalizeCoverage?.members ?? 0),
       }
       const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
       return jsonResponse({ event, myWindow: personal?.window ?? null, leaderboard, myCollection: leaderboard.find((row) => row.playerId === session.player_id) ?? null, eventTotals }, 200, origin)
@@ -5754,9 +5760,10 @@ export default {
       const yearValue = isRecord(body) ? Number(body.year) : new Date().getUTCFullYear()
       if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
       const db = requireDb(env)
-      const key = await db.prepare("SELECT player_id FROM halloween_historical_keys WHERE player_id = ?").bind(session.player_id).first<{ player_id: string }>()
+      const key = await db.prepare("SELECT player_id, consent_version AS consentVersion FROM halloween_historical_keys WHERE player_id = ?").bind(session.player_id).first<{ player_id: string; consentVersion: string }>()
       const portalKey = await savedKey(env, session.player_id)
       if (!key || !portalKey) return jsonResponse({ error: "Enable Halloween historical collection with your saved portal API key before collecting logs." }, 409, origin)
+      if (key.consentVersion !== "halloween-history-v2") return jsonResponse({ error: "Review the updated Halloween collection terms and enable User → Attacks access before collecting Revitalize data." }, 409, origin)
       const event = await db.prepare("SELECT start_at AS startAt, end_at AS endAt, historical_collection_enabled AS enabled FROM halloween_event_windows WHERE event_year = ?")
         .bind(yearValue).first<{ startAt: string; endAt: string; enabled: number }>()
       if (!event || event.enabled !== 1) return jsonResponse({ error: "Historical collection is not enabled for that event year." }, 409, origin)
