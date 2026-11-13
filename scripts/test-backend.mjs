@@ -810,13 +810,14 @@ try {
     assert.equal(missingWage.dailyCosts, null)
   })
 
-  await test("weekly profit prefers Torn's reported value and fallback costs cover exactly seven days", () => {
+  await test("weekly profit subtracts seven days of full daily expenses before reported fallback", () => {
     const profile = { company: { income: { weekly: 897615035 }, profit: { daily: 62692205, weekly: 240001645 } } }
     assert.equal(reportedCompanyProfit(profile, "weekly"), 240001645)
     assert.equal(reportedCompanyProfit({ profile: { weekly_profit: 240001645 } }, "weekly"), 240001645)
     assert.equal(reportedCompanyProfit({ company: { profit: { daily: 62692205 } } }, "weekly"), null)
-    assert.equal(estimateWeeklyProfit(897615035, 13200000 + 80744770, 0), 240001645)
-    assert.equal(estimateWeeklyProfit(897615035, 93944770, null), null)
+    const dailyExpenses = 13200000 + 80744770 + 2500000
+    assert.equal(estimateWeeklyProfit(897615035, dailyExpenses), 222501645)
+    assert.equal(estimateWeeklyProfit(897615035, null), null)
   })
 
   await test("handles quiet hours that cross midnight and all-day quiet windows", () => {
