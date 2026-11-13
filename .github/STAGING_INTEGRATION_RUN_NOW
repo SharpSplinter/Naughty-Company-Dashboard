@@ -21,3 +21,5 @@ Run 21: apply migration 0023 to isolated staging D1 and verify the private-live 
 Run 22: exercise private-live connect/refresh/networth opt-in/disconnect through the isolated staging Worker and sanitized Torn Service Binding after migration 0023; synthetic members only; no production resources.
 Run 22 retry: private-live connect/refresh/networth opt-in/disconnect through the isolated staging Worker and sanitized Torn Service Binding after fixing the static contract for fixture-aware private API transport; synthetic members only; no production resources.
 Run 22 retry 2: re-exercise the private-live staging Service Binding after updating every private selection contract to the environment-aware helper signature; synthetic accounts only; no production D1 or Worker.
+
+Run 23: validate range-aware 7/30/90-day faction activity history, member-specific last-action trends, 24h/72h inactivity and unknown timestamp handling; staging-only, no production resources; 2026-11-13T16:23-05:00

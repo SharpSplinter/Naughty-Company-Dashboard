@@ -48,7 +48,8 @@ The driver `scripts/run-faction-performance-staging-integration.mjs` verifies:
 - All three successful collection types advance `last_success_at`.
 - The authenticated faction stats API returns the latest scheduled `/faction/stats` aggregate snapshot, actual capture timestamp, recognized totals, missing/unrecognized field metadata, and collection freshness state.
 - The authenticated faction performance API returns the completed roster with joined stats and gym-energy samples, public last-action fields, and the target's configured revive setting separate from key-owner-specific revivability.
-- The authenticated faction activity API compares the two latest completed roster snapshots and returns typed, bounded membership/status/activity/flag/revive-setting/position changes.
+- The authenticated faction activity API samples completed roster history for 7/30/90-day ranges (hourly, every 4 hours, daily), returns typed, bounded membership/status/activity/flag/revive-setting/position changes, and discloses sampling/truncation metadata.
+- The authenticated faction activity API returns a selected member's per-snapshot last-action-age trend, current 24H+/72H+ inactivity classification, and Unknown for missing timestamps.
 - The authenticated weekly-rankings API uses synthetic Sunday-boundary baseline runs and later samples to verify separate Xanax/LSD deltas, negative networth movement, starting/current networth values, gym-energy delta/ranking, actual capture timestamps and selected-metric rank ordering.
 - The shared queue handler finalizes two synthetic closed weeks after their ending boundary runs reach terminal states; both report headers and member rows persist atomically.
 - A member who leaves midweek remains in the earlier report using the last pre-departure sample and is absent from the following week's report.
@@ -64,6 +65,6 @@ All API responses are generated from the sanitized schema fixture or synthetic d
 
 ## Expected side effects
 
-The workflow applies the pending migrations to staging D1, creates two dedicated queues, and deploys two staging-only Workers. Those Workers remain deployed after the workflow; they have no cron triggers. The integration creates synthetic test collection, boundary and immutable report rows and keeps them in staging D1 as run evidence. It selects an unused recent Sunday pair for each run so reruns do not overwrite historical reports. It creates and removes a temporary authenticated test player/session during the API check.
+The workflow applies the pending migrations to staging D1, creates two dedicated queues, and deploys two staging-only Workers. Those Workers remain deployed after the workflow; they have no cron triggers. The integration creates synthetic test collection, boundary and immutable report rows and keeps them in staging D1 as run evidence. Its activity-history assertion creates three short-lived synthetic roster captures, verifies exact inactivity bands and Unknown timestamps, then removes those rows and restores the test roster capture timestamp. It selects an unused recent Sunday pair for each run so reruns do not overwrite historical reports. It creates and removes a temporary authenticated test player/session during the API check.
 
 No production D1 migration, production Worker deployment, Pages deployment, or live Torn API collection is part of this test.

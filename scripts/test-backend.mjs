@@ -16,6 +16,7 @@ const sourceFiles = [
   "src/lib/torn/client.ts",
   "src/lib/torn/personalstats.ts",
   "src/lib/faction-performance/collector.ts",
+  "src/lib/faction-performance/activity.ts",
   "src/lib/faction-performance/weekly.ts",
   "src/lib/faction-performance/leaderboard.ts",
   "src/lib/faction-performance/private-live.ts",
@@ -56,6 +57,7 @@ try {
   const require = createRequire(import.meta.url)
   const { runEngine } = require(join(temp, "lib/company/engine.js"))
   const { TornApiClient, TornApiClientError } = require(join(temp, "lib/torn/client.js"))
+  const { classifyFactionInactivity } = require(join(temp, "lib/faction-performance/activity.js"))
   const {
     parseFactionRosterResponse,
     parseFactionGymEnergyResponse,
@@ -99,6 +101,29 @@ try {
     passed += 1
     console.log("PASS", name)
   }
+
+  await test("faction inactivity classification uses UTC last-action timestamps and exact 24h/72h boundaries", () => {
+    const lastAction = 1_800_000_000
+    const at = (seconds) => (lastAction + seconds) * 1000
+    assert.equal(classifyFactionInactivity(lastAction, at(24 * 3600 - 1)).classification, "normal")
+    assert.equal(classifyFactionInactivity(lastAction, at(24 * 3600)).classification, "inactive_24h")
+    assert.equal(classifyFactionInactivity(lastAction, at(72 * 3600 - 1)).classification, "inactive_24h")
+    assert.equal(classifyFactionInactivity(lastAction, at(72 * 3600)).classification, "inactive_72h")
+    assert.equal(classifyFactionInactivity(lastAction, at(72 * 3600)).elapsedSeconds, 72 * 3600)
+  })
+
+  await test("faction inactivity keeps missing or invalid timestamps unknown and clamps future action times", () => {
+    assert.deepEqual(classifyFactionInactivity(null, "2026-11-13T12:00:00.000Z"), {
+      classification: "unknown", elapsedSeconds: null, lastActionAt: null,
+    })
+    assert.equal(classifyFactionInactivity(0, "2026-11-13T12:00:00.000Z").classification, "unknown")
+    assert.equal(classifyFactionInactivity(1.5, "2026-11-13T12:00:00.000Z").classification, "unknown")
+    const future = classifyFactionInactivity(1_800_000_100, 1_800_000_000_000)
+    assert.equal(future.classification, "normal")
+    assert.equal(future.elapsedSeconds, 0)
+    assert.equal(future.lastActionAt, new Date(1_800_000_100_000).toISOString())
+    assert.equal(classifyFactionInactivity(1_800_000_000, "not-a-date").classification, "unknown")
+  })
 
   await test("rolling weekly profit requires seven consecutive complete daily-profit records", () => {
     const start = Date.parse("2026-11-06T00:00:00.000Z")

@@ -39,7 +39,7 @@ Inspected the current PR branch and repository configuration.
 
 The current portal already provides the shared workspace foundation, faction authentication, Company operations, Halloween collection/archive/live intelligence, a faction director/member workspace, account credential controls and administrator-role management.
 
-The PR branch contains migrations through 0025; the portal staging D1 has successfully applied the complete branch chain through 0025 (30 migration records, 64 tables), confirmed on 2026-11-13 by the final isolated D1/Queue integration run #43508964870. Full quality gates passed on run #43508964744. Migration 0019 adds public faction-performance collection runs, membership intervals, roster snapshots, 18-counter public personalstats snapshots and gym-energy snapshots. Migration 0020 adds the idempotent Sunday-boundary run registry; 0021 adds immutable completed-week reports/member results with database-level update/delete protection; and 0022 adds faction-wide stats snapshots. The Worker now includes scheduled public collection, Sunday UTC boundary capture/finalization, active-week rankings, immutable weekly history/comparisons, faction totals, public Live Member Status, a bounded snapshot-to-snapshot Faction Activity feed, and administrator-only boundary diagnostics plus audited recovery. Staging acceptance Run 20 passed against the dedicated non-production D1 database and fixture Workers. Remaining roadmap work includes member-consented private owner-key bars/cooldowns/detailed networth, richer member drilldowns and filters, a longer activity timeline, operational request-budget reporting, and production readiness/cutover.
+The PR branch contains migrations through 0025; the portal staging D1 has successfully applied the complete branch chain through 0025 (30 migration records, 64 tables), confirmed on 2026-11-13 by the final isolated D1/Queue integration run #43508964870. Full quality gates passed on run #43508964744. Migration 0019 adds public faction-performance collection runs, membership intervals, roster snapshots, 18-counter public personalstats snapshots and gym-energy snapshots. Migration 0020 adds the idempotent Sunday-boundary run registry; 0021 adds immutable completed-week reports/member results with database-level update/delete protection; and 0022 adds faction-wide stats snapshots. The Worker now includes scheduled public collection, Sunday UTC boundary capture/finalization, active-week rankings, immutable weekly history/comparisons, faction totals, public Live Member Status, and a range-aware 7/30/90-day Faction Activity history sampled from immutable roster captures. Member-specific inactivity trends use each sampled Torn last-action timestamp with explicit 24h/72h/Unknown bands. Administrator-only boundary diagnostics and audited recovery remain available. Staging acceptance Run 20 passed against the dedicated non-production D1 database and fixture Workers. Remaining roadmap work includes member-consented private owner-key bars/cooldowns/detailed networth, richer member drilldowns and filters, a longer activity timeline, operational request-budget reporting, and production readiness/cutover.
 
 The current application is defined in package.json and wrangler.toml. Preserve the existing React/Vite + Worker + D1 + Queue architecture unless an evidenced technical limitation requires a proposal and discussion first.
 
@@ -742,7 +742,8 @@ Still to implement or validate:
 - [x] Display wall, OC and early-discharge flags.
 - [x] Add roster capture time, collection freshness warning, search and status filters.
 - [x] Add an authenticated, bounded activity feed comparing the two latest completed public roster snapshots. It reports membership interval first-seen/departure observations plus changes in activity state, member status/timer, wall/OC/early-discharge flags, configured revive setting and position.
-- [ ] Persist a longer historical activity timeline and add member-specific inactivity trends.
+- [x] Add an authenticated 7/30/90-day activity timeline from completed immutable roster snapshots. Sample hourly over 7 days, every 4 hours over 30 days and daily over 90 days; return up to 500 recent observed changes and expose sampling/truncation metadata.
+- [x] Add member-specific inactivity trends using the public last-action timestamp at each sampled roster capture, with exact 24-hour and 72-hour thresholds. Missing timestamps remain Unknown, and the range selector/member selector are mobile responsive.
 
 ### Phase 5 — Unified member API key and voluntary private live sharing
 
@@ -800,6 +801,7 @@ Still to implement or validate:
 ### Live status and permissions tests
 - Online, Idle and Offline map from last_action.status.
 - Last action timestamp, not relative text, drives elapsed time.
+- Historical inactivity trend retains per-sample timestamp provenance and reports missing timestamps as Unknown.
 - 24 hours is the first inactivity threshold.
 - 72 hours takes priority over the 24-hour flag.
 - Missing timestamps remain Unknown.
