@@ -178,6 +178,171 @@ try {
   assert.equal(await adminPage.getByRole("button", { name: "Queue selected endpoint refresh ↻", exact: true }).isDisabled(), true, "Refresh jobs must remain disabled in read-only mode.");
   await adminPage.screenshot({ path: "test-results/admin-acceptance/admin-operations-readonly.png", fullPage: true });
 
+  // Keyboard-only and screen-reader-semantics proxy review. This is browser automation,
+  // not a substitute for a real TalkBack/VoiceOver session on a handset.
+  const keyboardContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+  });
+  try {
+    const keyboardPage = await keyboardContext.newPage();
+    await keyboardPage.addInitScript(token => {
+      localStorage.setItem("ncd_session", token);
+      sessionStorage.removeItem("ncd_active_view");
+    }, adminToken);
+    const keyboardHome = await keyboardPage.goto(pagesUrl, { waitUntil: "networkidle", timeout: 30000 });
+    assert.ok(keyboardHome?.ok(), "Keyboard review portal should load.");
+
+    let adminCardFocused = false;
+    for (let index = 0; index < 40; index += 1) {
+      await keyboardPage.keyboard.press("Tab");
+      const active = await keyboardPage.evaluate(() => {
+        const element = document.activeElement;
+        return {
+          className: typeof element?.className === "string" ? element.className : "",
+          tagName: element?.tagName || "",
+        };
+      });
+      if (active.className.split(/\\s+/).includes("portal-card-admin")) {
+        adminCardFocused = true;
+        break;
+      }
+    }
+    assert.ok(adminCardFocused, "Keyboard Tab navigation must reach the Admin Panel workspace card.");
+    const focusIndicator = await keyboardPage.evaluate(() => {
+      const element = document.activeElement;
+      if (!element) return { visible: false, outline: "none", outlineWidth: "0px", boxShadow: "none" };
+      const style = getComputedStyle(element);
+      const visible = (style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0)
+        || (style.boxShadow !== "none" && style.boxShadow !== "");
+      return { visible, outline: style.outlineStyle, outlineWidth: style.outlineWidth, boxShadow: style.boxShadow };
+    });
+    assert.ok(focusIndicator.visible, "Focused Admin Panel card must have a visible keyboard focus indicator.");
+    await keyboardPage.keyboard.press("Enter");
+    await keyboardPage.locator(".admin-console").waitFor({ state: "visible", timeout: 20000 });
+
+    let overviewFocused = false;
+    for (let index = 0; index < 40; index += 1) {
+      await keyboardPage.keyboard.press("Tab");
+      const activeLabel = await keyboardPage.evaluate(() => document.activeElement?.textContent?.trim() || "");
+      const activeClass = await keyboardPage.evaluate(() => String(document.activeElement?.className || ""));
+      if (activeClass.split(/\\s+/).includes("admin-tab")) {
+        assert.equal(activeLabel, "Overview", "Keyboard navigation should encounter Overview as the first admin section.");
+        overviewFocused = true;
+        break;
+      }
+    }
+    assert.ok(overviewFocused, "Keyboard Tab navigation must reach the admin section navigation.");
+    await keyboardPage.keyboard.press("Enter");
+    await keyboardPage.keyboard.press("Tab");
+    assert.equal(await keyboardPage.evaluate(() => document.activeElement?.textContent?.trim() || ""), "Members",
+      "Tab from Overview should reach Members in the administration navigation.");
+    await keyboardPage.keyboard.press("Enter");
+    await keyboardPage.getByRole("heading", { name: "Member management", exact: true }).waitFor({ state: "visible" });
+    const keyboardTableRegions = await keyboardPage.locator('.admin-members-layout [role="region"]').evaluateAll(elements =>
+      elements.map(element => ({ label: element.getAttribute("aria-label"), tabIndex: element.tabIndex }))
+    );
+    assert.ok(keyboardTableRegions.length > 0, "Member tables should expose a named, keyboard-focusable scroll region.");
+    assert.ok(keyboardTableRegions.every(region => region.tabIndex >= 0 && !!region.label),
+      "Scrollable member tables should have an accessible region name and be keyboard-focusable.");
+    await keyboardPage.keyboard.press("Tab");
+    assert.equal(await keyboardPage.evaluate(() => document.activeElement?.textContent?.trim() || ""), "Private Live",
+      "Tab from Members should reach Private Live in the administration navigation.");
+    await keyboardPage.keyboard.press("Enter");
+    await keyboardPage.getByRole("heading", { name: "Private-live diagnostics", exact: true }).waitFor({ state: "visible" });
+
+    const semantics = await keyboardPage.evaluate(() => {
+      const visible = element => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      };
+      const nameOf = element => (
+        element.getAttribute("aria-label")
+        || (element.getAttribute("aria-labelledby") && element.ownerDocument.getElementById(element.getAttribute("aria-labelledby"))?.textContent)
+        || element.innerText
+        || element.getAttribute("title")
+        || ""
+      ).trim();
+      const buttons = [...document.querySelectorAll("button")].filter(visible);
+      const fields = [...document.querySelectorAll("input, select, textarea")].filter(visible);
+      return {
+        mainLandmarks: document.querySelectorAll("main").length,
+        navigationLabels: [...document.querySelectorAll("nav[aria-label]")].map(element => element.getAttribute("aria-label")),
+        h1Count: document.querySelectorAll("h1").length,
+        sectionHeadingCount: document.querySelectorAll(".admin-console h2").length,
+        selectedAdminNavigationItems: document.querySelectorAll('.admin-tabs [aria-current="page"]').length,
+        visibleButtons: buttons.length,
+        visibleButtonsWithoutAccessibleNames: buttons.filter(element => !nameOf(element)).map(element => element.outerHTML.slice(0, 180)),
+        visibleFormFields: fields.length,
+        visibleFormFieldsWithoutProgrammaticLabels: fields.filter(element =>
+          !element.getAttribute("aria-label")
+          && !element.getAttribute("aria-labelledby")
+          && !(element.labels && element.labels.length)
+        ).map(element => ({ tag: element.tagName, type: element.getAttribute("type"), placeholder: element.getAttribute("placeholder") })),
+      };
+    });
+    assert.ok(semantics.mainLandmarks >= 1, "Admin view should expose a main landmark.");
+    assert.ok(semantics.navigationLabels.includes("Administration sections"), "Admin navigation needs a programmatic name.");
+    assert.equal(semantics.h1Count, 1, "Admin portal should expose one page-level h1.");
+    assert.equal(semantics.selectedAdminNavigationItems, 1, "Selected admin section should be announced with aria-current.");
+    assert.deepEqual(semantics.visibleButtonsWithoutAccessibleNames, [], "Visible admin buttons need accessible names.");
+    assert.deepEqual(semantics.visibleFormFieldsWithoutProgrammaticLabels, [], "Visible admin fields need programmatic labels.");
+
+    const physicalViewportProxy = [];
+    for (const viewport of [
+      { width: 360, height: 800, label: "android-compact-portrait" },
+      { width: 390, height: 844, label: "android-standard-portrait" },
+      { width: 432, height: 960, label: "android-large-portrait" },
+      { width: 740, height: 390, label: "android-landscape" },
+    ]) {
+      await keyboardPage.setViewportSize({ width: viewport.width, height: viewport.height });
+      await keyboardPage.waitForTimeout(60);
+      const metrics = await keyboardPage.evaluate(() => {
+        const root = document.documentElement;
+        const targets = [...document.querySelectorAll("button, a[href], input, select, textarea")].filter(element => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+        });
+        const smallTargets = targets.filter(element => {
+          const rect = element.getBoundingClientRect();
+          return rect.width < 24 || rect.height < 24;
+        });
+        return {
+          viewportWidth: innerWidth,
+          viewportHeight: innerHeight,
+          documentWidth: root.scrollWidth,
+          bodyWidth: document.body.scrollWidth,
+          visibleInteractiveTargets: targets.length,
+          targetsBelow24px: smallTargets.length,
+          smallestTargets: smallTargets.slice(0, 8).map(element => ({
+            tag: element.tagName,
+            label: element.getAttribute("aria-label") || element.textContent?.trim().slice(0, 50) || "",
+            width: Math.round(element.getBoundingClientRect().width),
+            height: Math.round(element.getBoundingClientRect().height),
+          })),
+        };
+      });
+      assert.ok(metrics.documentWidth <= viewport.width + 1 && metrics.bodyWidth <= viewport.width + 1,
+        "Admin layout must not create page-level horizontal overflow at " + viewport.label);
+      physicalViewportProxy.push({ ...viewport, ...metrics });
+      await keyboardPage.screenshot({
+        path: "test-results/admin-acceptance/" + viewport.label + ".png",
+        fullPage: true,
+      });
+    }
+    writeFileSync("test-results/admin-acceptance/keyboard-screenreader-device-proxy.json",
+      JSON.stringify({ focusIndicator, keyboardTableRegions, semantics, physicalViewportProxy,
+        limitation: "Automated keyboard and accessibility-semantics proxy only; no real screen reader or physical handset was driven by this test." }, null, 2) + "\n");
+    console.log("PASS keyboard navigation: Portal Admin card, admin sections, member table regions and visible focus indicator.");
+    console.log("PASS semantic proxy: main/navigation landmarks, one h1, aria-current, named buttons and labelled visible fields.");
+    console.log("PASS Android viewport emulation: four portrait/landscape sizes, no document-level horizontal overflow.");
+  } finally {
+    await keyboardContext.close();
+  }
+
   // The Company Dashboard must not expose a second Administration entry or a duplicate Member Activity page.
   await adminPage.goto(pagesUrl, { waitUntil: "networkidle", timeout: 30000 });
   const companyCard = adminPage.getByRole("button", { name: /Company Dashboard/ });

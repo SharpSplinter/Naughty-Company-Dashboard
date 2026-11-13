@@ -11,6 +11,13 @@ on:
         type: choice
         options:
           - naughtyfamily-staging
+  push:
+    branches:
+      - portal-rebuild
+    paths:
+      - ".github/workflows/deploy-staging-acceptance.yml"
+      - "scripts/test-staging-admin-acceptance.mjs"
+      - "scripts/test-staging-sustained-load.mjs"
 
 permissions:
   contents: read
@@ -192,6 +199,15 @@ jobs:
           STAGING_PAGES_URL: https://naughtyfamily-staging.pages.dev
           STAGING_API_URL: https://naughtyfamily-api-staging.kboone801.workers.dev
         run: node scripts/test-staging-admin-acceptance.mjs
+
+      - name: Run sustained read-only admin API load against isolated staging
+        env:
+          STAGING_API_URL: https://naughtyfamily-api-staging.kboone801.workers.dev
+          STAGING_TEST_ADMIN_SESSION_TOKEN: ${{ secrets.STAGING_TEST_ADMIN_SESSION_TOKEN }}
+          STAGING_LOAD_DURATION_SECONDS: "300"
+          STAGING_LOAD_REQUESTS_PER_SECOND: "5"
+          STAGING_LOAD_MAX_CONCURRENCY: "8"
+        run: node scripts/test-staging-sustained-load.mjs
 
       - name: Remove synthetic private-history fixtures from staging D1
         if: always()
