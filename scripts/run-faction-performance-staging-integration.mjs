@@ -978,7 +978,7 @@ async function main() {
   const factionStatsRun = await waitForFactionStatsRun(factionStatsRunId)
   if (factionStatsRun.status !== "completed") throw new Error("The fixture faction stats collection did not complete.")
   const factionStatsRows = await d1Query(
-    "SELECT stats_json, missing_stat_names_json, returned_stat_count, collection_status FROM faction_stats_snapshots WHERE run_id = ?",
+    "SELECT stats_json, missing_stat_names_json, unexpected_stat_names_json, returned_stat_count, collection_status FROM faction_stats_snapshots WHERE run_id = ?",
     [factionStatsRunId],
   )
   const savedFactionStats = factionStatsRows[0]
