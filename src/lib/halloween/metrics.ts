@@ -167,12 +167,12 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
       const itemTitle = title.toLowerCase()
       if (BOOSTER_ITEM_IDS.has(itemId) || itemTitle.includes("erotic dvd") || itemTitle.includes("lawyer business card")) metrics.boostersUsed += 1
       if (ENERGY_CAN_ITEM_IDS.has(itemId)) metrics.energyCansUsed += 1
-      if (itemId === ENERGY_DRINK_SIX_PACK_ITEM_ID) {
+      if (itemId === ENERGY_DRINK_SIX_PACK_ITEM_ID || itemTitle.includes("six-pack of energy drink") || itemTitle.includes("six pack of energy drink")) {
         metrics.energyDrinkSixPacksUsed += 1
         metrics.energyCans += 6
         metrics.energyCansUsed += 6
       }
-      if (itemId === ALCOHOL_SIX_PACK_ITEM_ID) metrics.alcoholSixPacksUsed += 1
+      if (itemId === ALCOHOL_SIX_PACK_ITEM_ID || itemTitle.includes("six-pack of alcohol") || itemTitle.includes("six pack of alcohol")) metrics.alcoholSixPacksUsed += 1
       if (FHC_ITEM_IDS.has(itemId) || itemTitle.includes("feathery hotel coupon")) metrics.fhcsUsed += 1
       if (GREEN_EGG_ITEM_IDS.has(itemId) || itemTitle.includes("green easter egg")) metrics.greenEggsUsed += 1
     }
