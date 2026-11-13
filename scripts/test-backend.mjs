@@ -208,6 +208,30 @@ try {
         logJson: JSON.stringify({ data: { items: { "366": 2, "367": 3, "368": 1, "473": 2, "530": 4, "987": 1, "818": 2 } } }),
       },
       {
+        logTypeId: 2190,
+        title: "Item use feathery hotel coupon",
+        category: "Item use",
+        logJson: JSON.stringify({ data: { item: 367, energy_increased: 150 } }),
+      },
+      {
+        logTypeId: 8981,
+        title: "Item use green easter egg",
+        category: "Item use",
+        logJson: JSON.stringify({ data: {} }),
+      },
+      {
+        logTypeId: 2040,
+        title: "Item use energy drink",
+        category: "Item use",
+        logJson: JSON.stringify({ data: { item: 530, energy_increased: 30 } }),
+      },
+      {
+        logTypeId: 2300,
+        title: "Item use erotic dvd",
+        category: "Item use",
+        logJson: JSON.stringify({ data: { item: 366 } }),
+      },
+      {
         logTypeId: 2547,
         title: "Halloween basket receive energy",
         category: "Halloween basket",
@@ -234,9 +258,13 @@ try {
     ])
     assert.deepEqual(metrics, {
       boosters: 3,
+      boostersUsed: 1,
       energyCans: 17,
+      energyCansUsed: 1,
       fhcs: 3,
+      fhcsUsed: 1,
       greenEggs: 2,
+      greenEggsUsed: 1,
       treatExchangeEnergyGained: 75,
       successfulAttackEnergyUsed: 25,
       successfulAttacks: 2,
