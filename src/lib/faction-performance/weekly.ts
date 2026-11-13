@@ -192,10 +192,14 @@ export function calculateWeeklyMemberResult(input: {
         (validTime(snapshot.capturedAt) ?? Number.POSITIVE_INFINITY) <= nowMs &&
         (leftAt === null || leftAt >= weekEndMs)))
     : null
-  const ending = endingBoundaryCandidate ?? (baselineAt === null ? null : newest(eligibleStats.filter((snapshot) => {
-    const captured = validTime(snapshot.capturedAt)
-    return captured !== null && captured > baselineAt
-  })))
+  // Keep the latest observed lifetime reading visible even when the Sunday baseline
+  // is missing. Weekly deltas remain unknown unless both endpoints exist.
+  const ending = endingBoundaryCandidate ?? newest(baselineAt === null
+    ? eligibleStats
+    : eligibleStats.filter((snapshot) => {
+        const captured = validTime(snapshot.capturedAt)
+        return captured !== null && captured > baselineAt
+      }))
 
   const startingMetrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map((name) => [name, baseline ? numeric(baseline[name]) : null])) as WeeklyMetricValues
   const endingMetrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map((name) => [name, ending ? numeric(ending[name]) : null])) as WeeklyMetricValues
@@ -235,10 +239,14 @@ export function calculateWeeklyMemberResult(input: {
         (validTime(snapshot.capturedAt) ?? Number.POSITIVE_INFINITY) <= nowMs &&
         (leftAt === null || leftAt >= weekEndMs)))
     : null
-  const gymEnding = gymEndingBoundaryCandidate ?? (gymBaselineAt === null ? null : newest(eligibleGym.filter((snapshot) => {
-    const captured = validTime(snapshot.capturedAt)
-    return captured !== null && captured > gymBaselineAt
-  })))
+  // Match public-stat behavior: expose the latest gym reading without inventing
+  // a weekly delta when the boundary baseline is unavailable.
+  const gymEnding = gymEndingBoundaryCandidate ?? newest(gymBaselineAt === null
+    ? eligibleGym
+    : eligibleGym.filter((snapshot) => {
+        const captured = validTime(snapshot.capturedAt)
+        return captured !== null && captured > gymBaselineAt
+      }))
   const gymStartValue = gymBaseline ? numeric(gymBaseline.gymEnergyTotal) : null
   const gymEndValue = gymEnding ? numeric(gymEnding.gymEnergyTotal) : null
   const gymEnergyAnomaly = gymStartValue !== null && gymEndValue !== null && gymEndValue < gymStartValue

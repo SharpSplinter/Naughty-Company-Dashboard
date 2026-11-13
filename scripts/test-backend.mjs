@@ -430,16 +430,20 @@ try {
     const missingBaseline = calculateWeeklyMemberResult({
       member: { userId: "104", name: "No Baseline", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
       statSnapshots: [{ runId: "only-later", userId: "104", capturedAt: "2026-11-01T00:20:00.000Z", ...row }],
-      gymSnapshots: [],
+      gymSnapshots: [{ runId: "only-later-gym", userId: "104", capturedAt: "2026-11-01T00:21:00.000Z", gymEnergyTotal: 700 }],
       weekStart: "2026-11-01T00:00:00.000Z",
       weekEnd: "2026-11-08T00:00:00.000Z",
       now: "2026-11-02T00:00:00.000Z",
       statsBoundaryRunId: "missing-boundary-run",
+      gymBoundaryRunId: "missing-gym-boundary-run",
     })
     assert.equal(missingBaseline.status, "waiting_for_baseline")
     assert.equal(missingBaseline.metrics.xantaken, null)
     assert.equal(missingBaseline.startingMetrics.xantaken, null, "missing baseline lifetime counter remains unknown")
     assert.equal(missingBaseline.endingMetrics.xantaken, 100, "the available ending lifetime counter is retained independently")
+    assert.equal(missingBaseline.startingGymEnergy, null, "missing gym baseline remains unknown")
+    assert.equal(missingBaseline.endingGymEnergy, 700, "the latest gym lifetime reading remains visible")
+    assert.equal(missingBaseline.gymEnergy, null, "gym weekly delta remains unknown without a baseline")
 
     const missingEnding = calculateWeeklyMemberResult({
       member: { userId: "105", name: "No Ending", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
