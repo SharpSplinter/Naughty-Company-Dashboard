@@ -4,6 +4,7 @@ export type ChartSeries = { label: string; values: { label: string; value: numbe
 export type SnapshotHistoryPoint = { day: string; period: number; capturedAt: number; dailyIncome: number | null; weeklyIncome: number | null; dailyProfit: number | null; weeklyProfit: number | null; rating: number | null; companyRank: number | null; companyRankTotal: number | null; stockQuantity: number | null; stockValue: number | null; averageEmployeeEfficiency: number | null }
 export type SnapshotHistoryCompany = { companyId: string; name: string; typeName: string; typeId: number; history: SnapshotHistoryPoint[] }
 export type SnapshotMetric = "dailyIncome" | "weeklyIncome" | "dailyProfit" | "weeklyProfit" | "stockQuantity" | "stockValue" | "rating" | "companyRank"
+export type OfficialCompanyHistoryPoint = { day: string } & Partial<Record<SnapshotMetric, number | null>>
 export function importedHistorySeries(companies: SnapshotHistoryCompany[], metric: SnapshotMetric): ChartSeries[] {
   const days = Array.from(new Set(companies.flatMap((company) => company.history.map((point) => point.day)))).sort()
   return companies.map((company) => ({ label: company.name, values: days.map((day) => {
@@ -43,7 +44,7 @@ type CompareData = { director: { companyName: string; directorName: string; dail
 type ChartResult = { model?: { company: { name: string } }; incomeHistory?: { fetchedAt: string; dailyIncome: number | null }[] } | null
 type ChartModel = { company: { name: string; dailyIncome: number | null; weeklyIncome: number | null } }
 
-export function buildChartSeriesFor(metric: SnapshotMetric, currentChartCompany: SnapshotHistoryCompany | undefined, ownCompareData: CompareData | null, result: ChartResult | null, model: ChartModel | undefined, selectedComparePlayerId: string, compareData: CompareData | null, currentRank: number | null, currentRating: number | null): ChartSeries[] {
+export function buildChartSeriesFor(metric: SnapshotMetric, currentChartCompany: SnapshotHistoryCompany | undefined, ownCompareData: CompareData | null, result: ChartResult | null, model: ChartModel | undefined, selectedComparePlayerId: string, compareData: CompareData | null, currentRank: number | null, currentRating: number | null, officialHistory: OfficialCompanyHistoryPoint[] = []): ChartSeries[] {
     const ownValues = new Map<string, number | null>()
     currentChartCompany?.history.forEach((point) => ownValues.set(point.day, point[metric]))
     ownCompareData?.history.forEach((point) => {
@@ -65,6 +66,12 @@ export function buildChartSeriesFor(metric: SnapshotMetric, currentChartCompany:
       const currentValue = metric === "dailyIncome" ? model.company.dailyIncome : model.company.weeklyIncome
       if (currentValue !== null) ownValues.set(new Date(Date.now() - 18 * 3600000).toISOString().slice(0, 10), currentValue)
     }
+    // Canonical saved reporting points override the imported archive and live samples.
+    officialHistory.forEach((point) => {
+      if (!Object.prototype.hasOwnProperty.call(point, metric)) return
+      const value = point[metric]
+      ownValues.set(point.day, typeof value === "number" && Number.isFinite(value) ? value : null)
+    })
     const series: ChartSeries[] = [{ label: model?.company.name || result?.model?.company.name || currentChartCompany?.name || "Selected company", values: Array.from(ownValues, ([label, value]) => ({ label, value })).sort((a, b) => a.label.localeCompare(b.label)) }]
     if (selectedComparePlayerId && compareData) {
       const peerByDay = new Map<string, number | null>(compareData.history.map((point) => {
