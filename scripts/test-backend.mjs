@@ -3440,10 +3440,17 @@ try {
     assert.equal(rosterRead, true, "the Worker should verify sharing permissions before returning any roster details")
   })
 
-  await test("Executive Overview and layout customization are not listed as administrator-only views", () => {
+  await test("Admin portal is separate and member directory is the only admin insights destination", () => {
     const floorSource = readFileSync(join(root, "src/components/floor/floor-app.tsx"), "utf8")
     const workspaceSource = readFileSync(join(root, "src/components/floor/insights-workspace.tsx"), "utf8")
-    assert.match(floorSource, /const adminOnlyViews = \["admin", "dashboard-members", "member-insights"\]/)
+    const portalSource = readFileSync(join(root, "src/components/portal/workspaces.tsx"), "utf8")
+    assert.match(floorSource, /const adminOnlyViews = \["dashboard-members"\]/)
+    assert.doesNotMatch(floorSource, /member-insights/)
+    assert.doesNotMatch(floorSource, /admin-nav-group/)
+    assert.match(floorSource, /if \(routePath === "\/admin"\)[\s\S]*ADMINISTRATION PORTAL[\s\S]*<AdminPanel/)
+    assert.match(portalSource, /props\.isAdmin && \([\s\S]*props\.onNavigate\("\/admin"\)/)
+    assert.doesNotMatch(workspaceSource, /view === "member-insights"|Member Activity/)
+    assert.doesNotMatch(floorSource, /view="member-insights"/)
     assert.doesNotMatch(floorSource, /const adminOnlyViews = \[[^\]]*(?:executive|layout)/)
     assert.match(floorSource, /activeView === "executive" && !demoMode/)
     assert.match(floorSource, /activeView === "layout" \?/)
