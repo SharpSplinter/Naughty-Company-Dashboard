@@ -216,6 +216,10 @@ type FactionWeeklyMember = {
   participation: "full_week" | "partial_week" | "unknown"
   status: "complete" | "partial" | "incomplete" | "waiting_for_baseline" | "waiting_for_update" | "anomaly"
   metrics: Record<FactionWeeklyMetric, number | null>
+  startingMetrics: Record<FactionWeeklyMetric, number | null>
+  endingMetrics: Record<FactionWeeklyMetric, number | null>
+  startingGymEnergy: number | null
+  endingGymEnergy: number | null
   startingNetworth: number | null
   endingNetworth: number | null
   gymEnergy: number | null
@@ -731,6 +735,31 @@ function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }
               <span>Gym baseline: <strong>{member.gymEnergyBaselineCapturedAt ? formatUtc(member.gymEnergyBaselineCapturedAt) : "Unavailable"}</strong></span>
               <span>Gym ending sample: <strong>{member.gymEnergyEndingCapturedAt ? formatUtc(member.gymEnergyEndingCapturedAt) : "Unavailable"}</strong></span>
               <span>Ending source: <strong>{member.endingIsBoundary ? "Sunday boundary capture" : "Latest in-week capture"}</strong></span>
+            </div>
+            <div className="historical-leaderboard faction-weekly-snapshot-history">
+              <table>
+                <thead><tr><th>METRIC</th><th>SUNDAY BASELINE</th><th>LATEST LIFETIME VALUE</th><th>WEEKLY DELTA</th><th>METRIC COVERAGE &amp; FRESHNESS</th></tr></thead>
+                <tbody>{factionWeeklyMetricOptions.map(option => {
+                  const isGym = option.value === "gymEnergy"
+                  const startingValue = isGym ? member.startingGymEnergy : member.startingMetrics[option.value]
+                  const endingValue = isGym ? member.endingGymEnergy : member.endingMetrics[option.value]
+                  const baselineAt = isGym ? member.gymEnergyBaselineCapturedAt : member.baselineCapturedAt
+                  const endingAt = isGym ? member.gymEnergyEndingCapturedAt : member.endingCapturedAt
+                  let coverage = "Known at both samples"
+                  if (!baselineAt) coverage = "Baseline unavailable"
+                  else if (!endingAt) coverage = "Ending sample unavailable"
+                  else if (startingValue === null) coverage = "Missing at baseline"
+                  else if (endingValue === null) coverage = "Missing at ending"
+                  else if (member.anomalyMetrics.includes(option.value)) coverage = "Counter decreased"
+                  return <tr key={option.value}>
+                    <td>{option.label}</td>
+                    <td>{formatNumber(startingValue, option.value)}</td>
+                    <td>{formatNumber(endingValue, option.value)}</td>
+                    <td><strong>{formatNumber(metricValue(member, option.value), option.value)}</strong></td>
+                    <td><span>{coverage}</span><small>Baseline: {baselineAt ? formatUtc(baselineAt) : "Unavailable"}</small><small>Ending: {endingAt ? formatUtc(endingAt) : "Unavailable"}</small></td>
+                  </tr>
+                })}</tbody>
+              </table>
             </div>
             {member.anomalyMetrics.length > 0 && <p className="faction-weekly-profile-anomaly">Counter decreases flagged: {member.anomalyMetrics.join(", ")}. These values are excluded from positive-use rankings.</p>}
             <div className="faction-weekly-member-metrics">

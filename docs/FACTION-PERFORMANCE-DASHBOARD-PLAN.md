@@ -725,11 +725,11 @@ Still to implement or validate:
 - [x] Add member search and a weekly leaderboard with rank, member, position, weekly deltas and completeness/anomaly/partial-week labels.
 - [x] Keep unavailable values as an em dash rather than zero, and keep Xanax/LSD separately ranked.
 - [x] Add clickable current-week and archived-week member profiles with member identity, reporting window, data status, participation, known-counter coverage, networth balances, public stats/gym capture timestamps, Sunday-boundary provenance and all weekly metric deltas.
-- [ ] Add lifetime-counter context alongside weekly deltas and expose per-metric freshness/coverage detail in the member profile.
+- [x] Add lifetime-counter context alongside weekly deltas and expose per-metric freshness/coverage detail in the member profile, using the immutable baseline/ending source snapshots.
 - [x] Add completed-week selection and optional earlier-week comparison, including weekly-value movement and rank movement.
 - [x] Add faction-wide lifetime totals from `/faction/stats` with scheduled timestamped snapshots, freshness and missing/unrecognized field reporting in the Faction totals tab.
 - [x] Add sortable leaderboard columns, case-insensitive member search, status and participation filters, anomalies-only filtering, result counts and a clear-filters action. Unknown metrics remain below known values in both sort directions; helper behavior is covered by backend regression tests.
-- [ ] Add lifetime-counter context and finer per-metric freshness detail.
+- [x] Add lifetime-counter context and finer per-metric freshness detail from the original per-member capture timestamps and NULL-aware source values.
 
 ### Phase 4 — Live Member Status and faction activity
 

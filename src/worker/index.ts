@@ -6188,9 +6188,20 @@ export default {
           "SELECT week_start_at AS weekStartAt, week_end_at AS weekEndAt, report_status AS status, member_count AS memberCount, complete_member_count AS completeMemberCount, summary_json AS summaryJson, finalized_at AS finalizedAt FROM faction_weekly_reports WHERE faction_id = ? AND week_start_at = ?"
         ).bind(NAUGHTY_SOULS_FACTION_ID, weeks).first<Record<string, unknown>>()
         if (!currentReport) return jsonResponse({ error: "That completed weekly report is not available." }, 404, origin)
+        const snapshotMetricColumns = WEEKLY_METRIC_NAMES.flatMap((name) => [
+          "b." + name + " AS starting_" + name,
+          "e." + name + " AS ending_" + name,
+        ]).join(", ")
         const loadRows = async (weekStartAt: string) => db.prepare(
-          "SELECT user_id AS userId, member_name AS name, position, level, participation, result_status AS status, metrics_json AS metricsJson, starting_networth AS startingNetworth, ending_networth AS endingNetworth, gym_energy AS gymEnergy, known_metric_count AS knownMetricCount, anomaly_metrics_json AS anomalyMetricsJson, baseline_captured_at AS baselineCapturedAt, ending_captured_at AS endingCapturedAt, ending_is_boundary AS endingIsBoundary, baseline_snapshot_id AS baselineSnapshotId, ending_snapshot_id AS endingSnapshotId, gym_baseline_captured_at AS gymEnergyBaselineCapturedAt, gym_ending_captured_at AS gymEnergyEndingCapturedAt, gym_ending_is_boundary AS gymEnergyEndingIsBoundary FROM faction_weekly_member_results WHERE faction_id = ? AND week_start_at = ? ORDER BY member_name COLLATE NOCASE, user_id"
+          "SELECT r.user_id AS userId, r.member_name AS name, r.position, r.level, r.participation, r.result_status AS status, r.metrics_json AS metricsJson, r.starting_networth AS startingNetworth, r.ending_networth AS endingNetworth, r.gym_energy AS gymEnergy, r.known_metric_count AS knownMetricCount, r.anomaly_metrics_json AS anomalyMetricsJson, r.baseline_captured_at AS baselineCapturedAt, r.ending_captured_at AS endingCapturedAt, r.ending_is_boundary AS endingIsBoundary, r.baseline_snapshot_id AS baselineSnapshotId, r.ending_snapshot_id AS endingSnapshotId, r.gym_baseline_captured_at AS gymEnergyBaselineCapturedAt, r.gym_ending_captured_at AS gymEnergyEndingCapturedAt, r.gym_ending_is_boundary AS gymEnergyEndingIsBoundary, " + snapshotMetricColumns + ", gb.gym_energy_total AS startingGymEnergy, ge.gym_energy_total AS endingGymEnergy " +
+          "FROM faction_weekly_member_results r " +
+          "LEFT JOIN faction_member_stat_snapshots b ON b.snapshot_id = r.baseline_snapshot_id AND b.faction_id = r.faction_id AND b.user_id = r.user_id " +
+          "LEFT JOIN faction_member_stat_snapshots e ON e.snapshot_id = r.ending_snapshot_id AND e.faction_id = r.faction_id AND e.user_id = r.user_id " +
+          "LEFT JOIN faction_gym_energy_snapshots gb ON gb.snapshot_id = (SELECT g.snapshot_id FROM faction_gym_energy_snapshots g WHERE g.faction_id = r.faction_id AND g.user_id = r.user_id AND g.captured_at = r.gym_baseline_captured_at AND g.collection_status != 'failed' ORDER BY g.snapshot_id DESC LIMIT 1) " +
+          "LEFT JOIN faction_gym_energy_snapshots ge ON ge.snapshot_id = (SELECT g.snapshot_id FROM faction_gym_energy_snapshots g WHERE g.faction_id = r.faction_id AND g.user_id = r.user_id AND g.captured_at = r.gym_ending_captured_at AND g.collection_status != 'failed' ORDER BY g.snapshot_id DESC LIMIT 1) " +
+          "WHERE r.faction_id = ? AND r.week_start_at = ? ORDER BY r.member_name COLLATE NOCASE, r.user_id"
         ).bind(NAUGHTY_SOULS_FACTION_ID, weekStartAt).all<Record<string, unknown>>()
+
         const mapStoredMember = (row: Record<string, unknown>): WeeklyMemberResult => {
           const rawMetrics = parseStoredJson(row.metricsJson)
           const metrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map((name) => [
@@ -6202,6 +6213,8 @@ export default {
             ? rawAnomalies.filter((value): value is WeeklyRankingMetric => typeof value === "string" && (value === "gymEnergy" || (WEEKLY_METRIC_NAMES as readonly string[]).includes(value)))
             : []
           const optionalNumber = (value: unknown) => value === null || value === undefined ? null : Number.isFinite(Number(value)) ? Number(value) : null
+          const startingMetrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map((name) => [name, optionalNumber(row["starting_" + name])])) as WeeklyMemberResult["startingMetrics"]
+          const endingMetrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map((name) => [name, optionalNumber(row["ending_" + name])])) as WeeklyMemberResult["endingMetrics"]
           return {
             userId: String(row.userId),
             name: String(row.name ?? "Unknown member"),
@@ -6210,6 +6223,10 @@ export default {
             participation: row.participation === "full_week" || row.participation === "partial_week" ? row.participation : "unknown",
             status: row.status === "complete" || row.status === "partial" || row.status === "incomplete" || row.status === "waiting_for_baseline" || row.status === "waiting_for_update" || row.status === "anomaly" ? row.status : "incomplete",
             metrics,
+            startingMetrics,
+            endingMetrics,
+            startingGymEnergy: optionalNumber(row.startingGymEnergy),
+            endingGymEnergy: optionalNumber(row.endingGymEnergy),
             startingNetworth: optionalNumber(row.startingNetworth),
             endingNetworth: optionalNumber(row.endingNetworth),
             gymEnergy: optionalNumber(row.gymEnergy),

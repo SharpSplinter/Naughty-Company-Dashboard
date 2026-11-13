@@ -54,6 +54,10 @@ export type WeeklyMemberResult = {
   participation: "full_week" | "partial_week" | "unknown"
   status: "complete" | "partial" | "incomplete" | "waiting_for_baseline" | "waiting_for_update" | "anomaly"
   metrics: WeeklyMetricValues
+  startingMetrics: WeeklyMetricValues
+  endingMetrics: WeeklyMetricValues
+  startingGymEnergy: number | null
+  endingGymEnergy: number | null
   startingNetworth: number | null
   endingNetworth: number | null
   gymEnergy: number | null
@@ -193,12 +197,14 @@ export function calculateWeeklyMemberResult(input: {
     return captured !== null && captured > baselineAt
   })))
 
+  const startingMetrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map((name) => [name, baseline ? numeric(baseline[name]) : null])) as WeeklyMetricValues
+  const endingMetrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map((name) => [name, ending ? numeric(ending[name]) : null])) as WeeklyMetricValues
   const metrics = Object.fromEntries(WEEKLY_METRIC_NAMES.map((name) => [name, null])) as WeeklyMetricValues
   const anomalyMetrics: WeeklyRankingMetric[] = []
   if (baseline && ending) {
     for (const name of WEEKLY_METRIC_NAMES) {
-      const startValue = numeric(baseline[name])
-      const endValue = numeric(ending[name])
+      const startValue = startingMetrics[name]
+      const endValue = endingMetrics[name]
       // Networth is a balance, not a monotonically increasing lifetime counter.
       // A negative weekly change is valid and must not be classified as a reset.
       if (name === "networth") {
@@ -261,6 +267,10 @@ export function calculateWeeklyMemberResult(input: {
     participation,
     status,
     metrics,
+    startingMetrics,
+    endingMetrics,
+    startingGymEnergy: gymStartValue,
+    endingGymEnergy: gymEndValue,
     startingNetworth,
     endingNetworth,
     gymEnergy,
