@@ -170,6 +170,10 @@ try {
   await settingsModule.waitFor({ state: "visible", timeout: 20000 });
   const settingsGrid = settingsModule.locator(".settings-grid");
   await settingsGrid.waitFor({ state: "visible", timeout: 10000 });
+  const privateLiveCard = settingsModule.locator(".settings-private-live-card");
+  await privateLiveCard.waitFor({ state: "visible", timeout: 10000 });
+  const shareControls = privateLiveCard.locator("label.settings-private-live-check");
+  assert.equal(await shareControls.count(), 2, "Private live card should expose the optional networth and sharing-consent controls.");
   for (const viewport of viewports) {
     await settingsPage.setViewportSize({ width: viewport.width, height: viewport.height });
     await settingsPage.waitForTimeout(80);
@@ -178,10 +182,26 @@ try {
       const module = document.querySelector(".settings-module");
       const grid = document.querySelector(".settings-module .settings-grid");
       const cards = [...document.querySelectorAll(".settings-module .settings-card")];
+      const privateLiveCard = document.querySelector(".settings-module .settings-private-live-card");
       const bounds = element => {
         const box = element.getBoundingClientRect();
         return { left: Math.round(box.left), right: Math.round(box.right), width: Math.round(box.width) };
       };
+      const shareControls = [...(privateLiveCard?.querySelectorAll("label.settings-private-live-check") || [])].map(label => {
+        const checkbox = label.querySelector('input[type="checkbox"]');
+        const copy = label.querySelector("span");
+        return {
+          label: bounds(label),
+          display: getComputedStyle(label).display,
+          textAlign: getComputedStyle(label).textAlign,
+          checkbox: bounds(checkbox),
+          checkboxWidth: checkbox.getBoundingClientRect().width,
+          copy: bounds(copy),
+          copyTextAlign: getComputedStyle(copy).textAlign,
+          copyClientWidth: copy.clientWidth,
+          copyScrollWidth: copy.scrollWidth,
+        };
+      });
       return {
         viewportWidth: window.innerWidth,
         documentWidth: root.scrollWidth,
@@ -190,6 +210,8 @@ try {
         grid: bounds(grid),
         rowGap: parseFloat(getComputedStyle(grid).rowGap) || 0,
         cards: cards.map(bounds),
+        privateLiveCard: bounds(privateLiveCard),
+        shareControls,
       };
     });
     const withinViewport = metrics.documentWidth <= viewport.width + 1
@@ -199,8 +221,22 @@ try {
       && metrics.grid.left >= -1
       && metrics.grid.right <= viewport.width + 1
       && metrics.cards.every(card => card.left >= -1 && card.right <= viewport.width + 1);
-    console.log((withinViewport ? "PASS " : "FAIL ") + "settings-" + viewport.label + ": " + JSON.stringify(metrics));
+    const sharingLabelsReadable = metrics.shareControls.length === 2 && metrics.shareControls.every(control =>
+      control.display === "grid"
+      && control.textAlign === "left"
+      && control.checkboxWidth >= 14 && control.checkboxWidth <= 18
+      && control.checkbox.left >= control.label.left - 1
+      && control.checkbox.left <= control.label.left + 3
+      && control.copy.left - control.checkbox.right >= 6
+      && control.copy.left - control.checkbox.right <= 13
+      && control.copy.width >= 80
+      && control.copy.right <= metrics.privateLiveCard.right - 12
+      && control.copyTextAlign === "left"
+      && control.copyScrollWidth <= control.copyClientWidth + 1
+    );
+    console.log((withinViewport && sharingLabelsReadable ? "PASS " : "FAIL ") + "settings-" + viewport.label + ": " + JSON.stringify(metrics));
     assert.ok(withinViewport, "Account Settings overflowed or a card exceeded the viewport at " + viewport.label);
+    assert.ok(sharingLabelsReadable, "Private live sharing checkboxes or their copy are misaligned, stretched, or clipped at " + viewport.label);
     assert.ok(metrics.rowGap >= 8, "Account Settings cards are too tightly spaced at " + viewport.label);
     await settingsPage.screenshot({ path: "test-results/staging-responsive/settings-" + viewport.label + ".png", fullPage: true });
   }
