@@ -1420,13 +1420,13 @@ try {
 
   await test("period comparisons reuse the selected Trends history response without a duplicate request", () => {
     const source = readFileSync(join(root, "src/components/floor/insights-workspace.tsx"), "utf8")
-    assert.match(source, /const comparisonRange = Number\\(comparisonDays\\) === 7 \\? 30 : Number\\(comparisonDays\\) === 30 \\? 90 : 365/)
-    assert.match(source, /const requestedRange = trendDays === "all" \\? "all" : String\\(Math\\.max\\(Number\\(trendDays\\), comparisonRange\\)\\)/)
-    assert.match(source, /if \\(view === "trends" \\|\\| view === "executive"\\) tasks\\.push\\(loadTrends\\(\\)\\)/)
-    assert.match(source, /const comparison = useMemo\\(\\(\\) => \\{\\s*const points = trends\\?\\.history \\|\\| \\[\\]/)
-    assert.match(source, /vs prior \\{comparisonDays\\}-day average/)
+    assert.match(source, /const comparisonRange = Number\(comparisonDays\) === 7 \? 30 : Number\(comparisonDays\) === 30 \? 90 : 365/)
+    assert.match(source, /const requestedRange = trendDays === "all" \? "all" : String\(Math\.max\(Number\(trendDays\), comparisonRange\)\)/)
+    assert.match(source, /if \(view === "trends" \|\| view === "executive"\) tasks\.push\(loadTrends\(\)\)/)
+    assert.match(source, /const comparison = useMemo\(\(\) => \{\s*const points = trends\?\.history \|\| \[\]/)
+    assert.match(source, /vs prior \{comparisonDays\}-day average/)
     assert.doesNotMatch(source, /loadComparison|comparisonHistory/, "period comparisons must not keep or load a second history collection")
-    assert.equal((source.match(/history\\?days=\\$\\{requestedRange\\}/g) || []).length, 1, "Trends and period comparison must share one history request")
+    assert.equal((source.match(/history\?days=\$\{requestedRange\}/g) || []).length, 1, "Trends and period comparison must share one history request")
   })
 
   await test("Trends workspace charts daily profit and stock quantity without treating missing points as zero", () => {
