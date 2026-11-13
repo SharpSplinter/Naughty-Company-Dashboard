@@ -3,6 +3,10 @@ export type HalloweenEventMetrics = {
   boostersUsed: number
   energyCans: number
   energyCansUsed: number
+  energyDrinkSixPacks: number
+  energyDrinkSixPacksUsed: number
+  alcoholSixPacks: number
+  alcoholSixPacksUsed: number
   fhcs: number
   fhcsUsed: number
   greenEggs: number
@@ -10,6 +14,9 @@ export type HalloweenEventMetrics = {
   treatExchangeEnergyGained: number
   successfulAttackEnergyUsed: number
   successfulAttacks: number
+  revitalizeProcs: number
+  revitalizeAttacksReviewed: number
+  revitalizeChanceCounts: Record<string, number>
 }
 
 export type HalloweenEventMetricLogRow = {
@@ -23,7 +30,8 @@ const BOOSTER_ITEM_IDS = new Set(["366", "368"])
 const FHC_ITEM_IDS = new Set(["367"])
 const GREEN_EGG_ITEM_IDS = new Set(["473"])
 const ENERGY_CAN_ITEM_IDS = new Set(["530", "532", "533", "553", "554", "555", "985", "986", "987"])
-const SIX_PACK_ITEM_ID = "818"
+const ENERGY_DRINK_SIX_PACK_ITEM_ID = "818"
+const ALCOHOL_SIX_PACK_ITEM_ID = "817"
 
 export function emptyHalloweenEventMetrics(): HalloweenEventMetrics {
   return {
@@ -31,6 +39,10 @@ export function emptyHalloweenEventMetrics(): HalloweenEventMetrics {
     boostersUsed: 0,
     energyCans: 0,
     energyCansUsed: 0,
+    energyDrinkSixPacks: 0,
+    energyDrinkSixPacksUsed: 0,
+    alcoholSixPacks: 0,
+    alcoholSixPacksUsed: 0,
     fhcs: 0,
     fhcsUsed: 0,
     greenEggs: 0,
@@ -38,6 +50,9 @@ export function emptyHalloweenEventMetrics(): HalloweenEventMetrics {
     treatExchangeEnergyGained: 0,
     successfulAttackEnergyUsed: 0,
     successfulAttacks: 0,
+    revitalizeProcs: 0,
+    revitalizeAttacksReviewed: 0,
+    revitalizeChanceCounts: {},
   }
 }
 
@@ -85,6 +100,50 @@ function parseLogJson(value: string | null): Record<string, unknown> | null {
   try { return asRecord(JSON.parse(value)) } catch { return null }
 }
 
+export type HalloweenAttackMetric = {
+  attacker?: { id?: number | string | null } | null
+  ended?: number | null
+  is_interrupted?: boolean
+  finishing_hit_effects?: Array<{ name?: string; value?: number }> | null
+}
+
+export type HalloweenRevitalizeMetrics = {
+  revitalizeProcs: number
+  revitalizeAttacksReviewed: number
+  revitalizeChanceCounts: Record<string, number>
+}
+
+export function calculateHalloweenRevitalizeMetrics(
+  attacks: readonly HalloweenAttackMetric[],
+  playerId: string,
+  windowStart: number,
+  windowEnd: number,
+): HalloweenRevitalizeMetrics {
+  const result: HalloweenRevitalizeMetrics = {
+    revitalizeProcs: 0,
+    revitalizeAttacksReviewed: 0,
+    revitalizeChanceCounts: {},
+  }
+  for (const attack of attacks) {
+    if (String(attack.attacker?.id ?? "") !== playerId) continue
+    const ended = Number(attack.ended)
+    if (!Number.isFinite(ended) || ended < windowStart || ended >= windowEnd) continue
+    if (attack.is_interrupted === true) continue
+    result.revitalizeAttacksReviewed += 1
+    for (const effect of attack.finishing_hit_effects ?? []) {
+      if (effect?.name !== "revitalize") continue
+      result.revitalizeProcs += 1
+      const chance = Number(effect.value)
+      if (Number.isInteger(chance) && chance > 0 && chance <= 100) {
+        const key = String(chance)
+        result.revitalizeChanceCounts[key] = (result.revitalizeChanceCounts[key] ?? 0) + 1
+      }
+      break
+    }
+  }
+  return result
+}
+
 export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetricLogRow[]): HalloweenEventMetrics {
   const metrics = emptyHalloweenEventMetrics()
   const basketItemTotals = new Map<string, number>()
@@ -108,7 +167,12 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
       const itemTitle = title.toLowerCase()
       if (BOOSTER_ITEM_IDS.has(itemId) || itemTitle.includes("erotic dvd") || itemTitle.includes("lawyer business card")) metrics.boostersUsed += 1
       if (ENERGY_CAN_ITEM_IDS.has(itemId)) metrics.energyCansUsed += 1
-      if (itemId === SIX_PACK_ITEM_ID) metrics.energyCansUsed += 6
+      if (itemId === ENERGY_DRINK_SIX_PACK_ITEM_ID) {
+        metrics.energyDrinkSixPacksUsed += 1
+        metrics.energyCans += 6
+        metrics.energyCansUsed += 6
+      }
+      if (itemId === ALCOHOL_SIX_PACK_ITEM_ID) metrics.alcoholSixPacksUsed += 1
       if (FHC_ITEM_IDS.has(itemId) || itemTitle.includes("feathery hotel coupon")) metrics.fhcsUsed += 1
       if (GREEN_EGG_ITEM_IDS.has(itemId) || itemTitle.includes("green easter egg")) metrics.greenEggsUsed += 1
     }
@@ -138,7 +202,8 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
     if (FHC_ITEM_IDS.has(itemId)) metrics.fhcs += quantity
     if (GREEN_EGG_ITEM_IDS.has(itemId)) metrics.greenEggs += quantity
     if (ENERGY_CAN_ITEM_IDS.has(itemId)) metrics.energyCans += quantity
-    if (itemId === SIX_PACK_ITEM_ID) metrics.energyCans += quantity * 6
+    if (itemId === ENERGY_DRINK_SIX_PACK_ITEM_ID) metrics.energyDrinkSixPacks += quantity
+    if (itemId === ALCOHOL_SIX_PACK_ITEM_ID) metrics.alcoholSixPacks += quantity
   }
 
   return metrics
@@ -150,6 +215,10 @@ export function sumHalloweenEventMetrics(values: readonly HalloweenEventMetrics[
     boostersUsed: total.boostersUsed + value.boostersUsed,
     energyCans: total.energyCans + value.energyCans,
     energyCansUsed: total.energyCansUsed + value.energyCansUsed,
+    energyDrinkSixPacks: total.energyDrinkSixPacks + value.energyDrinkSixPacks,
+    energyDrinkSixPacksUsed: total.energyDrinkSixPacksUsed + value.energyDrinkSixPacksUsed,
+    alcoholSixPacks: total.alcoholSixPacks + value.alcoholSixPacks,
+    alcoholSixPacksUsed: total.alcoholSixPacksUsed + value.alcoholSixPacksUsed,
     fhcs: total.fhcs + value.fhcs,
     fhcsUsed: total.fhcsUsed + value.fhcsUsed,
     greenEggs: total.greenEggs + value.greenEggs,
@@ -157,5 +226,11 @@ export function sumHalloweenEventMetrics(values: readonly HalloweenEventMetrics[
     treatExchangeEnergyGained: total.treatExchangeEnergyGained + value.treatExchangeEnergyGained,
     successfulAttackEnergyUsed: total.successfulAttackEnergyUsed + value.successfulAttackEnergyUsed,
     successfulAttacks: total.successfulAttacks + value.successfulAttacks,
+    revitalizeProcs: total.revitalizeProcs + value.revitalizeProcs,
+    revitalizeAttacksReviewed: total.revitalizeAttacksReviewed + value.revitalizeAttacksReviewed,
+    revitalizeChanceCounts: Object.entries(value.revitalizeChanceCounts).reduce((counts, [chance, count]) => {
+      counts[chance] = (counts[chance] ?? 0) + count
+      return counts
+    }, { ...total.revitalizeChanceCounts } as Record<string, number>),
   }), emptyHalloweenEventMetrics())
 }
