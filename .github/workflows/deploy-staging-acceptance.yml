@@ -1,6 +1,8 @@
 name: Deploy Naughty Family acceptance staging
 
 on:
+  # Staging deployment is intentionally operator-triggered. Do not redeploy
+  # Worker, D1 migrations, Pages, or Playwright for every branch commit.
   workflow_dispatch:
     inputs:
       confirm_target:
@@ -9,28 +11,13 @@ on:
         type: choice
         options:
           - naughtyfamily-staging
-  push:
-    branches: [portal-rebuild]
-    paths:
-      - ".github/workflows/deploy-staging-acceptance.yml"
-      - "wrangler.acceptance.toml"
-      - "src/worker/**"
-      - "src/lib/**"
-      - "src/components/**"
-      - "migrations/auth/**"
-      - "index.html"
-      - "package.json"
-      - "package-lock.json"
-      - "scripts/ensure-naughtyfamily-staging-queues.mjs"
-      - "scripts/test-staging-responsive.mjs"
-      - "vite.config.ts"
 
 permissions:
   contents: read
 
 concurrency:
   group: naughty-family-real-key-acceptance-staging
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   deploy-staging:
