@@ -17,7 +17,7 @@ assert.match(worker, /LEFT JOIN administrators a ON a\.player_id = p\.player_id 
 assert.match(worker, /if \(session\.is_admin !== 1\)/)
 assert.match(worker, /adminRequestSchemaInitializations = new WeakMap/)
 assert.match(worker, /await ensureAdminRequestSchema\(env\)/)
-assert.match(worker, /aria-current=\{tab === item.key \? "page" : undefined\}/)
+assert.match(adminPanel, /aria-current=\{tab === item.key \? "page" : undefined\}/)
 assert.match(adminPanel, /loadHistorySummary/)
 
 assert.match(worker, /\/api\/admin\/administrators\/grant/)
