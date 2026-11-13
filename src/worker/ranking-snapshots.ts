@@ -46,6 +46,30 @@ export type FactionCompanyRankSnapshot = RankingCompanyInput & RankingSnapshotMe
   typeRank: number
 }
 
+export type FactionDirectorySyncStatus = {
+  checkedAt: string
+  pendingCount: number
+  invalidMemberCount: number
+  complete: number
+}
+
+/**
+ * Only a fully traversed, recently checked faction directory can produce a
+ * canonical daily faction ranking. A partial roster must never be ranked as
+ * though it represented the entire faction.
+ */
+export function isFactionDirectorySnapshotEligible(
+  status: FactionDirectorySyncStatus | null | undefined,
+  sourceFetchedAt: string,
+  maxClockSkewMs = 30 * 60 * 1000,
+): boolean {
+  if (!status || status.complete !== 1 || status.pendingCount !== 0 || status.invalidMemberCount !== 0) return false
+  const checkedAt = Date.parse(status.checkedAt)
+  const sourceAt = Date.parse(sourceFetchedAt)
+  return Number.isFinite(checkedAt) && Number.isFinite(sourceAt) &&
+    Math.abs(checkedAt - sourceAt) <= maxClockSkewMs
+}
+
 function typeKey(company: RankingCompanyInput): string {
   const numericId = Number(company.companyTypeId)
   return Number.isFinite(numericId) && numericId > 0
