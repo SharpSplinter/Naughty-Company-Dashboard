@@ -164,6 +164,10 @@ export class TornApiClient {
     return this.request<Record<string, unknown>>(`/user/${playerId}/job`)
   }
 
+  async getKeyInfo(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("/key/info")
+  }
+
   async getMyPersonalStats(selection: PersonalStatsRequest): Promise<unknown> {
     return this.request<unknown>(buildPersonalStatsPath(null, selection))
   }
