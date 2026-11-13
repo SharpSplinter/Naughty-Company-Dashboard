@@ -1989,6 +1989,146 @@ async function sendHalloweenCollectionJob(env: WorkerEnv, jobId: string): Promis
   await env.GLOBAL_RANKINGS_QUEUE.send({ kind: "halloween-log-collection", jobId })
 }
 
+async function sendHalloweenAttackMetricsJob(env: WorkerEnv, jobId: string): Promise<void> {
+  if (!env.GLOBAL_RANKINGS_QUEUE) throw new Error("The background collection queue is not configured.")
+  await env.GLOBAL_RANKINGS_QUEUE.send({ kind: "halloween-attack-metrics", jobId })
+}
+
+async function runHalloweenAttackMetricsPage(env: WorkerEnv, jobId: string): Promise<void> {
+  const db = requireDb(env)
+  const job = await db.prepare(
+    "SELECT job_id, player_id, event_year, status, cursor_url, window_start_at, window_end_at, pages_collected, attacks_reviewed, revitalize_procs, revitalize_chances_json FROM halloween_attack_metrics_jobs WHERE job_id = ?"
+  ).bind(jobId).first<{
+    job_id: string
+    player_id: string
+    event_year: number
+    status: string
+    cursor_url: string | null
+    window_start_at: string
+    window_end_at: string
+    pages_collected: number
+    attacks_reviewed: number
+    revitalize_procs: number
+    revitalize_chances_json: string
+  }>()
+  if (!job || ["complete", "failed", "cancelled"].includes(job.status)) return
+
+  const memberStatus = await db.prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?")
+    .bind(job.player_id).first<{ disabled_at: string | null }>()
+  if (memberStatus?.disabled_at) {
+    await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'cancelled', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("Revitalize collection was cancelled because this member's dashboard access is disabled.", new Date().toISOString(), jobId).run()
+    return
+  }
+
+  const event = await db.prepare("SELECT historical_collection_enabled FROM halloween_event_windows WHERE event_year = ?")
+    .bind(job.event_year).first<{ historical_collection_enabled: number }>()
+  if (!event || event.historical_collection_enabled !== 1) {
+    await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("Historical collection is disabled for this event year.", new Date().toISOString(), jobId).run()
+    return
+  }
+
+  const keyRow = await db.prepare("SELECT player_id, consent_version FROM halloween_historical_keys WHERE player_id = ?")
+    .bind(job.player_id).first<{ player_id: string; consent_version: string }>()
+  const apiKey = keyRow?.consent_version === "halloween-history-v2" ? await savedKey(env, job.player_id) : null
+  if (!apiKey) {
+    await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("The member must accept the updated Halloween collection terms with a key that includes User → Attacks.", new Date().toISOString(), jobId).run()
+    return
+  }
+
+  await throttleHalloweenRequest(env, job.player_id)
+  const factionId = await verifyFactionMembershipWithKey(apiKey)
+  if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
+    await applyConfirmedFactionDeparture(env, job.player_id, factionId)
+    return
+  }
+
+  const windowStart = Math.floor(Date.parse(job.window_start_at) / 1000)
+  const windowEnd = Math.floor(Date.parse(job.window_end_at) / 1000)
+  if (!Number.isFinite(windowStart) || !Number.isFinite(windowEnd) || windowEnd <= windowStart) {
+    await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("The personal Halloween event window is invalid.", new Date().toISOString(), jobId).run()
+    return
+  }
+
+  let requestUrl = job.cursor_url || (() => {
+    const url = new URL("https://api.torn.com/v2/user/attacks")
+    url.searchParams.set("from", String(windowStart))
+    url.searchParams.set("to", String(windowEnd - 1))
+    url.searchParams.set("limit", "100")
+    url.searchParams.set("sort", "desc")
+    url.searchParams.set("filters", "outgoing")
+    return url.toString()
+  })()
+  let parsedUrl: URL
+  try { parsedUrl = new URL(requestUrl) } catch { throw new Error("Torn returned an invalid attack pagination URL.") }
+  if (parsedUrl.protocol !== "https:" || parsedUrl.hostname !== "api.torn.com" || parsedUrl.pathname !== "/v2/user/attacks" || parsedUrl.searchParams.has("key")) {
+    throw new Error("Torn returned an unsafe attack pagination URL. The API key was not sent.")
+  }
+
+  await throttleHalloweenRequest(env, job.player_id)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 15000)
+  let response: Response
+  let payload: unknown
+  try {
+    response = await trackedTornFetch("halloween-revitalize-attacks", parsedUrl.toString(), {
+      headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+      signal: controller.signal,
+    }, fetch, job.player_id)
+    payload = await response.json().catch(() => null)
+  } finally { clearTimeout(timeout) }
+
+  const apiError = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+  if (!response.ok || apiError) {
+    const code = typeof apiError?.code === "number" ? apiError.code : undefined
+    if (code === 2 || code === 16 || code === 18) {
+      await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+        .bind("Torn rejected the saved key for detailed attacks. Accept the updated terms with Full Access or Custom Access including User → Attacks.", new Date().toISOString(), jobId).run()
+      return
+    }
+    throw new Error(code === 5 || code === 8 || code === 14 ? "Torn rate limit reached during Revitalize collection." : code === 9 ? "Torn's API is currently disabled." : "Torn detailed attack request failed.")
+  }
+  if (!isRecord(payload) || !Array.isArray(payload.attacks)) throw new Error("Torn returned an unexpected detailed attacks response.")
+
+  const attacks = payload.attacks.filter(isRecord) as unknown as HalloweenAttackMetric[]
+  const pageMetrics = calculateHalloweenRevitalizeMetrics(attacks, job.player_id, windowStart, windowEnd)
+  let chances: Record<string, number> = {}
+  try {
+    const parsed = JSON.parse(String(job.revitalize_chances_json ?? "{}"))
+    if (isRecord(parsed)) chances = Object.fromEntries(
+      Object.entries(parsed).filter(([chance, count]) => /^\d+$/.test(chance) && typeof count === "number" && Number.isFinite(count) && count >= 0)
+    ) as Record<string, number>
+  } catch { chances = {} }
+  for (const [chance, count] of Object.entries(pageMetrics.revitalizeChanceCounts)) {
+    chances[chance] = (chances[chance] ?? 0) + count
+  }
+
+  const metadata = isRecord(payload._metadata) ? payload._metadata : {}
+  const links = isRecord(metadata.links) ? metadata.links : {}
+  const nextCandidate = typeof links.next === "string" ? links.next : typeof links.prev === "string" ? links.prev : null
+  const pages = Number(job.pages_collected ?? 0) + 1
+  const reviewed = Number(job.attacks_reviewed ?? 0) + pageMetrics.revitalizeAttacksReviewed
+  const procs = Number(job.revitalize_procs ?? 0) + pageMetrics.revitalizeProcs
+  const now = new Date().toISOString()
+
+  if (nextCandidate) {
+    const nextUrl = new URL(nextCandidate, parsedUrl)
+    if (nextUrl.protocol !== "https:" || nextUrl.hostname !== "api.torn.com" || nextUrl.pathname !== "/v2/user/attacks" || nextUrl.searchParams.has("key")) {
+      throw new Error("Torn returned an unsafe detailed attack pagination link.")
+    }
+    await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'running', cursor_url = ?, pages_collected = ?, attacks_reviewed = ?, revitalize_procs = ?, revitalize_chances_json = ?, last_error = NULL, updated_at = ? WHERE job_id = ?")
+      .bind(nextUrl.toString(), pages, reviewed, procs, asJson(chances), now, jobId).run()
+    await sendHalloweenAttackMetricsJob(env, jobId)
+    return
+  }
+
+  await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'complete', cursor_url = NULL, pages_collected = ?, attacks_reviewed = ?, revitalize_procs = ?, revitalize_chances_json = ?, last_error = NULL, completed_at = ?, updated_at = ? WHERE job_id = ?")
+    .bind(pages, reviewed, procs, asJson(chances), now, now, jobId).run()
+}
+
 type HalloweenEventDefinition = { eventYear: number; startAt: string; endAt: string }
 type HalloweenMemberEventWindow = {
   configured: boolean
