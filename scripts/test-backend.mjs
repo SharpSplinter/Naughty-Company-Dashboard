@@ -56,7 +56,7 @@ try {
   const worker = require(join(temp, "worker/index.js")).default
   const { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } = require(join(temp, "worker/snapshot-provenance.js"))
   const { withRollingWeeklyProfit } = require(join(temp, "worker/company-history.js"))
-  const { buildFactionCompanyRankSnapshots, buildGlobalCompanyRankSnapshots } = require(join(temp, "worker/ranking-snapshots.js"))
+  const { buildFactionCompanyRankSnapshots, buildGlobalCompanyRankSnapshots, isFactionDirectorySnapshotEligible } = require(join(temp, "worker/ranking-snapshots.js"))
   const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
   const { estimateWeeklyProfit, financialCosts, reportedCompanyProfit, stockCostTotal } = require(join(temp, "components/floor/financial-utils.js"))
   const { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isWithinQuietHours, normalizeWebhookUrl, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } = require(join(temp, "lib/automation/rules.js"))
@@ -99,6 +99,22 @@ try {
       point.day === "2026-11-12" ? { ...point, reportedWeeklyProfit: 300 } : point
     ))
     assert.equal(reconciled[6].weeklyProfitReconciliationDelta, 20)
+  })
+
+  await test("faction rank snapshots require a complete, recent directory sync", () => {
+    const complete = {
+      checkedAt: "2026-11-13T18:11:20.000Z",
+      pendingCount: 0,
+      invalidMemberCount: 0,
+      complete: 1,
+    }
+    assert.equal(isFactionDirectorySnapshotEligible(complete, "2026-11-13T18:11:01.000Z"), true)
+    assert.equal(isFactionDirectorySnapshotEligible({ ...complete, pendingCount: 1 }, "2026-11-13T18:11:01.000Z"), false)
+    assert.equal(isFactionDirectorySnapshotEligible({ ...complete, invalidMemberCount: 1 }, "2026-11-13T18:11:01.000Z"), false)
+    assert.equal(isFactionDirectorySnapshotEligible({ ...complete, complete: 0 }, "2026-11-13T18:11:01.000Z"), false)
+    assert.equal(isFactionDirectorySnapshotEligible(complete, "2026-11-13T17:00:00.000Z"), false,
+      "a directory sync far from the global capture must not be used for that day's rank")
+    assert.equal(isFactionDirectorySnapshotEligible(null, "2026-11-13T18:11:01.000Z"), false)
   })
 
   await test("global and faction ranking snapshots preserve overall and same-type ranks", () => {
