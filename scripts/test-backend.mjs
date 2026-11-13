@@ -1924,17 +1924,33 @@ try {
     assert.equal(response.profile.id, 77)
   })
 
-  await test("maps Torn rate-limit code 9 to HTTP 429", async () => {
+  await test("maps Torn too-many-requests code 5 to HTTP 429", async () => {
     const client = new TornApiClient({
       apiKey: "test",
       fetcher: async () => new Response(JSON.stringify({
-        error: { code: 9, error: "Too many requests" },
+        error: { code: 5, error: "Too many requests" },
       }), { status: 200 }),
     })
     await assert.rejects(() => client.getCompanyEmployees(), (error) =>
       error instanceof TornApiClientError &&
       error.status === 429 &&
+      error.code === 5 &&
       error.message.includes("rate limit"))
+  })
+
+  await test("maps Torn API-disabled code 9 to HTTP 503, not rate limiting", async () => {
+    const client = new TornApiClient({
+      apiKey: "test",
+      fetcher: async () => new Response(JSON.stringify({
+        error: { code: 9, error: "API disabled" },
+      }), { status: 200 }),
+    })
+    await assert.rejects(() => client.getCompanyEmployees(), (error) =>
+      error instanceof TornApiClientError &&
+      error.status === 503 &&
+      error.code === 9 &&
+      error.message.includes("API service is currently disabled") &&
+      !error.message.includes("rate limit"))
   })
 
   await test("sign-in verifies faction membership without probing company or director access", async () => {
