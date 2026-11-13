@@ -528,6 +528,10 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
   const tokenHash = createHash("sha256").update(token).digest("hex")
   const now = new Date().toISOString()
   const expiresAt = String(Math.floor(Date.now() / 1000) + 600)
+  const activityRunIds = []
+  let originalRosterCapturedAt = null
+  const activityMemberId = String(989000000000000 + randomInt(1, 999999))
+  const unknownActivityMemberId = String(989000000000000 + randomInt(1, 999999))
 
   await d1Query(
     `INSERT INTO players
@@ -593,15 +597,63 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
     }
     console.log("PASS authenticated faction stats API returned faction-wide totals, capture time and missing-stat metadata.")
 
-    const activityResponse = await fetch(`${WORKER_URL}/api/faction/activity`, {
+    const originalRosterCapture = await d1Query(
+      "SELECT captured_at FROM faction_roster_snapshots WHERE run_id = ?",
+      [rosterRunId],
+    )
+    originalRosterCapturedAt = originalRosterCapture[0]?.captured_at ?? null
+    if (!originalRosterCapturedAt) throw new Error("The integration roster capture timestamp is missing.")
+    // Move this synthetic header behind the test points so the timeline has
+    // three chronological captures without altering the collected member data.
+    const historicalAnchorAt = new Date(Date.now() - 100 * 3600000).toISOString()
+    await d1Query(
+      "UPDATE faction_roster_snapshots SET captured_at = ? WHERE run_id = ?",
+      [historicalAnchorAt, rosterRunId],
+    )
+    const generatedAtMs = Date.now()
+    const actionTimestamp = Math.floor((generatedAtMs - 80 * 3600000) / 1000)
+    const samples = [
+      { capturedAt: new Date(generatedAtMs - 72 * 3600000).toISOString(), status: "Online", position: "Recruit" },
+      { capturedAt: new Date(generatedAtMs - 48 * 3600000).toISOString(), status: "Idle", position: "Member" },
+      { capturedAt: new Date(generatedAtMs - 1 * 3600000).toISOString(), status: "Offline", position: "Officer" },
+    ]
+    for (const sample of samples) {
+      const runId = randomUUID()
+      activityRunIds.push(runId)
+      await d1Query(
+        "INSERT INTO faction_performance_collection_runs (run_id, collection_key, faction_id, collection_kind, status, scheduled_at, started_at, completed_at, created_at, updated_at) VALUES (?, ?, ?, 'roster', 'completed', ?, ?, ?, ?, ?)",
+        [runId, "activity-history-fixture:" + runId, FACTION_ID, sample.capturedAt, sample.capturedAt, sample.capturedAt, sample.capturedAt, sample.capturedAt],
+      )
+      await d1Query(
+        "INSERT INTO faction_roster_snapshots (run_id, faction_id, captured_at, scheduled_at, member_count, response_version) VALUES (?, ?, ?, ?, 2, 'torn-v2')",
+        [runId, FACTION_ID, sample.capturedAt, sample.capturedAt],
+      )
+      for (const [userId, lastAction] of [[activityMemberId, actionTimestamp], [unknownActivityMemberId, null]]) {
+        await d1Query(
+          "INSERT INTO faction_member_roster_snapshots (run_id, faction_id, user_id, captured_at, name, position, level, days_in_faction, last_action_status, last_action_timestamp, last_action_relative, status_description, status_details, status_state, status_until, status_color, is_revivable, revive_setting, is_on_wall, is_in_oc, has_early_discharge) VALUES (?, ?, ?, ?, ?, ?, 77, 100, ?, ?, ?, 'Okay', NULL, 'Okay', NULL, NULL, 0, 'Everyone', 0, 0, 0)",
+          [runId, FACTION_ID, userId, sample.capturedAt,
+            userId === activityMemberId ? "Timeline Trend Member" : "Unknown Timestamp Member",
+            sample.position, sample.status, lastAction, lastAction === null ? null : "80 hours ago"],
+        )
+      }
+    }
+
+    const activityResponse = await fetch(`${WORKER_URL}/api/faction/activity?days=7&memberId=${activityMemberId}`, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       signal: AbortSignal.timeout(30000),
     })
     const activity = await activityResponse.json().catch(() => null)
     if (!activityResponse.ok || !activity || !Array.isArray(activity.events) ||
         !["compared", "waiting_for_previous_roster"].includes(activity.comparisonStatus) ||
-        activity.latestRoster?.runId !== rosterRunId) {
-      throw new Error(`Faction activity API returned HTTP ${activityResponse.status} or omitted its completed roster comparison.`)
+        activity.latestRoster?.runId !== activityRunIds[2] ||
+        activity.historyRangeDays !== 7 || activity.samplingIntervalHours !== 1 ||
+        activity.sampledSnapshotCount < 3 || activity.memberTrend?.memberId !== activityMemberId ||
+        activity.memberTrend?.points?.length !== 3 ||
+        activity.memberTrend.points.map((point) => point.classification).join(",") !== "normal,inactive_24h,inactive_72h" ||
+        activity.inactivityMembers.find((member) => member.userId === activityMemberId)?.classification !== "inactive_72h" ||
+        activity.inactivityMembers.find((member) => member.userId === unknownActivityMemberId)?.classification !== "unknown" ||
+        activity.inactivityMembers.find((member) => member.userId === unknownActivityMemberId)?.elapsedSeconds !== null) {
+      throw new Error(`Faction activity API returned HTTP ${activityResponse.status} or omitted its sampled timeline/member inactivity trend contract.`)
     }
     const allowedActivityTypes = new Set([
       "member_added", "member_removed", "activity_changed", "status_changed",
@@ -616,7 +668,11 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
     )) {
       throw new Error("Faction activity API returned an invalid or unsupported roster-change event.")
     }
-    console.log("PASS authenticated faction activity API compared completed roster snapshots and returned only typed public membership/status/flag events.")
+    if (!activity.events.some((event) => event.userId === activityMemberId && event.eventType === "activity_changed") ||
+        !activity.events.some((event) => event.userId === activityMemberId && event.eventType === "position_changed")) {
+      throw new Error("The longer faction timeline did not report sampled activity and position changes for the synthetic member.")
+    }
+    console.log("PASS authenticated faction activity API returns a sampled 7-day timeline, member-specific inactivity trend, exact 24h/72h bands and explicit unknown timestamps.")
 
     const weeklyResponse = await fetch(`${WORKER_URL}/api/faction/weekly-rankings?metric=xantaken`, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
@@ -796,6 +852,14 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
     }
     console.log("PASS admin weekly boundary diagnostics identify failed captures, retry a frozen Sunday run through Queues, audit the action, and refuse to rewrite finalized reports.")
   } finally {
+    for (const runId of activityRunIds) {
+      await d1Query("DELETE FROM faction_member_roster_snapshots WHERE run_id = ?", [runId]).catch(() => undefined)
+      await d1Query("DELETE FROM faction_roster_snapshots WHERE run_id = ?", [runId]).catch(() => undefined)
+      await d1Query("DELETE FROM faction_performance_collection_runs WHERE run_id = ?", [runId]).catch(() => undefined)
+    }
+    if (originalRosterCapturedAt) {
+      await d1Query("UPDATE faction_roster_snapshots SET captured_at = ? WHERE run_id = ?", [originalRosterCapturedAt, rosterRunId]).catch(() => undefined)
+    }
     await d1Query("DELETE FROM players WHERE player_id = ?", [playerId])
   }
 }
