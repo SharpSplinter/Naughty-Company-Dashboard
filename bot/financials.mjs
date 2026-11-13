@@ -197,13 +197,24 @@ export function estimateWeeklyProfit(weeklyIncome, breakdown) {
 }
 
 /**
- * Prefer the independently calculated figure whenever the full cost breakdown
- * is available. Torn's reported profit can disagree with its displayed income
- * and costs, so it is only a fallback when the local calculation is incomplete.
+ * Match the dashboard's daily-profit rule: calculate from current income and
+ * complete current costs; otherwise fall back to the latest saved daily value.
  */
-export function resolveDisplayedProfit(reportedProfit, calculatedProfit) {
+export function resolveDisplayedDailyProfit(historicalProfit, dailyIncome, breakdown) {
+  const calculatedProfit = estimateDailyProfit(dailyIncome, breakdown);
   if (isNumber(calculatedProfit)) return { value: calculatedProfit, source: "calculated" };
+  if (isNumber(historicalProfit)) return { value: historicalProfit, source: "historical" };
+  return { value: null, source: "unavailable" };
+}
+
+/**
+ * Match the dashboard's weekly-profit precedence: Torn's reported weekly value,
+ * then the current cost-based estimate, then the latest saved weekly value.
+ */
+export function resolveDisplayedWeeklyProfit(reportedProfit, calculatedProfit, historicalProfit) {
   if (isNumber(reportedProfit)) return { value: reportedProfit, source: "reported" };
+  if (isNumber(calculatedProfit)) return { value: calculatedProfit, source: "calculated" };
+  if (isNumber(historicalProfit)) return { value: historicalProfit, source: "historical" };
   return { value: null, source: "unavailable" };
 }
 
