@@ -20,6 +20,8 @@ const sourceFiles = [
   "src/lib/torn/types.ts",
   "src/worker/index.ts",
   "src/worker/snapshot-provenance.ts",
+  "src/worker/company-history.ts",
+  "src/worker/ranking-snapshots.ts",
   "src/components/floor/ranking-utils.ts",
   "src/components/floor/financial-utils.ts",
 ].map((file) => resolve(root, file))
@@ -53,6 +55,8 @@ try {
   const { TornApiClient, TornApiClientError } = require(join(temp, "lib/torn/client.js"))
   const worker = require(join(temp, "worker/index.js")).default
   const { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } = require(join(temp, "worker/snapshot-provenance.js"))
+  const { withRollingWeeklyProfit } = require(join(temp, "worker/company-history.js"))
+  const { buildFactionCompanyRankSnapshots, buildGlobalCompanyRankSnapshots } = require(join(temp, "worker/ranking-snapshots.js"))
   const { placement } = require(join(temp, "components/floor/ranking-utils.js"))
   const { estimateWeeklyProfit, financialCosts, reportedCompanyProfit, stockCostTotal } = require(join(temp, "components/floor/financial-utils.js"))
   const { evaluateIncomeDrop, evaluateIncomeIncrease, evaluatePercentageDrop, evaluateRosterChange, isWithinQuietHours, normalizeWebhookUrl, isSnapshotStale, normalizeAlertThreshold, normalizeCooldownHours } = require(join(temp, "lib/automation/rules.js"))
@@ -65,6 +69,54 @@ try {
     console.log("PASS", name)
   }
 
+  await test("rolling weekly profit requires seven consecutive complete daily-profit records", () => {
+    const start = Date.parse("2026-11-06T00:00:00.000Z")
+    const complete = Array.from({ length: 8 }, (_, index) => ({
+      day: new Date(start + index * 86400000).toISOString().slice(0, 10),
+      dailyProfit: (index + 1) * 10,
+      reportedWeeklyProfit: null,
+    }))
+    const rolling = withRollingWeeklyProfit(complete)
+    assert.equal(rolling[5].weeklyProfit, null, "six days cannot form a seven-day total")
+    assert.equal(rolling[6].weeklyProfit, 280, "Nov 6-12 should sum the first seven daily values")
+    assert.equal(rolling[7].weeklyProfit, 350, "Nov 7-13 should roll forward one reporting day")
+    assert.equal(rolling[7].weeklyProfitSource, "reconstructed")
+    const missingDay = withRollingWeeklyProfit(complete.filter((point) => point.day !== "2026-11-09"))
+    assert.equal(missingDay.find((point) => point.day === "2026-11-12")?.weeklyProfit, null,
+      "a missing reporting day must not be silently skipped")
+    const missingProfit = withRollingWeeklyProfit(complete.map((point) =>
+      point.day === "2026-11-09" ? { ...point, dailyProfit: null } : point
+    ))
+    assert.equal(missingProfit.find((point) => point.day === "2026-11-12")?.weeklyProfit, null,
+      "an unknown daily profit must keep the weekly total unknown")
+    const reconciled = withRollingWeeklyProfit(complete.map((point) =>
+      point.day === "2026-11-12" ? { ...point, reportedWeeklyProfit: 300 } : point
+    ))
+    assert.equal(reconciled[6].weeklyProfitReconciliationDelta, 20)
+  })
+
+  await test("global and faction ranking snapshots preserve overall and same-type ranks", () => {
+    const companies = [
+      { companyId: "oil-a", companyName: "Oil A", companyType: "Oil Rig", companyTypeId: 28, starRating: 10, weeklyIncome: 300, dailyIncome: 50, averageDailyIncome: 300 / 7, directorName: "A" },
+      { companyId: "tv-a", companyName: "TV A", companyType: "Television Network", companyTypeId: 5, starRating: 9, weeklyIncome: 250, dailyIncome: 40, averageDailyIncome: 250 / 7, directorName: "B" },
+      { companyId: "oil-b", companyName: "Oil B", companyType: "Oil Rig", companyTypeId: 28, starRating: 10, weeklyIncome: 200, dailyIncome: 30, averageDailyIncome: 200 / 7, directorName: "C" },
+    ]
+    const metadata = { reportingDay: "2026-11-13", sourceFetchedAt: "2026-11-13T18:10:00.000Z", capturedAt: "2026-11-13T18:11:00.000Z", source: "scheduled" }
+    const globalRows = buildGlobalCompanyRankSnapshots(companies, metadata)
+    assert.deepEqual(globalRows.map((row) => [row.companyId, row.globalRank, row.typeRank]), [
+      ["oil-a", 1, 1], ["tv-a", 2, 1], ["oil-b", 3, 2],
+    ])
+    const factionRows = buildFactionCompanyRankSnapshots([
+      { playerId: "101", playerName: "A", factionId: "8317", companyId: "oil-b", isDirector: 1 },
+      { playerId: "102", playerName: "B", factionId: "8317", companyId: "oil-a", isDirector: 1 },
+      { playerId: "103", playerName: "C", factionId: "8317", companyId: "missing-company", isDirector: 1 },
+      { playerId: "104", playerName: "D", factionId: "8317", companyId: "tv-a", isDirector: 0 },
+    ], companies, metadata)
+    assert.deepEqual(factionRows.map((row) => [row.companyId, row.factionRank, row.typeRank]), [
+      ["oil-a", 1, 1], ["oil-b", 2, 2],
+    ])
+    assert.equal(factionRows.every((row) => row.factionId === "8317"), true)
+  })
   await test("administrator password hash generator passes Node syntax validation without running", () => {
     execFileSync(process.execPath, ["--check", join(root, "scripts/generate-admin-password-hash.mjs")], { stdio: "pipe" })
   })
