@@ -480,3 +480,86 @@
 .faction-live-private-bars strong,.faction-live-private-cooldowns strong{display:block;color:#c8e8d6;font-size:8px;font-weight:700}
 .faction-live-private-unavailable{color:#7d9496;font-size:8px}
 @media(max-width:600px){.settings-private-live-meta{flex-direction:column;gap:8px}.settings-private-live-actions{flex-direction:column;align-items:stretch}.faction-live-private-data{min-width:200px}}
+
+/* Keep Account Settings content inside the viewport at every breakpoint. */
+.settings-module,
+.settings-module *,
+.settings-module *::before,
+.settings-module *::after {
+  box-sizing: border-box;
+}
+.settings-module {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: clip;
+}
+.settings-module > *,
+.settings-module .module-topbar,
+.settings-module .module-heading,
+.settings-module .settings-member-card,
+.settings-module .settings-grid,
+.settings-module .settings-feedback,
+.settings-module .module-footer {
+  min-width: 0;
+  max-width: 1140px;
+}
+.settings-module .settings-member-card,
+.settings-module .settings-grid,
+.settings-module .settings-feedback,
+.settings-module .module-footer {
+  width: 100%;
+}
+.settings-module .settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.settings-module .settings-card {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.settings-module .settings-card > *,
+.settings-module .settings-inline-form > *,
+.settings-module .settings-company-row > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.settings-module .settings-inline-form input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.settings-module .settings-company-row {
+  min-width: 0;
+  max-width: 100%;
+}
+.settings-module .settings-company-row > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.settings-module .settings-company-row button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.settings-module .settings-private-live-disclosure {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+}
+.settings-module .settings-private-live-disclosure table {
+  max-width: 100%;
+}
+@media (max-width: 760px) {
+  .settings-module .settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .settings-module .settings-card-wide {
+    grid-column: auto;
+  }
+  .settings-module .settings-company-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+}
