@@ -1,8 +1,12 @@
 export type HalloweenEventMetrics = {
   boosters: number
+  boostersUsed: number
   energyCans: number
+  energyCansUsed: number
   fhcs: number
+  fhcsUsed: number
   greenEggs: number
+  greenEggsUsed: number
   treatExchangeEnergyGained: number
   successfulAttackEnergyUsed: number
   successfulAttacks: number
@@ -15,7 +19,7 @@ export type HalloweenEventMetricLogRow = {
   logJson: string | null
 }
 
-const BOOSTER_ITEM_IDS = new Set(["366", "368"])
+const BOOSTER_ITEM_IDS = new Set(["366", "368", "561", "563"])
 const FHC_ITEM_IDS = new Set(["367"])
 const GREEN_EGG_ITEM_IDS = new Set(["473"])
 const ENERGY_CAN_ITEM_IDS = new Set(["530", "532", "533", "553", "554", "555", "985", "986", "987"])
@@ -24,9 +28,13 @@ const SIX_PACK_ITEM_ID = "818"
 export function emptyHalloweenEventMetrics(): HalloweenEventMetrics {
   return {
     boosters: 0,
+    boostersUsed: 0,
     energyCans: 0,
+    energyCansUsed: 0,
     fhcs: 0,
+    fhcsUsed: 0,
     greenEggs: 0,
+    greenEggsUsed: 0,
     treatExchangeEnergyGained: 0,
     successfulAttackEnergyUsed: 0,
     successfulAttacks: 0,
@@ -95,6 +103,16 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
       addBasketItems(data.items, basketItemTotals)
     }
 
+    if (category.toLowerCase() === "item use" || title.toLowerCase().startsWith("item use ")) {
+      const itemId = data.item === undefined || data.item === null ? "" : String(data.item)
+      const itemTitle = title.toLowerCase()
+      if (BOOSTER_ITEM_IDS.has(itemId) || itemTitle.includes("erotic dvd") || itemTitle.includes("lawyer business card") ||
+        itemTitle.includes("book of carols") || itemTitle.includes("gift card")) metrics.boostersUsed += 1
+      if (ENERGY_CAN_ITEM_IDS.has(itemId)) metrics.energyCansUsed += 1
+      if (FHC_ITEM_IDS.has(itemId) || itemTitle.includes("feathery hotel coupon")) metrics.fhcsUsed += 1
+      if (GREEN_EGG_ITEM_IDS.has(itemId) || itemTitle.includes("green easter egg")) metrics.greenEggsUsed += 1
+    }
+
     if (logTypeId === "2547" || title.toLowerCase() === "halloween basket receive energy") {
       const gained = nonNegativeNumber(data.energy_increased)
       if (gained !== null) metrics.treatExchangeEnergyGained += gained
@@ -129,9 +147,13 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
 export function sumHalloweenEventMetrics(values: readonly HalloweenEventMetrics[]): HalloweenEventMetrics {
   return values.reduce((total, value) => ({
     boosters: total.boosters + value.boosters,
+    boostersUsed: total.boostersUsed + value.boostersUsed,
     energyCans: total.energyCans + value.energyCans,
+    energyCansUsed: total.energyCansUsed + value.energyCansUsed,
     fhcs: total.fhcs + value.fhcs,
+    fhcsUsed: total.fhcsUsed + value.fhcsUsed,
     greenEggs: total.greenEggs + value.greenEggs,
+    greenEggsUsed: total.greenEggsUsed + value.greenEggsUsed,
     treatExchangeEnergyGained: total.treatExchangeEnergyGained + value.treatExchangeEnergyGained,
     successfulAttackEnergyUsed: total.successfulAttackEnergyUsed + value.successfulAttackEnergyUsed,
     successfulAttacks: total.successfulAttacks + value.successfulAttacks,
