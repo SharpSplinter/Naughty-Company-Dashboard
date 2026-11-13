@@ -117,11 +117,10 @@ export function resolveDisplayedDailyProfit(
 
 export function estimateWeeklyProfit(
   weeklyIncome: number | null | undefined,
-  dailyRecurringCosts: number | null | undefined,
-  stockCosts: number | null | undefined,
+  dailyExpenses: number | null | undefined,
 ): number | null {
-  if (![weeklyIncome, dailyRecurringCosts, stockCosts].every((value) => typeof value === "number" && Number.isFinite(value))) return null
-  return (weeklyIncome as number) - (dailyRecurringCosts as number) * 7 - (stockCosts as number)
+  if (![weeklyIncome, dailyExpenses].every((value) => typeof value === "number" && Number.isFinite(value))) return null
+  return (weeklyIncome as number) - (dailyExpenses as number) * 7
 }
 
 export function pretty(value: unknown): string {
