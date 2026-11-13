@@ -191,8 +191,8 @@ export function estimateDailyProfit(dailyIncome, breakdown) {
 }
 
 export function estimateWeeklyProfit(weeklyIncome, breakdown) {
-  return isNumber(weeklyIncome) && isNumber(breakdown?.dailyRecurringCosts) && isNumber(breakdown?.stockCosts)
-    ? weeklyIncome - breakdown.dailyRecurringCosts * 7 - breakdown.stockCosts
+  return isNumber(weeklyIncome) && isNumber(breakdown?.total)
+    ? weeklyIncome - breakdown.total * 7
     : null;
 }
 
@@ -212,8 +212,8 @@ export function resolveDisplayedDailyProfit(historicalProfit, dailyIncome, break
  * then the current cost-based estimate, then the latest saved weekly value.
  */
 export function resolveDisplayedWeeklyProfit(reportedProfit, calculatedProfit, historicalProfit) {
-  if (isNumber(reportedProfit)) return { value: reportedProfit, source: "reported" };
   if (isNumber(calculatedProfit)) return { value: calculatedProfit, source: "calculated" };
+  if (isNumber(reportedProfit)) return { value: reportedProfit, source: "reported" };
   if (isNumber(historicalProfit)) return { value: historicalProfit, source: "historical" };
   return { value: null, source: "unavailable" };
 }
