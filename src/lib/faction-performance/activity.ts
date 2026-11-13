@@ -16,7 +16,8 @@ export function classifyFactionInactivity(
 ): FactionInactivityAssessment {
   const validTimestamp = typeof lastActionTimestampSeconds === "number" &&
     Number.isSafeInteger(lastActionTimestampSeconds) &&
-    lastActionTimestampSeconds > 0
+    lastActionTimestampSeconds > 0 &&
+    lastActionTimestampSeconds <= 8_640_000_000_000
   const lastActionAt = validTimestamp
     ? new Date(lastActionTimestampSeconds * 1000).toISOString()
     : null

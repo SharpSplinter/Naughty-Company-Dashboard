@@ -6212,6 +6212,7 @@ export default {
           }
         }
 
+        const eventScanTruncated = (changeRows.results?.length ?? 0) >= 4000
         const orderedEvents = events.sort((a, b) =>
           Date.parse(b.occurredAt) - Date.parse(a.occurredAt) || a.id.localeCompare(b.id)
         ).slice(0, 500)
@@ -6273,7 +6274,9 @@ export default {
           latestRoster: latest, previousRoster: previous,
           historyRangeDays: rangeDays, samplingIntervalHours, sampledSnapshotCount: runs.length,
           oldestSampledAt: runs[runs.length - 1]?.capturedAt ?? null, historyTruncated,
-          eventCount: orderedEvents.length, totalObservedEventCount: events.length, eventsTruncated: events.length > orderedEvents.length,
+          eventCount: orderedEvents.length, totalObservedEventCount: events.length,
+          eventsTruncated: events.length > orderedEvents.length || eventScanTruncated,
+          eventScanTruncated,
           eventCounts, events: orderedEvents, inactivityCounts, inactivityMembers, memberTrend,
         }, 200, origin, { "cache-control": "private, max-age=30" })
       } catch {

@@ -1269,7 +1269,8 @@ function FactionActivityFeed({ playerName, onNavigate, apiBase, sessionToken }: 
       ? "Waiting for a second completed roster"
       : "Waiting for the first completed roster"
   const typeCount = (type: FactionActivityEvent["eventType"]) => payload?.eventCounts[type] || 0
-  const selectedMember = payload?.inactivityMembers.find(member => member.userId === (selectedMemberId || payload.memberTrend.memberId)) ?? null
+  const activeMemberId = selectedMemberId || payload?.memberTrend.memberId || ""
+  const selectedMember = payload?.inactivityMembers.find(member => member.userId === activeMemberId) ?? null
   const trendPoints = payload?.memberTrend.points.slice(-24) ?? []
   const trendMaximum = Math.max(1, ...trendPoints.map(point => point.elapsedSeconds ?? 0))
 
@@ -1340,7 +1341,7 @@ function FactionActivityFeed({ playerName, onNavigate, apiBase, sessionToken }: 
             </li>)}
           </ol>
         ) : <div className="historical-empty"><strong>{payload?.comparisonStatus === "compared" ? (payload.events.length ? "No changes match this filter." : "No changes observed in this sampled range.") : "Activity comparison is preparing."}</strong><span>{payload?.comparisonStatus === "compared" ? "The feed includes changes visible between sampled completed roster snapshots." : "A second completed roster is required before snapshot-to-snapshot changes can be reported."}</span></div>}
-        {payload?.eventsTruncated && <p className="faction-inactivity-footnote">The timeline reached its 500-event response cap. Narrow the range or filter by member to focus the view.</p>}
+        {payload?.eventsTruncated && <p className="faction-inactivity-footnote">The timeline reached a response or change-scan cap. Narrow the range or filter by member to focus the view.</p>}
       </section>
       <footer className="module-footer"><span>FACTION ACTIVITY TIMELINE</span><span>Signed in as {playerName} · Public roster history only</span></footer>
     </main>
