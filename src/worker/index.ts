@@ -181,7 +181,7 @@ async function verifyFactionMembershipWithKey(apiKey: string): Promise<string> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 10000)
   try {
-    const response = await fetch("https://api.torn.com/v2/user/faction", {
+    const response = await trackedTornFetch("login-faction-membership", "https://api.torn.com/v2/user/faction", {
       headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
       signal: controller.signal,
     })
@@ -189,7 +189,7 @@ async function verifyFactionMembershipWithKey(apiKey: string): Promise<string> {
     const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
     if (!response.ok || error) {
       const code = typeof error?.code === "number" ? error.code : undefined
-      throw Object.assign(new Error(code === 9 ? "Torn rate limit reached while checking faction membership." : "Could not refresh current Naughty Souls membership."), { status: code === 9 ? 429 : 502 })
+      throw Object.assign(new Error(code === 5 ? "Torn rate limit reached while checking faction membership." : code === 9 ? "Torn's API is currently disabled." : "Could not refresh current Naughty Souls membership."), { status: code === 5 || code === 8 || code === 14 ? 429 : code === 9 ? 503 : 502 })
     }
     const faction = isRecord(payload) && isRecord(payload.faction) ? payload.faction : null
     const id = faction?.id ?? (isRecord(payload) ? payload.faction_id : undefined)
@@ -369,13 +369,13 @@ async function validateTornKey(apiKey: string): Promise<{ id: string; name: stri
   const timeout = setTimeout(() => controller.abort(), 10000)
   try {
     const headers = { Authorization: `ApiKey ${apiKey}`, Accept: "application/json" }
-    const profileResponse = await fetch("https://api.torn.com/v2/user/profile", { headers, signal: controller.signal })
+    const profileResponse = await trackedTornFetch("portal-key-profile-validation", "https://api.torn.com/v2/user/profile", { headers, signal: controller.signal })
     const profilePayload: unknown = await profileResponse.json().catch(() => null)
     if (!profileResponse.ok || (isRecord(profilePayload) && isRecord(profilePayload.error))) {
       const error = isRecord(profilePayload) && isRecord(profilePayload.error) ? profilePayload.error : null
       const code = typeof error?.code === "number" ? error.code : undefined
-      const status = code === 2 ? 401 : code === 3 ? 403 : code === 9 ? 429 : profileResponse.status >= 500 ? 502 : 401
-      throw Object.assign(new Error(code === 2 ? "That Torn API key is invalid." : code === 3 ? "This Torn API key does not have profile access." : code === 9 ? "Torn rate limit reached. Try again shortly." : "Could not verify this Torn API key."), { status })
+      const status = code === 2 ? 401 : code === 3 ? 403 : code === 5 || code === 8 || code === 14 ? 429 : code === 9 ? 503 : profileResponse.status >= 500 ? 502 : 401
+      throw Object.assign(new Error(code === 2 ? "That Torn API key is invalid." : code === 3 ? "This Torn API key does not have profile access." : code === 5 || code === 8 || code === 14 ? "Torn rate limit reached. Try again shortly." : code === 9 ? "Torn's API is currently disabled." : "Could not verify this Torn API key."), { status })
     }
     const profile = isRecord(profilePayload) && isRecord(profilePayload.profile) ? profilePayload.profile : null
     const id = profile?.id ?? profile?.player_id
@@ -383,13 +383,13 @@ async function validateTornKey(apiKey: string): Promise<{ id: string; name: stri
     if ((typeof id !== "number" && typeof id !== "string") || !/^\d+$/.test(String(id)) || Number(id) <= 0 || typeof name !== "string" || !name.trim()) throw Object.assign(new Error("Torn returned an unexpected player profile."), { status: 502 })
 
     // Validate faction membership server-side before saving the key or creating a session.
-    const factionResponse = await fetch("https://api.torn.com/v2/user/faction", { headers, signal: controller.signal })
+    const factionResponse = await trackedTornFetch("portal-key-faction-validation", "https://api.torn.com/v2/user/faction", { headers, signal: controller.signal })
     const factionPayload: unknown = await factionResponse.json().catch(() => null)
     if (!factionResponse.ok || (isRecord(factionPayload) && isRecord(factionPayload.error))) {
       const error = isRecord(factionPayload) && isRecord(factionPayload.error) ? factionPayload.error : null
       const code = typeof error?.code === "number" ? error.code : undefined
-      const status = code === 2 ? 401 : code === 3 ? 403 : code === 9 ? 429 : factionResponse.status >= 500 ? 502 : 502
-      throw Object.assign(new Error(code === 3 ? "The API key needs faction access so Naughty Souls membership can be verified. Use a limited-access key that includes faction access." : code === 9 ? "Torn rate limit reached while checking faction membership. Try again shortly." : "We could not verify your Naughty Souls membership with Torn. Please check your key permissions and try again."), { status })
+      const status = code === 2 ? 401 : code === 3 ? 403 : code === 5 || code === 8 || code === 14 ? 429 : code === 9 ? 503 : factionResponse.status >= 500 ? 502 : 502
+      throw Object.assign(new Error(code === 3 ? "The API key needs faction access so Naughty Souls membership can be verified. Use a limited-access key that includes faction access." : code === 5 || code === 8 || code === 14 ? "Torn rate limit reached. Try again shortly." : code === 9 ? "Torn rate limit reached while checking faction membership. Try again shortly." : "We could not verify your Naughty Souls membership with Torn. Please check your key permissions and try again."), { status })
     }
     const faction = isRecord(factionPayload) && isRecord(factionPayload.faction) ? factionPayload.faction : null
     const factionId = faction?.id ?? (isRecord(factionPayload) ? factionPayload.faction_id : undefined)
@@ -464,10 +464,10 @@ async function fetchPrivateLiveSelection(env: WorkerEnv, apiKey: string, selecti
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 10000)
   try {
-    const response = await fetcher("https://api.torn.com/v2/user/" + selection, {
+    const response = await trackedTornFetch("private-live-" + selection, "https://api.torn.com/v2/user/" + selection, {
       headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
       signal: controller.signal,
-    })
+    }, fetcher)
     const payload: unknown = await response.json().catch(() => null)
     const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
     if (!response.ok || error) {
@@ -507,16 +507,16 @@ async function validatePrivateLiveKeyOwner(env: WorkerEnv, apiKey: string, playe
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 10000)
   try {
-    const response = await fetcher("https://api.torn.com/v2/key/info", {
+    const response = await trackedTornFetch("private-live-key-validation", "https://api.torn.com/v2/key/info", {
       headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
       signal: controller.signal,
-    })
+    }, fetcher, playerId)
     const payload: unknown = await response.json().catch(() => null)
     const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
     if (!response.ok || error) {
       const code = typeof error?.code === "number" ? error.code : undefined
-      const status = code === 2 ? 401 : code === 5 ? 429 : response.status >= 500 ? 502 : 400
-      throw new TornApiClientError(code === 5 ? "Torn rate limit reached while validating your private live key." : "Torn could not validate this private live API key.", { status, code })
+      const status = code === 2 ? 401 : code === 5 || code === 8 || code === 14 ? 429 : code === 9 ? 503 : response.status >= 500 ? 502 : 400
+      throw new TornApiClientError(code === 5 || code === 8 || code === 14 ? "Torn rate limit reached while validating your private live key." : code === 9 ? "Torn's API is currently disabled." : "Torn could not validate this private live API key.", { status, code })
     }
     const root = isRecord(payload) && isRecord(payload.info) ? payload.info : null
     const owner = isRecord(root?.user) ? root.user.id : isRecord(payload) && isRecord(payload.user) ? payload.user.id : undefined
@@ -1371,7 +1371,7 @@ function numberField(row: Record<string, string>, ...names: string[]): number | 
 }
 async function fetchGlobalCompanyRankings(apiKey: string): Promise<{ companies: Record<string, unknown>[]; snapshotFetchedAt: string }> {
   const headers = { Authorization: `ApiKey ${apiKey}`, Accept: "application/json" }
-  const typesResponse = await fetch("https://api.torn.com/v2/torn/companies", { headers, signal: AbortSignal.timeout(20000) })
+  const typesResponse = await trackedTornFetch("global-company-type-catalog", "https://api.torn.com/v2/torn/companies", { headers, signal: AbortSignal.timeout(20000) })
   const typesBody = await typesResponse.text()
   if (!typesResponse.ok || typesBody.trimStart().startsWith("{") && (() => { try { const parsed = JSON.parse(typesBody); return isRecord(parsed) && isRecord(parsed.error) } catch { return true } })()) {
     let message = "Torn could not provide the company type catalog."
@@ -1403,7 +1403,7 @@ async function fetchGlobalCompanyRankings(apiKey: string): Promise<{ companies: 
     let expectedTotal: number | null = null
     for (let page = 0; page < 1000; page++) {
       const offset = rows.length
-      const response = await fetch(`https://api.torn.com/v2/company/${type.id}/companies?offset=${offset}&limit=${pageSize}`, { headers, signal: AbortSignal.timeout(20000) })
+      const response = await trackedTornFetch("global-company-ranking-page", `https://api.torn.com/v2/company/${type.id}/companies?offset=${offset}&limit=${pageSize}`, { headers, signal: AbortSignal.timeout(20000) })
       const body = await response.text()
       if (!response.ok) {
         let message = `Torn could not provide companies for ${type.name} (type #${type.id}).`
@@ -1479,7 +1479,7 @@ async function fetchGlobalCompanyRankings(apiKey: string): Promise<{ companies: 
 
 // Verification-only source: never use /company/snapshot to populate the live global ranking cache.
 async function fetchOfficialCompanySnapshot(apiKey: string): Promise<{ companies: Record<string, unknown>[]; snapshotFetchedAt: string }> {
-  const response = await fetch("https://api.torn.com/v2/company/snapshot", {
+  const response = await trackedTornFetch("global-company-snapshot-verification", "https://api.torn.com/v2/company/snapshot", {
     headers: { Authorization: `ApiKey ${apiKey}`, Accept: "text/csv, text/plain, application/json" },
     signal: AbortSignal.timeout(20000),
   })
@@ -1526,7 +1526,7 @@ async function ensureGlobalRankingRefreshSchema(env: WorkerEnv): Promise<void> {
 
 async function fetchGlobalCompanyTypeCatalog(apiKey: string): Promise<GlobalCompanyType[]> {
   // A complete, validated type catalog is required before creating a durable cache-refresh run.
-  const response = await fetch("https://api.torn.com/v2/torn/companies", {
+  const response = await trackedTornFetch("global-company-type-catalog", "https://api.torn.com/v2/torn/companies", {
     headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
     signal: AbortSignal.timeout(12000),
   })
@@ -1746,7 +1746,7 @@ async function processGlobalRankingQueueMessage(env: WorkerEnv, runId: string): 
     const maxPagesPerInvocation = 3
     for (let pageNumber = 0; pageNumber < maxPagesPerInvocation && typeIndex < types.length; pageNumber++) {
       const type = types[typeIndex]
-      const response = await fetch("https://api.torn.com/v2/company/" + type.id + "/companies?offset=" + offset + "&limit=" + pageSize, {
+      const response = await trackedTornFetch("global-company-ranking-page", "https://api.torn.com/v2/company/" + type.id + "/companies?offset=" + offset + "&limit=" + pageSize, {
         headers: { Authorization: "ApiKey " + key, Accept: "application/json" },
         signal: AbortSignal.timeout(8000),
       })
@@ -2080,10 +2080,10 @@ async function runHalloweenLiveSnapshot(env: WorkerEnv, playerId: string, eventY
   let response: Response
   let payload: unknown
   try {
-    response = await fetch("https://api.torn.com/v2/user/halloween", {
+    response = await trackedTornFetch("halloween-live-collection", "https://api.torn.com/v2/user/halloween", {
       headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
       signal: controller.signal,
-    })
+    }, fetch, playerId)
     payload = await response.json().catch(() => null)
   } finally { clearTimeout(timeout) }
   const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
@@ -5235,10 +5235,10 @@ export default {
         let payload: unknown
         let response: Response
         try {
-          response = await fetch("https://api.torn.com/v2/key/info", {
+          response = await trackedTornFetch("scheduled-key-owner-validation", "https://api.torn.com/v2/key/info", {
             headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
             signal: controller.signal,
-          })
+          }, fetch, playerId)
           payload = await response.json().catch(() => null)
         } finally { clearTimeout(timeout) }
         const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
