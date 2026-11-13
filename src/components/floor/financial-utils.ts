@@ -115,12 +115,50 @@ export function resolveDisplayedDailyProfit(
     : null
 }
 
+type WeeklyExpenseHistoryPoint = {
+  day: string
+  advertisingBudget: number | null
+  employeeWages: number | null
+  stockOrderExpense: number | null
+  fetchedAt?: string
+}
+
+/** Calculate weekly profit from the actual expenses saved for seven consecutive reporting days. */
 export function estimateWeeklyProfit(
   weeklyIncome: number | null | undefined,
-  dailyExpenses: number | null | undefined,
+  history: readonly WeeklyExpenseHistoryPoint[] | null | undefined,
 ): number | null {
-  if (![weeklyIncome, dailyExpenses].every((value) => typeof value === "number" && Number.isFinite(value))) return null
-  return (weeklyIncome as number) - (dailyExpenses as number) * 7
+  if (typeof weeklyIncome !== "number" || !Number.isFinite(weeklyIncome) || !Array.isArray(history)) return null
+
+  const pointsByDay = new Map<string, WeeklyExpenseHistoryPoint>()
+  for (const point of history) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(point.day)) continue
+    const timestamp = Date.parse(`${point.day}T00:00:00.000Z`)
+    if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 10) !== point.day) continue
+    const existing = pointsByDay.get(point.day)
+    const currentFetchedAt = Date.parse(point.fetchedAt ?? "")
+    const existingFetchedAt = Date.parse(existing?.fetchedAt ?? "")
+    if (!existing || (Number.isFinite(currentFetchedAt) && (!Number.isFinite(existingFetchedAt) || currentFetchedAt >= existingFetchedAt))) {
+      pointsByDay.set(point.day, point)
+    }
+  }
+
+  const latestSeven = Array.from(pointsByDay.values()).sort((a, b) => a.day.localeCompare(b.day)).slice(-7)
+  if (latestSeven.length !== 7) return null
+
+  for (let index = 1; index < latestSeven.length; index++) {
+    const previous = Date.parse(`${latestSeven[index - 1].day}T00:00:00.000Z`)
+    const current = Date.parse(`${latestSeven[index].day}T00:00:00.000Z`)
+    if (current - previous !== 86400000) return null
+  }
+
+  let totalExpenses = 0
+  for (const point of latestSeven) {
+    const costs = [point.advertisingBudget, point.employeeWages, point.stockOrderExpense]
+    if (!costs.every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0)) return null
+    totalExpenses += costs.reduce((sum, value) => sum + (value as number), 0)
+  }
+  return weeklyIncome - totalExpenses
 }
 
 export function pretty(value: unknown): string {
