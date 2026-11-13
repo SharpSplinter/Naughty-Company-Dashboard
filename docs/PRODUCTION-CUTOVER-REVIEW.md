@@ -1,7 +1,7 @@
 # Production backup, migration, rollback and cutover review
 
 **Original review date:** 2026-11-03  
-**State refresh:** 2026-11-13 (read-only Cloudflare/GitHub verification)  
+**State refresh:** 2026-11-13 (read-only production baseline plus successful portal staging validation)  
 **Scope:** PR #152, branch `portal-rebuild`  
 **Decision:** The separate Naughty Family portal production cutover remains paused. The existing Company Dashboard baseline has since received PR #155 in production; this refresh updates the cutover baseline and does not perform any production mutation.
 
@@ -27,7 +27,7 @@ The stateful acceptance environment is:
 - Worker: `https://naughtyfamily-api-staging.kboone801.workers.dev`
 - D1: `naughtyfamily-acceptance-staging`
 
-The acceptance D1 migration ledger was read and verified through `0024_halloween_custom_key_support.sql` (28 applied migration records, 60 tables). The branch also contains `0025_halloween_attack_metrics.sql`; that migration had not yet been applied to the acceptance D1 at this state refresh. The deployment also passed TypeScript, backend tests, production frontend build, staging D1 migration checks, Worker health/encryption/CORS checks, and Pages bundle verification. The successful staging deployment is [GitHub Actions run #41582829643](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/41582829643). The latest quality-gate run is [#41582751329](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/41582751329).
+The portal staging D1 migration ledger was read after the final PR #152 staging integration: 30 migration records through `0025_halloween_attack_metrics.sql`, with 64 tables. Full quality gates passed on [run #43508964744](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/43508964744), and the complete isolated D1/Queue integration passed on [run #43508964870](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/43508964870). That integration verified private-live consent/owner checks, faction stats missing/unexpected-field metadata, roster/personalstats/gym-energy collection, immutable weekly report creation and comparison, authenticated APIs, admin recovery safeguards, transient-error retries and DLQ behavior. These runs contacted only portal staging D1 and sanitized fixture Workers; no production D1 or Worker was contacted.
 
 ## 2. Verified production baseline
 
@@ -74,7 +74,7 @@ The workflow lists pending migrations, applies them, lists the ledger again, dep
 
 ## 4. Migration review
 
-The acceptance D1 has successfully applied the portal branch migration chain through `0024` (28 migration records; 60 tables). Migration `0025_halloween_attack_metrics.sql` is present on the current branch and still needs its staging integration run. Production has already applied `0012_company_ranking_snapshots.sql`; the portal-specific migration files still pending in production are:
+The portal staging D1 has successfully applied the portal branch migration chain through `0025_halloween_attack_metrics.sql` (30 migration records; 64 tables), with end-to-end staging integration confirmed on run #43508964870. Production has already applied `0012_company_ranking_snapshots.sql`; the portal-specific migration files still pending in production are:
 
 | Migration file | Purpose |
 |---|---|
