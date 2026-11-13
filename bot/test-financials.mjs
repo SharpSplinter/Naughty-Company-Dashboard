@@ -61,7 +61,16 @@ const wages = knownWageSummary({ rosterCount: 30, knownWageCount: 30, totalKnown
 const breakdown = buildCostBreakdown({ advertisingBudget: 5200000, wages: wages.total, stockSummary: stockCosts });
 assert.equal(breakdown.total, 83400000);
 assert.equal(estimateDailyProfit(119465920, breakdown), 36065920);
-assert.equal(estimateWeeklyProfit(850324992, breakdown), 850324992 - breakdown.total * 7, "weekly profit must subtract seven full daily expense totals");
+const weeklyHistory = Array.from({ length: 7 }, (_, index) => ({
+  day: `2026-11-${String(index + 1).padStart(2, "0")}`,
+  advertisingBudget: 100 + index * 10,
+  employeeWages: 300,
+  stockOrderExpense: index * 5,
+})).reverse();
+assert.equal(estimateWeeklyProfit(10000, weeklyHistory), 6885, "weekly profit must subtract the actual expenses saved for each of seven reporting days");
+assert.equal(estimateWeeklyProfit(10000, weeklyHistory.slice(1)), null, "six days are not enough for a weekly calculation");
+assert.equal(estimateWeeklyProfit(10000, weeklyHistory.map((point, index) => index === 3 ? { ...point, employeeWages: null } : point)), null, "unknown costs must not be treated as zero");
+assert.equal(estimateWeeklyProfit(10000, weeklyHistory.map((point, index) => index === 3 ? { ...point, day: "2026-11-10" } : point)), null, "gaps in the reporting days must invalidate the weekly calculation");
 assert.deepEqual(resolveDisplayedDailyProfit(57573280, 119465920, breakdown), {
   value: 36065920,
   source: "calculated"
