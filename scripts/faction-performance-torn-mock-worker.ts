@@ -68,17 +68,22 @@ export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
     if (request.method !== "GET") return json({ error: "Method not allowed." }, 405)
-    const privateLiveRoute = url.pathname === "/v2/key/info" ||
-      url.pathname === "/v2/user/bars" ||
+    const authorization = request.headers.get("Authorization")
+    if (url.pathname === "/v2/key/info") {
+      if (authorization === `ApiKey ${PRIVATE_LIVE_API_KEY}`) {
+        return json({ info: { user: { id: PRIVATE_LIVE_OWNER_ID }, access: { type: "Custom Access" } } })
+      }
+      if (authorization === `ApiKey ${INTEGRATION_API_KEY}`) {
+        return json({ info: { user: { id: 351311 }, access: { type: "Full Access" }, selections: {} } })
+      }
+      return json({ error: { code: 2, error: "Invalid integration fixture key." } }, 401)
+    }
+    const privateLiveRoute = url.pathname === "/v2/user/bars" ||
       url.pathname === "/v2/user/cooldowns" ||
       url.pathname === "/v2/user/networth"
     const expectedKey = privateLiveRoute ? PRIVATE_LIVE_API_KEY : INTEGRATION_API_KEY
-    if (request.headers.get("Authorization") !== `ApiKey ${expectedKey}`) {
+    if (authorization !== `ApiKey ${expectedKey}`) {
       return json({ error: { code: 2, error: "Invalid integration fixture key." } }, 401)
-    }
-
-    if (url.pathname === "/v2/key/info") {
-      return json({ info: { user: { id: PRIVATE_LIVE_OWNER_ID }, access: { type: "Custom Access" } } })
     }
     if (url.pathname === "/v2/user/bars") {
       return json({ bars: {
