@@ -1160,6 +1160,13 @@ async function runFactionPerformanceCollection(env: WorkerEnv, runId: string): P
     "UPDATE faction_performance_collection_runs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running')"
   ).bind(now, now, runId).run()
   const client = createTornApiClient(env, apiKey, "faction-performance-collection")
+  let keyAccessDiagnostic: string | null = null
+  if (run.collectionKind === "personalstats") {
+    const keyInfoPayload = await client.getKeyInfo()
+    const keyInfoRoot = isRecord(keyInfoPayload.info) ? keyInfoPayload.info : keyInfoPayload
+    const access = isRecord(keyInfoRoot.access) ? keyInfoRoot.access : null
+    keyAccessDiagnostic = JSON.stringify(access ?? { available: false, returnedKeys: Object.keys(keyInfoRoot) })
+  }
 
   if (run.collectionKind === "roster") {
     await runFactionRosterCollection(env, run, client)
@@ -1169,6 +1176,17 @@ async function runFactionPerformanceCollection(env: WorkerEnv, runId: string): P
     await runFactionGymEnergyCollection(env, run, client)
   } else {
     throw new Error("Unknown faction performance collection kind.")
+  }
+
+  if (keyAccessDiagnostic !== null) {
+    const latest = await db.prepare(
+      "SELECT last_error AS lastError FROM faction_performance_collection_runs WHERE run_id = ?"
+    ).bind(runId).first<{ lastError: string | null }>()
+    const diagnostic = `Torn /key/info access: ${keyAccessDiagnostic}`
+    const combined = latest?.lastError ? `${diagnostic}; collection: ${latest.lastError}` : diagnostic
+    await db.prepare(
+      "UPDATE faction_performance_collection_runs SET last_error = ?, updated_at = ? WHERE run_id = ?"
+    ).bind(combined, new Date().toISOString(), runId).run()
   }
 }
 async function saveCompanyKey(env: WorkerEnv, playerId: string, apiKey: string): Promise<void> {
