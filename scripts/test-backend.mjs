@@ -1313,7 +1313,7 @@ try {
     assert.ok(workerSource.includes("administrator.revoked"))
     assert.doesNotMatch(workerSource, /ADMIN_PASSWORD_HASH|ADMIN_USERNAME|isAdminElevated|admin_elevated_until/)
     assert.doesNotMatch(floorAppSource, /Unlock administration|adminPassword|adminUsername/)
-    assert.match(adminRoutes, /ensureAdminJobPayloadSchema\(env\)/)
+    assert.match(adminRoutes, /ensureAdminRequestSchema\(env\)/)
     assert.match(adminRoutes, /"endpoint-refresh"/)
     assert.match(adminRoutes, /rawIds\.length > 100/, "selected-user jobs must be bounded")
     assert.match(adminRoutes, /manualRefreshEnabled/, "global manual-refresh policy must be enforced")
