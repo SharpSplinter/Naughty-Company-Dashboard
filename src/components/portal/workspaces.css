@@ -563,3 +563,46 @@
     flex-wrap: wrap;
   }
 }
+
+/* Keep private-live consent controls compact and their copy anchored beside them.
+   The general settings form input rule intentionally makes text fields full-width,
+   but must not stretch native checkboxes across the label. */
+.settings-module .settings-inline-form .settings-private-live-check {
+  display: grid !important;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  justify-content: start;
+  gap: 9px !important;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  text-align: left !important;
+}
+
+.settings-module .settings-inline-form .settings-private-live-check > input[type="checkbox"] {
+  appearance: auto;
+  display: block;
+  grid-column: 1;
+  width: 16px !important;
+  min-width: 16px;
+  max-width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  justify-self: start;
+  accent-color: #70b89d;
+}
+
+.settings-module .settings-inline-form .settings-private-live-check > span {
+  display: block;
+  grid-column: 2;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  text-align: left !important;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
