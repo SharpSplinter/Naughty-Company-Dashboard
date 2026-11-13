@@ -175,6 +175,22 @@ try {
   assert.equal(await adminPage.getByRole("button", { name: "Queue selected endpoint refresh ↻", exact: true }).isDisabled(), true, "Refresh jobs must remain disabled in read-only mode.");
   await adminPage.screenshot({ path: "test-results/admin-acceptance/admin-operations-readonly.png", fullPage: true });
 
+  // The Company Dashboard must not expose a second Administration entry or a duplicate Member Activity page.
+  await adminPage.goto(pagesUrl, { waitUntil: "networkidle", timeout: 30000 });
+  const companyCard = adminPage.getByRole("button", { name: /Company Dashboard/ });
+  await companyCard.waitFor({ state: "visible", timeout: 15000 });
+  await companyCard.click();
+  await adminPage.locator(".company-module").waitFor({ state: "visible", timeout: 15000 });
+  assert.equal(await adminPage.locator(".admin-nav-group").count(), 0, "Company Dashboard must not contain an Administration sidebar entry.");
+  const companyCategories = adminPage.getByRole("navigation", { name: "Company dashboard categories" });
+  await companyCategories.getByRole("button", { name: "Insights", exact: true }).click();
+  const companyInsights = adminPage.getByRole("navigation", { name: "Insights pages" });
+  await companyInsights.waitFor({ state: "visible", timeout: 10000 });
+  assert.equal(await companyInsights.getByRole("button", { name: "Member Activity", exact: true }).count(), 0, "Insights must not expose the duplicate Member Activity destination.");
+  await companyInsights.getByRole("button", { name: "Member Directory", exact: true }).waitFor({ state: "visible", timeout: 10000 });
+  console.log("PASS Company Dashboard navigation: no Administration sidebar link; Insights contains Member Directory and no Member Activity.");
+
+
   const counts = {};
   for (const item of browserRequests) counts[item.path] = (counts[item.path] || 0) + 1;
   const nonGetRequests = browserRequests.filter(item => item.method !== "GET");
