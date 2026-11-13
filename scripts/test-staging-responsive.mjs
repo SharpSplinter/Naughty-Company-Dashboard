@@ -29,7 +29,9 @@ try {
 
   // Exercise navigation, not just a static screenshot of the landing panel.
   await primaryNav.getByRole("button", { name: "Insights", exact: true }).click();
-  await companyNav.getByRole("button", { name: "Historical Trends", exact: true }).click();
+  const insightsNav = page.getByRole("navigation", { name: "Insights pages" });
+  await insightsNav.waitFor({ state: "visible" });
+  await insightsNav.getByRole("button", { name: "Historical Trends", exact: true }).click();
   await page.getByText("History window", { exact: false }).waitFor({ state: "visible" });
 
   const viewports = [
@@ -80,7 +82,9 @@ try {
   // Confirm a narrow screen can switch to another top-level area without losing the current Company shell.
   await page.setViewportSize({ width: 390, height: 844 });
   await primaryNav.getByRole("button", { name: "Rankings", exact: true }).click();
-  await companyNav.getByRole("button", { name: "Faction Rankings", exact: true }).click();
+  const rankingsNav = page.getByRole("navigation", { name: "Rankings pages" });
+  await rankingsNav.waitFor({ state: "visible" });
+  await rankingsNav.getByRole("button", { name: "Faction Rankings", exact: true }).click();
   await page.locator(".company-module").waitFor({ state: "visible" });
   assert.equal(await page.locator(".sidebar").evaluate(element => getComputedStyle(element).display), "none");
   if (failures.length) throw new Error(failures.join("\\n"));
