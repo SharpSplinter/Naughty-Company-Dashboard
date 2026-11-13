@@ -156,7 +156,7 @@ export function estimateWeeklyProfit(
   for (const point of latestSeven) {
     const costs = [point.advertisingBudget, point.employeeWages, point.stockOrderExpense]
     if (!costs.every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0)) return null
-    totalExpenses += costs.reduce((sum, value) => sum + (value as number), 0)
+    totalExpenses += (point.advertisingBudget as number) + (point.employeeWages as number) + (point.stockOrderExpense as number)
   }
   return weeklyIncome - totalExpenses
 }
