@@ -70,7 +70,7 @@ try {
   } = require(join(temp, "lib/faction-performance/weekly.js"))
   const { filterAndSortWeeklyMembers } = require(join(temp, "lib/faction-performance/leaderboard.js"))
   const { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } = require(join(temp, "lib/faction-performance/private-live.js"))
-  const { calculateHalloweenEventMetrics, emptyHalloweenEventMetrics, sumHalloweenEventMetrics } = require(join(temp, "lib/halloween/metrics.js"))
+  const { calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, emptyHalloweenEventMetrics, sumHalloweenEventMetrics } = require(join(temp, "lib/halloween/metrics.js"))
   const {
     buildPersonalStatsPath,
     categoriesForMissingPersonalStats,
@@ -205,7 +205,7 @@ try {
         logTypeId: 2535,
         title: "Item use halloween basket",
         category: "Halloween basket",
-        logJson: JSON.stringify({ data: { items: { "366": 2, "367": 3, "368": 1, "473": 2, "530": 4, "561": 1, "563": 1, "987": 1, "818": 2 } } }),
+        logJson: JSON.stringify({ data: { items: { "366": 2, "367": 3, "368": 1, "473": 2, "530": 4, "561": 1, "563": 1, "817": 3, "818": 2, "987": 1 } } }),
       },
       {
         logTypeId: 2190,
@@ -238,6 +238,18 @@ try {
         logJson: JSON.stringify({ data: { item: 561 } }),
       },
       {
+        logTypeId: 2040,
+        title: "Item use six pack of energy drink",
+        category: "Item use",
+        logJson: JSON.stringify({ data: { item: 818 } }),
+      },
+      {
+        logTypeId: 2041,
+        title: "Item use six pack of alcohol",
+        category: "Item use",
+        logJson: JSON.stringify({ data: { item: 817 } }),
+      },
+      {
         logTypeId: 2547,
         title: "Halloween basket receive energy",
         category: "Halloween basket",
@@ -265,8 +277,12 @@ try {
     assert.deepEqual(metrics, {
       boosters: 3,
       boostersUsed: 1,
-      energyCans: 17,
-      energyCansUsed: 1,
+      energyCans: 11,
+      energyCansUsed: 7,
+      energyDrinkSixPacks: 2,
+      energyDrinkSixPacksUsed: 1,
+      alcoholSixPacks: 3,
+      alcoholSixPacksUsed: 1,
       fhcs: 3,
       fhcsUsed: 1,
       greenEggs: 2,
@@ -276,6 +292,44 @@ try {
       successfulAttacks: 2,
     })
     assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
+  })
+
+  await test("Halloween Revitalize proc parsing counts only the member's actual finishing-hit procs in their event window", () => {
+    const summary = calculateHalloweenRevitalizeMetrics([
+      {
+        attacker: { id: 101 },
+        ended: 1500,
+        is_interrupted: false,
+        finishing_hit_effects: [{ name: "revitalize", value: 14 }],
+      },
+      {
+        attacker: { id: "101" },
+        ended: 1600,
+        is_interrupted: false,
+        finishing_hit_effects: [],
+      },
+      {
+        attacker: { id: 202 },
+        ended: 1700,
+        finishing_hit_effects: [{ name: "revitalize", value: 14 }],
+      },
+      {
+        attacker: { id: 101 },
+        ended: 1800,
+        is_interrupted: true,
+        finishing_hit_effects: [{ name: "revitalize", value: 14 }],
+      },
+      {
+        attacker: { id: 101 },
+        ended: 2500,
+        finishing_hit_effects: [{ name: "revitalize", value: 20 }],
+      },
+    ], "101", 1000, 2000)
+    assert.deepEqual(summary, {
+      revitalizeProcs: 1,
+      revitalizeAttacksReviewed: 2,
+      revitalizeChanceCounts: { "14": 1 },
+    })
   })
 
   await test("weekly windows start Sunday 00:00 UTC and remain exactly 168 hours across DST changes", () => {
