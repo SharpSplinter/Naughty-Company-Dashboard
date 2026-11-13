@@ -732,17 +732,17 @@ async function replyFor(i, env) {
           wages: wageInfo.available ? wageInfo.total : null,
           stockSummary: stockOrderSummary
         });
-        const estimatedWeekly = estimateWeeklyProfit(weeklyIncome, costBreakdown);
+        const estimatedWeekly = estimateWeeklyProfit(weeklyIncome, history);
         const monthToDate = summarizeMonthToDate(history);
         const latestHistory = history.at(-1) || {};
         const displayedDailyProfit = resolveDisplayedDailyProfit(latestHistory.dailyProfit, dailyIncome, costBreakdown);
         const displayedWeeklyProfit = resolveDisplayedWeeklyProfit(weeklyProfit, estimatedWeekly, latestHistory.weeklyProfit);
-        const formatDisplayedProfit = choice => choice.value === null
+        const formatDisplayedProfit = (choice, calculatedLabel) => choice.value === null
           ? "Not available"
-          : moneyValue(choice.value) + (choice.source === "calculated" ? " (calculated from listed costs)" :
+          : moneyValue(choice.value) + (choice.source === "calculated" ? " (calculated from " + calculatedLabel + ")" :
             choice.source === "reported" ? " (reported)" : " (historical fallback)");
-        const dailyProfitText = formatDisplayedProfit(displayedDailyProfit);
-        const weeklyProfitText = formatDisplayedProfit(displayedWeeklyProfit);
+        const dailyProfitText = formatDisplayedProfit(displayedDailyProfit, "listed costs");
+        const weeklyProfitText = formatDisplayedProfit(displayedWeeklyProfit, "seven days of saved expenses");
         const reportedCostLines = Object.entries(expenses).filter(([key, value]) => /cost|wage|advert|expense/i.test(key) && typeof value === "number" && Number.isFinite(value))
           .slice(0, 6).map(([key, value]) => safeText(key, 50) + ": " + moneyValue(value));
         return privateReply("**Company profit | " + companyName + "**\nDaily income: " + moneyValue(dailyIncome) +
@@ -836,16 +836,16 @@ async function replyFor(i, env) {
         wageInfo = knownWageSummary(wagesData.summary);
       }
       const costBreakdown = buildCostBreakdown({ advertisingBudget, wages: wageInfo.available ? wageInfo.total : null, stockSummary: stockOrderSummary });
-      const estimatedWeekly = estimateWeeklyProfit(weeklyIncome, costBreakdown);
+      const estimatedWeekly = estimateWeeklyProfit(weeklyIncome, stockHistory);
       const latestHistory = stockHistory.at(-1) || {};
       const displayedDailyProfit = resolveDisplayedDailyProfit(latestHistory.dailyProfit, dailyIncome, costBreakdown);
       const displayedWeeklyProfit = resolveDisplayedWeeklyProfit(reportedWeeklyProfit, estimatedWeekly, latestHistory.weeklyProfit);
-      const formatOverviewProfit = choice => choice.value === null
+      const formatOverviewProfit = (choice, calculatedLabel) => choice.value === null
         ? "Not available"
-        : money(choice.value) + (choice.source === "calculated" ? " (calculated from listed costs)" :
+        : money(choice.value) + (choice.source === "calculated" ? " (calculated from " + calculatedLabel + ")" :
           choice.source === "reported" ? " (reported)" : " (historical fallback)");
-      const dailyProfit = formatOverviewProfit(displayedDailyProfit);
-      const weeklyProfit = formatOverviewProfit(displayedWeeklyProfit);
+      const dailyProfit = formatOverviewProfit(displayedDailyProfit, "listed costs");
+      const weeklyProfit = formatOverviewProfit(displayedWeeklyProfit, "seven days of saved expenses");
       const safeName = String(data.companyName || company.company_name || "Your company").replace(/@/g, "@\u200b").slice(0, 90);
       const findMetric = (source, keys, depth = 0) => {
         if (!source || typeof source !== "object" || depth > 5) return undefined;
