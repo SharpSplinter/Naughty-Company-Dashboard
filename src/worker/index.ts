@@ -21,6 +21,7 @@ import {
   type WeeklySnapshot,
 } from "../lib/faction-performance/weekly"
 import { PERSONAL_STATS_HISTORICAL_NAMES } from "../lib/torn/personalstats"
+import { classifyFactionInactivity } from "../lib/faction-performance/activity"
 import { calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, emptyHalloweenEventMetrics, sumHalloweenEventMetrics, type HalloweenAttackMetric, type HalloweenEventMetrics } from "../lib/halloween/metrics"
 import { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } from "../lib/faction-performance/private-live"
 import { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } from "./snapshot-provenance"
@@ -6034,87 +6035,114 @@ export default {
       try {
         type RosterRun = { runId: string; capturedAt: string; scheduledAt: string; memberCount: number }
         type ActivityRosterRow = {
-          userId: string
-          name: string | null
-          position: string | null
-          level: number | null
-          lastActionStatus: string | null
-          statusDescription: string | null
-          statusDetails: string | null
-          statusState: string | null
-          statusUntil: string | null
-          reviveSetting: string | null
-          isOnWall: number | null
-          isInOc: number | null
-          hasEarlyDischarge: number | null
+          userId: string; name: string | null; position: string | null; level: number | null
+          lastActionStatus: string | null; lastActionTimestamp: number | null
+          statusDescription: string | null; statusDetails: string | null; statusState: string | null
+          statusUntil: string | null; reviveSetting: string | null
+          isOnWall: number | null; isInOc: number | null; hasEarlyDischarge: number | null
         }
-        type MembershipChange = {
-          userId: string
-          memberName: string | null
-          firstSeenAt: string
-          leftObservedAt: string | null
+        type ActivityChangeRow = ActivityRosterRow & {
+          capturedAt: string; previousCapturedAt: string | null; previousName: string | null
+          previousPosition: string | null; previousLastActionStatus: string | null
+          previousStatusDescription: string | null; previousStatusDetails: string | null
+          previousStatusState: string | null; previousStatusUntil: string | null
+          previousReviveSetting: string | null; previousIsOnWall: number | null
+          previousIsInOc: number | null; previousHasEarlyDischarge: number | null
         }
+        type MembershipChange = { userId: string; memberName: string | null; firstSeenAt: string; leftObservedAt: string | null }
         type ActivityEvent = {
-          id: string
-          eventType: string
-          occurredAt: string
-          userId: string
-          memberName: string
-          detail: string
-          previousValue: string | null
-          currentValue: string | null
+          id: string; eventType: string; occurredAt: string; userId: string; memberName: string
+          detail: string; previousValue: string | null; currentValue: string | null
         }
 
-        const rosterRuns = await db.prepare(
-          "SELECT s.run_id AS runId, s.captured_at AS capturedAt, s.scheduled_at AS scheduledAt, s.member_count AS memberCount FROM faction_roster_snapshots s JOIN faction_performance_collection_runs c ON c.run_id = s.run_id AND c.status = 'completed' WHERE s.faction_id = ? ORDER BY s.captured_at DESC, s.run_id DESC LIMIT 2"
-        ).bind(NAUGHTY_SOULS_FACTION_ID).all<RosterRun>()
-        const runs = rosterRuns.results ?? []
+        const requestedDays = Number(url.searchParams.get("days") || "30")
+        const rangeDays: 7 | 30 | 90 = requestedDays === 7 ? 7 : requestedDays === 90 ? 90 : 30
+        const samplingIntervalSeconds = rangeDays === 7 ? 3600 : rangeDays === 30 ? 4 * 3600 : 24 * 3600
+        const generatedAt = new Date().toISOString()
+        const rangeStartAt = new Date(Date.now() - rangeDays * DAY * 1000).toISOString()
+        const sampledRunRows = await db.prepare(
+          "SELECT runId, capturedAt, scheduledAt, memberCount FROM (SELECT s.run_id AS runId, s.captured_at AS capturedAt, s.scheduled_at AS scheduledAt, s.member_count AS memberCount, ROW_NUMBER() OVER (PARTITION BY CAST(strftime('%s', s.captured_at) AS INTEGER) / ? ORDER BY s.captured_at DESC, s.run_id DESC) AS sampleRank FROM faction_roster_snapshots s JOIN faction_performance_collection_runs c ON c.run_id = s.run_id AND c.status = 'completed' WHERE s.faction_id = ? AND s.captured_at >= ?) WHERE sampleRank = 1 ORDER BY capturedAt DESC, runId DESC LIMIT 181"
+        ).bind(samplingIntervalSeconds, NAUGHTY_SOULS_FACTION_ID, rangeStartAt).all<RosterRun>()
+        const allSampledRuns = sampledRunRows.results ?? []
+        const historyTruncated = allSampledRuns.length > 180
+        const runs = allSampledRuns.slice(0, 180)
         const latest = runs[0] ?? null
         const previous = runs[1] ?? null
+        const samplingIntervalHours = samplingIntervalSeconds / 3600
         if (!latest) {
           return jsonResponse({
-            factionId: NAUGHTY_SOULS_FACTION_ID,
-            generatedAt: new Date().toISOString(),
-            comparisonStatus: "waiting_for_roster",
-            latestCapturedAt: null,
-            previousCapturedAt: null,
-            events: [],
-            eventCount: 0,
+            factionId: NAUGHTY_SOULS_FACTION_ID, generatedAt, comparisonStatus: "waiting_for_roster",
+            latestRoster: null, previousRoster: null, historyRangeDays: rangeDays,
+            samplingIntervalHours, sampledSnapshotCount: 0, oldestSampledAt: null, historyTruncated: false,
+            eventCount: 0, totalObservedEventCount: 0, eventsTruncated: false, eventCounts: {}, events: [],
+            inactivityCounts: { normal: 0, inactive_24h: 0, inactive_72h: 0, unknown: 0 },
+            inactivityMembers: [],
+            memberTrend: { memberId: null, memberName: null, sampleCount: 0, knownSampleCount: 0, points: [] },
           }, 200, origin, { "cache-control": "private, max-age=30" })
         }
 
-        const [latestRows, previousRows, intervalRows] = await Promise.all([
+        const latestRowsResult = await db.prepare(
+          "SELECT user_id AS userId, name, position, level, last_action_status AS lastActionStatus, last_action_timestamp AS lastActionTimestamp, status_description AS statusDescription, status_details AS statusDetails, status_state AS statusState, status_until AS statusUntil, revive_setting AS reviveSetting, is_on_wall AS isOnWall, is_in_oc AS isInOc, has_early_discharge AS hasEarlyDischarge FROM faction_member_roster_snapshots WHERE run_id = ? ORDER BY name COLLATE NOCASE, user_id"
+        ).bind(latest.runId).all<ActivityRosterRow>()
+        const latestRows = latestRowsResult.results ?? []
+
+        const sampledRunsCte = [
+          "WITH bucketed_runs AS (",
+          " SELECT s.run_id AS runId, s.captured_at AS capturedAt, s.scheduled_at AS scheduledAt, s.member_count AS memberCount,",
+          "        ROW_NUMBER() OVER (PARTITION BY CAST(strftime('%s', s.captured_at) AS INTEGER) / ? ORDER BY s.captured_at DESC, s.run_id DESC) AS sampleRank",
+          " FROM faction_roster_snapshots s",
+          " JOIN faction_performance_collection_runs c ON c.run_id = s.run_id AND c.status = 'completed'",
+          " WHERE s.faction_id = ? AND s.captured_at >= ?",
+          "), selected_runs AS (",
+          " SELECT runId, capturedAt, scheduledAt, memberCount FROM bucketed_runs",
+          " WHERE sampleRank = 1 ORDER BY capturedAt DESC, runId DESC LIMIT 180",
+          ")",
+        ].join("\n")
+        const changeColumns = [
+          "m.user_id AS userId", "m.name AS name", "m.position AS position", "m.level AS level",
+          "m.last_action_status AS lastActionStatus", "m.last_action_timestamp AS lastActionTimestamp",
+          "m.status_description AS statusDescription", "m.status_details AS statusDetails",
+          "m.status_state AS statusState", "m.status_until AS statusUntil", "m.revive_setting AS reviveSetting",
+          "m.is_on_wall AS isOnWall", "m.is_in_oc AS isInOc", "m.has_early_discharge AS hasEarlyDischarge",
+          "r.capturedAt AS capturedAt",
+          "LAG(r.capturedAt) OVER (PARTITION BY m.user_id ORDER BY r.capturedAt ASC, m.run_id ASC) AS previousCapturedAt",
+          "LAG(m.name) OVER (PARTITION BY m.user_id ORDER BY r.capturedAt ASC, m.run_id ASC) AS previousName",
+          "LAG(m.position) OVER (PARTITION BY m.user_id ORDER BY r.capturedAt ASC, m.run_id ASC) AS previousPosition",
+          "LAG(m.last_action_status) OVER (PARTITION BY m.user_id ORDER BY r.capturedAt ASC, m.run_id ASC) AS previousLastActionStatus",
+          "LAG(m.status_description) OVER (PARTITION BY m.user_id ORDER BY r.capturedAt ASC, m.run_id ASC) AS previousStatusDescription",
+          "LAG(m.status_details) OVER (PARTITION BY m.user_id ORDER BY r.capturedAt ASC, m.run_id ASC) AS previousStatusDetails",
+          "LAG(m.status_state) OVER (PARTITION BY m.user_id ORDER BY r.capturedAt ASC, m.run_id ASC) AS previousStatusState",
+          "LAG(m.status_until) OVER (PARTITION BY m.user_id ORDER BY r.capturedAt ASC, m.run_id ASC) AS previousStatusUntil",
+          "LAG(m.revive_setting) OVER (PARTITION BY m.user_id ORDER BY r.capturedAt ASC, m.run_id ASC) AS previousReviveSetting",
+          "LAG(m.is_on_wall) OVER (PARTITION BY m.user_id ORDER BY r.capturedAt ASC, m.run_id ASC) AS previousIsOnWall",
+          "LAG(m.is_in_oc) OVER (PARTITION BY m.user_id ORDER BY r.capturedAt ASC, m.run_id ASC) AS previousIsInOc",
+          "LAG(m.has_early_discharge) OVER (PARTITION BY m.user_id ORDER BY r.capturedAt ASC, m.run_id ASC) AS previousHasEarlyDischarge",
+        ]
+        const changeSql = sampledRunsCte +
+          ", history AS (SELECT " + changeColumns.join(", ") +
+          " FROM faction_member_roster_snapshots m JOIN selected_runs r ON r.runId = m.run_id)" +
+          " SELECT * FROM history WHERE previousCapturedAt IS NOT NULL AND (" +
+          " lastActionStatus IS NOT previousLastActionStatus OR statusDescription IS NOT previousStatusDescription OR" +
+          " statusDetails IS NOT previousStatusDetails OR statusState IS NOT previousStatusState OR statusUntil IS NOT previousStatusUntil OR" +
+          " reviveSetting IS NOT previousReviveSetting OR isOnWall IS NOT previousIsOnWall OR isInOc IS NOT previousIsInOc OR" +
+          " hasEarlyDischarge IS NOT previousHasEarlyDischarge OR position IS NOT previousPosition)" +
+          " ORDER BY capturedAt DESC, userId LIMIT 4000"
+        const [changeRows, intervalRows] = await Promise.all([
+          db.prepare(changeSql).bind(samplingIntervalSeconds, NAUGHTY_SOULS_FACTION_ID, rangeStartAt).all<ActivityChangeRow>(),
           db.prepare(
-            "SELECT user_id AS userId, name, position, level, last_action_status AS lastActionStatus, status_description AS statusDescription, status_details AS statusDetails, status_state AS statusState, status_until AS statusUntil, revive_setting AS reviveSetting, is_on_wall AS isOnWall, is_in_oc AS isInOc, has_early_discharge AS hasEarlyDischarge FROM faction_member_roster_snapshots WHERE run_id = ? ORDER BY name COLLATE NOCASE, user_id"
-          ).bind(latest.runId).all<ActivityRosterRow>(),
-          previous ? db.prepare(
-            "SELECT user_id AS userId, name, position, level, last_action_status AS lastActionStatus, status_description AS statusDescription, status_details AS statusDetails, status_state AS statusState, status_until AS statusUntil, revive_setting AS reviveSetting, is_on_wall AS isOnWall, is_in_oc AS isInOc, has_early_discharge AS hasEarlyDischarge FROM faction_member_roster_snapshots WHERE run_id = ? ORDER BY name COLLATE NOCASE, user_id"
-          ).bind(previous.runId).all<ActivityRosterRow>() : Promise.resolve({ results: [] as ActivityRosterRow[] }),
-          previous ? db.prepare(
             "SELECT user_id AS userId, member_name AS memberName, first_seen_at AS firstSeenAt, left_observed_at AS leftObservedAt FROM faction_membership_intervals WHERE faction_id = ? AND ((first_seen_at > ? AND first_seen_at <= ?) OR (left_observed_at > ? AND left_observed_at <= ?)) ORDER BY COALESCE(left_observed_at, first_seen_at) DESC, user_id"
-          ).bind(NAUGHTY_SOULS_FACTION_ID, previous.capturedAt, latest.capturedAt, previous.capturedAt, latest.capturedAt).all<MembershipChange>() : Promise.resolve({ results: [] as MembershipChange[] }),
+          ).bind(NAUGHTY_SOULS_FACTION_ID, rangeStartAt, latest.capturedAt, rangeStartAt, latest.capturedAt).all<MembershipChange>(),
         ])
 
         const events: ActivityEvent[] = []
         const pushEvent = (
-          eventType: string,
-          occurredAt: string,
-          userId: string,
-          memberName: string | null,
-          detail: string,
-          previousValue: string | null = null,
-          currentValue: string | null = null,
+          eventType: string, occurredAt: string, userId: string, memberName: string | null, detail: string,
+          previousValue: string | null = null, currentValue: string | null = null,
         ) => {
           if (!occurredAt) return
           events.push({
-            id: [eventType, userId, occurredAt].join(":"),
-            eventType,
-            occurredAt,
-            userId,
-            memberName: memberName || "Unknown member",
-            detail,
-            previousValue,
-            currentValue,
+            id: [eventType, userId, occurredAt].join(":"), eventType, occurredAt, userId,
+            memberName: memberName || "Unknown member", detail, previousValue, currentValue,
           })
         }
         const normalizeBoolean = (value: unknown): string => value === 1 || value === true || value === "1"
@@ -6125,84 +6153,128 @@ export default {
         const displayValue = (value: unknown): string => value == null || String(value).trim() === ""
           ? "Unknown"
           : String(value)
-        const newByUser = new Map((latestRows.results ?? []).map(row => [String(row.userId), row]))
-        const oldByUser = new Map((previousRows.results ?? []).map(row => [String(row.userId), row]))
-
         for (const interval of intervalRows.results ?? []) {
-          if (interval.firstSeenAt > previous!.capturedAt && interval.firstSeenAt <= latest.capturedAt) {
+          if (interval.firstSeenAt > rangeStartAt && interval.firstSeenAt <= latest.capturedAt) {
             pushEvent("member_added", interval.firstSeenAt, String(interval.userId), interval.memberName,
               "First observed in a completed faction roster.")
           }
-          if (interval.leftObservedAt && interval.leftObservedAt > previous!.capturedAt && interval.leftObservedAt <= latest.capturedAt) {
+          if (interval.leftObservedAt && interval.leftObservedAt > rangeStartAt && interval.leftObservedAt <= latest.capturedAt) {
             pushEvent("member_removed", interval.leftObservedAt, String(interval.userId), interval.memberName,
               "Departure observed by the faction roster collector.")
           }
         }
-
-        if (previous) {
-          for (const [userId, current] of newByUser) {
-            const old = oldByUser.get(userId)
-            if (!old) continue
-            const memberName = current.name || old.name
-            const oldActivity = displayValue(old.lastActionStatus)
-            const newActivity = displayValue(current.lastActionStatus)
-            if (oldActivity !== newActivity) {
-              pushEvent("activity_changed", latest.capturedAt, userId, memberName,
-                "Public last-action state changed.", oldActivity, newActivity)
+        for (const current of changeRows.results ?? []) {
+          const userId = String(current.userId)
+          const memberName = current.name || current.previousName
+          const occurredAt = String(current.capturedAt)
+          const oldActivity = displayValue(current.previousLastActionStatus)
+          const newActivity = displayValue(current.lastActionStatus)
+          if (oldActivity !== newActivity) {
+            pushEvent("activity_changed", occurredAt, userId, memberName,
+              "Public last-action state changed between sampled completed rosters.", oldActivity, newActivity)
+          }
+          const statusSummary = (row: { statusDescription: string | null; statusState: string | null; statusDetails: string | null }) =>
+            [row.statusDescription, row.statusState, row.statusDetails].map(value => value?.trim() || "").filter(Boolean).join(" · ") || "Unknown"
+          const oldStatus = statusSummary({
+            statusDescription: current.previousStatusDescription,
+            statusState: current.previousStatusState,
+            statusDetails: current.previousStatusDetails,
+          })
+          const newStatus = statusSummary(current)
+          if (oldStatus !== newStatus || displayValue(current.previousStatusUntil) !== displayValue(current.statusUntil)) {
+            const oldTimer = displayValue(current.previousStatusUntil)
+            const newTimer = displayValue(current.statusUntil)
+            const oldLabel = oldTimer === "Unknown" ? oldStatus : oldStatus + " · " + oldTimer
+            const newLabel = newTimer === "Unknown" ? newStatus : newStatus + " · " + newTimer
+            pushEvent("status_changed", occurredAt, userId, memberName,
+              "Public member status or timer changed between sampled completed rosters.", oldLabel, newLabel)
+          }
+          const flagChanges: Array<[string, string, unknown, unknown]> = [
+            ["wall_changed", "Wall status", current.previousIsOnWall, current.isOnWall],
+            ["oc_changed", "Organized crime status", current.previousIsInOc, current.isInOc],
+            ["early_discharge_changed", "Early-discharge status", current.previousHasEarlyDischarge, current.hasEarlyDischarge],
+          ]
+          for (const [eventType, label, from, to] of flagChanges) {
+            if (normalizeBoolean(from) !== normalizeBoolean(to)) {
+              pushEvent(eventType, occurredAt, userId, memberName, label + " changed.", normalizeBoolean(from), normalizeBoolean(to))
             }
-            const statusSummary = (row: ActivityRosterRow) =>
-              [row.statusDescription, row.statusState, row.statusDetails]
-                .map(value => value?.trim() || "")
-                .filter(Boolean)
-                .join(" · ") || "Unknown"
-            const oldStatus = statusSummary(old)
-            const newStatus = statusSummary(current)
-            if (oldStatus !== newStatus || displayValue(old.statusUntil) !== displayValue(current.statusUntil)) {
-              const oldTimer = displayValue(old.statusUntil)
-              const newTimer = displayValue(current.statusUntil)
-              const oldLabel = oldTimer === "Unknown" ? oldStatus : oldStatus + " · " + oldTimer
-              const newLabel = newTimer === "Unknown" ? newStatus : newStatus + " · " + newTimer
-              pushEvent("status_changed", latest.capturedAt, userId, memberName,
-                "Public member status or timer changed.", oldLabel, newLabel)
-            }
-            const flagChanges: Array<[string, string, unknown, unknown]> = [
-              ["wall_changed", "Wall status", old.isOnWall, current.isOnWall],
-              ["oc_changed", "Organized crime status", old.isInOc, current.isInOc],
-              ["early_discharge_changed", "Early-discharge status", old.hasEarlyDischarge, current.hasEarlyDischarge],
-            ]
-            for (const [eventType, label, from, to] of flagChanges) {
-              if (normalizeBoolean(from) !== normalizeBoolean(to)) {
-                pushEvent(eventType, latest.capturedAt, userId, memberName, label + " changed.",
-                  normalizeBoolean(from), normalizeBoolean(to))
-              }
-            }
-            const oldRevive = displayValue(old.reviveSetting)
-            const newRevive = displayValue(current.reviveSetting)
-            if (oldRevive !== newRevive) {
-              pushEvent("revive_setting_changed", latest.capturedAt, userId, memberName,
-                "Configured faction revive setting changed.", oldRevive, newRevive)
-            }
-            const oldPosition = displayValue(old.position)
-            const newPosition = displayValue(current.position)
-            if (oldPosition !== newPosition) {
-              pushEvent("position_changed", latest.capturedAt, userId, memberName,
-                "Faction position changed.", oldPosition, newPosition)
-            }
+          }
+          const oldRevive = displayValue(current.previousReviveSetting)
+          const newRevive = displayValue(current.reviveSetting)
+          if (oldRevive !== newRevive) {
+            pushEvent("revive_setting_changed", occurredAt, userId, memberName,
+              "Configured faction revive setting changed.", oldRevive, newRevive)
+          }
+          const oldPosition = displayValue(current.previousPosition)
+          const newPosition = displayValue(current.position)
+          if (oldPosition !== newPosition) {
+            pushEvent("position_changed", occurredAt, userId, memberName, "Faction position changed.", oldPosition, newPosition)
           }
         }
 
-        const orderedEvents = events.sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt) || a.id.localeCompare(b.id)).slice(0, 100)
+        const orderedEvents = events.sort((a, b) =>
+          Date.parse(b.occurredAt) - Date.parse(a.occurredAt) || a.id.localeCompare(b.id)
+        ).slice(0, 500)
         const eventCounts = Object.fromEntries(Array.from(new Set(orderedEvents.map(event => event.eventType)))
           .map(eventType => [eventType, orderedEvents.filter(event => event.eventType === eventType).length]))
+
+        const inactivityMembers = latestRows.map((member) => {
+          const timestamp = typeof member.lastActionTimestamp === "number" && Number.isSafeInteger(member.lastActionTimestamp)
+            ? member.lastActionTimestamp
+            : null
+          const assessment = classifyFactionInactivity(timestamp, generatedAt)
+          return {
+            userId: String(member.userId), name: member.name || "Unknown member", position: member.position,
+            lastActionStatus: member.lastActionStatus, lastActionAt: assessment.lastActionAt,
+            elapsedSeconds: assessment.elapsedSeconds, classification: assessment.classification,
+          }
+        }).sort((a, b) => (b.elapsedSeconds ?? -1) - (a.elapsedSeconds ?? -1) || a.name.localeCompare(b.name))
+        const inactivityCounts = {
+          normal: inactivityMembers.filter(member => member.classification === "normal").length,
+          inactive_24h: inactivityMembers.filter(member => member.classification === "inactive_24h").length,
+          inactive_72h: inactivityMembers.filter(member => member.classification === "inactive_72h").length,
+          unknown: inactivityMembers.filter(member => member.classification === "unknown").length,
+        }
+        const requestedMemberId = (url.searchParams.get("memberId") || "").trim()
+        const selectedMember = (requestedMemberId ? inactivityMembers.find(member => member.userId === requestedMemberId) : null) ??
+          inactivityMembers.find(member => member.classification !== "unknown") ?? inactivityMembers[0] ?? null
+        let memberTrend: {
+          memberId: string | null; memberName: string | null; sampleCount: number; knownSampleCount: number
+          points: Array<{ capturedAt: string; lastActionAt: string | null; lastActionStatus: string | null; elapsedSeconds: number | null; classification: "normal" | "inactive_24h" | "inactive_72h" | "unknown" }>
+        } = { memberId: null, memberName: null, sampleCount: 0, knownSampleCount: 0, points: [] }
+        if (selectedMember) {
+          const trendRows = await db.prepare(
+            sampledRunsCte +
+            " SELECT r.capturedAt AS capturedAt, m.last_action_timestamp AS lastActionTimestamp, m.last_action_status AS lastActionStatus" +
+            " FROM selected_runs r JOIN faction_member_roster_snapshots m ON m.run_id = r.runId" +
+            " WHERE m.user_id = ? ORDER BY r.capturedAt ASC, r.runId ASC"
+          ).bind(samplingIntervalSeconds, NAUGHTY_SOULS_FACTION_ID, rangeStartAt, selectedMember.userId).all<{
+            capturedAt: string; lastActionTimestamp: number | null; lastActionStatus: string | null
+          }>()
+          const points = (trendRows.results ?? []).map((row) => {
+            const timestamp = typeof row.lastActionTimestamp === "number" && Number.isSafeInteger(row.lastActionTimestamp)
+              ? row.lastActionTimestamp
+              : null
+            const assessment = classifyFactionInactivity(timestamp, row.capturedAt)
+            return {
+              capturedAt: String(row.capturedAt), lastActionAt: assessment.lastActionAt,
+              lastActionStatus: row.lastActionStatus, elapsedSeconds: assessment.elapsedSeconds,
+              classification: assessment.classification,
+            }
+          })
+          memberTrend = {
+            memberId: selectedMember.userId, memberName: selectedMember.name,
+            sampleCount: points.length, knownSampleCount: points.filter(point => point.classification !== "unknown").length, points,
+          }
+        }
         return jsonResponse({
-          factionId: NAUGHTY_SOULS_FACTION_ID,
-          generatedAt: new Date().toISOString(),
+          factionId: NAUGHTY_SOULS_FACTION_ID, generatedAt,
           comparisonStatus: previous ? "compared" : "waiting_for_previous_roster",
-          latestRoster: latest,
-          previousRoster: previous,
-          eventCount: orderedEvents.length,
-          eventCounts,
-          events: orderedEvents,
+          latestRoster: latest, previousRoster: previous,
+          historyRangeDays: rangeDays, samplingIntervalHours, sampledSnapshotCount: runs.length,
+          oldestSampledAt: runs[runs.length - 1]?.capturedAt ?? null, historyTruncated,
+          eventCount: orderedEvents.length, totalObservedEventCount: events.length, eventsTruncated: events.length > orderedEvents.length,
+          eventCounts, events: orderedEvents, inactivityCounts, inactivityMembers, memberTrend,
         }, 200, origin, { "cache-control": "private, max-age=30" })
       } catch {
         return jsonResponse({ error: "Faction activity history is unavailable. Verify the completed roster snapshots and faction membership intervals." }, 503, origin)
