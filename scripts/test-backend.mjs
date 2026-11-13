@@ -472,7 +472,7 @@ try {
     const workerSource = readFileSync(join(root, "src/worker/index.ts"), "utf8")
     assert.match(workerSource, /PARTITION BY date\(fetched_at, '-18 hours'\)/)
     assert.match(workerSource, /fetchedAtMs - 18 \* 60 \* 60 \* 1000/)
-    assert.ok(uiSource.includes("/api/me/companies/\u0024{encodeURIComponent(companyId)}/history?days=7"))
+    assert.ok(uiSource.includes("/api/me/companies/\u0024{encodeURIComponent(companyId)}/history?days=all"))
     assert.match(uiSource, /const officialStockSnapshots = officialStockHistory/)
     assert.match(uiSource, /const stockDifference = currentOfficialStockSnapshot\?\.stockQuantity != null && previousStockSnapshot\?\.stockQuantity != null/)
     assert.match(uiSource, /missingStockSnapshotDays\.join\(" and "\)/)
