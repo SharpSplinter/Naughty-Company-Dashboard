@@ -569,13 +569,13 @@ export function FloorApp() {
   const weeklyIncome = model?.company.weeklyIncome ?? null
   const latestReportedWeeklyProfit = archivedWeekPoints.filter((point) => point.weeklyProfit !== null).at(-1)?.weeklyProfit ?? null
   const archivedMonthProfit = archivedMonthPoints.filter((point) => point.dailyProfit !== null)
-  const operatingDailyCosts = costs?.dailyRecurringCosts ?? null
+  const dailyExpenses = costs?.dailyCosts ?? null
   const reportedWeeklyProfit = reportedCompanyProfit(result?.profile, "weekly")
-  const estimatedWeeklyProfit = estimateWeeklyProfit(weeklyIncome, operatingDailyCosts, costs?.stockCosts)
-  const weeklyProfit = reportedWeeklyProfit ?? estimatedWeeklyProfit ?? latestReportedWeeklyProfit
+  const estimatedWeeklyProfit = estimateWeeklyProfit(weeklyIncome, dailyExpenses)
+  const weeklyProfit = estimatedWeeklyProfit ?? reportedWeeklyProfit ?? latestReportedWeeklyProfit
   const monthlyProfit = archivedMonthProfit.length
     ? archivedMonthProfit.reduce((sum, point) => sum + (point.dailyProfit ?? 0), 0)
-    : monthlyIncome === null || operatingDailyCosts === null || costs?.stockCosts == null || Math.max(monthSamples.length, archivedMonthPoints.length) === 0 ? null : monthlyIncome - operatingDailyCosts * Math.max(monthSamples.length, archivedMonthPoints.length) - costs.stockCosts
+    : monthlyIncome === null || costs?.dailyRecurringCosts == null || costs?.stockCosts == null || Math.max(monthSamples.length, archivedMonthPoints.length) === 0 ? null : monthlyIncome - costs.dailyRecurringCosts * Math.max(monthSamples.length, archivedMonthPoints.length) - costs.stockCosts
   const weekCoverage = new Set([...weekSamples.map((item) => new Date(new Date(item.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10)), ...archivedWeekPoints.map((point) => point.day)]).size
   const monthCoverage = new Set([...monthSamples.map((item) => new Date(new Date(item.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10)), ...archivedMonthPoints.map((point) => point.day)]).size
   const expectedReportingDays = (start: Date) => Math.max(1, Math.floor((utcNow.getTime() - start.getTime()) / 86400000) + 1)
