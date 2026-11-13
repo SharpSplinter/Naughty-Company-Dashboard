@@ -1666,10 +1666,10 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
             <h3>Items and energy activity</h3>
             <p>Totals from completed personal event-log collections for {archive.eventTotals.coveredMembers} faction members. Energy-can counts include the six cans represented by each Six-Pack of Energy Drink reward.</p>
             <div className="coverage-grid">
-              <div><small>BOOSTERS RECEIVED</small><strong>{eventMetric(archive.eventTotals.boosters)}</strong><span>Other booster rewards from Halloween baskets</span></div>
-              <div><small>ENERGY CANS RECEIVED</small><strong>{eventMetric(archive.eventTotals.energyCans)}</strong><span>Individual cans and six-pack equivalents</span></div>
-              <div><small>FEATHERY HOTEL COUPONS</small><strong>{eventMetric(archive.eventTotals.fhcs)}</strong><span>Received from Halloween basket exchanges</span></div>
-              <div><small>GREEN EASTER EGGS</small><strong>{eventMetric(archive.eventTotals.greenEggs)}</strong><span>Received from Halloween basket exchanges</span></div>
+              <div><small>BOOSTERS RECEIVED</small><strong>{eventMetric(archive.eventTotals.boosters)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.boostersUsed) + " used" : "Used: —"}</span></div>
+              <div><small>ENERGY CANS RECEIVED</small><strong>{eventMetric(archive.eventTotals.energyCans)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.energyCansUsed) + " used · six-packs count as 6" : "Used: —"}</span></div>
+              <div><small>FEATHERY HOTEL COUPONS</small><strong>{eventMetric(archive.eventTotals.fhcs)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.fhcsUsed) + " used" : "Used: —"}</span></div>
+              <div><small>GREEN EASTER EGGS</small><strong>{eventMetric(archive.eventTotals.greenEggs)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.greenEggsUsed) + " used" : "Used: —"}</span></div>
               <div><small>ENERGY FROM TREAT EXCHANGES</small><strong>{eventMetricsReady ? eventMetric(archive.eventTotals.treatExchangeEnergyGained) : "—"}</strong><span>Energy restored by Halloween basket rewards</span></div>
               <div><small>ENERGY USED IN SUCCESSFUL ATTACKS</small><strong>{eventMetricsReady ? eventMetric(archive.eventTotals.successfulAttackEnergyUsed) : "—"}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.successfulAttacks) + " successful attacks" : "Awaiting completed event logs"}</span></div>
             </div>
