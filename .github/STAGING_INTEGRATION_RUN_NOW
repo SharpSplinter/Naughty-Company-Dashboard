@@ -23,3 +23,5 @@ Run 22 retry: private-live connect/refresh/networth opt-in/disconnect through th
 Run 22 retry 2: re-exercise the private-live staging Service Binding after updating every private selection contract to the environment-aware helper signature; synthetic accounts only; no production D1 or Worker.
 
 Run 23: validate range-aware 7/30/90-day faction activity history, member-specific last-action trends, 24h/72h inactivity and unknown timestamp handling; staging-only, no production resources; 2026-11-13T16:23-05:00
+
+Run 24: repeat complete staging-only D1/Queue acceptance against the finalized sampled activity timeline, synthetic per-member inactivity trend, exact 24h/72h boundaries and Unknown timestamp regression; no production resources.
