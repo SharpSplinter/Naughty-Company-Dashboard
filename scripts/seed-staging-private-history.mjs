@@ -68,7 +68,7 @@ assert.ok(process.env.GITHUB_ENV, "GITHUB_ENV is required so the ephemeral sessi
 const config = readFileSync(CONFIG, "utf8");
 assert.match(config, /name\s*=\s*"naughtyfamily-api-staging"/);
 assert.match(config, /database_name\s*=\s*"naughtyfamily-acceptance-staging"/);
-assert.match(config, new RegExp("database_id\\\\s*=\\\\s*\\\"" + DATABASE_ID + "\\\""));
+assert.ok(config.includes('database_id = "' + DATABASE_ID + '"'), "Refusing to seed a different D1 database.");
 assert.ok(!config.includes("bbbe128a-c5cc-46ec-b8ef-93860183e795"), "Production D1 must not appear in the acceptance config.");
 
 const now = new Date();
