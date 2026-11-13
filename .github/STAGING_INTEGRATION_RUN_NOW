@@ -27,3 +27,5 @@ Run 23: validate range-aware 7/30/90-day faction activity history, member-specif
 Run 24: repeat complete staging-only D1/Queue acceptance against the finalized sampled activity timeline, synthetic per-member inactivity trend, exact 24h/72h boundaries and Unknown timestamp regression; no production resources.
 
 Run 25: rerun staging-only faction timeline integration after making the synthetic history fixtures repeat-safe across prior staging captures; restore all original staging roster header timestamps in cleanup.
+
+Run 26: retain explicit diagnostic fields for the sampled faction activity staging assertion in case history fixture/API alignment still differs; staging-only, no production resources.

@@ -655,7 +655,22 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
         activity.inactivityMembers.find((member) => member.userId === activityMemberId)?.classification !== "inactive_72h" ||
         activity.inactivityMembers.find((member) => member.userId === unknownActivityMemberId)?.classification !== "unknown" ||
         activity.inactivityMembers.find((member) => member.userId === unknownActivityMemberId)?.elapsedSeconds !== null) {
-      throw new Error(`Faction activity API returned HTTP ${activityResponse.status} or omitted its sampled timeline/member inactivity trend contract.`)
+      throw new Error("Faction activity history assertion mismatch: " + JSON.stringify({
+        httpStatus: activityResponse.status,
+        latestRunId: activity.latestRoster?.runId ?? null,
+        expectedLatestRunId: activityRunIds[2] ?? null,
+        historyRangeDays: activity.historyRangeDays ?? null,
+        samplingIntervalHours: activity.samplingIntervalHours ?? null,
+        sampledSnapshotCount: activity.sampledSnapshotCount ?? null,
+        trendMemberId: activity.memberTrend?.memberId ?? null,
+        expectedTrendMemberId: activityMemberId,
+        trendPoints: activity.memberTrend?.points?.map((point) => ({
+          capturedAt: point.capturedAt, elapsedSeconds: point.elapsedSeconds, classification: point.classification,
+        })) ?? null,
+        liveMemberRows: activity.inactivityMembers?.filter((member) =>
+          member.userId === activityMemberId || member.userId === unknownActivityMemberId
+        ) ?? null,
+      }))
     }
     const allowedActivityTypes = new Set([
       "member_added", "member_removed", "activity_changed", "status_changed",
