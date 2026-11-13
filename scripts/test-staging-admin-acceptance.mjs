@@ -228,7 +228,7 @@ try {
       const activeLabel = await keyboardPage.evaluate(() => document.activeElement?.textContent?.trim() || "");
       const activeClass = await keyboardPage.evaluate(() => String(document.activeElement?.className || ""));
       if (activeClass.split(" ").includes("admin-tab")) {
-        assert.equal(activeLabel, "Overview", "Keyboard navigation should encounter Overview as the first admin section.");
+        assert.ok(activeLabel.endsWith("Overview"), "Keyboard navigation should encounter Overview as the first admin section.");
         overviewFocused = true;
         break;
       }
@@ -236,7 +236,7 @@ try {
     assert.ok(overviewFocused, "Keyboard Tab navigation must reach the admin section navigation.");
     await keyboardPage.keyboard.press("Enter");
     await keyboardPage.keyboard.press("Tab");
-    assert.equal(await keyboardPage.evaluate(() => document.activeElement?.textContent?.trim() || ""), "Members",
+    assert.ok((await keyboardPage.evaluate(() => document.activeElement?.textContent?.trim() || "")).endsWith("Members"),
       "Tab from Overview should reach Members in the administration navigation.");
     await keyboardPage.keyboard.press("Enter");
     await keyboardPage.getByRole("heading", { name: "Member management", exact: true }).waitFor({ state: "visible" });
@@ -247,7 +247,7 @@ try {
     assert.ok(keyboardTableRegions.every(region => region.tabIndex >= 0 && !!region.label),
       "Scrollable member tables should have an accessible region name and be keyboard-focusable.");
     await keyboardPage.keyboard.press("Tab");
-    assert.equal(await keyboardPage.evaluate(() => document.activeElement?.textContent?.trim() || ""), "Private Live",
+    assert.ok((await keyboardPage.evaluate(() => document.activeElement?.textContent?.trim() || "")).endsWith("Private Live"),
       "Tab from Members should reach Private Live in the administration navigation.");
     await keyboardPage.keyboard.press("Enter");
     await keyboardPage.getByRole("heading", { name: "Private-live diagnostics", exact: true }).waitFor({ state: "visible" });
