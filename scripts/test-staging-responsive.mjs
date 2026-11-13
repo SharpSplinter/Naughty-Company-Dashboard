@@ -32,7 +32,11 @@ try {
   const insightsNav = page.getByRole("navigation", { name: "Insights pages" });
   await insightsNav.waitFor({ state: "visible" });
   await insightsNav.getByRole("button", { name: "Historical Trends", exact: true }).click();
-  await page.getByRole("heading", { name: "Historical Trends and Comparisons", exact: true }).waitFor({ state: "visible", timeout: 15000 });
+  const trendsPageHeading = page.locator(".company-module-heading h1").filter({
+    hasText: /^Historical Trends and Comparisons$/
+  });
+  await trendsPageHeading.waitFor({ state: "visible", timeout: 15000 });
+  assert.equal(await trendsPageHeading.count(), 1, "Expected one page-level Historical Trends heading.");
   const trendsToolbar = page.locator(".insights-range-toolbar");
   await trendsToolbar.waitFor({ state: "visible", timeout: 15000 });
   const historyWindow = trendsToolbar.getByRole("combobox", { name: "History window" });
