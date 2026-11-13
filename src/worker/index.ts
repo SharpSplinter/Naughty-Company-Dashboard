@@ -2555,6 +2555,9 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
       } else if (body.kind === "halloween-log-collection" && halloweenJobId) {
         await requireDb(env).prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ? AND status NOT IN ('complete', 'cancelled')")
           .bind("Historical collection exhausted its queue retries. Check the saved Full Access key and retry.", new Date().toISOString(), halloweenJobId).run()
+      } else if (body.kind === "halloween-attack-metrics" && halloweenJobId) {
+        await requireDb(env).prepare("UPDATE halloween_attack_metrics_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ? AND status NOT IN ('complete', 'cancelled')")
+          .bind("Detailed attack collection exhausted its queue retries. Check User → Attacks access and retry.", new Date().toISOString(), halloweenJobId).run()
       } else if (body.kind === "manual-snapshot-recovery" && runId) {
         await markManualSnapshotRecoveryFailed(env, runId, "Manual snapshot recovery exhausted its queue retries.")
       } else if (body.kind === "manual-snapshot-recovery" && runId) {
@@ -2656,6 +2659,21 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
         else {
           await requireDb(env).prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
             .bind("Historical collection failed after repeated Torn API errors. Retry the collection from the Historical tab.", new Date().toISOString(), halloweenJobId).run()
+          message.ack()
+        }
+      }
+      continue
+    }
+    if (body.kind === "halloween-attack-metrics" && halloweenJobId) {
+      try {
+        await runHalloweenAttackMetricsPage(env, halloweenJobId)
+        message.ack()
+      } catch {
+        const attempts = Number(message.attempts ?? 1)
+        if (attempts < 4) message.retry({ delaySeconds: Math.min(30, attempts * 5) })
+        else {
+          await requireDb(env).prepare("UPDATE halloween_attack_metrics_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+            .bind("Detailed attack collection failed after repeated Torn API errors. Retry the collection from the Historical tab.", new Date().toISOString(), halloweenJobId).run()
           message.ack()
         }
       }
