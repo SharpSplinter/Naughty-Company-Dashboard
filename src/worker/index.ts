@@ -1165,7 +1165,11 @@ async function runFactionPerformanceCollection(env: WorkerEnv, runId: string): P
     const keyInfoPayload = await client.getKeyInfo()
     const keyInfoRoot = isRecord(keyInfoPayload.info) ? keyInfoPayload.info : keyInfoPayload
     const access = isRecord(keyInfoRoot.access) ? keyInfoRoot.access : null
-    keyAccessDiagnostic = JSON.stringify(access ?? { available: false, returnedKeys: Object.keys(keyInfoRoot) })
+    const selections = isRecord(keyInfoRoot.selections) ? keyInfoRoot.selections : null
+    keyAccessDiagnostic = JSON.stringify({
+      access: access ?? null,
+      selections: selections ?? null,
+    })
   }
 
   if (run.collectionKind === "roster") {
