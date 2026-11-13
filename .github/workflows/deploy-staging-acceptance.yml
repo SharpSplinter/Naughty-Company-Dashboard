@@ -22,6 +22,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - "scripts/ensure-naughtyfamily-staging-queues.mjs"
+      - "scripts/test-staging-responsive.mjs"
       - "vite.config.ts"
 
 permissions:
@@ -177,3 +178,21 @@ jobs:
             throw new Error("Staging JavaScript assets do not embed the isolated acceptance API Worker URL.");
           }
           NODE
+
+      - name: Install Playwright Chromium for staging viewport checks
+        run: |
+          npm install --no-save --package-lock=false playwright
+          npx playwright install --with-deps chromium
+
+      - name: Run Company Dashboard responsive checks on staging
+        env:
+          STAGING_PAGES_URL: https://naughtyfamily-staging.pages.dev
+        run: node scripts/test-staging-responsive.mjs
+
+      - name: Upload staging viewport screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: company-dashboard-staging-viewports
+          path: test-results/staging-responsive/
+          if-no-files-found: ignore
