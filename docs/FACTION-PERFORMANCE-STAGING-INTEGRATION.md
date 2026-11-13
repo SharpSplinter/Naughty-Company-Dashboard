@@ -1,6 +1,12 @@
 # Faction performance staging integration
 
-This is the stateful acceptance test for faction collection, active-week rankings and immutable completed-week history. It exercises the actual Worker queue handler, Cloudflare D1 writes, scheduled finalizer queue path and authenticated read APIs against the non-production database, while all Torn API responses come from a deterministic fixture Worker.
+This is the stateful acceptance test for faction collection, active-week rankings, immutable completed-week history, and the sampled historical faction activity timeline. It exercises the actual Worker queue handler, Cloudflare D1 writes, scheduled finalizer queue path and authenticated read APIs against the non-production database, while all Torn API responses come from a deterministic fixture Worker.
+
+## Latest verified acceptance
+
+- [Run 25](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/43512489832) passed on 2026-11-13 using commit `3652ae2e945305a897b3c1acb5a516076439a7ae`. The authenticated activity API returned the 7-day hourly sampled timeline, selected-member trend points at 8h, 32h and 79h since last action, the live 72H+ band, and Unknown for a member with a NULL timestamp. The full faction collection, weekly report/history, admin recovery and retry/DLQ assertions also passed.
+- The workflow concluded: `STAGING INTEGRATION PASSED. No production D1 or Worker was contacted.`
+- [Quality gates run #43512499313](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/43512499313) and [Discord Bot Quality Gates run #43512499285](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/43512499285) also passed on that feature commit.
 
 ## Resources used
 
@@ -65,6 +71,6 @@ All API responses are generated from the sanitized schema fixture or synthetic d
 
 ## Expected side effects
 
-The workflow applies the pending migrations to staging D1, creates two dedicated queues, and deploys two staging-only Workers. Those Workers remain deployed after the workflow; they have no cron triggers. The integration creates synthetic test collection, boundary and immutable report rows and keeps them in staging D1 as run evidence. Its activity-history assertion creates three short-lived synthetic roster captures, verifies exact inactivity bands and Unknown timestamps, then removes those rows and restores the test roster capture timestamp. It selects an unused recent Sunday pair for each run so reruns do not overwrite historical reports. It creates and removes a temporary authenticated test player/session during the API check.
+The workflow applies the pending migrations to staging D1, creates two dedicated queues, and deploys two staging-only Workers. Those Workers remain deployed after the workflow; they have no cron triggers. The integration creates synthetic test collection, boundary and immutable report rows and keeps them in staging D1 as run evidence. Its activity-history assertion temporarily moves all recent staging roster-header timestamps out of the test window, creates three synthetic captures, verifies exact inactivity bands and Unknown timestamps, deletes the temporary rows, and restores every original timestamp. It selects an unused recent Sunday pair for each run so reruns do not overwrite historical reports. It creates and removes a temporary authenticated test player/session during the API check.
 
 No production D1 migration, production Worker deployment, Pages deployment, or live Torn API collection is part of this test.
