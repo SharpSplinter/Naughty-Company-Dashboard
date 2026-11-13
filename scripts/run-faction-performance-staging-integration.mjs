@@ -639,6 +639,12 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
         )
       }
     }
+    const observedFirstSeenAt = new Date(generatedAtMs - 72 * 3600000).toISOString()
+    const estimatedJoinedAt = new Date(generatedAtMs - 103 * 24 * 3600000).toISOString()
+    await d1Query(
+      "INSERT INTO faction_membership_intervals (interval_id, faction_id, user_id, member_name, position, level, days_in_faction, estimated_joined_at, first_seen_at, last_seen_at, left_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+      ["activity-profile:" + randomUUID(), FACTION_ID, activityMemberId, "Timeline Trend Member", "Officer", 77, 100, estimatedJoinedAt, observedFirstSeenAt, samples[2].capturedAt],
+    )
 
     const activityResponse = await fetch(`${WORKER_URL}/api/faction/activity?days=7&memberId=${activityMemberId}`, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
@@ -692,7 +698,7 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
     if (activity.memberProfile?.userId !== activityMemberId ||
         activity.memberProfile.level !== 77 ||
         activity.memberProfile.reviveSetting !== "Everyone" ||
-        activity.memberProfile.position !== "Leader" ||
+        activity.memberProfile.position !== "Officer" ||
         activity.memberProfile.firstSeenAt == null ||
         !Array.isArray(activity.memberEvents) ||
         !activity.memberEvents.some((event) => event.eventType === "position_changed") ||
@@ -930,6 +936,7 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
     for (const capture of originalRosterCaptures) {
       await d1Query("UPDATE faction_roster_snapshots SET captured_at = ? WHERE run_id = ?", [capture.captured_at, capture.run_id]).catch(() => undefined)
     }
+    await d1Query("DELETE FROM faction_membership_intervals WHERE faction_id = ? AND user_id IN (?, ?)", [FACTION_ID, activityMemberId, unknownActivityMemberId]).catch(() => undefined)
     await d1Query("DELETE FROM players WHERE player_id = ?", [playerId])
   }
 }

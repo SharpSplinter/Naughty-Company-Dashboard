@@ -1,1 +1,1 @@
-Run 27: validate richer selected-member drilldowns and administrator-only private-live freshness/error metadata against isolated staging D1/Queue; assert non-admin denial and private payload/credential exclusion; production untouched.
+Run 28: rerun richer member drilldown and private-live admin diagnostic acceptance after declaration-order and membership-fixture corrections. Isolated staging D1/Queue only; production untouched.

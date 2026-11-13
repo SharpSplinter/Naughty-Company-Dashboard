@@ -207,6 +207,18 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load member details."); setMemberDetail(null) }
   }, [apiBase, sessionToken])
 
+const loadPrivateLiveDiagnostics = useCallback(async () => {
+    setPrivateLiveDiagnosticsLoading(true)
+    setPrivateLiveDiagnosticsError("")
+    try {
+      const payload = await adminFetch<AdminPrivateLivePayload>(apiBase, sessionToken, "/api/admin/private-live")
+      setPrivateLiveDiagnostics(payload)
+    } catch (caught) {
+      setPrivateLiveDiagnosticsError(caught instanceof Error ? caught.message : "Could not load private-live diagnostics.")
+      setPrivateLiveDiagnostics(null)
+    } finally { setPrivateLiveDiagnosticsLoading(false) }
+  }, [apiBase, sessionToken])
+
   const loadJobs = useCallback(async () => {
     try {
       const payload = await adminFetch<{ jobs: AdminJob[] }>(apiBase, sessionToken, "/api/admin/jobs?limit=30")
@@ -440,18 +452,6 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
       setAdministrators(payload.administrators || [])
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load administrator roles.") }
   }
-  const loadPrivateLiveDiagnostics = useCallback(async () => {
-    setPrivateLiveDiagnosticsLoading(true)
-    setPrivateLiveDiagnosticsError("")
-    try {
-      const payload = await adminFetch<AdminPrivateLivePayload>(apiBase, sessionToken, "/api/admin/private-live")
-      setPrivateLiveDiagnostics(payload)
-    } catch (caught) {
-      setPrivateLiveDiagnosticsError(caught instanceof Error ? caught.message : "Could not load private-live diagnostics.")
-      setPrivateLiveDiagnostics(null)
-    } finally { setPrivateLiveDiagnosticsLoading(false) }
-  }, [apiBase, sessionToken])
-
   async function changeAdministratorRole(action: "grant" | "revoke", target?: Administrator) {
     if (!actionsArmed || administratorBusy) return
     const targetId = action === "grant" ? administratorPlayerId.trim() : target?.playerId || ""
