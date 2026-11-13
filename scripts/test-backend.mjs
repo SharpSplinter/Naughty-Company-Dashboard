@@ -1438,9 +1438,9 @@ try {
     assert.match(source, /LineChart title="Stock quantity" series=\{stockQuantitySeries\}/)
     assert.match(source, /<th>DAILY PROFIT<\/th>/)
     assert.match(source, /<td>\{money\(point\.dailyProfit\)\}<\/td>/)
-    assert.match(source, /const points = selectedTrendHistory\\.filter\\(\\(point\\) => point\\[metric\\] !== null && Number\\.isFinite\\(point\\[metric\\]\\)\\)/)
-    assert.match(source, /const profitSeries: ChartSeries.*selectedTrendHistory\\.map\\(\\(point\\) => \\(\\{ label: point\\.day, value: point\\.dailyProfit \\}\\)\\)/)
-    assert.match(source, /const stockQuantitySeries: ChartSeries.*selectedTrendHistory\\.map\\(\\(point\\) => \\(\\{ label: point\\.day, value: point\\.stockQuantity \\}\\)\\)/)
+    assert.ok(source.includes("const points = selectedTrendHistory.filter((point) => point[metric] !== null && Number.isFinite(point[metric]))"))
+    assert.ok(source.includes("values: selectedTrendHistory.map((point) => ({ label: point.day, value: point.dailyProfit }))"))
+    assert.ok(source.includes("values: selectedTrendHistory.map((point) => ({ label: point.day, value: point.stockQuantity }))"))
   })
 
   await test("daily webhook digest sends every eligible alert in Discord-safe batches and logs each batch accurately", () => {
