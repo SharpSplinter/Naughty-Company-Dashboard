@@ -740,11 +740,10 @@ function FactionWeeklyRankings({ playerName, onNavigate, apiBase, sessionToken }
               <table>
                 <thead><tr><th>METRIC</th><th>SUNDAY BASELINE</th><th>LATEST LIFETIME VALUE</th><th>WEEKLY DELTA</th><th>METRIC COVERAGE &amp; FRESHNESS</th></tr></thead>
                 <tbody>{factionWeeklyMetricOptions.map(option => {
-                  const isGym = option.value === "gymEnergy"
-                  const startingValue = isGym ? member.startingGymEnergy : member.startingMetrics[option.value]
-                  const endingValue = isGym ? member.endingGymEnergy : member.endingMetrics[option.value]
-                  const baselineAt = isGym ? member.gymEnergyBaselineCapturedAt : member.baselineCapturedAt
-                  const endingAt = isGym ? member.gymEnergyEndingCapturedAt : member.endingCapturedAt
+                  const startingValue = option.value === "gymEnergy" ? member.startingGymEnergy : member.startingMetrics[option.value]
+                  const endingValue = option.value === "gymEnergy" ? member.endingGymEnergy : member.endingMetrics[option.value]
+                  const baselineAt = option.value === "gymEnergy" ? member.gymEnergyBaselineCapturedAt : member.baselineCapturedAt
+                  const endingAt = option.value === "gymEnergy" ? member.gymEnergyEndingCapturedAt : member.endingCapturedAt
                   let coverage = "Known at both samples"
                   if (!baselineAt) coverage = "Baseline unavailable"
                   else if (!endingAt) coverage = "Ending sample unavailable"

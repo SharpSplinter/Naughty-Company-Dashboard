@@ -438,6 +438,8 @@ try {
     })
     assert.equal(missingBaseline.status, "waiting_for_baseline")
     assert.equal(missingBaseline.metrics.xantaken, null)
+    assert.equal(missingBaseline.startingMetrics.xantaken, null, "missing baseline lifetime counter remains unknown")
+    assert.equal(missingBaseline.endingMetrics.xantaken, 100, "the available ending lifetime counter is retained independently")
 
     const missingEnding = calculateWeeklyMemberResult({
       member: { userId: "105", name: "No Ending", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
@@ -450,6 +452,39 @@ try {
     })
     assert.equal(missingEnding.status, "waiting_for_update")
     assert.equal(missingEnding.metrics.xantaken, null)
+    assert.equal(missingEnding.startingMetrics.xantaken, 100, "the available baseline lifetime counter is retained independently")
+    assert.equal(missingEnding.endingMetrics.xantaken, null, "missing ending lifetime counter remains unknown")
+  })
+
+  await test("weekly source counters expose per-metric coverage without converting missing values to zero", () => {
+    const baseline = Object.fromEntries(WEEKLY_METRIC_NAMES.map(name => [name, 100]))
+    const ending = { ...baseline, xantaken: 108, lsdtaken: null }
+    const result = calculateWeeklyMemberResult({
+      member: { userId: "1051", name: "Partial Metric Member", estimatedJoinedAt: "2026-01-01T00:00:00.000Z" },
+      statSnapshots: [
+        { runId: "baseline", userId: "1051", capturedAt: "2026-11-01T00:02:00.000Z", ...baseline },
+        { runId: "ending", userId: "1051", capturedAt: "2026-11-01T00:20:00.000Z", ...ending },
+      ],
+      gymSnapshots: [
+        { runId: "gym-baseline", userId: "1051", capturedAt: "2026-11-01T00:03:00.000Z", gymEnergyTotal: 500 },
+        { runId: "gym-ending", userId: "1051", capturedAt: "2026-11-01T00:21:00.000Z", gymEnergyTotal: 525 },
+      ],
+      weekStart: "2026-11-01T00:00:00.000Z",
+      weekEnd: "2026-11-08T00:00:00.000Z",
+      now: "2026-11-02T00:00:00.000Z",
+      statsBoundaryRunId: "baseline",
+      gymBoundaryRunId: "gym-baseline",
+    })
+    assert.equal(result.startingMetrics.xantaken, 100)
+    assert.equal(result.endingMetrics.xantaken, 108)
+    assert.equal(result.metrics.xantaken, 8)
+    assert.equal(result.startingMetrics.lsdtaken, 100)
+    assert.equal(result.endingMetrics.lsdtaken, null)
+    assert.equal(result.metrics.lsdtaken, null)
+    assert.equal(result.startingGymEnergy, 500)
+    assert.equal(result.endingGymEnergy, 525)
+    assert.equal(result.gymEnergy, 25)
+    assert.equal(result.status, "partial")
   })
 
   await test("midweek leavers remain partial-week participants and use only pre-departure samples", () => {
