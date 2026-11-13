@@ -37,11 +37,17 @@ try {
   });
   await trendsPageHeading.waitFor({ state: "visible", timeout: 15000 });
   assert.equal(await trendsPageHeading.count(), 1, "Expected one page-level Historical Trends heading.");
-  const trendsToolbar = page.locator(".insights-range-toolbar");
-  await trendsToolbar.waitFor({ state: "visible", timeout: 15000 });
-  const historyWindow = trendsToolbar.getByRole("combobox", { name: "History window" });
-  await historyWindow.waitFor({ state: "visible" });
-  assert.equal(await historyWindow.inputValue(), "90", "Historical Trends should expose the default 90-day history selector.");
+  // This flow enters through "Explore the demo dashboard", so live history controls
+  // are intentionally gated. Assert the authenticated-only empty state instead.
+  const demoInsightsIntro = page.locator(".insights-intro");
+  await demoInsightsIntro.waitFor({ state: "visible", timeout: 15000 });
+  assert.equal(
+    (await demoInsightsIntro.locator("h2").textContent())?.trim(),
+    "Historical Trends and Comparisons",
+    "The Insights workspace should show the selected Trends page title."
+  );
+  await page.getByText("Live insights require an authenticated dashboard session.", { exact: true })
+    .waitFor({ state: "visible", timeout: 15000 });
 
   const viewports = [
     { width: 320, height: 720, label: "phone-320" },
