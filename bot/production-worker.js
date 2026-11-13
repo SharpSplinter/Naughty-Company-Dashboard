@@ -1,7 +1,7 @@
 import { money, numberLabel, countChangeLabel } from "./formatting.mjs";
 import { parseCommandRoute } from "./command-routing.mjs";
 import { isDuringQuietHours, severityRank } from "./alert-delivery.mjs";
-import { buildCostBreakdown, estimateDailyProfit, estimateWeeklyProfit, resolveDisplayedDailyProfit, resolveDisplayedWeeklyProfit, findAdvertisingBudget, knownWageSummary, stockInventorySummary, stockOrderExpenses, stockQuantityDeltaForReportingDays, summarizeMonthToDate } from "./financials.mjs";
+import { buildCostBreakdown, estimateWeeklyProfit, resolveDisplayedDailyProfit, resolveDisplayedWeeklyProfit, findAdvertisingBudget, knownWageSummary, stockInventorySummary, stockOrderExpenses, stockQuantityDeltaForReportingDays, summarizeMonthToDate } from "./financials.mjs";
 import { buildDailySummaryMessage, isDailySummaryDue, previousReportingDay, reportingDayAt, summaryMetricValues } from "./daily-summary.mjs";
 import { buildDashboardPanelComponents, isDashboardPanelView, parseDashboardPanelCustomId } from "./dashboard-panel.mjs";
 
@@ -732,7 +732,6 @@ async function replyFor(i, env) {
           wages: wageInfo.available ? wageInfo.total : null,
           stockSummary: stockOrderSummary
         });
-        const estimatedDaily = estimateDailyProfit(dailyIncome, costBreakdown);
         const estimatedWeekly = estimateWeeklyProfit(weeklyIncome, costBreakdown);
         const monthToDate = summarizeMonthToDate(history);
         const latestHistory = history.at(-1) || {};
@@ -837,7 +836,6 @@ async function replyFor(i, env) {
         wageInfo = knownWageSummary(wagesData.summary);
       }
       const costBreakdown = buildCostBreakdown({ advertisingBudget, wages: wageInfo.available ? wageInfo.total : null, stockSummary: stockOrderSummary });
-      const estimatedDaily = estimateDailyProfit(dailyIncome, costBreakdown);
       const estimatedWeekly = estimateWeeklyProfit(weeklyIncome, costBreakdown);
       const latestHistory = stockHistory.at(-1) || {};
       const displayedDailyProfit = resolveDisplayedDailyProfit(latestHistory.dailyProfit, dailyIncome, costBreakdown);
