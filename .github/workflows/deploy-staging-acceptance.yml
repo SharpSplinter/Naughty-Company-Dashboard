@@ -1,8 +1,8 @@
 name: Deploy Naughty Family acceptance staging
 
 on:
-  # Staging deployment is intentionally operator-triggered. Do not redeploy
-  # Worker, D1 migrations, Pages, or Playwright for every branch commit.
+  # Full acceptance staging is manual by default. Only commits that change
+  # these review harness files trigger a targeted staging validation run.
   workflow_dispatch:
     inputs:
       confirm_target:
@@ -203,7 +203,6 @@ jobs:
       - name: Run sustained read-only admin API load against isolated staging
         env:
           STAGING_API_URL: https://naughtyfamily-api-staging.kboone801.workers.dev
-          STAGING_TEST_ADMIN_SESSION_TOKEN: ${{ secrets.STAGING_TEST_ADMIN_SESSION_TOKEN }}
           STAGING_LOAD_DURATION_SECONDS: "300"
           STAGING_LOAD_REQUESTS_PER_SECOND: "5"
           STAGING_LOAD_MAX_CONCURRENCY: "8"

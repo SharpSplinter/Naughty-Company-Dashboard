@@ -204,7 +204,7 @@ try {
           tagName: element?.tagName || "",
         };
       });
-      if (active.className.split(/\\s+/).includes("portal-card-admin")) {
+      if (active.className.split(" ").includes("portal-card-admin")) {
         adminCardFocused = true;
         break;
       }
@@ -227,7 +227,7 @@ try {
       await keyboardPage.keyboard.press("Tab");
       const activeLabel = await keyboardPage.evaluate(() => document.activeElement?.textContent?.trim() || "");
       const activeClass = await keyboardPage.evaluate(() => String(document.activeElement?.className || ""));
-      if (activeClass.split(/\\s+/).includes("admin-tab")) {
+      if (activeClass.split(" ").includes("admin-tab")) {
         assert.equal(activeLabel, "Overview", "Keyboard navigation should encounter Overview as the first admin section.");
         overviewFocused = true;
         break;
