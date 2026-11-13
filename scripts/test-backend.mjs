@@ -125,6 +125,76 @@ try {
     assert.equal(payload.stats[0].value, 19)
   })
 
+  await test("Torn API errors distinguish per-user rate limits from the disabled API and emit sanitized request telemetry", async () => {
+    const events = []
+    const rateLimited = new TornApiClient({
+      apiKey: "synthetic-rate-limit-key",
+      workload: "test-company-refresh",
+      playerId: "12345",
+      onRequest: event => events.push(event),
+      fetcher: async input => {
+        assert.equal(String(input), "https://api.torn.com/v2/user/12345/job")
+        return new Response(JSON.stringify({ error: { code: 5, error: "Too many requests" } }), {
+          status: 200, headers: { "content-type": "application/json", "retry-after": "15" },
+        })
+      },
+    })
+    await assert.rejects(rateLimited.getUserJobFor("12345"), error => {
+      assert.equal(error.status, 429)
+      assert.equal(error.code, 5)
+      assert.match(error.message, /rate limit/i)
+      return true
+    })
+    assert.deepEqual(events[0], {
+      endpoint: "/user/:id/job",
+      method: "GET",
+      workload: "test-company-refresh",
+      playerId: "12345",
+      upstreamStatus: 200,
+      status: 429,
+      errorCode: 5,
+      outcome: "rate_limited",
+      durationMs: events[0].durationMs,
+      retryAfter: "15",
+    })
+    assert.ok(events[0].durationMs >= 0)
+
+    const disabledEvents = []
+    const disabled = new TornApiClient({
+      apiKey: "synthetic-api-disabled-key",
+      onRequest: event => disabledEvents.push(event),
+      fetcher: async () => new Response(JSON.stringify({ error: { code: 9, error: "API disabled" } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      }),
+    })
+    await assert.rejects(disabled.getFactionStats(), error => {
+      assert.equal(error.status, 503)
+      assert.equal(error.code, 9)
+      assert.match(error.message, /API.*disabled/i)
+      assert.doesNotMatch(error.message, /rate limit/i)
+      return true
+    })
+    assert.equal(disabledEvents[0].outcome, "api_disabled")
+    assert.equal(disabledEvents[0].status, 503)
+
+    const permissionEvents = []
+    const restricted = new TornApiClient({
+      apiKey: "synthetic-permission-key",
+      onRequest: event => permissionEvents.push(event),
+      fetcher: async () => new Response(JSON.stringify({ error: { code: 16, error: "Access level too low" } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      }),
+    })
+    await assert.rejects(restricted.getFactionStats(), error => {
+      assert.equal(error.status, 403)
+      assert.equal(error.code, 16)
+      return true
+    })
+    assert.equal(permissionEvents[0].outcome, "permission_denied")
+    assert.equal(JSON.stringify(events.concat(disabledEvents, permissionEvents)).includes("synthetic-rate-limit-key"), false,
+      "telemetry must never include the API key")
+  })
+
   await test("weekly windows start Sunday 00:00 UTC and remain exactly 168 hours across DST changes", () => {
     const regular = utcSundayWindow(Date.parse("2026-11-02T18:00:00.000Z"))
     assert.equal(regular.startAt, "2026-11-01T00:00:00.000Z")
