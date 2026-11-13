@@ -6,6 +6,7 @@ import type {
   TornCompanyProfile,
   TornCompanyResponse,
   TornCompanySelections,
+  TornRequestOutcome,
 } from "./types"
 
 const DEFAULT_BASE_URL = "https://api.torn.com/v2"
