@@ -32,7 +32,12 @@ try {
   const insightsNav = page.getByRole("navigation", { name: "Insights pages" });
   await insightsNav.waitFor({ state: "visible" });
   await insightsNav.getByRole("button", { name: "Historical Trends", exact: true }).click();
-  await page.getByText("History window", { exact: false }).waitFor({ state: "visible" });
+  await page.getByRole("heading", { name: "Historical Trends and Comparisons", exact: true }).waitFor({ state: "visible", timeout: 15000 });
+  const trendsToolbar = page.locator(".insights-range-toolbar");
+  await trendsToolbar.waitFor({ state: "visible", timeout: 15000 });
+  const historyWindow = trendsToolbar.getByRole("combobox", { name: "History window" });
+  await historyWindow.waitFor({ state: "visible" });
+  assert.equal(await historyWindow.inputValue(), "90", "Historical Trends should expose the default 90-day history selector.");
 
   const viewports = [
     { width: 320, height: 720, label: "phone-320" },
