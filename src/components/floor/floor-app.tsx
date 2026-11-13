@@ -538,7 +538,7 @@ export function FloorApp() {
           if (!item || typeof item !== "object" || Array.isArray(item)) return []
           const record = item as Record<string, unknown>
           const day = typeof record.day === "string" ? record.day : ""
-          if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(day)) return []
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return []
           const point: OfficialCompanyHistoryPoint = {
             day,
             dailyIncome: numeric(record, "dailyIncome"),
