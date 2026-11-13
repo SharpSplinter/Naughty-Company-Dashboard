@@ -526,7 +526,7 @@ export function FloorApp() {
     let cancelled = false
     async function loadOfficialCompanyHistory() {
       try {
-        const response = await fetch(`${API_BASE}/api/me/companies/${encodeURIComponent(companyId)}/history?days=90`, {
+        const response = await fetch(`${API_BASE}/api/me/companies/${encodeURIComponent(companyId)}/history?days=all`, {
           headers: { Authorization: `Bearer ${sessionToken}` },
         })
         if (!response.ok) throw new Error("Could not load saved daily company history.")
