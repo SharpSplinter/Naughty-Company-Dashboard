@@ -815,6 +815,29 @@ async function assertPrivateLiveRoutes() {
         [playerId, `Private Live Integration ${playerId}`, now, now, FACTION_ID, now],
       )
     }
+    // The private-live connect endpoint reuses the member's canonical portal
+    // key from api_keys. Seed owner-scoped encrypted keys for both synthetic
+    // sessions so the next request reaches the consent gate (400) and the
+    // wrong-owner validation gate (403), rather than the missing-key guard (409).
+    const primaryKeyDigest = await webcrypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(PRIVATE_LIVE_ENCRYPTION_SECRET),
+    )
+    const primaryEncryptionKey = await webcrypto.subtle.importKey(
+      "raw", primaryKeyDigest, { name: "AES-GCM" }, false, ["encrypt"],
+    )
+    for (const playerId of testIds) {
+      const iv = webcrypto.getRandomValues(new Uint8Array(12))
+      const ciphertext = await webcrypto.subtle.encrypt(
+        { name: "AES-GCM", iv },
+        primaryEncryptionKey,
+        new TextEncoder().encode(PRIVATE_LIVE_API_KEY),
+      )
+      await d1Query(
+        "INSERT INTO api_keys (player_id, ciphertext, iv, last_four, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, updated_at = excluded.updated_at",
+        [playerId, Buffer.from(ciphertext).toString("base64"), Buffer.from(iv).toString("base64"), PRIVATE_LIVE_API_KEY.slice(-4), now, now],
+      )
+    }
     await d1Query(
       "INSERT INTO sessions (token_hash, player_id, expires_at, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(token_hash) DO UPDATE SET expires_at = excluded.expires_at",
       [ownerTokenHash, PRIVATE_LIVE_OWNER_ID, expiresAt, now],
