@@ -1889,18 +1889,18 @@ async function loadHalloweenEventMetricsForPlayers(db: D1Database, eventYear: nu
   if (playerIds.length === 0) return metricsByPlayer
 
   const placeholders = playerIds.map(() => "?").join(", ")
-  const basketRows = await db.prepare(
+  const itemRows = await db.prepare(
     `SELECT player_id AS playerId, log_type_id AS logTypeId, title, category, log_json AS logJson
      FROM halloween_event_logs
-     WHERE event_year = ? AND log_type_id = 2535 AND player_id IN (${placeholders})`
+     WHERE event_year = ? AND (log_type_id = 2535 OR category = 'Item use') AND player_id IN (${placeholders})`
   ).bind(eventYear, ...playerIds).all<{ playerId: string; logTypeId: number; title: string | null; category: string | null; logJson: string | null }>()
-  const basketsByPlayer = new Map<string, Array<{ logTypeId: number; title: string | null; category: string | null; logJson: string | null }>>()
-  for (const row of basketRows.results ?? []) {
-    const list = basketsByPlayer.get(row.playerId) ?? []
+  const eventRowsByPlayer = new Map<string, Array<{ logTypeId: number; title: string | null; category: string | null; logJson: string | null }>>()
+  for (const row of itemRows.results ?? []) {
+    const list = eventRowsByPlayer.get(row.playerId) ?? []
     list.push(row)
-    basketsByPlayer.set(row.playerId, list)
+    eventRowsByPlayer.set(row.playerId, list)
   }
-  for (const [playerId, rows] of basketsByPlayer) {
+  for (const [playerId, rows] of eventRowsByPlayer) {
     metricsByPlayer.set(playerId, calculateHalloweenEventMetrics(rows))
   }
 
