@@ -61,7 +61,7 @@ const wages = knownWageSummary({ rosterCount: 30, knownWageCount: 30, totalKnown
 const breakdown = buildCostBreakdown({ advertisingBudget: 5200000, wages: wages.total, stockSummary: stockCosts });
 assert.equal(breakdown.total, 83400000);
 assert.equal(estimateDailyProfit(119465920, breakdown), 36065920);
-assert.equal(estimateWeeklyProfit(850324992, breakdown), 850324992 - (5200000 + 78200000) * 7);
+assert.equal(estimateWeeklyProfit(850324992, breakdown), 850324992 - breakdown.total * 7, "weekly profit must subtract seven full daily expense totals");
 assert.deepEqual(resolveDisplayedDailyProfit(57573280, 119465920, breakdown), {
   value: 36065920,
   source: "calculated"
@@ -75,9 +75,9 @@ assert.deepEqual(resolveDisplayedDailyProfit(undefined, 119465920, { ...breakdow
   source: "unavailable"
 }, "daily profit stays unavailable without complete live costs or historical profit");
 assert.deepEqual(resolveDisplayedWeeklyProfit(57573280, 30090542, 41000000), {
-  value: 57573280,
-  source: "reported"
-}, "weekly profit must prefer Torn's reported value, matching the dashboard");
+  value: 30090542,
+  source: "calculated"
+}, "a complete seven-day cost calculation must override a conflicting reported weekly profit");
 assert.deepEqual(resolveDisplayedWeeklyProfit(undefined, 30090542, 41000000), {
   value: 30090542,
   source: "calculated"
