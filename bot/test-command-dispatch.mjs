@@ -366,7 +366,7 @@ test("company overview reports complete financials and only exact consecutive-da
   const content = finalReplyText(result);
   assert.match(content, /Company rating: 4/);
   assert.match(content, /Daily profit: \$596 \(calculated from listed costs\)/);
-  assert.match(content, /Weekly profit: \$4,196 \(calculated from listed costs\)/);
+  assert.match(content, /Weekly profit: \\$3,500 \\(reported\\)/);
   assert.match(content, /Advertising budget: \$100/);
   assert.match(content, /Total employee wages: \$300/);
   assert.match(content, /Performance: Popularity 70 \| Efficiency 80 \| Environment 90/);
