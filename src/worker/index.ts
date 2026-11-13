@@ -3359,15 +3359,22 @@ export default {
             if (Array.isArray(parsed)) snapshotCompanies = parsed.filter(isRecord)
           } catch { /* The persisted daily snapshot below is the canonical fallback. */ }
         }
-        if (!snapshotCompanies.length) {
-          const latest = await db.prepare("SELECT MAX(reporting_day) AS reportingDay FROM global_company_rank_snapshots").first<{ reportingDay: string | null }>()
-          if (latest?.reportingDay) {
-            const fallbackRows = await db.prepare("SELECT company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, star_rating AS starRating, weekly_income AS weeklyIncome, daily_income AS dailyIncome, average_daily_income AS averageDailyIncome, director_name AS directorName, global_rank AS globalRank, type_rank AS typeRank, 'torn-global' AS playerId, source_fetched_at AS fetchedAt FROM global_company_rank_snapshots WHERE reporting_day = ? ORDER BY global_rank ASC")
-              .bind(latest.reportingDay).all<Record<string, unknown>>()
-            snapshotCompanies = fallbackRows.results ?? []
-            generatedAt = snapshotCompanies.map((company) => String(company.fetchedAt ?? "")).filter(Boolean).sort().at(-1) || ""
-            rankingSource = "Persisted daily global-ranking snapshot fallback"
-          }
+        const latest = await db.prepare("SELECT reporting_day AS reportingDay, MAX(source_fetched_at) AS sourceFetchedAt, COUNT(*) AS companyCount FROM global_company_rank_snapshots WHERE reporting_day = (SELECT MAX(reporting_day) FROM global_company_rank_snapshots) GROUP BY reporting_day")
+          .first<{ reportingDay: string | null; sourceFetchedAt: string | null; companyCount: number }>()
+        const cacheFetchedAt = cached?.fetchedAt ? Date.parse(cached.fetchedAt) : 0
+        const snapshotFetchedAt = latest?.sourceFetchedAt ? Date.parse(latest.sourceFetchedAt) : 0
+        const persistedSnapshotIsNewerOrMoreComplete = Boolean(latest?.reportingDay) && (
+          !snapshotCompanies.length ||
+          !Number.isFinite(cacheFetchedAt) ||
+          cacheFetchedAt < snapshotFetchedAt ||
+          snapshotCompanies.length < Number(latest?.companyCount ?? 0)
+        )
+        if (latest?.reportingDay && persistedSnapshotIsNewerOrMoreComplete) {
+          const fallbackRows = await db.prepare("SELECT company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, star_rating AS starRating, weekly_income AS weeklyIncome, daily_income AS dailyIncome, average_daily_income AS averageDailyIncome, director_name AS directorName, global_rank AS globalRank, type_rank AS typeRank, 'torn-global' AS playerId, source_fetched_at AS fetchedAt FROM global_company_rank_snapshots WHERE reporting_day = ? ORDER BY global_rank ASC")
+            .bind(latest.reportingDay).all<Record<string, unknown>>()
+          snapshotCompanies = fallbackRows.results ?? []
+          generatedAt = snapshotCompanies.map((company) => String(company.fetchedAt ?? "")).filter(Boolean).sort().at(-1) || ""
+          rankingSource = "Persisted daily global-ranking snapshot fallback"
         }
         const requestedType = (url.searchParams.get("type") ?? "").trim().toLocaleLowerCase()
         const requestedTypeIdRaw = url.searchParams.get("typeId")
@@ -3409,14 +3416,23 @@ export default {
         const rows = await factionDb.prepare("SELECT player_id AS playerId, player_name AS directorName, company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, company_rating AS starRating, daily_income AS dailyIncome, weekly_income AS weeklyIncome, updated_at AS fetchedAt FROM faction_member_cache WHERE faction_id = '8317' AND is_director = 1 ORDER BY company_type ASC, weekly_income DESC").all<Record<string, unknown>>()
         let directors = rows.results ?? []
         let directorySource = "Daily cached Torn API snapshots"
-        if (!directors.length) {
-          const latest = await factionDb.prepare("SELECT MAX(reporting_day) AS reportingDay FROM faction_company_rank_snapshots WHERE faction_id = '8317'").first<{ reportingDay: string | null }>()
-          if (latest?.reportingDay) {
-            const fallback = await factionDb.prepare("SELECT player_id AS playerId, director_name AS directorName, company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, star_rating AS starRating, daily_income AS dailyIncome, weekly_income AS weeklyIncome, source_fetched_at AS fetchedAt, faction_rank AS factionRank, type_rank AS typeRank FROM faction_company_rank_snapshots WHERE faction_id = '8317' AND reporting_day = ? ORDER BY faction_rank ASC")
-              .bind(latest.reportingDay).all<Record<string, unknown>>()
-            directors = fallback.results ?? []
-            directorySource = "Persisted daily faction-ranking snapshot fallback"
-          }
+        const latest = await factionDb.prepare("SELECT reporting_day AS reportingDay, MAX(source_fetched_at) AS sourceFetchedAt, COUNT(*) AS snapshotCount FROM faction_company_rank_snapshots WHERE faction_id = '8317' AND reporting_day = (SELECT MAX(reporting_day) FROM faction_company_rank_snapshots WHERE faction_id = '8317') GROUP BY reporting_day")
+          .first<{ reportingDay: string | null; sourceFetchedAt: string | null; snapshotCount: number }>()
+        const latestDirectoryCheck = await factionDb.prepare("SELECT MAX(checked_at) AS checkedAt FROM faction_member_cache WHERE faction_id = '8317' AND is_director = 1")
+          .first<{ checkedAt: string | null }>()
+        const snapshotFetchedAt = latest?.sourceFetchedAt ? Date.parse(latest.sourceFetchedAt) : 0
+        const directoryCheckedAt = latestDirectoryCheck?.checkedAt ? Date.parse(latestDirectoryCheck.checkedAt) : 0
+        const persistedSnapshotIsNewerOrMoreComplete = Boolean(latest?.reportingDay) && (
+          !directors.length ||
+          !Number.isFinite(directoryCheckedAt) ||
+          directoryCheckedAt < snapshotFetchedAt ||
+          directors.length < Number(latest?.snapshotCount ?? 0)
+        )
+        if (latest?.reportingDay && persistedSnapshotIsNewerOrMoreComplete) {
+          const fallback = await factionDb.prepare("SELECT player_id AS playerId, director_name AS directorName, company_id AS companyId, company_name AS companyName, company_type AS companyType, company_type_id AS companyTypeId, star_rating AS starRating, daily_income AS dailyIncome, weekly_income AS weeklyIncome, source_fetched_at AS fetchedAt, member_checked_at AS memberCheckedAt, faction_rank AS factionRank, type_rank AS typeRank FROM faction_company_rank_snapshots WHERE faction_id = '8317' AND reporting_day = ? ORDER BY faction_rank ASC")
+            .bind(latest.reportingDay).all<Record<string, unknown>>()
+          directors = fallback.results ?? []
+          directorySource = "Persisted daily faction-ranking snapshot fallback"
         }
         const weeklyCounts = await getWeeklyFactionStarCounts(env)
         const generatedAt = directors.map((director) => String(director.fetchedAt ?? "")).filter(Boolean).sort().at(-1) || weeklyCounts.weeklyStarCountsCapturedAt || ""
