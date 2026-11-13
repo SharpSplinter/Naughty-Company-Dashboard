@@ -2055,10 +2055,10 @@ async function runHalloweenAttackMetricsPage(env: WorkerEnv, jobId: string): Pro
 
   let requestUrl = job.cursor_url || (() => {
     const url = new URL("https://api.torn.com/v2/user/attacks")
-    url.searchParams.set("from", String(windowStart))
+    url.searchParams.set("from", String(windowStart - 1))
     url.searchParams.set("to", String(windowEnd - 1))
     url.searchParams.set("limit", "100")
-    url.searchParams.set("sort", "desc")
+    url.searchParams.set("sort", "DESC")
     url.searchParams.set("filters", "outgoing")
     return url.toString()
   })()
