@@ -28,12 +28,20 @@ export type FactionDirectorRankingInput = {
   playerName: string
   factionId: string | number
   companyId: string | number | null
+  companyName: string | null
+  companyType: string | null
+  companyTypeId: number | null
+  companyRating: number | null
+  dailyIncome: number | null
+  weeklyIncome: number | null
+  memberCheckedAt: string | null
   isDirector: number | boolean
 }
 
 export type FactionCompanyRankSnapshot = RankingCompanyInput & RankingSnapshotMetadata & {
   factionId: string
   playerId: string
+  memberCheckedAt: string | null
   factionRank: number
   typeRank: number
 }
@@ -68,20 +76,34 @@ export function buildGlobalCompanyRankSnapshots(
   })
 }
 
-/** Rank only confirmed faction directors whose companies occur in the same global capture. */
+/**
+ * Rank only confirmed faction directors from the faction directory itself.
+ * This mirrors the Faction Rankings page and does not drop a director merely
+ * because their company was absent from the global ranking response.
+ */
 export function buildFactionCompanyRankSnapshots(
   members: readonly FactionDirectorRankingInput[],
-  globalCompanies: readonly RankingCompanyInput[],
   metadata: RankingSnapshotMetadata,
 ): FactionCompanyRankSnapshot[] {
-  const byCompany = new Map(globalCompanies.map((company) => [String(company.companyId), company]))
   const factions = new Map<string, Map<string, { company: RankingCompanyInput; member: FactionDirectorRankingInput }>>()
   for (const member of members) {
     if (!(member.isDirector === true || member.isDirector === 1) || member.companyId === null) continue
+    if (typeof member.weeklyIncome !== "number" || !Number.isFinite(member.weeklyIncome)) continue
     const factionId = String(member.factionId)
     const companyId = String(member.companyId)
-    const company = byCompany.get(companyId)
-    if (!company || !factionId || !companyId) continue
+    if (!factionId || !companyId) continue
+    const company: RankingCompanyInput = {
+      companyId,
+      companyName: member.companyName?.trim() || "Company #" + companyId,
+      companyType: member.companyType?.trim() || "Unknown",
+      companyTypeId: member.companyTypeId,
+      starRating: member.companyRating,
+      weeklyIncome: member.weeklyIncome,
+      dailyIncome: member.dailyIncome,
+      averageDailyIncome: member.weeklyIncome / 7,
+      directorName: member.playerName,
+      playerId: String(member.playerId),
+    }
     let faction = factions.get(factionId)
     if (!faction) {
       faction = new Map()
@@ -105,7 +127,7 @@ export function buildFactionCompanyRankSnapshots(
         ...metadata,
         factionId,
         playerId: String(member.playerId),
-        directorName: member.playerName || company.directorName,
+        memberCheckedAt: member.memberCheckedAt,
         factionRank: index + 1,
         typeRank,
       })
