@@ -19,6 +19,7 @@ const sourceFiles = [
   "src/lib/faction-performance/weekly.ts",
   "src/lib/faction-performance/leaderboard.ts",
   "src/lib/faction-performance/private-live.ts",
+  "src/lib/halloween/metrics.ts",
   "src/lib/torn/types.ts",
   "src/worker/index.ts",
   "src/worker/snapshot-provenance.ts",
@@ -69,6 +70,7 @@ try {
   } = require(join(temp, "lib/faction-performance/weekly.js"))
   const { filterAndSortWeeklyMembers } = require(join(temp, "lib/faction-performance/leaderboard.js"))
   const { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } = require(join(temp, "lib/faction-performance/private-live.js"))
+  const { calculateHalloweenEventMetrics, emptyHalloweenEventMetrics, sumHalloweenEventMetrics } = require(join(temp, "lib/halloween/metrics.js"))
   const {
     buildPersonalStatsPath,
     categoriesForMissingPersonalStats,
@@ -195,6 +197,51 @@ try {
     assert.equal(permissionEvents[0].outcome, "permission_denied")
     assert.equal(JSON.stringify(events.concat(disabledEvents, permissionEvents)).includes("synthetic-rate-limit-key"), false,
       "telemetry must never include the API key")
+  })
+
+  await test("Halloween treat exchanges count booster rewards, energy cans, FHCs, green eggs, treat energy, and successful-attack energy", () => {
+    const metrics = calculateHalloweenEventMetrics([
+      {
+        logTypeId: 2535,
+        title: "Item use halloween basket",
+        category: "Halloween basket",
+        logJson: JSON.stringify({ data: { items: { "366": 2, "367": 3, "368": 1, "473": 2, "530": 4, "987": 1, "818": 2 } } }),
+      },
+      {
+        logTypeId: 2547,
+        title: "Halloween basket receive energy",
+        category: "Halloween basket",
+        logJson: JSON.stringify({ data: { energy_increased: 75 } }),
+      },
+      {
+        logTypeId: 8150,
+        title: "Attack leave",
+        category: "Attacking",
+        logJson: JSON.stringify({ data: { energy_used: 25 }, params: { color: "green" } }),
+      },
+      {
+        logTypeId: 8155,
+        title: "Attack mug",
+        category: "Attacking",
+        logJson: JSON.stringify({ data: { energy_used: 0 }, params: { color: "green" } }),
+      },
+      {
+        logTypeId: 8156,
+        title: "Attack mug receive",
+        category: "Attacking",
+        logJson: JSON.stringify({ data: { energy_used: 25 }, params: { color: "red" } }),
+      },
+    ])
+    assert.deepEqual(metrics, {
+      boosters: 3,
+      energyCans: 17,
+      fhcs: 3,
+      greenEggs: 2,
+      treatExchangeEnergyGained: 75,
+      successfulAttackEnergyUsed: 25,
+      successfulAttacks: 2,
+    })
+    assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
   })
 
   await test("weekly windows start Sunday 00:00 UTC and remain exactly 168 hours across DST changes", () => {
