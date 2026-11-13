@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS faction_company_rank_snapshots (
   faction_id TEXT NOT NULL,
   company_id TEXT NOT NULL,
   player_id TEXT NOT NULL,
+  member_checked_at TEXT,
   director_name TEXT NOT NULL DEFAULT '',
   company_name TEXT NOT NULL,
   company_type TEXT NOT NULL,
