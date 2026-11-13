@@ -25,3 +25,5 @@ Run 22 retry 2: re-exercise the private-live staging Service Binding after updat
 Run 23: validate range-aware 7/30/90-day faction activity history, member-specific last-action trends, 24h/72h inactivity and unknown timestamp handling; staging-only, no production resources; 2026-11-13T16:23-05:00
 
 Run 24: repeat complete staging-only D1/Queue acceptance against the finalized sampled activity timeline, synthetic per-member inactivity trend, exact 24h/72h boundaries and Unknown timestamp regression; no production resources.
+
+Run 25: rerun staging-only faction timeline integration after making the synthetic history fixtures repeat-safe across prior staging captures; restore all original staging roster header timestamps in cleanup.

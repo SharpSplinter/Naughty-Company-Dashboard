@@ -529,7 +529,7 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
   const now = new Date().toISOString()
   const expiresAt = String(Math.floor(Date.now() / 1000) + 600)
   const activityRunIds = []
-  let originalRosterCapturedAt = null
+  let originalRosterCaptures = []
   const activityMemberId = String(989000000000000 + randomInt(1, 999999))
   const unknownActivityMemberId = String(989000000000000 + randomInt(1, 999999))
 
@@ -597,18 +597,20 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
     }
     console.log("PASS authenticated faction stats API returned faction-wide totals, capture time and missing-stat metadata.")
 
-    const originalRosterCapture = await d1Query(
-      "SELECT captured_at FROM faction_roster_snapshots WHERE run_id = ?",
-      [rosterRunId],
+    const activityRangeStartAt = new Date(Date.now() - 7 * 24 * 3600000).toISOString()
+    originalRosterCaptures = await d1Query(
+      "SELECT run_id, captured_at FROM faction_roster_snapshots WHERE faction_id = ? AND captured_at >= ?",
+      [FACTION_ID, activityRangeStartAt],
     )
-    originalRosterCapturedAt = originalRosterCapture[0]?.captured_at ?? null
-    if (!originalRosterCapturedAt) throw new Error("The integration roster capture timestamp is missing.")
-    // Move this synthetic header behind the test points so the timeline has
-    // three chronological captures without altering the collected member data.
+    if (!originalRosterCaptures.some((row) => row.run_id === rosterRunId)) {
+      throw new Error("The current integration roster capture timestamp is missing from the staging fixture window.")
+    }
+    // Collapse prior synthetic roster headers into one old bucket, then restore
+    // every original timestamp in finally so reruns cannot outrank these points.
     const historicalAnchorAt = new Date(Date.now() - 100 * 3600000).toISOString()
     await d1Query(
-      "UPDATE faction_roster_snapshots SET captured_at = ? WHERE run_id = ?",
-      [historicalAnchorAt, rosterRunId],
+      "UPDATE faction_roster_snapshots SET captured_at = ? WHERE faction_id = ? AND captured_at >= ?",
+      [historicalAnchorAt, FACTION_ID, activityRangeStartAt],
     )
     const generatedAtMs = Date.now()
     const actionTimestamp = Math.floor((generatedAtMs - 80 * 3600000) / 1000)
@@ -857,8 +859,8 @@ async function assertApiRoute(rosterRunId, weeklyFixture, departedUserId, histor
       await d1Query("DELETE FROM faction_roster_snapshots WHERE run_id = ?", [runId]).catch(() => undefined)
       await d1Query("DELETE FROM faction_performance_collection_runs WHERE run_id = ?", [runId]).catch(() => undefined)
     }
-    if (originalRosterCapturedAt) {
-      await d1Query("UPDATE faction_roster_snapshots SET captured_at = ? WHERE run_id = ?", [originalRosterCapturedAt, rosterRunId]).catch(() => undefined)
+    for (const capture of originalRosterCaptures) {
+      await d1Query("UPDATE faction_roster_snapshots SET captured_at = ? WHERE run_id = ?", [capture.captured_at, capture.run_id]).catch(() => undefined)
     }
     await d1Query("DELETE FROM players WHERE player_id = ?", [playerId])
   }
