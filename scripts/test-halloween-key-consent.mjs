@@ -91,7 +91,7 @@ assert.ok(workspace.includes("halloweenHistoryStatus.previouslyConsented"), "Acc
 assert.ok(workspace.includes("historicalKeyStatus && !historicalKeyStatus.previouslyConsented"), "the Halloween event page must show consent only before initial consent")
 assert.ok(workspace.includes("autoCollectionYearRef"), "selecting a Halloween event year must trigger an automatic collection check")
 assert.ok(workspace.includes("void startHistoricalCollection()"), "the selected Halloween year must invoke the idempotent collection endpoint")
-assert.ok(workspace.includes("Manage its connection in Account Settings"), "subsequent Halloween consent management must leave the event page")
+assert.ok(workspace.includes("manage this connection from Account Settings"), "subsequent Halloween consent management must leave the event page")
 assert.ok(!workspace.includes("halloween-history-v1"))
 assert.ok(worker.includes("LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL"), "disabled accounts must be excluded from the shared historical leaderboard")
 assert.ok(worker.includes("p.player_id = ? AND p.faction_id = ? AND st.disabled_at IS NULL"), "disabled accounts must not expose member event details")
