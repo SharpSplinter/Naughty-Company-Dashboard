@@ -1888,7 +1888,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
               </section>
       )}
           {archive?.myEventMetrics && <section className="halloween-panel halloween-event-metrics halloween-personal-event-metrics">
-            <div className="halloween-status"><i /> YOUR PERSONAL HALLOWEEN STATS · {archiveYearLabel}</div>
+            <div className="halloween-status"><i /> LIVE HALLOWEEN STATS · {archiveYearLabel}</div>
             <h3>Live Halloween Stats</h3>
             <p>These stats use your own completed event-window logs and detailed attack records. They are separate from the faction-wide totals below.</p>
             <div className="halloween-live-total-attacks-card">
