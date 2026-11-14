@@ -1972,6 +1972,9 @@ async function loadHalloweenEventMetricsForPlayers(db: D1Database, eventYear: nu
     if (!metrics) continue
     metrics.revitalizeAttacksReviewed = Number(row.attacksReviewed ?? 0)
     metrics.revitalizeProcs = Number(row.revitalizeProcs ?? 0)
+    // Match the proc numerator to successful attack-log counts from the same
+    // member-event collection with complete detailed attack coverage.
+    metrics.revitalizeSuccessfulAttacks = metrics.successfulAttacks
     try {
       const chances = JSON.parse(String(row.chancesJson ?? "{}"))
       if (isRecord(chances)) {
