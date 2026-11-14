@@ -54,6 +54,7 @@ export type HalloweenEventMetrics = {
   quadruplerProcs: number
   quintuplerProcs: number
   unclassifiedTreatAwards: number
+  catInHellJackpots: number
   multipackProcs: number
   dealWithDevilProcs: number
   revitalizeProcs: number
@@ -66,6 +67,8 @@ export type HalloweenEventMetricLogRow = {
   logTypeId: number | string | null
   title?: string | null
   category?: string | null
+  /** Known base treat amount for NPC attacks. Standard player attacks default to one. */
+  baseTreats?: number | null
   logJson: string | null
 }
 
@@ -77,7 +80,7 @@ const ENERGY_DRINK_SIX_PACK_ITEM_ID = "818"
 const ALCOHOL_SIX_PACK_ITEM_ID = "817"
 const MULTIPACK_ITEM_IDS = new Set(["817", "818", "1298"])
 const DEAL_WITH_THE_DEVIL_ITEM_IDS = new Set(["366", "367", "396", "428"])
-/** Final treat amount -> upgrades that procced, with a base award of one treat. */
+/** Multiplier product -> upgrades that procced. The standard player base award is one treat. */
 export const HALLOWEEN_TREAT_MULTIPLIER_COMBINATIONS: Record<
   number,
   Array<"doubler" | "tripler" | "quadrupler" | "quintupler">
@@ -215,6 +218,7 @@ export function emptyHalloweenEventMetrics(): HalloweenEventMetrics {
     quadruplerProcs: 0,
     quintuplerProcs: 0,
     unclassifiedTreatAwards: 0,
+    catInHellJackpots: 0,
     multipackProcs: 0,
     dealWithDevilProcs: 0,
     revitalizeProcs: 0,
@@ -360,9 +364,21 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
         metrics.successfulAttacksWithTreats += 1
         const key = String(treats)
         metrics.treatsByAttack[key] = (metrics.treatsByAttack[key] ?? 0) + 1
-        // Each attack starts at one treat. The final amount identifies the
-        // successful multiplier combination because these upgrades stack.
-        const procs = HALLOWEEN_TREAT_MULTIPLIER_COMBINATIONS[treats]
+        // Cat in Hell is a flat 1,000-treat jackpot and is never multiplied.
+        if (treats === 1000) {
+          metrics.catInHellJackpots += 1
+          continue
+        }
+        // Multiplier decoding uses the known base amount. Standard player
+        // attacks default to one; callers may provide the base for NPC attacks.
+        const baseTreats = nonNegativeNumber(
+          row.baseTreats ?? data.base_treats ?? data.baseTreats ?? 1,
+        )
+        const multiplier = baseTreats !== null && Number.isInteger(baseTreats) && baseTreats > 0 &&
+          treats % baseTreats === 0
+          ? treats / baseTreats
+          : Number.NaN
+        const procs = HALLOWEEN_TREAT_MULTIPLIER_COMBINATIONS[multiplier]
         if (!procs) {
           metrics.unclassifiedTreatAwards += 1
         } else {
@@ -453,6 +469,7 @@ export function sumHalloweenEventMetrics(values: readonly HalloweenEventMetrics[
     quadruplerProcs: total.quadruplerProcs + value.quadruplerProcs,
     quintuplerProcs: total.quintuplerProcs + value.quintuplerProcs,
     unclassifiedTreatAwards: total.unclassifiedTreatAwards + value.unclassifiedTreatAwards,
+    catInHellJackpots: total.catInHellJackpots + value.catInHellJackpots,
     multipackProcs: total.multipackProcs + value.multipackProcs,
     dealWithDevilProcs: total.dealWithDevilProcs + value.dealWithDevilProcs,
     revitalizeProcs: total.revitalizeProcs + value.revitalizeProcs,
