@@ -1919,14 +1919,15 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
             <section className="halloween-live-perk-cards">
               <div className="halloween-live-perk-card">
                 <div className="halloween-live-stat-card-heading">TREAT MULTIPLIER PERKS</div>
-                <p>Each awarded treat starts from a base of 1. The final amount identifies which multiplier upgrades procced, including stacked combinations.</p>
+                <p>Standard player attacks start at one base treat. Each unlocked multiplier rolls independently, and successful bonuses stack multiplicatively. NPC awards are decoded only when their base treat amount is known.</p>
                 <div className="halloween-live-perk-grid">
                   <div><small>DOUBLER · 20% BASE CHANCE</small><strong>{archive.myEventMetrics.doublerProcs.toLocaleString()}</strong><span>Observed procs</span></div>
                   <div><small>TRIPLER · 10% BASE CHANCE</small><strong>{archive.myEventMetrics.triplerProcs.toLocaleString()}</strong><span>Observed procs</span></div>
                   <div><small>QUADRUPLER · 5% BASE CHANCE</small><strong>{archive.myEventMetrics.quadruplerProcs.toLocaleString()}</strong><span>Observed procs</span></div>
                   <div><small>QUINTUPLER · 1% BASE CHANCE</small><strong>{archive.myEventMetrics.quintuplerProcs.toLocaleString()}</strong><span>Observed procs</span></div>
                 </div>
-                {archive.myEventMetrics.unclassifiedTreatAwards > 0 && <p className="halloween-live-stat-note">{archive.myEventMetrics.unclassifiedTreatAwards.toLocaleString()} treat awards had amounts that do not match a known multiplier combination and are excluded from these proc totals.</p>}
+                {archive.myEventMetrics.catInHellJackpots > 0 && <p className="halloween-live-stat-note">{archive.myEventMetrics.catInHellJackpots.toLocaleString()} Cat in Hell jackpot(s) awarded 1,000 treats each. They appear in the histogram and are excluded from multiplier proc counts.</p>}
+                {archive.myEventMetrics.unclassifiedTreatAwards > 0 && <p className="halloween-live-stat-note">{archive.myEventMetrics.unclassifiedTreatAwards.toLocaleString()} treat awards had unknown or nonstandard base amounts and are excluded from these proc totals.</p>}
               </div>
               <div className="halloween-live-perk-card">
                 <div className="halloween-live-stat-card-heading">BASKET EXCHANGE PERKS</div>
