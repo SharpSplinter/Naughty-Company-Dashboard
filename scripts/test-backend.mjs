@@ -379,6 +379,50 @@ try {
     assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
   })
 
+  await test("Halloween Live Stats count treat awards, estimate multiplier procs, and count exact exchange rewards", () => {
+    const rows = [
+      ...[1, 2, 3, 5, 24].map(treats => ({
+        logTypeId: 2536,
+        title: "Halloween treat receive",
+        category: "Halloween basket",
+        logJson: JSON.stringify({ data: { treats, type: "(Trick or Treat)" }, params: { color: "green" } }),
+      })),
+      {
+        logTypeId: 2536,
+        title: "Halloween treat receive",
+        category: "Halloween basket",
+        logJson: JSON.stringify({ data: { treats: 100, type: "(Cashback)" }, params: { color: "green" } }),
+      },
+      {
+        logTypeId: 2536,
+        title: "Halloween treat receive",
+        category: "Halloween basket",
+        logJson: JSON.stringify({ data: { treats: 50, type: "(Freebie)" }, params: { color: "green" } }),
+      },
+      {
+        logTypeId: 2535,
+        title: "Item use halloween basket",
+        category: "Halloween basket",
+        logJson: JSON.stringify({
+          data: {
+            items: { "817": 2, "818": 1, "1298": 3, "366": 1, "367": 1, "396": 2, "428": 1 },
+          },
+          params: { color: "green" },
+        }),
+      },
+    ]
+    const metrics = calculateHalloweenEventMetrics(rows)
+    assert.equal(metrics.successfulAttacksWithTreats, 5)
+    assert.deepEqual(metrics.treatsByAttack, { "1": 1, "2": 1, "3": 1, "5": 1, "24": 1 })
+    assert.equal(metrics.expectedDoublerProcs, 1)
+    assert.equal(metrics.expectedTriplerProcs, 0.5)
+    assert.equal(metrics.expectedQuadruplerProcs, 0.25)
+    assert.equal(metrics.expectedQuintuplerProcs, 0.05)
+    assert.equal(metrics.multipackProcs, 6)
+    assert.equal(metrics.dealWithDevilProcs, 5)
+    assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
+  })
+
   await test("Halloween cooldown calculation counts every FHC use and applies the corrected per-item cooldown values", () => {
     const rows = [
       ...Array.from({ length: 24 }, () => ({
@@ -485,25 +529,41 @@ try {
       {
         attacker: { id: 101 },
         ended: 1500,
+        result: "Attacked",
         is_interrupted: false,
         finishing_hit_effects: [{ name: "revitalize", value: 14 }],
       },
       {
         attacker: { id: "101" },
         ended: 1600,
+        result: "Mugged",
         is_interrupted: false,
         finishing_hit_effects: [],
       },
       {
         attacker: { id: 202 },
         ended: 1700,
+        result: "Attacked",
         finishing_hit_effects: [{ name: "revitalize", value: 14 }],
       },
       {
         attacker: { id: 101 },
         ended: 1800,
+        result: "Attacked",
         is_interrupted: true,
         finishing_hit_effects: [{ name: "revitalize", value: 14 }],
+      },
+      {
+        attacker: { id: 101 },
+        ended: 1850,
+        result: "Lost",
+        is_interrupted: false,
+      },
+      {
+        attacker: { id: 101 },
+        ended: 1900,
+        result: "Stalemate",
+        is_interrupted: false,
       },
       {
         attacker: { id: 101 },
@@ -513,7 +573,9 @@ try {
     ], "101", 1000, 2000)
     assert.deepEqual(summary, {
       revitalizeProcs: 1,
-      revitalizeAttacksReviewed: 2,
+      revitalizeAttacksReviewed: 4,
+      successfulAttacks: 3,
+      lostStalematedAttacks: 2,
       revitalizeChanceCounts: { "14": 1 },
     })
   })
