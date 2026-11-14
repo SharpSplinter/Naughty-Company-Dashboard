@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react"
+import { useEffect, useMemo, useState } from "react"
 import type { ChristmasTownItemMetric, ChristmasTownMetrics } from "../../lib/christmas-town/metrics"
 
 type ChristmasTownWorkspaceProps = {
@@ -45,6 +45,21 @@ type ChristmasTownArchivePayload = {
 }
 
 const todayUtc = () => new Date().toISOString().slice(0, 10)
+
+function christmasTownAvailableYears(): number[] {
+  const today = todayUtc()
+  const currentYear = Number(today.slice(0, 4))
+  const latestYear = today >= currentYear + "-12-10" ? currentYear : currentYear - 1
+  return Array.from({ length: Math.max(0, latestYear - 2021 + 1) }, (_, index) => 2021 + index)
+}
+
+function christmasTownDateRange(yearScope: string): { from: string; to: string } {
+  const today = todayUtc()
+  if (yearScope === "all") return { from: "2021-12-10", to: today }
+  const year = Number(yearScope)
+  const seasonEnd = year + "-12-31"
+  return { from: year + "-12-10", to: seasonEnd > today ? today : seasonEnd }
+}
 const formatMoney = (value: number | null | undefined) =>
   value === null || value === undefined || !Number.isFinite(value) ? "—" : "$" + Math.round(value).toLocaleString()
 const formatCount = (value: number | null | undefined) =>
@@ -137,10 +152,9 @@ export function ChristmasTownWorkspace({
   apiBase,
   sessionToken,
 }: ChristmasTownWorkspaceProps) {
-  const [fromDate, setFromDate] = useState("2021-12-10")
-  const [toDate, setToDate] = useState(todayUtc())
-  const [appliedFromDate, setAppliedFromDate] = useState("2021-12-10")
-  const [appliedToDate, setAppliedToDate] = useState(todayUtc())
+  const [selectedYear, setSelectedYear] = useState("all")
+  const availableYears = christmasTownAvailableYears()
+  const { from: appliedFromDate, to: appliedToDate } = christmasTownDateRange(selectedYear)
   const [keyStatus, setKeyStatus] = useState<ChristmasTownKeyStatus | null>(null)
   const [archive, setArchive] = useState<ChristmasTownArchivePayload | null>(null)
   const [busy, setBusy] = useState(false)
@@ -229,21 +243,6 @@ export function ChristmasTownWorkspace({
     }
   }
 
-  const applyDateRange = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (!fromDate || !toDate || fromDate > toDate) {
-      setError("Choose a valid date range. The start date must not be after the end date.")
-      return
-    }
-    if (toDate > todayUtc()) {
-      setError("The end date cannot be in the future.")
-      return
-    }
-    setError("")
-    setAppliedFromDate(fromDate)
-    setAppliedToDate(toDate)
-  }
-
   const collectHistory = async () => {
     if (collectBusy) return
     setCollectBusy(true)
@@ -311,19 +310,18 @@ export function ChristmasTownWorkspace({
         <p>Your personal Christmas Town history, rewards, chest openings, minigames and item values across the event seasons recorded by Torn.</p>
       </section>
 
-      <section className="christmas-town-toolbar">
-        <form onSubmit={applyDateRange} className="christmas-town-date-form">
-          <label>FROM<input type="date" min="2021-12-10" max={todayUtc()} value={fromDate} onChange={event => setFromDate(event.target.value)} /></label>
-          <label>TO<input type="date" min="2021-12-10" max={todayUtc()} value={toDate} onChange={event => setToDate(event.target.value)} /></label>
-          <button type="submit" disabled={busy}>Apply dates</button>
-        </form>
-        <div className="christmas-town-range-meta">
-          <small>SELECTED HISTORY · UTC</small>
-          <strong>{appliedFromDate} – {appliedToDate}</strong>
-          <span>{metrics?.fromTimestamp !== null && metrics?.fromTimestamp !== undefined && metrics?.toTimestamp !== null
-            ? "First " + formatStamp(metrics.fromTimestamp) + " · last " + formatStamp(metrics.toTimestamp)
-            : "Waiting for Christmas Town records"}</span>
+      <section className="halloween-year-filter christmas-town-year-filter" aria-label="Christmas Town historical scope">
+        <div>
+          <small>CHRISTMAS TOWN HISTORY SCOPE</small>
+          <strong>{selectedYear === "all" ? "All time" : "Christmas Town " + selectedYear}</strong>
+          <span>Showing {appliedFromDate} – {appliedToDate} · UTC</span>
         </div>
+        <label htmlFor="christmas-town-year">Display
+          <select id="christmas-town-year" value={selectedYear} onChange={event => setSelectedYear(event.target.value)} disabled={busy}>
+            <option value="all">All time</option>
+            {availableYears.map(year => <option key={year} value={String(year)}>{year}</option>)}
+          </select>
+        </label>
       </section>
 
       {error && <p className="settings-feedback error" role="alert">{error}</p>}
