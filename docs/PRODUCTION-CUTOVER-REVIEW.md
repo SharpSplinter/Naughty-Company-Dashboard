@@ -29,7 +29,22 @@ The stateful acceptance environment is:
 
 The portal staging D1 migration ledger was read after the final PR #152 staging integration: 30 migration records through `0025_halloween_attack_metrics.sql`, with 64 tables. Full quality gates passed on [run #43508964744](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/43508964744), and the complete isolated D1/Queue integration passed on [run #43508964870](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/43508964870). That integration verified private-live consent/owner checks, faction stats missing/unexpected-field metadata, roster/personalstats/gym-energy collection, immutable weekly report creation and comparison, authenticated APIs, admin recovery safeguards, transient-error retries and DLQ behavior. These runs contacted only portal staging D1 and sanitized fixture Workers; no production D1 or Worker was contacted.
 
-## 2. Verified production baseline
+## 2. Production administrator-access blocker (owner-reported, 2026-11-14)
+
+The project owner reports being unable to reach the production administrator controls because production still uses the legacy separate administrator username/password step-up. This is consistent with the current `main` implementation: the Worker expects the `ADMIN_USERNAME` and `ADMIN_PASSWORD_HASH` configuration and the production UI presents a separate administrator credential form after the member session is established. This is distinct from the PR #152 portal implementation, which has not been deployed.
+
+The intended PR #152 authorization flow is:
+
+1. The member signs in with a Torn API key belonging to their own account. The Worker validates that key with Torn, confirms the player's identity and Naughty Souls faction membership, and creates a session tied to that verified Torn player ID.
+2. Administrator privilege is a separate role attached to that verified player ID in the D1 `administrators` registry. The Worker joins the active role to the authenticated session and checks it on every `/api/admin/*` request.
+3. The portal administrator registry UI grants/revokes by Torn player ID. The owner bootstrap is limited to the configured `ADMIN_PLAYER_ID` and uses insert-if-absent semantics; it does not override a previously revoked row.
+4. A Torn ID by itself is not an authentication secret. The Torn API key proves account control; the verified player ID is the stable identity to which the administrator role is attached.
+
+**Operational consequence:** The new Torn-identity/administrator-registry flow cannot provide production admin access until the portal D1 migrations (including `0012_administrator_registry.sql`), the portal Worker, and the `naughtyfamily` Pages frontend are deployed together. Until then, production continues to use the legacy administrator credential step-up, which the owner reports is currently unusable. Staging acceptance of the new role flow is not proof that production has switched over.
+
+Do not attempt to work around production authorization, alter production administrator records, or change production secrets as an interim fix. The cutover remains paused until the verified external D1 backup, fresh pre-migration Time Travel bookmark, reviewed migration/deployment sequence, and explicit release approval are in place. Production remains unchanged by this documentation update.
+
+## 3. Verified production baseline
 
 These values were read from Cloudflare and the live production D1 database during this review. Re-check them immediately before a release; do not assume they remain unchanged.
 
@@ -51,7 +66,7 @@ The live production D1 ledger now contains 16 migration records and ends with `0
 
 A read-only Time Travel bookmark was available during the review. It is only a review-time observation, not the release rollback point. Capture a fresh bookmark immediately before the production migration.
 
-## 3. Deployment safety controls
+## 4. Deployment safety controls
 
 ### Pages
 
@@ -72,7 +87,7 @@ The PR branch now makes this workflow `workflow_dispatch` only. It requires:
 
 The workflow lists pending migrations, applies them, lists the ledger again, deploys the Worker, and checks production health plus encryption readiness. The backup-reference input is a manual gate only: the workflow does not create, download, inspect, or validate the backup. The operator must complete those checks independently before dispatching it. This safeguard takes effect when the PR's workflow change is merged to `main`.
 
-## 4. Migration review
+## 5. Migration review
 
 The portal staging D1 has successfully applied the portal branch migration chain through `0025_halloween_attack_metrics.sql` (30 migration records; 64 tables), with end-to-end staging integration confirmed on run #43508964870. Production has already applied `0012_company_ranking_snapshots.sql`; the portal-specific migration files still pending in production are:
 
@@ -141,7 +156,7 @@ After the preceding checks and explicit approval:
 9. Verify the new Pages root, JavaScript bundle API URL, browser CORS, sign-in, company refresh, and critical workspace flows. Keep the previous Pages site frozen as the fallback.
 10. Record the deployed Worker version, Pages deployment ID, D1 migration ledger, backup reference/checksum and smoke-test results in the release record.
 
-## 7. Rollback plan and limitations
+## 8. Rollback plan and limitations
 
 ### Worker code rollback
 
