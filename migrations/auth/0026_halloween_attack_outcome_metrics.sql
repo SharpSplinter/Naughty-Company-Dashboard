@@ -7,3 +7,6 @@ ALTER TABLE halloween_attack_metrics_jobs
 
 ALTER TABLE halloween_attack_metrics_jobs
   ADD COLUMN lost_stalemated_attacks INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE halloween_attack_metrics_jobs
+  ADD COLUMN outcomes_version INTEGER NOT NULL DEFAULT 0;
