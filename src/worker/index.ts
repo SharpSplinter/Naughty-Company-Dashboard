@@ -2120,13 +2120,12 @@ async function loadHalloweenExchangeMarketValue(
 }
 
 async function loadRecordedHalloweenEventWindows(db: D1Database): Promise<Array<{ eventYear: number; startAt: string; endAt: string }>> {
+  // Configured event years must be selectable before the first member collection.
+  // Otherwise the UI creates a dead end: no records means no year option, and no
+  // year option means the member cannot start the first collection.
   const rows = await db.prepare(
     `SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt
-     FROM halloween_event_windows e
-     WHERE EXISTS (SELECT 1 FROM halloween_collection_jobs j WHERE j.event_year = e.event_year)
-        OR EXISTS (SELECT 1 FROM halloween_event_logs l WHERE l.event_year = e.event_year)
-        OR EXISTS (SELECT 1 FROM halloween_attack_metrics_jobs a WHERE a.event_year = e.event_year)
-        OR EXISTS (SELECT 1 FROM halloween_live_snapshots s WHERE s.event_year = e.event_year)
+     FROM halloween_event_windows
      ORDER BY event_year DESC`
   ).all<{ eventYear: number; startAt: string; endAt: string }>()
   return rows.results ?? []
@@ -2328,6 +2327,32 @@ async function throttleHalloweenRequest(env: WorkerEnv, playerId: string): Promi
     .bind(playerId, startedAt).run()
 }
 
+async function getHalloweenHistoricalCollectionKey(env: WorkerEnv, playerId: string): Promise<string | null> {
+  const row = await requireDb(env).prepare(
+    "SELECT access_level AS accessLevel, consent_version AS consentVersion FROM halloween_historical_keys WHERE player_id = ?"
+  ).bind(playerId).first<{ accessLevel: string; consentVersion: string }>()
+  if (!row || row.consentVersion !== "halloween-history-v2") return null
+
+  // The service-owned Full Access secret is used only for its verified owner.
+  // Other members continue to use their own encrypted portal sign-in key.
+  if (playerId === ADMIN_PLAYER_ID) {
+    const apiKey = env.TORN_API_KEY_FULL_ACCESS?.trim() ?? ""
+    if (!apiKey || row.accessLevel !== "Full Access") return null
+    const response = await trackedTornFetch("halloween-owner-key-validation", "https://api.torn.com/v2/key/info", {
+      headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+    }, fetch, playerId)
+    const payload: unknown = await response.json().catch(() => null)
+    const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+    const info = isRecord(payload) && isRecord(payload.info) ? payload.info : null
+    const owner = isRecord(info?.user) ? String(info.user.id ?? "") : ""
+    const access = isRecord(info?.access) ? String(info.access.type ?? "") : ""
+    if (!response.ok || error || owner !== playerId || access !== "Full Access") return null
+    return apiKey
+  }
+
+  return savedKey(env, playerId)
+}
+
 async function sendHalloweenCollectionJob(env: WorkerEnv, jobId: string): Promise<void> {
   if (!env.GLOBAL_RANKINGS_QUEUE) throw new Error("The background collection queue is not configured.")
   await env.GLOBAL_RANKINGS_QUEUE.send({ kind: "halloween-log-collection", jobId })
@@ -2375,9 +2400,7 @@ async function runHalloweenAttackMetricsPage(env: WorkerEnv, jobId: string): Pro
     return
   }
 
-  const keyRow = await db.prepare("SELECT player_id, consent_version FROM halloween_historical_keys WHERE player_id = ?")
-    .bind(job.player_id).first<{ player_id: string; consent_version: string }>()
-  const apiKey = keyRow?.consent_version === "halloween-history-v2" ? await savedKey(env, job.player_id) : null
+  const apiKey = await getHalloweenHistoricalCollectionKey(env, job.player_id)
   if (!apiKey) {
     await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
       .bind("The member must accept the updated Halloween collection terms with a key that includes User → Attacks.", new Date().toISOString(), jobId).run()
@@ -2541,9 +2564,7 @@ async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Pro
       .bind("Historical collection is disabled for this event year.", new Date().toISOString(), jobId).run()
     return
   }
-  const keyRow = await db.prepare("SELECT player_id FROM halloween_historical_keys WHERE player_id = ?")
-    .bind(job.player_id).first<{ player_id: string }>()
-  const apiKey = keyRow ? await savedKey(env, job.player_id) : null
+  const apiKey = await getHalloweenHistoricalCollectionKey(env, job.player_id)
   if (!apiKey) {
     await db.prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
       .bind("The member's portal API key is no longer connected. Sign in with a key that includes user log access.", new Date().toISOString(), jobId).run()
@@ -6755,7 +6776,7 @@ export default {
       const db = requireDb(env)
       const key = await db.prepare("SELECT player_id, consent_version AS consentVersion FROM halloween_historical_keys WHERE player_id = ?")
         .bind(session.player_id).first<{ player_id: string; consentVersion: string }>()
-      const portalKey = await savedKey(env, session.player_id)
+      const portalKey = await getHalloweenHistoricalCollectionKey(env, session.player_id)
       if (!key || !portalKey) return jsonResponse({ error: "Enable Halloween historical collection with your saved portal API key before collecting logs." }, 409, origin)
       if (key.consentVersion !== "halloween-history-v2") {
         return jsonResponse({ error: "Review the updated Halloween collection terms and enable User → Attacks access before collecting Revitalize data." }, 409, origin)
