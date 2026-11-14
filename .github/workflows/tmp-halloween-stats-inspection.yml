@@ -1,0 +1,79 @@
+name: Temporary Halloween stats payload inspection
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect Halloween log shapes without exposing raw entries
+        env:
+          TORN_API_KEY: ${{ secrets.TORN_API_KEY_FULL_ACCESS }}
+        run: |
+          node <<'NODE'
+          const start = 1792929600;
+          const end = 1793534400;
+          if (!process.env.TORN_API_KEY) throw new Error("Required repository secret is unavailable.");
+          let url = new URL("https://api.torn.com/v2/user/log");
+          url.searchParams.set("from", String(start));
+          url.searchParams.set("to", String(end));
+          url.searchParams.set("log", "2535,2536,2540");
+          url.searchParams.set("limit", "100");
+          const records = [];
+          for (let page = 0; page < 100; page++) {
+            const response = await fetch(url, {
+              headers: { Authorization: "ApiKey " + process.env.TORN_API_KEY, Accept: "application/json" }
+            });
+            const payload = await response.json();
+            if (!response.ok || payload?.error) throw new Error("Torn log request failed (HTTP " + response.status + ").");
+            if (!Array.isArray(payload?.log)) throw new Error("Unexpected Torn user-log response shape.");
+            records.push(...payload.log);
+            const next = payload?._metadata?.links?.next;
+            if (!next) break;
+            const parsed = new URL(next, url);
+            if (parsed.protocol !== "https:" || parsed.hostname !== "api.torn.com" || parsed.pathname !== "/v2/user/log" || parsed.searchParams.has("key")) throw new Error("Unsafe pagination URL.");
+            url = parsed;
+            if (page === 99) throw new Error("Pagination safety limit reached.");
+          }
+          const byType = {};
+          const itemTotals = {};
+          const treatDistribution = {};
+          const fieldShapes = {};
+          for (const row of records) {
+            const id = String(row?.details?.id ?? "unknown");
+            byType[id] = (byType[id] ?? 0) + 1;
+            const data = row?.data && typeof row.data === "object" && !Array.isArray(row.data) ? row.data : {};
+            const params = row?.params && typeof row.params === "object" && !Array.isArray(row.params) ? row.params : {};
+            if (["2535", "2536", "2540"].includes(id) && !fieldShapes[id]) {
+              fieldShapes[id] = {
+                title: row?.details?.title ?? null,
+                category: row?.details?.category ?? null,
+                data: Object.fromEntries(Object.entries(data).map(([k,v]) => [k, Array.isArray(v) ? "array" : v === null ? "null" : typeof v])),
+                params: Object.fromEntries(Object.entries(params).map(([k,v]) => [k, Array.isArray(v) ? "array" : v === null ? "null" : typeof v]))
+              };
+            }
+            if (id === "2536") {
+              const n = Number(data.treats);
+              if (Number.isFinite(n) && n >= 0) treatDistribution[String(n)] = (treatDistribution[String(n)] ?? 0) + 1;
+            }
+            if (id === "2535" && data.items && typeof data.items === "object" && !Array.isArray(data.items)) {
+              for (const [itemId, quantity] of Object.entries(data.items)) {
+                const n = Number(quantity);
+                if (/^\\d+$/.test(itemId) && Number.isFinite(n) && n >= 0) itemTotals[itemId] = (itemTotals[itemId] ?? 0) + n;
+              }
+            }
+          }
+          console.log("HALLOWEEN_STATS_SCHEMA " + JSON.stringify({
+            window: { from: start, to: end },
+            pagesRecords: records.length,
+            recordsByType: byType,
+            fieldShapes,
+            treatAwardDistribution: treatDistribution,
+            exchangeItemTotalsById: itemTotals
+          }));
+          NODE
