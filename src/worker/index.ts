@@ -1958,12 +1958,17 @@ async function loadHalloweenEventMetricsForPlayers(db: D1Database, eventYear: nu
     }
   }
   const attackRows = await db.prepare(
-    `SELECT player_id AS playerId, attacks_reviewed AS attacksReviewed, revitalize_procs AS revitalizeProcs, revitalize_chances_json AS chancesJson
+    `SELECT player_id AS playerId, attacks_reviewed AS attacksReviewed, successful_attacks AS successfulAttacks,
+            lost_stalemated_attacks AS lostStalematedAttacks, outcomes_version AS outcomesVersion,
+            revitalize_procs AS revitalizeProcs, revitalize_chances_json AS chancesJson
      FROM halloween_attack_metrics_jobs
      WHERE event_year = ? AND status = 'complete' AND player_id IN (${placeholders})`
   ).bind(eventYear, ...playerIds).all<{
     playerId: string
     attacksReviewed: number
+    successfulAttacks: number
+    lostStalematedAttacks: number
+    outcomesVersion: number
     revitalizeProcs: number
     chancesJson: string
   }>()
@@ -1972,9 +1977,16 @@ async function loadHalloweenEventMetricsForPlayers(db: D1Database, eventYear: nu
     if (!metrics) continue
     metrics.revitalizeAttacksReviewed = Number(row.attacksReviewed ?? 0)
     metrics.revitalizeProcs = Number(row.revitalizeProcs ?? 0)
-    // Match the proc numerator to successful attack-log counts from the same
-    // member-event collection with complete detailed attack coverage.
-    metrics.revitalizeSuccessfulAttacks = metrics.successfulAttacks
+    if (Number(row.outcomesVersion ?? 0) >= 1) {
+      metrics.successfulAttacks = Number(row.successfulAttacks ?? 0)
+      metrics.lostStalematedAttacks = Number(row.lostStalematedAttacks ?? 0)
+      metrics.revitalizeSuccessfulAttacks = metrics.successfulAttacks
+      metrics.treatsByAttack["0"] = Math.max(0, metrics.successfulAttacks - metrics.successfulAttacksWithTreats)
+    } else {
+      // Preserve the existing log-derived successful-attack count until this
+      // member refreshes detailed attack data with outcome coverage.
+      metrics.revitalizeSuccessfulAttacks = metrics.successfulAttacks
+    }
     try {
       const chances = JSON.parse(String(row.chancesJson ?? "{}"))
       if (isRecord(chances)) {
@@ -2188,7 +2200,7 @@ async function sendHalloweenAttackMetricsJob(env: WorkerEnv, jobId: string): Pro
 async function runHalloweenAttackMetricsPage(env: WorkerEnv, jobId: string): Promise<void> {
   const db = requireDb(env)
   const job = await db.prepare(
-    "SELECT job_id, player_id, event_year, status, cursor_url, window_start_at, window_end_at, pages_collected, attacks_reviewed, revitalize_procs, revitalize_chances_json FROM halloween_attack_metrics_jobs WHERE job_id = ?"
+    "SELECT job_id, player_id, event_year, status, cursor_url, window_start_at, window_end_at, pages_collected, attacks_reviewed, successful_attacks, lost_stalemated_attacks, revitalize_procs, revitalize_chances_json FROM halloween_attack_metrics_jobs WHERE job_id = ?"
   ).bind(jobId).first<{
     job_id: string
     player_id: string
@@ -2199,6 +2211,8 @@ async function runHalloweenAttackMetricsPage(env: WorkerEnv, jobId: string): Pro
     window_end_at: string
     pages_collected: number
     attacks_reviewed: number
+    successful_attacks: number
+    lost_stalemated_attacks: number
     revitalize_procs: number
     revitalize_chances_json: string
   }>()
@@ -2302,6 +2316,8 @@ async function runHalloweenAttackMetricsPage(env: WorkerEnv, jobId: string): Pro
   const nextCandidate = typeof links.next === "string" ? links.next : typeof links.prev === "string" ? links.prev : null
   const pages = Number(job.pages_collected ?? 0) + 1
   const reviewed = Number(job.attacks_reviewed ?? 0) + pageMetrics.revitalizeAttacksReviewed
+  const successfulAttacks = Number(job.successful_attacks ?? 0) + pageMetrics.successfulAttacks
+  const lostStalematedAttacks = Number(job.lost_stalemated_attacks ?? 0) + pageMetrics.lostStalematedAttacks
   const procs = Number(job.revitalize_procs ?? 0) + pageMetrics.revitalizeProcs
   const now = new Date().toISOString()
 
@@ -2310,14 +2326,14 @@ async function runHalloweenAttackMetricsPage(env: WorkerEnv, jobId: string): Pro
     if (nextUrl.protocol !== "https:" || nextUrl.hostname !== "api.torn.com" || nextUrl.pathname !== "/v2/user/attacks" || nextUrl.searchParams.has("key")) {
       throw new Error("Torn returned an unsafe detailed attack pagination link.")
     }
-    await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'running', cursor_url = ?, pages_collected = ?, attacks_reviewed = ?, revitalize_procs = ?, revitalize_chances_json = ?, last_error = NULL, updated_at = ? WHERE job_id = ?")
-      .bind(nextUrl.toString(), pages, reviewed, procs, asJson(chances), now, jobId).run()
+    await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'running', cursor_url = ?, pages_collected = ?, attacks_reviewed = ?, successful_attacks = ?, lost_stalemated_attacks = ?, revitalize_procs = ?, revitalize_chances_json = ?, outcomes_version = 0, last_error = NULL, updated_at = ? WHERE job_id = ?")
+      .bind(nextUrl.toString(), pages, reviewed, successfulAttacks, lostStalematedAttacks, procs, asJson(chances), now, jobId).run()
     await sendHalloweenAttackMetricsJob(env, jobId)
     return
   }
 
-  await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'complete', cursor_url = NULL, pages_collected = ?, attacks_reviewed = ?, revitalize_procs = ?, revitalize_chances_json = ?, last_error = NULL, completed_at = ?, updated_at = ? WHERE job_id = ?")
-    .bind(pages, reviewed, procs, asJson(chances), now, now, jobId).run()
+  await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'complete', cursor_url = NULL, pages_collected = ?, attacks_reviewed = ?, successful_attacks = ?, lost_stalemated_attacks = ?, revitalize_procs = ?, revitalize_chances_json = ?, outcomes_version = 1, last_error = NULL, completed_at = ?, updated_at = ? WHERE job_id = ?")
+    .bind(pages, reviewed, successfulAttacks, lostStalematedAttacks, procs, asJson(chances), now, now, jobId).run()
 }
 
 type HalloweenEventDefinition = { eventYear: number; startAt: string; endAt: string }
@@ -6170,8 +6186,8 @@ export default {
           .bind(session.player_id, yearValue).first<{ jobId: string; status: string; logsCollected: number }>(),
         db.prepare("SELECT job_id AS jobId, status, logs_collected AS logsCollected FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? AND status = 'complete' ORDER BY updated_at DESC LIMIT 1")
           .bind(session.player_id, yearValue).first<{ jobId: string; status: string; logsCollected: number }>(),
-        db.prepare("SELECT job_id AS jobId, status, attacks_reviewed AS attacksReviewed FROM halloween_attack_metrics_jobs WHERE player_id = ? AND event_year = ? LIMIT 1")
-          .bind(session.player_id, yearValue).first<{ jobId: string; status: string; attacksReviewed: number }>(),
+        db.prepare("SELECT job_id AS jobId, status, attacks_reviewed AS attacksReviewed, outcomes_version AS outcomesVersion FROM halloween_attack_metrics_jobs WHERE player_id = ? AND event_year = ? LIMIT 1")
+          .bind(session.player_id, yearValue).first<{ jobId: string; status: string; attacksReviewed: number; outcomesVersion: number }>(),
       ])
 
       let logJobId = activeLog?.jobId ?? finishedLog?.jobId ?? ""
@@ -6195,11 +6211,12 @@ export default {
       let attackJobId = existingAttack?.jobId ?? ""
       let attackStatus = existingAttack?.status ?? "not_started"
       let attackQueueError = ""
-      if (!existingAttack || ["failed", "cancelled"].includes(existingAttack.status)) {
+      if (!existingAttack || ["failed", "cancelled"].includes(existingAttack.status) ||
+          (existingAttack.status === "complete" && Number(existingAttack.outcomesVersion ?? 0) < 1)) {
         attackJobId = existingAttack?.jobId ?? crypto.randomUUID()
         attackStatus = "queued"
         if (existingAttack) {
-          await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'queued', cursor_url = NULL, window_start_at = ?, window_end_at = ?, pages_collected = 0, attacks_reviewed = 0, revitalize_procs = 0, revitalize_chances_json = '{}', last_error = NULL, completed_at = NULL, updated_at = ? WHERE job_id = ?")
+          await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'queued', cursor_url = NULL, window_start_at = ?, window_end_at = ?, pages_collected = 0, attacks_reviewed = 0, successful_attacks = 0, lost_stalemated_attacks = 0, outcomes_version = 0, revitalize_procs = 0, revitalize_chances_json = '{}', last_error = NULL, completed_at = NULL, updated_at = ? WHERE job_id = ?")
             .bind(personal.window.startAt, personal.window.endAt, now, attackJobId).run()
         } else {
           await db.prepare("INSERT INTO halloween_attack_metrics_jobs (job_id, player_id, event_year, status, window_start_at, window_end_at, created_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)")
