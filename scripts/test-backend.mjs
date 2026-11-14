@@ -74,7 +74,7 @@ try {
   } = require(join(temp, "lib/faction-performance/weekly.js"))
   const { filterAndSortWeeklyMembers } = require(join(temp, "lib/faction-performance/leaderboard.js"))
   const { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } = require(join(temp, "lib/faction-performance/private-live.js"))
-  const { calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, emptyHalloweenEventMetrics, sumHalloweenEventMetrics } = require(join(temp, "lib/halloween/metrics.js"))
+  const { calculateHalloweenBoosterCooldown, calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, emptyHalloweenEventMetrics, sumHalloweenEventMetrics } = require(join(temp, "lib/halloween/metrics.js"))
   const {
     buildPersonalStatsPath,
     categoriesForMissingPersonalStats,
@@ -374,6 +374,46 @@ try {
       revitalizeChanceCounts: {},
     })
     assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
+  })
+
+  await test("Halloween cooldown calculation counts every FHC use and applies the corrected per-item cooldown values", () => {
+    const rows = [
+      ...Array.from({ length: 24 }, () => ({
+        logTypeId: 2190,
+        title: "Item use Feathery Hotel Coupon",
+        category: "ITEM USE",
+        logJson: JSON.stringify({ data: { item: 367 } }),
+      })),
+      ...Array.from({ length: 2 }, () => ({
+        logTypeId: 8981,
+        title: "Item use Green Easter Egg",
+        category: "item use",
+        logJson: JSON.stringify({ data: { item: 473 } }),
+      })),
+      ...Array.from({ length: 2 }, () => ({
+        logTypeId: 2040,
+        title: "Item use Energy Drink",
+        category: null,
+        logJson: JSON.stringify({ data: { item: 530 } }),
+      })),
+    ]
+    const metrics = calculateHalloweenEventMetrics(rows)
+    assert.equal(metrics.fhcsUsed, 24)
+    assert.equal(metrics.greenEggsUsed, 2)
+    assert.equal(metrics.energyCansUsed, 2)
+    assert.deepEqual(calculateHalloweenBoosterCooldown(metrics), {
+      fhcsUsed: 24,
+      greenEggsUsed: 2,
+      energyCansUsed: 2,
+      fhcHours: 144,
+      greenEggHours: 12,
+      energyCanHours: 4,
+      totalHours: 160,
+      eventWindowHours: 168,
+      usableHours: 160,
+      uncoveredHours: 8,
+      excessHours: 0,
+    })
   })
 
   await test("Halloween Revitalize proc parsing counts only the member's actual finishing-hit procs in their event window", () => {

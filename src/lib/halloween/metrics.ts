@@ -1,3 +1,25 @@
+export const HALLOWEEN_BOOSTER_COOLDOWN_RULES = {
+  fhcHours: 6,
+  greenEggHours: 6,
+  energyCanHours: 2,
+  maxTimerHours: 48,
+  eventWindowHours: 168,
+} as const
+
+export type HalloweenBoosterCooldownEstimate = {
+  fhcsUsed: number
+  greenEggsUsed: number
+  energyCansUsed: number
+  fhcHours: number
+  greenEggHours: number
+  energyCanHours: number
+  totalHours: number
+  eventWindowHours: number
+  usableHours: number
+  uncoveredHours: number
+  excessHours: number
+}
+
 export type HalloweenEventMetrics = {
   boosters: number
   boostersUsed: number
@@ -32,6 +54,36 @@ const GREEN_EGG_ITEM_IDS = new Set(["473"])
 const ENERGY_CAN_ITEM_IDS = new Set(["530", "532", "533", "553", "554", "555", "985", "986", "987"])
 const ENERGY_DRINK_SIX_PACK_ITEM_ID = "818"
 const ALCOHOL_SIX_PACK_ITEM_ID = "817"
+
+export function calculateHalloweenBoosterCooldown(
+  metrics: Pick<HalloweenEventMetrics, "fhcsUsed" | "greenEggsUsed" | "energyCansUsed">,
+  eventWindowHours = HALLOWEEN_BOOSTER_COOLDOWN_RULES.eventWindowHours,
+): HalloweenBoosterCooldownEstimate {
+  const count = (value: number) => Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0
+  const fhcsUsed = count(metrics.fhcsUsed)
+  const greenEggsUsed = count(metrics.greenEggsUsed)
+  const energyCansUsed = count(metrics.energyCansUsed)
+  const validEventHours = Number.isFinite(eventWindowHours) && eventWindowHours >= 0
+    ? eventWindowHours
+    : HALLOWEEN_BOOSTER_COOLDOWN_RULES.eventWindowHours
+  const fhcHours = fhcsUsed * HALLOWEEN_BOOSTER_COOLDOWN_RULES.fhcHours
+  const greenEggHours = greenEggsUsed * HALLOWEEN_BOOSTER_COOLDOWN_RULES.greenEggHours
+  const energyCanHours = energyCansUsed * HALLOWEEN_BOOSTER_COOLDOWN_RULES.energyCanHours
+  const totalHours = fhcHours + greenEggHours + energyCanHours
+  return {
+    fhcsUsed,
+    greenEggsUsed,
+    energyCansUsed,
+    fhcHours,
+    greenEggHours,
+    energyCanHours,
+    totalHours,
+    eventWindowHours: validEventHours,
+    usableHours: Math.min(totalHours, validEventHours),
+    uncoveredHours: Math.max(0, validEventHours - totalHours),
+    excessHours: Math.max(0, totalHours - validEventHours),
+  }
+}
 
 export function emptyHalloweenEventMetrics(): HalloweenEventMetrics {
   return {

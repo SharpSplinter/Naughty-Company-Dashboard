@@ -242,6 +242,14 @@
 .historical-detail-metrics small,.historical-detail-metrics strong{display:block}
 .historical-detail-metrics small{font-size:7px;letter-spacing:.12em;color:#82999e}
 .historical-detail-metrics strong{font:600 14px 'Space Grotesk',sans-serif;color:#d9eee4;margin-top:6px}
+.historical-booster-cooldown{margin-top:16px;padding:15px;border:1px solid #594f3d;border-radius:9px;background:#171e23}
+.historical-booster-cooldown h3{margin:9px 0 12px;font:600 13px 'Space Grotesk',sans-serif;color:#e7e0d1}
+.historical-booster-cooldown>p{margin:12px 0 0;color:#aab2ad;font-size:9px;line-height:1.7}
+.historical-detail-cooldown-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.historical-detail-cooldown-grid>div{min-width:0;padding:10px;border:1px solid #ffffff15;border-radius:7px;background:#0d171e}
+.historical-detail-cooldown-grid small,.historical-detail-cooldown-grid strong{display:block}
+.historical-detail-cooldown-grid small{font-size:7px;letter-spacing:.08em;color:#82999e}
+.historical-detail-cooldown-grid strong{font:600 12px 'Space Grotesk',sans-serif;color:#e2eee6;margin-top:6px}
 .historical-daily-activity,.historical-event-feed{margin-top:18px}
 .historical-daily-activity h3,.historical-event-feed h3{margin:0 0 12px;font:600 13px 'Space Grotesk',sans-serif;color:#d9e8e0}
 .historical-day-row{display:grid;grid-template-columns:90px minmax(50px,1fr) 44px;align-items:center;gap:12px;margin:9px 0}
@@ -256,7 +264,7 @@
 .event-hit-pill,.event-label-pill{display:inline-block;border-radius:5px;padding:3px 5px;margin:0 0 4px 4px;font-size:7px;letter-spacing:.05em;text-transform:uppercase}
 .event-hit-pill{background:#573434;color:#ffb4a9;border:1px solid #8e5952}
 .event-label-pill{background:#1e3835;color:#a9d7c5;border:1px solid #3a6259}
-@media(max-width:680px){.historical-collection-toolbar,.historical-collect-banner{align-items:flex-start;flex-direction:column}.historical-collect-banner button{width:100%}.historical-detail-metrics{grid-template-columns:1fr}.historical-event-feed article{flex-direction:column}.historical-day-row{grid-template-columns:74px minmax(40px,1fr) 36px}}
+@media(max-width:680px){.historical-collection-toolbar,.historical-collect-banner{align-items:flex-start;flex-direction:column}.historical-collect-banner button{width:100%}.historical-detail-metrics{grid-template-columns:1fr}.historical-detail-cooldown-grid{grid-template-columns:1fr}.historical-event-feed article{flex-direction:column}.historical-day-row{grid-template-columns:74px minmax(40px,1fr) 36px}}
 
 .halloween-personal-window{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(240px,.65fr);gap:26px;margin:18px 0 20px;padding:22px 24px;border:1px solid #355448;border-radius:13px;background:linear-gradient(135deg,#142821,#111d25)}
 .halloween-personal-window-copy h2{margin:12px 0 9px;font:600 20px 'Space Grotesk',sans-serif;color:#e6f2e9}

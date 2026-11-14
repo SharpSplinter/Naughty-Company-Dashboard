@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import type { HalloweenEventMetrics } from "../../lib/halloween/metrics"
+import { calculateHalloweenBoosterCooldown, type HalloweenEventMetrics } from "../../lib/halloween/metrics"
 import { filterAndSortWeeklyMembers, type WeeklyLeaderboardDirection, type WeeklyLeaderboardParticipationFilter, type WeeklyLeaderboardSortKey, type WeeklyLeaderboardStatusFilter } from "../../lib/faction-performance/leaderboard"
 
 type SavedCompanySummary = {
@@ -1569,7 +1569,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [collectBusy, setCollectBusy] = useState(false)
   const [collectMessage, setCollectMessage] = useState("")
   const [selectedMember, setSelectedMember] = useState<{ playerId: string; playerName: string } | null>(null)
-  const [memberDetail, setMemberDetail] = useState<{ collection: { status: string; coverage: string; logsCollected?: number }; dailyActivity: Array<{ eventDay: string; totalHits: number; relevantLogs: number }>; logs: Array<{ logId: string; timestamp: number; title: string; category: string; labels: string[]; isHit: boolean; details: Record<string, unknown> | null }> } | null>(null)
+  const [memberDetail, setMemberDetail] = useState<{ collection: { status: string; coverage: string; logsCollected?: number }; dailyActivity: Array<{ eventDay: string; totalHits: number; relevantLogs: number }>; metrics: Pick<HalloweenEventMetrics, "fhcsUsed" | "greenEggsUsed" | "energyCansUsed"> | null; logs: Array<{ logId: string; timestamp: number; title: string; category: string; labels: string[]; isHit: boolean; details: Record<string, unknown> | null }> } | null>(null)
   const [memberDetailBusy, setMemberDetailBusy] = useState(false)
 
   const loadHistoricalKeyStatus = async () => {
@@ -1616,9 +1616,9 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     setSelectedMember(member); setMemberDetail(null); setMemberDetailBusy(true); setArchiveError("")
     try {
       const response = await fetch(apiBase + "/api/me/halloween/members/" + encodeURIComponent(member.playerId) + "?year=" + eventYear, { headers: { Authorization: "Bearer " + sessionToken } })
-      const payload = await response.json() as { error?: string; collection?: { status: string; coverage: string; logsCollected?: number }; dailyActivity?: Array<{ eventDay: string; totalHits: number; relevantLogs: number }>; logs?: Array<{ logId: string; timestamp: number; title: string; category: string; labels: string[]; isHit: boolean; details: Record<string, unknown> | null }> }
+      const payload = await response.json() as { error?: string; collection?: { status: string; coverage: string; logsCollected?: number }; dailyActivity?: Array<{ eventDay: string; totalHits: number; relevantLogs: number }>; metrics?: Pick<HalloweenEventMetrics, "fhcsUsed" | "greenEggsUsed" | "energyCansUsed"> | null; logs?: Array<{ logId: string; timestamp: number; title: string; category: string; labels: string[]; isHit: boolean; details: Record<string, unknown> | null }> }
       if (!response.ok) throw new Error(payload.error || "Could not load this member's event history.")
-      setMemberDetail({ collection: payload.collection || { status: "not_collected", coverage: "not_collected" }, dailyActivity: payload.dailyActivity || [], logs: payload.logs || [] })
+      setMemberDetail({ collection: payload.collection || { status: "not_collected", coverage: "not_collected" }, dailyActivity: payload.dailyActivity || [], metrics: payload.metrics ?? null, logs: payload.logs || [] })
     } catch (caught) { setArchiveError(caught instanceof Error ? caught.message : "Could not load this member's event history.") }
     finally { setMemberDetailBusy(false) }
   }
@@ -1736,6 +1736,9 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const revitalizeChanceLabel = Object.keys(archive?.eventTotals?.revitalizeChanceCounts ?? {}).sort((a, b) => Number(a) - Number(b)).map(chance => chance + "%").join(" · ") || "—"
   const eventMetricsReady = (archive?.eventTotals?.coveredMembers ?? 0) > 0
   const eventMetric = (value: number | undefined) => eventMetricsReady && value !== undefined ? value.toLocaleString() : "—"
+  const memberBoosterCooldown = memberDetail?.metrics
+    ? calculateHalloweenBoosterCooldown(memberDetail.metrics)
+    : null
 
   return (
     <main className="module-page halloween-module">
@@ -1866,6 +1869,21 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
             <div className="historical-detail-heading"><div><small>MEMBER EVENT PROFILE</small><strong>{selectedMember.playerName} <span>#{selectedMember.playerId}</span></strong></div><button type="button" onClick={() => { setSelectedMember(null); setMemberDetail(null) }}>Close</button></div>
             {memberDetailBusy ? <p className="historical-key-muted">Loading member history…</p> : memberDetail ? <>
               <div className="historical-detail-metrics"><div><small>COLLECTION STATUS</small><strong>{coverageLabel(memberDetail.collection.coverage)}</strong></div><div><small>DAILY HIT DAYS</small><strong>{memberDetail.dailyActivity.filter(day => Number(day.totalHits) > 0).length}</strong></div><div><small>EVENT LOGS</small><strong>{memberDetail.logs.length.toLocaleString()}</strong></div></div>
+              {memberBoosterCooldown ? (
+                <section className="historical-booster-cooldown" aria-label="Personal booster cooldown calculation">
+                  <div className="halloween-status historical"><i /> PERSONAL BOOSTER COOLDOWN</div>
+                  <h3>Cooldown from items used in this event window</h3>
+                  <div className="historical-detail-cooldown-grid">
+                    <div><small>FEATHERY HOTEL COUPONS · 6H EACH</small><strong>{memberBoosterCooldown.fhcsUsed} used · {memberBoosterCooldown.fhcHours}h</strong></div>
+                    <div><small>GREEN EASTER EGGS · 6H EACH</small><strong>{memberBoosterCooldown.greenEggsUsed} used · {memberBoosterCooldown.greenEggHours}h</strong></div>
+                    <div><small>ENERGY CANS · 2H EACH</small><strong>{memberBoosterCooldown.energyCansUsed} used · {memberBoosterCooldown.energyCanHours}h</strong></div>
+                    <div><small>TOTAL ITEM COOLDOWN</small><strong>{memberBoosterCooldown.totalHours}h</strong></div>
+                    <div><small>USABLE IN 168H EVENT</small><strong>{memberBoosterCooldown.usableHours}h / {memberBoosterCooldown.eventWindowHours}h</strong></div>
+                    <div><small>EVENT TIME UNCOVERED</small><strong>{memberBoosterCooldown.uncoveredHours}h</strong></div>
+                  </div>
+                  <p>Event opening cooldown is 0h. The 48h maximum applies to the active timer when an item is used, not to the total cooldown accumulated across the event. Use the first items up to 48h, then use another cooldown item whenever the timer drops below 48h. Counts come from this member’s completed event-window item-use logs.</p>
+                </section>
+              ) : <p className="historical-key-muted">Booster cooldown totals appear when this member’s Halloween event-log collection is complete.</p>}
               <div className="historical-daily-activity"><h3>Daily hit history</h3>{memberDetail.dailyActivity.length ? memberDetail.dailyActivity.map(day => <div className="historical-day-row" key={day.eventDay}><span>{day.eventDay}</span><div><i style={{ width: ((Number(day.totalHits || 0) / maxDailyHits) * 100) + "%" }} /></div><strong>{Number(day.totalHits || 0).toLocaleString()}</strong></div>) : <p className="historical-key-muted">Daily activity is not available for this member yet.</p>}</div>
               <div className="historical-event-feed"><h3>Event log feed</h3>{memberDetail.logs.length ? memberDetail.logs.slice(0, 80).map(log => <article key={log.logId}><div><strong>{log.title || "Halloween-related activity"}</strong><small>{formatWhen(log.timestamp)} · Log #{log.logId}</small></div><div>{log.isHit && <span className="event-hit-pill">HIT</span>}{(log.labels || []).map(label => <span className="event-label-pill" key={label}>{label.replaceAll("_", " ")}</span>)}</div></article>) : <p className="historical-key-muted">No event logs are available for this member yet.</p>}</div>
             </> : <p className="historical-key-muted">No member details loaded.</p>}
