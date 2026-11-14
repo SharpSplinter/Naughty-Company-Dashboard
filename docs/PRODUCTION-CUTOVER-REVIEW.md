@@ -1,9 +1,9 @@
 # Production backup, migration, rollback and cutover review
 
 **Original review date:** 2026-11-03  
-**State refresh:** 2026-11-14 (read-only production baseline, successful portal staging validation, production D1 export and isolated restore rehearsal)  
+**State refresh:** 2026-11-14 04:24 UTC (current Time Travel bookmark re-read, production D1/Worker/Pages baseline rechecked, PR-head quality gates reviewed)  
 **Scope:** PR #152, branch `portal-rebuild`  
-**Decision:** The separate Naughty Family portal production cutover remains paused. The existing Company Dashboard baseline has since received PR #155 in production; this refresh updates the cutover baseline and does not perform any production mutation.
+**Decision:** **NO-GO for production cutover at this review.** The production Time Travel current bookmark and live D1/Worker/Pages baseline have been rechecked, and the release workflow/configuration safeguards are present. PR #152 remains OPEN/DRAFT with no submitted GitHub review approvals. The latest Halloween/Revitalize changes have not had a functional staging acceptance run on the current release candidate, production service-key fallback acceptance remains to be confirmed, and explicit approval to merge/deploy has not been given. This review performs no production mutation.
 
 **2026-11-13 baseline update:** PR #155 merged at `f0420232231fa9708cece921a4fd5921eaad8e71`. Its production Worker deployment succeeded, migration `0012_company_ranking_snapshots.sql` was applied, and the existing `naughty-company-dashboard` Pages site was manually deployed from Android. The owner confirmed Trends & Charts displays the correct data. This does **not** deploy the Naughty Family portal branch or authorize its remaining migrations.
 
@@ -42,7 +42,7 @@ The intended PR #152 authorization flow is:
 
 **Operational consequence:** The new Torn-identity/administrator-registry flow cannot provide production admin access until the portal D1 migrations (including `0012_administrator_registry.sql`), the portal Worker, and the `naughtyfamily` Pages frontend are deployed together. Until then, production continues to use the legacy administrator credential step-up, which the owner reports is currently unusable. Staging acceptance of the new role flow is not proof that production has switched over.
 
-Do not attempt to work around production authorization, alter production administrator records, or change production secrets as an interim fix. A full production D1 export backup and isolated data restore rehearsal have now completed successfully; the exact backup/checksum and rehearsal results are recorded in Section 6. The cutover remains paused until the owner has retained the encrypted archive, a fresh Time Travel bookmark is captured immediately before migration, the migration/deployment sequence is rechecked, and explicit release approval is given. Production remains unchanged by this documentation update.
+Do not attempt to work around production authorization, alter production administrator records, or change production secrets as an interim fix. A full production D1 export backup and isolated data restore rehearsal have completed successfully; the exact backup/checksum and rehearsal results are recorded in Section 6. The current Time Travel bookmark was re-read at 2026-11-14 04:23:12.859 UTC and recorded below. Re-read the current bookmark again immediately before migration if any writes, maintenance-driven bookmark advance, or meaningful delay occurs. The cutover remains paused pending final feature-level staging acceptance, confirmation of the production service-key fallback, explicit release approval, and the operator-ready migration/deployment window. Production remains unchanged.
 
 ## 3. Verified production baseline
 
@@ -64,7 +64,7 @@ These values were read from Cloudflare and the live production D1 database durin
 
 The live production D1 ledger now contains 16 migration records and ends with `0012_company_ranking_snapshots.sql`; the live schema has 41 tables. The pending portal branch migrations are `0012_administrator_registry.sql` and `0013` through `0025`. The two `0012` filenames are distinct migration records; the read-only ledger confirmed only the company-ranking file is applied in production. Production is not a clean or empty database. Do not repoint acceptance resources at production.
 
-A read-only Time Travel bookmark was available during the review. It is only a review-time observation, not the release rollback point. Capture a fresh bookmark immediately before the production migration.
+Cloudflare D1 Time Travel bookmarks are generated automatically; there is no manual bookmark-creation action. A fresh read-only `GET` of the current bookmark was completed at **2026-11-14T04:23:12.859Z** for production D1 `naughty-company-dashboard`. It returned `000004ca-0000033a-00005123-06be4f012000b1afd17db773eeaf4ef8`, unchanged from the export-time bookmark recorded in Section 6. This is a freshly revalidated current-bookmark reference, **not a newly minted snapshot**. Cloudflare documents that bookmarks advance automatically and can also move due to internal maintenance without application SQL writes. Re-read the current bookmark immediately before the actual migration if the cutover is delayed or any writes/maintenance events occur.
 
 ## 4. Deployment safety controls
 
@@ -113,7 +113,7 @@ The migration review found no intentional deletion of company history. Migration
 2. Confirm that `wrangler.toml` still points to the production Worker and the production D1 UUID above; compare it against `wrangler.acceptance.toml` to ensure no staging ID can be used.
 3. Run `npx wrangler d1 migrations list naughty-company-dashboard --remote --config wrangler.toml` and confirm that the portal-specific pending filenames are exactly `0012_administrator_registry.sql` and `0013`–`0025`; confirm `0012_company_ranking_snapshots.sql` is already applied.
 4. Export and verify the full production D1 database as described below. Store the backup in restricted encrypted storage outside the repository, GitHub Actions artifacts, and public logs.
-5. Capture and record a fresh D1 Time Travel bookmark immediately before migration.
+5. Read and record the current D1 Time Travel bookmark through the read-only API immediately before migration. Cloudflare creates bookmarks automatically; there is no manual-create operation. Re-read it again if writes, internal bookmark advancement, or a meaningful delay occurs.
 6. Review the pending SQL files in order and confirm the live ledger matches the post-PR-155 baseline ending in `0012_company_ranking_snapshots.sql`. Pay particular attention to the two distinct files sharing the `0012` numeric prefix; compare exact filenames, not only numeric prefixes.
 7. Confirm required production Worker secret names exist without printing or disclosing their values. In particular, verify the configured encryption secret and the service-owned Torn keys required by the production runtime. Do not run `wrangler secret put` as a substitute; secret changes can deploy the currently targeted Worker.
 8. Obtain explicit release approval before dispatching the production workflow.
@@ -125,6 +125,8 @@ D1 Time Travel provides point-in-time recovery within the preceding 30 days. A s
 ### Completed production export and isolated restore rehearsal (2026-11-14)
 
 A full D1-compatible SQL export was completed from production database `naughty-company-dashboard` (`bbbe128a-c5cc-46ec-b8ef-93860183e795`). The export captured Time Travel bookmark `000004ca-0000033a-00005123-06be4f012000b1afd17db773eeaf4ef8` at 2026-11-14 03:38:56 UTC. The untouched SQL export is 7,706,099 bytes with SHA-256 `8ac318ed69c22eea82d8bc5cff55fe010236a3dc9c979ed718fae3ee0282eb7e`.
+
+**Current bookmark recheck (2026-11-14 04:23:12.859 UTC):** a read-only `GET /time_travel/bookmark` with no timestamp parameter returned the same bookmark token as the export-time record above. This validates that token as the current bookmark at the time of this review; it does not create a new manual snapshot. Cloudflare states Time Travel is always enabled, bookmarks are automatically generated, and bookmark values may advance due to internal maintenance events. See [Cloudflare D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/).
 
 The first direct import attempt exposed a 4.3 MB `global_rankings_cache` statement exceeding D1's per-statement limit. The export also interleaves data for a child table before a later referenced table definition. A lossless import-normalized derivative was prepared: it breaks the 4,295,173-character JSON value into bounded hex-literal append operations, creates all 40 application tables before row data, inserts parent tables before dependants using the exported foreign-key graph, restores `sqlite_sequence` state after data, and creates all 22 explicit indexes last. The JSON value and its `fetched_at` timestamp were reconstructed and compared exactly.
 
@@ -206,15 +208,16 @@ Do not run a restore or overwrite production D1 as part of a routine application
 
 ## 9. Remaining production gates
 
-- [ ] Separate real-key acceptance for bars/cooldowns, detailed networth and Halloween historical logs with their required selections/consents.
-- [ ] Admin/non-admin end-to-end acceptance on the target production-like deployment.
-- [ ] Mobile, accessibility, load and request-budget review.
+- [x] Operator-confirmed real-key permission/consent acceptance for private bars/cooldowns, optional detailed networth, and Halloween historical summaries/logs, as recorded in the PR's validation history. This does not replace the staging functional acceptance still required for the latest Halloween dashboard changes.
+- [x] Admin/non-admin end-to-end acceptance on the isolated staging Worker/D1/Pages environment, including the synthetic administrator and denied non-admin paths. Production authorization has not been switched.
+- [x] Physical Android TalkBack/layout review, automated accessibility checks, sustained staging load and read-only production request-budget review. Device/version details and granular per-control/table outcomes remain documented limitations.
 - [x] Full production D1 export completed, SQL checksum verified, and AES-256 archive uploaded outside the repository; owner should retain a downloaded copy separately.
 - [x] Isolated production-data restore rehearsal completed; 40 application tables, 22 explicit indexes and 934 rows matched, with zero D1 foreign-key violations. Direct D1 PRAGMA integrity_check remains unavailable through the REST API; exact normalized SQL passed local SQLite integrity_check.
-- [ ] Fresh pre-cutover Time Travel bookmark captured and recorded.
-- [ ] Production migration list and current schema rechecked.
-- [ ] Production Worker secret names/readiness verified without revealing secret values.
-- [ ] Explicit approval to merge/deploy and to publish the new Pages target.
+- [x] Current production Time Travel bookmark re-read and recorded at 2026-11-14 04:23:12.859 UTC. The value is unchanged from the export-time bookmark; Cloudflare automatically generates bookmarks and does not offer manual snapshot creation. Re-read immediately before migration if anything changes or time passes.
+- [x] Production migration ledger and schema rechecked read-only at 2026-11-14 04:24 UTC: 16 migrations, 41 tables; last applied migration remains `0012_company_ranking_snapshots.sql`. Portal-specific `0012_administrator_registry.sql` and `0013`–`0025` remain pending.
+- [x] Production Worker secret binding names inspected without reading values. `KEY_ENCRYPTION_SECRET`, `TORN_API_KEY_CUSTOM`, and `TORN_FACTION_API_KEY` are present. The optional dedicated `TORN_API_KEY_FULL_ACCESS` binding is not configured; the portal code falls back to the Custom Access service key for the public global-ranking path. That fallback must be functionally accepted on staging before release.
+- [ ] Functional acceptance on the current release candidate in isolated staging: Live/current-year and Historical/all-time/year-specific scopes, member comparisons, partial-coverage behavior, Revitalize proc percentage and exact numerator/denominator, plus critical admin/member flows. The latest quality gates are not a substitute for this runtime acceptance.
+- [ ] Explicit owner approval to merge PR #152, dispatch the production Worker migration/deployment workflow, and publish the new `naughtyfamily` Pages target.
 - [ ] Post-deployment smoke tests completed and rollback operator available.
 
 ## 10. Current production changes versus the separate portal cutover
@@ -236,6 +239,29 @@ Not performed for the separate Naughty Family portal cutover:
 - No production rollback/restore has been performed.
 
 The portal branch Worker deployment workflow remains manual-only and requires the explicit `naughty-company-api` target plus an operator-supplied backup reference. That manual reference input is still not an automated check of backup contents; the owner must supply the verified archive reference at release time. The backup now exists and has passed the isolated restore rehearsal documented above. This workflow safeguard becomes effective after merge. This section is a state clarification, not authorization to deploy.
+
+## 11. Final release review (2026-11-14 04:24 UTC)
+
+### Read-only production evidence
+
+- Production D1 identity was verified as `naughty-company-dashboard` / `bbbe128a-c5cc-46ec-b8ef-93860183e795`. A read-only schema query returned 41 tables (including Cloudflare's internal `_cf_KV` table) and a read-only `d1_migrations` query returned 16 records, ending with `0012_company_ranking_snapshots.sql`. No portal migration has been applied.
+- The current production Worker deployment is `naughty-company-api`, version `af3b0630-c758-4910-9a41-d43c8c330960`, serving 100% traffic from deployment `c1705050-3a5b-424d-bd1d-50a71c185fcc` (created 2026-11-13 20:00:55 UTC).
+- Legacy Pages project `naughty-company-dashboard` remains on successful production deployment `b0352cf1-db23-437e-87b4-a363d08b53b8` (2026-11-13 20:23:19 UTC). Its Git automatic production/preview deployments are disabled.
+- Separate Pages project `naughtyfamily` has no production deployment. Its automatic production/preview Git deployments are disabled. It remains the intended target for the future portal deployment; the legacy Pages project remains the fallback.
+- Production Worker secret binding names were read without accessing values. `KEY_ENCRYPTION_SECRET`, `TORN_API_KEY_CUSTOM`, and `TORN_FACTION_API_KEY` are present. `TORN_API_KEY_FULL_ACCESS` is absent; the branch code has a Custom Access fallback. Do not change secrets as part of this review.
+- The branch Worker deployment workflow was inspected. It is `workflow_dispatch` only, requires the `main` ref, explicit `naughty-company-api` target, and a non-empty external-backup reference. It independently verifies the production Worker/D1 names and IDs. The reference input is not cryptographic validation of backup contents; the operator remains responsible for checksum/access verification.
+
+### PR and validation evidence
+
+- PR #152 remains OPEN/DRAFT. No GitHub review approvals or inline review threads are recorded. The branch has no commits behind current `main` (merge base `097762ac6f1d8afc071b37c1518f235073834644`).
+- Latest release-candidate code commit reviewed: `a9f4d8b8e10c7ed7eb5832c6bd9711f65d444361`.
+- [Quality Gates #1021](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/43556243253) passed TypeScript, production frontend build, staging harness syntax checks and backend regression tests. [Discord Bot Quality Gates #123](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/43556243261) also passed.
+- The prior full isolated D1/Queue staging integration and sustained-load acceptance remain valid for the code they tested, but they predate the latest Halloween event-year/member-comparison and Revitalize-rate changes. No functional staging deployment/acceptance was performed on this exact release candidate; CI does not prove runtime behavior against staging D1/Queue/Pages.
+- The current bookmark was read again at 04:23:12.859 UTC and matched the export-time bookmark. Cloudflare documents that bookmarks are generated automatically; this was a fresh read of the current token, not a separately minted backup snapshot.
+
+### Release decision
+
+**NO-GO for production cutover.** The production baseline, external SQL backup/restore rehearsal, current Time Travel bookmark, target isolation and manual deployment safeguards have been reviewed. Before any merge/deployment, complete functional staging acceptance on this exact release candidate, resolve/accept the Custom Access fallback for the public global-ranking service-key path, and obtain explicit owner approval. After approval, take another current bookmark immediately before migration, verify the external backup is accessible/checksummed, recheck pending migration filenames, then follow Sections 7–8. This review did not merge the PR, change its draft status, deploy Worker/Pages, run SQL writes, apply migrations, modify secrets, or restore production D1.
 
 ## Cloudflare references
 
