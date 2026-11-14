@@ -2009,7 +2009,7 @@ async function loadHalloweenExchangeMarketValue(
 ): Promise<HalloweenExchangeMarketValue> {
   const quantities = Object.fromEntries(
     Object.entries(basketItemsById ?? {})
-      .filter(([itemId, quantity]) => /^\\d+$/.test(itemId) && Number.isSafeInteger(Number(quantity)) && Number(quantity) > 0),
+      .filter(([itemId, quantity]) => /^\d+$/.test(itemId) && Number.isSafeInteger(Number(quantity)) && Number(quantity) > 0),
   )
   const itemIds = Object.keys(quantities)
   const now = Math.floor(Date.now() / 1000)
