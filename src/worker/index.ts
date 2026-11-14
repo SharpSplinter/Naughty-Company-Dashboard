@@ -1985,6 +1985,180 @@ async function loadHalloweenEventMetricsForPlayers(db: D1Database, eventYear: nu
   return metricsByPlayer
 }
 
+
+async function loadRecordedHalloweenEventWindows(db: D1Database): Promise<Array<{ eventYear: number; startAt: string; endAt: string }>> {
+  const rows = await db.prepare(
+    `SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt
+     FROM halloween_event_windows e
+     WHERE EXISTS (SELECT 1 FROM halloween_collection_jobs j WHERE j.event_year = e.event_year)
+        OR EXISTS (SELECT 1 FROM halloween_event_logs l WHERE l.event_year = e.event_year)
+        OR EXISTS (SELECT 1 FROM halloween_attack_metrics_jobs a WHERE a.event_year = e.event_year)
+        OR EXISTS (SELECT 1 FROM halloween_live_snapshots s WHERE s.event_year = e.event_year)
+     ORDER BY event_year DESC`
+  ).all<{ eventYear: number; startAt: string; endAt: string }>()
+  return rows.results ?? []
+}
+
+async function loadHalloweenAllTimeArchive(db: D1Database, signedInPlayerId: string) {
+  const events = await loadRecordedHalloweenEventWindows(db)
+  const eventYears = events.map((event) => Number(event.eventYear))
+  const membersResult = await db.prepare(
+    `SELECT p.player_id AS playerId, p.player_name AS playerName,
+       EXISTS(SELECT 1 FROM halloween_historical_keys k WHERE k.player_id = p.player_id) AS keyConnected
+     FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id
+     WHERE p.faction_id = ? AND st.disabled_at IS NULL
+     ORDER BY p.player_name`
+  ).bind(NAUGHTY_SOULS_FACTION_ID).all<{ playerId: string; playerName: string; keyConnected: number }>()
+  const members = membersResult.results ?? []
+  if (!eventYears.length) {
+    return {
+      event: null, events: [], eventYears: [], myWindow: null, leaderboard: [],
+      myCollection: null, myEventMetrics: null,
+      eventTotals: { ...emptyHalloweenEventMetrics(), coveredMembers: 0, revitalizeCoveredMembers: 0, coveredMemberYears: 0, revitalizeCoveredMemberYears: 0 },
+      memberComparisons: [],
+    }
+  }
+
+  const placeholders = eventYears.map(() => "?").join(", ")
+  const [jobResult, attackResult, logResult, slotResult] = await Promise.all([
+    db.prepare(
+      `SELECT player_id AS playerId, event_year AS eventYear, status, pages_collected AS pagesCollected, updated_at AS updatedAt
+       FROM halloween_collection_jobs WHERE event_year IN (${placeholders}) ORDER BY updated_at DESC`
+    ).bind(...eventYears).all<{ playerId: string; eventYear: number; status: string; pagesCollected: number; updatedAt: string }>(),
+    db.prepare(
+      `SELECT player_id AS playerId, event_year AS eventYear, status
+       FROM halloween_attack_metrics_jobs WHERE event_year IN (${placeholders})`
+    ).bind(...eventYears).all<{ playerId: string; eventYear: number; status: string }>(),
+    db.prepare(
+      `SELECT player_id AS playerId, event_year AS eventYear, COUNT(*) AS logsCollected,
+              COALESCE(SUM(is_hit), 0) AS totalHits, MAX(collected_at) AS lastCollectedAt
+       FROM halloween_event_logs WHERE event_year IN (${placeholders})
+       GROUP BY player_id, event_year`
+    ).bind(...eventYears).all<{ playerId: string; eventYear: number; logsCollected: number; totalHits: number; lastCollectedAt: string | null }>(),
+    db.prepare(
+      `SELECT player_id AS playerId, event_year AS eventYear, start_minute_of_day AS startMinuteOfDay
+       FROM halloween_member_event_slots WHERE event_year IN (${placeholders}) ORDER BY event_year DESC`
+    ).bind(...eventYears).all<{ playerId: string; eventYear: number; startMinuteOfDay: number }>(),
+  ])
+
+  const keyFor = (playerId: string, year: number) => playerId + ":" + year
+  const latestJobs = new Map<string, { status: string; pagesCollected: number }>()
+  for (const row of jobResult.results ?? []) {
+    const key = keyFor(row.playerId, Number(row.eventYear))
+    if (!latestJobs.has(key)) latestJobs.set(key, { status: row.status, pagesCollected: Number(row.pagesCollected ?? 0) })
+  }
+  const attackJobs = new Map<string, string>()
+  for (const row of attackResult.results ?? []) attackJobs.set(keyFor(row.playerId, Number(row.eventYear)), row.status)
+  const logSummary = new Map<string, { logsCollected: number; totalHits: number; lastCollectedAt: string | null }>()
+  for (const row of logResult.results ?? []) {
+    logSummary.set(keyFor(row.playerId, Number(row.eventYear)), {
+      logsCollected: Number(row.logsCollected ?? 0),
+      totalHits: Number(row.totalHits ?? 0),
+      lastCollectedAt: row.lastCollectedAt ?? null,
+    })
+  }
+  const latestSlots = new Map<string, { eventYear: number; startMinuteOfDay: number }>()
+  for (const row of slotResult.results ?? []) {
+    if (!latestSlots.has(row.playerId)) latestSlots.set(row.playerId, { eventYear: Number(row.eventYear), startMinuteOfDay: Number(row.startMinuteOfDay) })
+  }
+
+  const metricsByPlayer = new Map<string, HalloweenEventMetrics>()
+  const completedMemberIds = new Set<string>()
+  const revitalizeMemberIds = new Set<string>()
+  let coveredMemberYears = 0
+  let revitalizeCoveredMemberYears = 0
+  for (const eventYear of eventYears) {
+    const completedIds = members
+      .filter((member) => latestJobs.get(keyFor(member.playerId, eventYear))?.status === "complete")
+      .map((member) => member.playerId)
+    if (!completedIds.length) continue
+    const yearMetrics = await loadHalloweenEventMetricsForPlayers(db, eventYear, completedIds)
+    for (const [playerId, metrics] of yearMetrics) {
+      const previous = metricsByPlayer.get(playerId)
+      metricsByPlayer.set(playerId, previous ? sumHalloweenEventMetrics([previous, metrics]) : metrics)
+      completedMemberIds.add(playerId)
+      coveredMemberYears += 1
+    }
+    for (const playerId of completedIds) {
+      if (attackJobs.get(keyFor(playerId, eventYear)) === "complete") {
+        revitalizeMemberIds.add(playerId)
+        revitalizeCoveredMemberYears += 1
+      }
+    }
+  }
+
+  const leaderboard = members.map((member) => {
+    const eligibleYears = eventYears.filter((year) =>
+      latestJobs.has(keyFor(member.playerId, year)) || logSummary.has(keyFor(member.playerId, year)),
+    )
+    const completeYears = eligibleYears.filter((year) => latestJobs.get(keyFor(member.playerId, year))?.status === "complete")
+    const knownLogs = eventYears.map((year) => logSummary.get(keyFor(member.playerId, year))).filter((row): row is NonNullable<typeof row> => Boolean(row))
+    const completeLogRows = completeYears.map((year) => logSummary.get(keyFor(member.playerId, year))).filter((row): row is NonNullable<typeof row> => Boolean(row))
+    const logsCollected = knownLogs.reduce((total, row) => total + row.logsCollected, 0)
+    const totalHits = completeYears.length ? completeLogRows.reduce((total, row) => total + row.totalHits, 0) : null
+    const hasRunning = eligibleYears.some((year) => ["queued", "running"].includes(latestJobs.get(keyFor(member.playerId, year))?.status ?? ""))
+    const hasFailed = eligibleYears.some((year) => latestJobs.get(keyFor(member.playerId, year))?.status === "failed")
+    const coverage = eligibleYears.length > 0 && completeYears.length === eligibleYears.length
+      ? "complete"
+      : completeYears.length > 0 || logsCollected > 0
+        ? "partial"
+        : hasRunning ? "collecting" : "not_collected"
+    const attackCompleteYears = completeYears.filter((year) => attackJobs.get(keyFor(member.playerId, year)) === "complete")
+    const attackMetricsStatus = completeYears.length > 0 && attackCompleteYears.length === completeYears.length
+      ? "complete"
+      : attackCompleteYears.length > 0 ? "partial"
+        : eligibleYears.some((year) => ["queued", "running"].includes(attackJobs.get(keyFor(member.playerId, year)) ?? "")) ? "running"
+          : "not_collected"
+    const slot = latestSlots.get(member.playerId)
+    const latestCollected = knownLogs.map((row) => row.lastCollectedAt).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null
+    const pagesCollected = eligibleYears.reduce((total, year) => total + Number(latestJobs.get(keyFor(member.playerId, year))?.pagesCollected ?? 0), 0)
+    return {
+      playerId: member.playerId,
+      playerName: member.playerName,
+      eventWindowConfigured: Boolean(slot),
+      startTime: slot ? formatHalloweenStartTime(slot.startMinuteOfDay) : null,
+      keyConnected: member.keyConnected === 1,
+      collectionStatus: coverage === "complete" ? "complete" : coverage === "partial" ? hasFailed ? "failed" : "partial" : coverage === "collecting" ? "running" : "not_collected",
+      attackMetricsStatus,
+      pagesCollected,
+      logsCollected,
+      totalHits,
+      lastCollectedAt: latestCollected,
+      coverage,
+      completedEventYears: completeYears,
+      recordedEventYears: eligibleYears,
+    }
+  }).sort((a, b) => (b.totalHits ?? -1) - (a.totalHits ?? -1) || a.playerName.localeCompare(b.playerName))
+
+  const myEventMetrics = metricsByPlayer.get(signedInPlayerId) ?? null
+  const eventTotals = {
+    ...sumHalloweenEventMetrics(Array.from(metricsByPlayer.values())),
+    coveredMembers: completedMemberIds.size,
+    revitalizeCoveredMembers: revitalizeMemberIds.size,
+    coveredMemberYears,
+    revitalizeCoveredMemberYears,
+  }
+  const memberComparisons = leaderboard.map((member) => ({
+    playerId: member.playerId,
+    playerName: member.playerName,
+    totalHits: member.totalHits,
+    coverage: member.coverage,
+    completedEventYears: member.completedEventYears,
+    metrics: metricsByPlayer.get(member.playerId) ?? null,
+  }))
+  return {
+    event: null,
+    events,
+    eventYears,
+    myWindow: null,
+    leaderboard,
+    myCollection: leaderboard.find((member) => member.playerId === signedInPlayerId) ?? null,
+    myEventMetrics,
+    eventTotals,
+    memberComparisons,
+  }
+}
+
 async function throttleHalloweenRequest(env: WorkerEnv, playerId: string): Promise<void> {
   const db = requireDb(env)
   const row = await db.prepare("SELECT last_request_at FROM halloween_api_throttles WHERE player_id = ?")
@@ -5791,7 +5965,9 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       const db = requireDb(env)
-      const yearValue = Number(url.searchParams.get("year") || new Date().getUTCFullYear())
+      const requestedYear = (url.searchParams.get("year") || String(new Date().getUTCFullYear())).trim().toLowerCase()
+      if (requestedYear === "all") return jsonResponse(await loadHalloweenAllTimeArchive(db, session.player_id), 200, origin)
+      const yearValue = Number(requestedYear)
       if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
       const event = await db.prepare("SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt FROM halloween_event_windows WHERE event_year = ?")
         .bind(yearValue).first<{ eventYear: number; startAt: string; endAt: string }>()
@@ -5818,6 +5994,7 @@ export default {
           coverage: complete ? "complete" : statusText === "running" || statusText === "queued" ? "collecting" : statusText === "failed" && Number(row.storedLogCount ?? 0) > 0 ? "partial" : "not_collected",
         }
       }).sort((a, b) => (b.totalHits ?? -1) - (a.totalHits ?? -1) || a.playerName.localeCompare(b.playerName))
+      const availableEventYears = (await loadRecordedHalloweenEventWindows(db)).map((item) => item.eventYear)
       const completeMemberIds = leaderboard.filter((member) => member.coverage === "complete").map((member) => member.playerId)
       const metricsByPlayer = await loadHalloweenEventMetricsForPlayers(db, yearValue, completeMemberIds)
       const revitalizeCoverage = completeMemberIds.length
@@ -5831,13 +6008,24 @@ export default {
       }
       const myEventMetrics = metricsByPlayer.get(session.player_id) ?? null
       const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
+      const memberComparisons = leaderboard.map((member) => ({
+        playerId: member.playerId,
+        playerName: member.playerName,
+        totalHits: member.totalHits,
+        coverage: member.coverage,
+        completedEventYears: [yearValue].filter(() => member.coverage === "complete"),
+        metrics: metricsByPlayer.get(member.playerId) ?? null,
+      }))
       return jsonResponse({
         event,
+        events: [event],
+        eventYears: availableEventYears,
         myWindow: personal?.window ?? null,
         leaderboard,
         myCollection: leaderboard.find((row) => row.playerId === session.player_id) ?? null,
         myEventMetrics,
         eventTotals,
+        memberComparisons,
       }, 200, origin)
     }
     const halloweenMemberMatch = url.pathname.match(/^\/api\/me\/halloween\/members\/(\d+)$/)
@@ -5845,12 +6033,66 @@ export default {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       const targetId = halloweenMemberMatch[1]
-      const yearValue = Number(url.searchParams.get("year") || new Date().getUTCFullYear())
-      if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
+      const requestedYear = (url.searchParams.get("year") || String(new Date().getUTCFullYear())).trim().toLowerCase()
+      const allTimeDetail = requestedYear === "all"
+      const yearValue = Number(requestedYear)
+      if (!allTimeDetail && (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100)) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
       const db = requireDb(env)
       const member = await db.prepare("SELECT player_id AS playerId, player_name AS playerName FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.player_id = ? AND p.faction_id = ? AND st.disabled_at IS NULL")
         .bind(targetId, NAUGHTY_SOULS_FACTION_ID).first<{ playerId: string; playerName: string }>()
       if (!member) return jsonResponse({ error: "That member is not currently verified as a Naughty Souls member." }, 404, origin)
+      if (allTimeDetail) {
+        const eventYears = (await loadRecordedHalloweenEventWindows(db)).map((item) => item.eventYear)
+        if (!eventYears.length) return jsonResponse({ member, collection: { status: "not_collected", coverage: "not_collected", logsCollected: 0 }, dailyActivity: [], metrics: null, logs: [] }, 200, origin)
+        const yearParams = eventYears.map(() => "?").join(", ")
+        const [jobs, logs, daily] = await Promise.all([
+          db.prepare(`SELECT event_year AS eventYear, status, logs_collected AS logsCollected, pages_collected AS pagesCollected, last_error AS lastError, updated_at AS updatedAt, completed_at AS completedAt FROM halloween_collection_jobs WHERE player_id = ? AND event_year IN (${yearParams}) ORDER BY updated_at DESC`)
+            .bind(targetId, ...eventYears).all<Record<string, unknown>>(),
+          db.prepare(`SELECT event_year AS eventYear, log_id AS logId, event_timestamp AS timestamp, log_type_id AS logTypeId, category, title, labels_json AS labelsJson, is_hit AS isHit, log_json AS logJson, collected_at AS collectedAt FROM halloween_event_logs WHERE player_id = ? AND event_year IN (${yearParams}) ORDER BY event_year DESC, event_timestamp DESC, log_id DESC LIMIT 250`)
+            .bind(targetId, ...eventYears).all<Record<string, unknown>>(),
+          db.prepare(`SELECT event_year AS eventYear, date(event_timestamp, 'unixepoch') AS eventDay, SUM(is_hit) AS totalHits, COUNT(*) AS relevantLogs FROM halloween_event_logs WHERE player_id = ? AND event_year IN (${yearParams}) GROUP BY event_year, date(event_timestamp, 'unixepoch') ORDER BY event_year, eventDay`)
+            .bind(targetId, ...eventYears).all<Record<string, unknown>>(),
+        ])
+        const latestJobs = new Map<number, Record<string, unknown>>()
+        for (const row of jobs.results ?? []) if (!latestJobs.has(Number(row.eventYear))) latestJobs.set(Number(row.eventYear), row)
+        const completedYears = eventYears.filter((year) => latestJobs.get(year)?.status === "complete")
+        const knownLogs = (logs.results ?? [])
+        const knownHits = knownLogs.filter((row) => completedYears.includes(Number(row.eventYear)) && row.isHit === 1).length
+        const completedLogCount = knownLogs.filter((row) => completedYears.includes(Number(row.eventYear))).length
+        const hasRunning = eventYears.some((year) => ["queued", "running"].includes(String(latestJobs.get(year)?.status ?? "")))
+        const coverage = completedYears.length === eventYears.length && completedYears.length > 0 ? "complete"
+          : completedYears.length > 0 || knownLogs.length > 0 ? "partial"
+            : hasRunning ? "collecting" : "not_collected"
+        const perYearMetrics: HalloweenEventMetrics[] = []
+        for (const year of completedYears) {
+          const yearly = await loadHalloweenEventMetricsForPlayers(db, year, [targetId])
+          const metrics = yearly.get(targetId)
+          if (metrics) perYearMetrics.push(metrics)
+        }
+        const metrics = perYearMetrics.length ? sumHalloweenEventMetrics(perYearMetrics) : null
+        const lastJob = Array.from(latestJobs.values()).sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")))[0] ?? null
+        return jsonResponse({
+          member,
+          collection: {
+            status: coverage === "complete" ? "complete" : coverage === "partial" ? "partial" : coverage === "collecting" ? "running" : String(lastJob?.status ?? "not_collected"),
+            coverage,
+            logsCollected: knownLogs.length,
+            completedEventYears: completedYears,
+            recordedEventYears: eventYears,
+            lastError: lastJob?.lastError ?? null,
+            updatedAt: lastJob?.updatedAt ?? null,
+          },
+          dailyActivity: daily.results ?? [],
+          metrics,
+          logs: (logs.results ?? []).map((row) => {
+            let parsed: unknown = null
+            try { parsed = JSON.parse(String(row.logJson ?? "null")) } catch { parsed = null }
+            let labels: unknown = []
+            try { labels = JSON.parse(String(row.labelsJson ?? "[]")) } catch { labels = [] }
+            return { eventYear: Number(row.eventYear), logId: row.logId, timestamp: row.timestamp, title: row.title, category: row.category, labels, isHit: row.isHit === 1, details: parsed }
+          }),
+        }, 200, origin)
+      }
       const [job, logs, daily] = await Promise.all([
         db.prepare("SELECT status, logs_collected AS logsCollected, pages_collected AS pagesCollected, last_error AS lastError, updated_at AS updatedAt, completed_at AS completedAt FROM halloween_collection_jobs WHERE player_id = ? AND event_year = ? ORDER BY updated_at DESC LIMIT 1")
           .bind(targetId, yearValue).first<Record<string, unknown>>(),
@@ -5872,7 +6114,7 @@ export default {
           try { parsed = JSON.parse(String(row.logJson ?? "null")) } catch { parsed = null }
           let labels: unknown = []
           try { labels = JSON.parse(String(row.labelsJson ?? "[]")) } catch { labels = [] }
-          return { logId: row.logId, timestamp: row.timestamp, title: row.title, category: row.category, labels, isHit: row.isHit === 1, details: parsed }
+          return { eventYear: yearValue, logId: row.logId, timestamp: row.timestamp, title: row.title, category: row.category, labels, isHit: row.isHit === 1, details: parsed }
         }),
       }, 200, origin)
     }
