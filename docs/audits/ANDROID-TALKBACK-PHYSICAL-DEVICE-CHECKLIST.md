@@ -44,7 +44,7 @@ For each issue, record the screen, exact control/announcement, expected result, 
 - On Faction Weekly Rankings, the `Rank by` control was announced as a “mini popup button” with an activation instruction. After activation, choices were announced with their selected state and radio-button role. The selected option was spoken as “Checked, Xanax, Radio Button”; other choices were announced as “Unchecked.”
 - The user reported that the other controls and selections, including the Data status filter, announced their purpose and classification correctly.
 - The user confirmed the dashboard’s TalkBack features were working properly overall.
-- **Spoken heading-role observation:** When asked whether TalkBack appended the word “heading” after “Faction Weekly Rankings,” the user answered “No.” The implementation uses an `<h1>` for that title. This is recorded as a targeted follow-up observation, not as a confirmed semantic-markup defect; heading-navigation behavior was not separately established during the conversation.
+- **Heading announcement follow-up:** In a targeted follow-up using TalkBack heading navigation, the user confirmed that the title was announced as “Faction Weekly Rankings Heading 1.” This verifies that the title is exposed to TalkBack as a level-one heading. The earlier observation that the word “heading” was not appended during ordinary swipe reading is not a defect; no markup change is indicated.
 
 ### Physical layout results reported
 
