@@ -6045,23 +6045,30 @@ export default {
         const eventYears = (await loadRecordedHalloweenEventWindows(db)).map((item) => item.eventYear)
         if (!eventYears.length) return jsonResponse({ member, collection: { status: "not_collected", coverage: "not_collected", logsCollected: 0 }, dailyActivity: [], metrics: null, logs: [] }, 200, origin)
         const yearParams = eventYears.map(() => "?").join(", ")
-        const [jobs, logs, daily] = await Promise.all([
+        const [jobs, logs, daily, logSummary] = await Promise.all([
           db.prepare(`SELECT event_year AS eventYear, status, logs_collected AS logsCollected, pages_collected AS pagesCollected, last_error AS lastError, updated_at AS updatedAt, completed_at AS completedAt FROM halloween_collection_jobs WHERE player_id = ? AND event_year IN (${yearParams}) ORDER BY updated_at DESC`)
             .bind(targetId, ...eventYears).all<Record<string, unknown>>(),
           db.prepare(`SELECT event_year AS eventYear, log_id AS logId, event_timestamp AS timestamp, log_type_id AS logTypeId, category, title, labels_json AS labelsJson, is_hit AS isHit, log_json AS logJson, collected_at AS collectedAt FROM halloween_event_logs WHERE player_id = ? AND event_year IN (${yearParams}) ORDER BY event_year DESC, event_timestamp DESC, log_id DESC LIMIT 250`)
             .bind(targetId, ...eventYears).all<Record<string, unknown>>(),
           db.prepare(`SELECT event_year AS eventYear, date(event_timestamp, 'unixepoch') AS eventDay, SUM(is_hit) AS totalHits, COUNT(*) AS relevantLogs FROM halloween_event_logs WHERE player_id = ? AND event_year IN (${yearParams}) GROUP BY event_year, date(event_timestamp, 'unixepoch') ORDER BY event_year, eventDay`)
             .bind(targetId, ...eventYears).all<Record<string, unknown>>(),
+          db.prepare(`SELECT event_year AS eventYear, COUNT(*) AS logsCollected, COALESCE(SUM(is_hit), 0) AS totalHits, MAX(collected_at) AS lastCollectedAt FROM halloween_event_logs WHERE player_id = ? AND event_year IN (${yearParams}) GROUP BY event_year`)
+            .bind(targetId, ...eventYears).all<{ eventYear: number; logsCollected: number; totalHits: number; lastCollectedAt: string | null }>(),
         ])
         const latestJobs = new Map<number, Record<string, unknown>>()
         for (const row of jobs.results ?? []) if (!latestJobs.has(Number(row.eventYear))) latestJobs.set(Number(row.eventYear), row)
-        const completedYears = eventYears.filter((year) => latestJobs.get(year)?.status === "complete")
-        const knownLogs = (logs.results ?? [])
-        const knownHits = knownLogs.filter((row) => completedYears.includes(Number(row.eventYear)) && row.isHit === 1).length
-        const completedLogCount = knownLogs.filter((row) => completedYears.includes(Number(row.eventYear))).length
-        const hasRunning = eventYears.some((year) => ["queued", "running"].includes(String(latestJobs.get(year)?.status ?? "")))
-        const coverage = completedYears.length === eventYears.length && completedYears.length > 0 ? "complete"
-          : completedYears.length > 0 || knownLogs.length > 0 ? "partial"
+        const logsByYear = new Map<number, { logsCollected: number; totalHits: number; lastCollectedAt: string | null }>()
+        for (const row of logSummary.results ?? []) logsByYear.set(Number(row.eventYear), row)
+        const eligibleYears = eventYears.filter((year) => latestJobs.has(year) || logsByYear.has(year))
+        const completedYears = eligibleYears.filter((year) => latestJobs.get(year)?.status === "complete")
+        const hasRunning = eligibleYears.some((year) => ["queued", "running"].includes(String(latestJobs.get(year)?.status ?? "")))
+        const logsCollected = eligibleYears.reduce((sum, year) => sum + Number(logsByYear.get(year)?.logsCollected ?? 0), 0)
+        const totalHits = completedYears.length
+          ? completedYears.reduce((sum, year) => sum + Number(logsByYear.get(year)?.totalHits ?? 0), 0)
+          : null
+        const lastCollectedAt = eligibleYears.map((year) => logsByYear.get(year)?.lastCollectedAt).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null
+        const coverage = eligibleYears.length > 0 && completedYears.length === eligibleYears.length ? "complete"
+          : completedYears.length > 0 || logsCollected > 0 ? "partial"
             : hasRunning ? "collecting" : "not_collected"
         const perYearMetrics: HalloweenEventMetrics[] = []
         for (const year of completedYears) {
@@ -6076,9 +6083,11 @@ export default {
           collection: {
             status: coverage === "complete" ? "complete" : coverage === "partial" ? "partial" : coverage === "collecting" ? "running" : String(lastJob?.status ?? "not_collected"),
             coverage,
-            logsCollected: knownLogs.length,
+            logsCollected,
+            totalHits,
+            lastCollectedAt,
             completedEventYears: completedYears,
-            recordedEventYears: eventYears,
+            recordedEventYears: eligibleYears,
             lastError: lastJob?.lastError ?? null,
             updatedAt: lastJob?.updatedAt ?? null,
           },
