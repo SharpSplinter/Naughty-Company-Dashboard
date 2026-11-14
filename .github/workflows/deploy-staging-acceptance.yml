@@ -22,6 +22,7 @@ on:
       - "src/worker/index.ts"
       - "src/components/portal/workspaces.tsx"
       - "src/components/portal/christmas-town.tsx"
+      - "scripts/test-christmas-town-consent.mjs"
       - "src/components/portal/workspaces.css"
       - "migrations/auth/0029_halloween_historical_event_years.sql"
       - "scripts/test-halloween-key-consent.mjs"
