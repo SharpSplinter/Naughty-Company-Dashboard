@@ -18,3 +18,15 @@ FROM halloween_historical_keys;
 INSERT OR IGNORE INTO event_history_consent_records (player_id, event_key, first_consented_at)
 SELECT player_id, 'christmas-town', consented_at
 FROM christmas_town_historical_keys;
+
+-- Collection jobs prove that a member completed the initial event-page opt-in
+-- even when they disconnected the key before this migration was introduced.
+INSERT OR IGNORE INTO event_history_consent_records (player_id, event_key, first_consented_at)
+SELECT player_id, 'halloween', MIN(created_at)
+FROM halloween_collection_jobs
+GROUP BY player_id;
+
+INSERT OR IGNORE INTO event_history_consent_records (player_id, event_key, first_consented_at)
+SELECT player_id, 'christmas-town', MIN(created_at)
+FROM christmas_town_collection_jobs
+GROUP BY player_id;
