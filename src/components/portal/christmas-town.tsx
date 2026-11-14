@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { ChristmasTownItemMetric, ChristmasTownMetrics } from "../../lib/christmas-town/metrics"
 
 type ChristmasTownWorkspaceProps = {
@@ -10,6 +10,7 @@ type ChristmasTownWorkspaceProps = {
 
 type ChristmasTownKeyStatus = {
   connected: boolean
+  previouslyConsented: boolean
   key?: {
     lastFour: string
     accessLevel: string
@@ -157,6 +158,8 @@ export function ChristmasTownWorkspace({
   const { from: appliedFromDate, to: appliedToDate } = christmasTownDateRange(selectedYear)
   const [keyStatus, setKeyStatus] = useState<ChristmasTownKeyStatus | null>(null)
   const [archive, setArchive] = useState<ChristmasTownArchivePayload | null>(null)
+  const [archiveLoadedRange, setArchiveLoadedRange] = useState("")
+  const automaticCollectionKeyRef = useRef("")
   const [busy, setBusy] = useState(false)
   const [keyBusy, setKeyBusy] = useState(false)
   const [collectBusy, setCollectBusy] = useState(false)
@@ -184,6 +187,7 @@ export function ChristmasTownWorkspace({
       const payload = await response.json() as ChristmasTownArchivePayload & { error?: string }
       if (!response.ok) throw new Error(payload.error || "Could not load your Christmas Town archive.")
       setArchive(payload)
+      setArchiveLoadedRange(from + "|" + to)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not load your Christmas Town archive.")
     } finally {
@@ -222,28 +226,7 @@ export function ChristmasTownWorkspace({
     }
   }
 
-  const disconnectHistory = async () => {
-    if (keyBusy || !window.confirm("Disconnect Christmas Town history collection? Previously collected Christmas Town records will remain in your personal archive.")) return
-    setKeyBusy(true)
-    setError("")
-    setMessage("")
-    try {
-      const response = await fetch(apiBase + "/api/me/christmas-town/key", {
-        method: "DELETE",
-        headers: { Authorization: "Bearer " + sessionToken },
-      })
-      const payload = await response.json() as { error?: string }
-      if (!response.ok) throw new Error(payload.error || "Could not disconnect Christmas Town history.")
-      setMessage("History collection has been disconnected. Previously collected records were retained.")
-      await loadKeyStatus()
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not disconnect Christmas Town history.")
-    } finally {
-      setKeyBusy(false)
-    }
-  }
-
-  const collectHistory = async () => {
+  const collectHistory = async (from = appliedFromDate, to = appliedToDate, automatic = false) => {
     if (collectBusy) return
     setCollectBusy(true)
     setError("")
@@ -252,7 +235,7 @@ export function ChristmasTownWorkspace({
       const response = await fetch(apiBase + "/api/me/christmas-town/collect", {
         method: "POST",
         headers: { Authorization: "Bearer " + sessionToken, "Content-Type": "application/json" },
-        body: JSON.stringify({ fromDate: appliedFromDate, toDate: appliedToDate }),
+        body: JSON.stringify({ fromDate: from, toDate: to }),
       })
       const payload = await response.json() as {
         error?: string
@@ -262,15 +245,36 @@ export function ChristmasTownWorkspace({
       if (!response.ok) throw new Error(payload.error || "Could not start Christmas Town collection.")
       const queued = (payload.jobs ?? []).filter(job => job.status === "queued").length
       setMessage(queued
-        ? "Queued " + queued.toLocaleString() + " Christmas Town season(s) for collection. Progress will appear here as the logs are processed."
+        ? automatic
+          ? "Collection automatically started for Christmas Town " + (selectedYear === "all" ? "seasons" : selectedYear) + ". Progress will appear here as Torn logs are processed."
+          : "Queued " + queued.toLocaleString() + " Christmas Town season(s) for collection. Progress will appear here as the logs are processed."
         : "The selected Christmas Town seasons are already up to date.")
-      await loadArchive()
+      await loadArchive(from, to)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not start Christmas Town collection.")
     } finally {
       setCollectBusy(false)
     }
   }
+
+  useEffect(() => {
+    if (selectedYear === "all" || !keyStatus?.connected || busy || collectBusy || keyBusy ||
+        archiveLoadedRange !== appliedFromDate + "|" + appliedToDate || !archive) return
+    const year = Number(selectedYear)
+    if (!Number.isInteger(year)) return
+    const job = archive.collection.find(item => item.eventYear === year)
+    const expectedStart = new Date(Date.UTC(year, 11, 1)).toISOString()
+    const expectedEnd = new Date(Date.UTC(year + 1, 0, 1)).toISOString()
+    if (job?.status === "complete" && job.windowStartAt === expectedStart && job.windowEndAt === expectedEnd) return
+    if (job && (job.status === "queued" || job.status === "running")) return
+    const requestKey = year + ":" + (keyStatus.key?.consentedAt ?? keyStatus.key?.lastValidatedAt ?? "")
+    if (automaticCollectionKeyRef.current === requestKey) return
+    automaticCollectionKeyRef.current = requestKey
+    // The authenticated endpoint reuses an active/completed job and queues only an
+    // incomplete or failed season. All-time remains opt-in to avoid bulk collection.
+    void collectHistory(appliedFromDate, appliedToDate, true)
+  }, [selectedYear, keyStatus?.connected, keyStatus?.key?.consentedAt,
+    archive, busy, collectBusy, keyBusy, archiveLoadedRange, appliedFromDate, appliedToDate])
 
   const metrics = archive?.metrics ?? null
   const itemNames = useMemo(() => new Map([
@@ -317,7 +321,7 @@ export function ChristmasTownWorkspace({
           <span>Showing {appliedFromDate} – {appliedToDate} · UTC</span>
         </div>
         <label htmlFor="christmas-town-year">Display
-          <select id="christmas-town-year" value={selectedYear} onChange={event => setSelectedYear(event.target.value)} disabled={busy}>
+          <select id="christmas-town-year" value={selectedYear} onChange={event => { automaticCollectionKeyRef.current = ""; setSelectedYear(event.target.value) }} disabled={busy}>
             <option value="all">All time</option>
             {availableYears.map(year => <option key={year} value={String(year)}>{year}</option>)}
           </select>
@@ -327,27 +331,27 @@ export function ChristmasTownWorkspace({
       {error && <p className="settings-feedback error" role="alert">{error}</p>}
       {message && <p className="settings-feedback success" role="status">{message}</p>}
 
-      {keyStatus?.connected ? (
-        <section className="christmas-town-permission">
-          <div>
-            <small>PERSONAL HISTORY COLLECTION</small>
-            <strong><i /> Enabled · key ending {keyStatus.key?.lastFour ?? "••••"}</strong>
-            <span>{keyStatus.key?.accessLevel ?? "Torn API"} · User → Log access · records remain private to your portal account</span>
-          </div>
-          <button type="button" onClick={() => void disconnectHistory()} disabled={keyBusy}>{keyBusy ? "Working…" : "Disconnect history"}</button>
-        </section>
-      ) : (
+      {keyStatus && !keyStatus.previouslyConsented && (
         <section className="christmas-town-permission christmas-town-consent">
           <div>
-            <small>ENABLE YOUR CHRISTMAS TOWN ARCHIVE</small>
+            <small>INITIAL CHRISTMAS TOWN HISTORY CONSENT</small>
             <h2>Connect your personal event history</h2>
-            <p>With your permission, the portal will use your saved Torn API key to read the Christmas Town part of your User → Log history for the selected seasons. The key remains encrypted, logs are stored in your personal archive, and this data is not shared in faction reports. No second API key is needed.</p>
+            <p>With your one-time initial permission, the portal will use your saved Torn API key to read the Christmas Town part of your User → Log history for the selected seasons. The key remains encrypted, logs are stored in your personal archive, and this data is not shared in faction reports. No second API key is needed. After initial consent, manage this connection from Account Settings.</p>
             <label className="christmas-town-consent-check">
               <input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} />
               <span>I consent to collecting and storing my personal Christmas Town event logs for this dashboard.</span>
             </label>
           </div>
           <button type="button" onClick={() => void enableHistory()} disabled={!consent || keyBusy}>{keyBusy ? "Enabling…" : "Enable Christmas Town history"}</button>
+        </section>
+      )}
+      {keyStatus?.previouslyConsented && !keyStatus.connected && (
+        <section className="christmas-town-permission">
+          <div>
+            <small>PERSONAL HISTORY COLLECTION</small>
+            <span>Christmas Town collection is currently disabled. Manage or re-enable it in Account Settings.</span>
+          </div>
+          <button type="button" onClick={() => onNavigate("/settings")}>Open Account Settings</button>
         </section>
       )}
 

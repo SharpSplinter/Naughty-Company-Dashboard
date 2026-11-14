@@ -6173,14 +6173,20 @@ export default {
     if (url.pathname === "/api/me/christmas-town/key" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
-      const row = await requireDb(env).prepare(
-        "SELECT last_four, access_level, consent_version, consented_at, last_validated_at, updated_at FROM christmas_town_historical_keys WHERE player_id = ?",
-      ).bind(session.player_id).first<{
-        last_four: string; access_level: string; consent_version: string
-        consented_at: string; last_validated_at: string; updated_at: string
-      }>()
+      const db = requireDb(env)
+      const [row, priorConsent] = await Promise.all([
+        db.prepare(
+          "SELECT last_four, access_level, consent_version, consented_at, last_validated_at, updated_at FROM christmas_town_historical_keys WHERE player_id = ?",
+        ).bind(session.player_id).first<{
+          last_four: string; access_level: string; consent_version: string
+          consented_at: string; last_validated_at: string; updated_at: string
+        }>(),
+        db.prepare("SELECT first_consented_at FROM event_history_consent_records WHERE player_id = ? AND event_key = 'christmas-town'")
+          .bind(session.player_id).first<{ first_consented_at: string }>(),
+      ])
       return jsonResponse({
         connected: Boolean(row),
+        previouslyConsented: Boolean(priorConsent),
         key: row ? {
           lastFour: row.last_four,
           accessLevel: row.access_level,
@@ -6264,6 +6270,8 @@ export default {
           session.player_id, encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), accessType,
           "christmas-town-history-v1", now, now, now, now,
         ).run()
+        await requireDb(env).prepare("INSERT OR IGNORE INTO event_history_consent_records (player_id, event_key, first_consented_at) VALUES (?, 'christmas-town', ?)")
+          .bind(session.player_id, now).run()
         return jsonResponse({
           saved: true,
           lastFour: apiKey.slice(-4),
@@ -6424,9 +6432,18 @@ export default {
     if (url.pathname === "/api/me/halloween/key" && request.method === "GET") {
       const session = await authenticate(request, env)
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
-      const row = await requireDb(env).prepare("SELECT last_four, access_level, consent_version, consented_at, last_validated_at, created_at, updated_at FROM halloween_historical_keys WHERE player_id = ?")
-        .bind(session.player_id).first<{ last_four: string; access_level: string; consent_version: string; consented_at: string; last_validated_at: string; created_at: string; updated_at: string }>()
-      return jsonResponse({ connected: Boolean(row), key: row ? { lastFour: row.last_four, accessLevel: row.access_level, consentVersion: row.consent_version, consentedAt: row.consented_at, lastValidatedAt: row.last_validated_at, updatedAt: row.updated_at } : null }, 200, origin)
+      const db = requireDb(env)
+      const [row, priorConsent] = await Promise.all([
+        db.prepare("SELECT last_four, access_level, consent_version, consented_at, last_validated_at, created_at, updated_at FROM halloween_historical_keys WHERE player_id = ?")
+          .bind(session.player_id).first<{ last_four: string; access_level: string; consent_version: string; consented_at: string; last_validated_at: string; created_at: string; updated_at: string }>(),
+        db.prepare("SELECT first_consented_at FROM event_history_consent_records WHERE player_id = ? AND event_key = 'halloween'")
+          .bind(session.player_id).first<{ first_consented_at: string }>(),
+      ])
+      return jsonResponse({
+        connected: Boolean(row),
+        previouslyConsented: Boolean(priorConsent),
+        key: row ? { lastFour: row.last_four, accessLevel: row.access_level, consentVersion: row.consent_version, consentedAt: row.consented_at, lastValidatedAt: row.last_validated_at, updatedAt: row.updated_at } : null,
+      }, 200, origin)
     }
     if (url.pathname === "/api/me/halloween/key" && request.method === "POST") {
       const session = await authenticate(request, env)
@@ -6470,6 +6487,8 @@ export default {
         const now = new Date().toISOString()
         await requireDb(env).prepare("INSERT INTO halloween_historical_keys (player_id, ciphertext, iv, last_four, access_level, consent_version, consented_at, last_validated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, access_level = excluded.access_level, consent_version = excluded.consent_version, consented_at = excluded.consented_at, last_validated_at = excluded.last_validated_at, updated_at = excluded.updated_at")
           .bind(session.player_id, encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), accessType, "halloween-history-v2", now, now, now, now).run()
+        await requireDb(env).prepare("INSERT OR IGNORE INTO event_history_consent_records (player_id, event_key, first_consented_at) VALUES (?, 'halloween', ?)")
+          .bind(session.player_id, now).run()
         return jsonResponse({ saved: true, lastFour: apiKey.slice(-4), accessLevel: accessType, consentedAt: now, lastValidatedAt: now }, 200, origin)
       } catch (error) { return tornError(error, origin) }
     }

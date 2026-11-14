@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { calculateHalloweenBoosterCooldown, calculateHalloweenDashboardBoostersReceived, calculateHalloweenDashboardBoostersUsed, calculateHalloweenEffectiveProcRate, calculateHalloweenRevitalizeProcRate, calculateHalloweenTreatMultiplierEligibleAwards, type HalloweenEventMetrics } from "../../lib/halloween/metrics"
 import type { HalloweenExchangeMarketValue } from "../../lib/halloween/market-value"
 import { filterAndSortWeeklyMembers, type WeeklyLeaderboardDirection, type WeeklyLeaderboardParticipationFilter, type WeeklyLeaderboardSortKey, type WeeklyLeaderboardStatusFilter } from "../../lib/faction-performance/leaderboard"
@@ -1578,7 +1578,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [eventWindowError, setEventWindowError] = useState("")
   const [eventWindowNotice, setEventWindowNotice] = useState("")
   const [historicalConsent, setHistoricalConsent] = useState(false)
-  const [historicalKeyStatus, setHistoricalKeyStatus] = useState<{ connected: boolean; key: { lastFour: string; accessLevel: string; consentVersion: string; consentedAt: string; lastValidatedAt: string } | null } | null>(null)
+  const [historicalKeyStatus, setHistoricalKeyStatus] = useState<{ connected: boolean; previouslyConsented: boolean; key: { lastFour: string; accessLevel: string; consentVersion: string; consentedAt: string; lastValidatedAt: string } | null } | null>(null)
   const [historicalKeyBusy, setHistoricalKeyBusy] = useState(false)
   const [historicalKeyMessage, setHistoricalKeyMessage] = useState("")
   const [historicalKeyError, setHistoricalKeyError] = useState("")
@@ -1594,6 +1594,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [selectedMember, setSelectedMember] = useState<{ playerId: string; playerName: string } | null>(null)
   const [memberDetail, setMemberDetail] = useState<{ collection: { status: string; coverage: string; logsCollected?: number; completedEventYears?: number[]; recordedEventYears?: number[] }; dailyActivity: Array<{ eventYear?: number; eventDay: string; totalHits: number; relevantLogs: number }>; metrics: Pick<HalloweenEventMetrics, "fhcsUsed" | "greenEggsUsed" | "energyCansUsed"> | null; logs: Array<{ eventYear?: number; logId: string; timestamp: number; title: string; category: string; labels: string[]; isHit: boolean; details: Record<string, unknown> | null }> } | null>(null)
   const [memberDetailBusy, setMemberDetailBusy] = useState(false)
+  const autoCollectionYearRef = useRef<number | null>(null)
 
   const historicalCollectionYear = historicalYear === "all"
     ? archive?.eventYears?.[0] ?? null
@@ -1601,9 +1602,9 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const loadHistoricalKeyStatus = async () => {
     try {
       const response = await fetch(apiBase + "/api/me/halloween/key", { headers: { Authorization: "Bearer " + sessionToken } })
-      const payload = await response.json() as { error?: string; connected?: boolean; key?: { lastFour: string; accessLevel: string; consentVersion: string; consentedAt: string; lastValidatedAt: string } | null }
+      const payload = await response.json() as { error?: string; connected?: boolean; previouslyConsented?: boolean; key?: { lastFour: string; accessLevel: string; consentVersion: string; consentedAt: string; lastValidatedAt: string } | null }
       if (!response.ok) throw new Error(payload.error || "Could not load your Halloween key status.")
-      setHistoricalKeyStatus({ connected: payload.connected === true, key: payload.key ?? null })
+      setHistoricalKeyStatus({ connected: payload.connected === true, previouslyConsented: payload.previouslyConsented === true, key: payload.key ?? null })
     } catch (caught) { setHistoricalKeyError(caught instanceof Error ? caught.message : "Could not load your Halloween key status.") }
   }
 
@@ -1791,6 +1792,19 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const personalEventPhase = !personalWindow?.configured ? "TIME SLOT REQUIRED" : nowMs < personalStartMs ? "UPCOMING FOR YOU" : nowMs < personalEndMs ? "ACTIVE FOR YOU" : "YOUR EVENT WINDOW CONCLUDED"
   const canCapturePersonalSnapshot = Boolean(personalWindow?.configured && nowMs >= personalStartMs && nowMs < personalEndMs)
   const historicalConsentCurrent = Boolean(historicalKeyStatus?.connected && historicalKeyStatus.key?.consentVersion === "halloween-history-v2")
+  useEffect(() => {
+    if (tab !== "historical" || historicalYear === "all") return
+    const targetYear = Number(historicalYear)
+    if (!Number.isInteger(targetYear) || !historicalConsentCurrent ||
+        archive?.event?.eventYear !== targetYear ||
+        personalWindowYear !== targetYear || !personalWindow?.configured || collectBusy) return
+    if (autoCollectionYearRef.current === targetYear) return
+    autoCollectionYearRef.current = targetYear
+    // The server checks both the event-log job and versioned detailed-attack job.
+    // It queues only incomplete work and returns alreadyComplete for a finished year.
+    void startHistoricalCollection()
+  }, [tab, historicalYear, historicalConsentCurrent, archive?.event?.eventYear,
+    personalWindowYear, personalWindow?.configured, collectBusy])
   const archiveYearLabel = tab === "live" ? String(eventYear) : historicalYear === "all" ? "ALL RECORDED YEARS" : historicalYear
   const revitalizeMetricsReady = (archive?.eventTotals?.revitalizeCoveredMemberYears ?? archive?.eventTotals?.revitalizeCoveredMembers ?? 0) > 0
   const revitalizeProcRateLabel = (metrics: HalloweenEventMetrics | null | undefined) => {
@@ -2114,31 +2128,36 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
           <div className="halloween-year-filter">
             <div><small>HISTORICAL EVENT SCOPE</small><strong>{historicalYear === "all" ? "All recorded years" : "Event year " + historicalYear}</strong><span>{archive?.eventYears.length ?? 0} recorded event years available</span></div>
             <label htmlFor="halloween-historical-year">Display
-              <select id="halloween-historical-year" value={historicalYear} onChange={event => { setHistoricalYear(event.target.value); setSelectedMember(null); setMemberDetail(null) }} disabled={archiveBusy}>
+              <select id="halloween-historical-year" value={historicalYear} onChange={event => { autoCollectionYearRef.current = null; setHistoricalYear(event.target.value); setSelectedMember(null); setMemberDetail(null) }} disabled={archiveBusy}>
                 <option value="all">All time</option>
                 {(archive?.eventYears ?? []).map(year => <option key={year} value={String(year)}>{year}</option>)}
               </select>
             </label>
           </div>
-          <div className="historical-key-notice"><strong>Your own key. Your own records. Shared faction history.</strong><span>Your sign-in key is already encrypted and associated with your Torn player ID. Enable historical collection below to authorize its use for your own event logs. Other members can browse the shared faction archive without connecting a key. If you leave Naughty Souls, your saved key and contributed Halloween records are purged.</span></div>
-          <section className="historical-key-card">
-            <div className="historical-key-heading"><div><small>YOUR HISTORICAL COLLECTION KEY</small><strong>{historicalConsentCurrent ? "Enabled · •••• " + (historicalKeyStatus?.key?.lastFour || "••••") : historicalKeyStatus?.connected ? "Updated consent required · •••• " + (historicalKeyStatus.key?.lastFour || "••••") : "Not connected"}</strong></div><span className={historicalConsentCurrent ? "key-status connected" : "key-status"}><i /> {historicalConsentCurrent ? (historicalKeyStatus?.key?.accessLevel || "PORTAL KEY") + " VERIFIED" : historicalKeyStatus?.connected ? "UPDATED CONSENT REQUIRED" : "OPT-IN REQUIRED"}</span></div>
-            {historicalConsentCurrent ? <div className="historical-key-connected"><p>Your saved portal key is enabled for historical logs and detailed attack effects. Last validation: {historicalKeyStatus?.key?.lastValidatedAt ? new Date(historicalKeyStatus.key.lastValidatedAt).toLocaleString() : "Not available"}.</p><button type="button" disabled={historicalKeyBusy} onClick={removeHistoricalKey}>Disable historical collection</button></div> : <form className="historical-key-form" onSubmit={saveHistoricalKey}>
-              <p>{historicalKeyStatus?.connected ? "Review the expanded data use and confirm User → Attacks collection. Your existing encrypted portal key will be reused. No second API key is required." : "Your saved portal API key will be used. No second API key is required."}</p>
-              <div className="historical-tos"><strong>Historical Halloween data use</strong><table><tbody>
-                <tr><th>Data Storage</th><td>Persistent, until account deletion or faction change. Disconnecting the key does not erase records already contributed.</td></tr>
-                <tr><th>Data Sharing</th><td>All authenticated Naughty Souls faction members.</td></tr>
-                <tr><th>Purpose of Use</th><td>Halloween event analytics, personal event history, faction-wide leaderboard/archive, and Revitalize finishing-hit proc counts and weapon chance.</td></tr>
-                <tr><th>Key Storage & Sharing</th><td>Stored remotely encrypted; used only by this service's historical collection workflows. The raw key is not shared with faction members.</td></tr>
-                <tr><th>Key Access Level</th><td>Full Access, or Custom Access with both User → Log and User → Attacks selections. Log category restrictions must include Halloween records.</td></tr>
-              </tbody></table></div>
-              <label className="historical-consent"><input type="checkbox" checked={historicalConsent} onChange={event => setHistoricalConsent(event.target.checked)} disabled={historicalKeyBusy} /><span>I have reviewed the data-use terms and consent to using my saved portal API key for Halloween event-log and detailed attack collection, including Revitalize finishing-hit proc counts and weapon chance, and sharing these event metrics with authenticated Naughty Souls faction members.</span></label>
-              <button className="historical-connect-button" type="submit" disabled={historicalKeyBusy || !historicalConsent}>{historicalKeyBusy ? "Enabling…" : "Enable historical collection with portal key"}</button>
-            </form>}
-            {historicalKeyError && <p className="historical-key-error" role="alert">{historicalKeyError}</p>}
-            {historicalKeyMessage && <p className="historical-key-message" role="status">{historicalKeyMessage}</p>}
-            {!historicalKeyStatus && <p className="historical-key-muted">Checking your saved key status…</p>}
-          </section>
+          {historicalKeyStatus && !historicalKeyStatus.previouslyConsented && (
+            <>
+              <div className="historical-key-notice"><strong>Your own key. Your own records. Shared faction history.</strong><span>Your sign-in key is already encrypted and associated with your Torn player ID. This is the one-time initial authorization for your own event logs and detailed attack collection. After you consent, manage this connection from Account Settings. Other members can browse the shared faction archive without connecting a key. If you leave Naughty Souls, your saved key and contributed Halloween records are purged.</span></div>
+              <section className="historical-key-card">
+                <div className="historical-key-heading"><div><small>INITIAL HISTORICAL COLLECTION CONSENT</small><strong>{historicalKeyStatus.connected ? "Updated consent required · •••• " + (historicalKeyStatus.key?.lastFour || "••••") : "Initial consent required"}</strong></div><span className="key-status"><i /> ONE-TIME OPT-IN</span></div>
+                <form className="historical-key-form" onSubmit={saveHistoricalKey}>
+                  <p>Your saved portal API key will be used. No second API key is required.</p>
+                  <div className="historical-tos"><strong>Historical Halloween data use</strong><table><tbody>
+                    <tr><th>Data Storage</th><td>Persistent, until account deletion or faction change. Disabling collection in Account Settings removes the encrypted event key but retains records already contributed.</td></tr>
+                    <tr><th>Data Sharing</th><td>All authenticated Naughty Souls faction members.</td></tr>
+                    <tr><th>Purpose of Use</th><td>Halloween event analytics, personal event history, faction-wide leaderboard/archive, and Revitalize finishing-hit proc counts and weapon chance.</td></tr>
+                    <tr><th>Key Storage & Sharing</th><td>Stored remotely encrypted; used only by this service's historical collection workflows. The raw key is not shared with faction members.</td></tr>
+                    <tr><th>Key Access Level</th><td>Full Access, or Custom Access with both User → Log and User → Attacks selections. Log category restrictions must include Halloween records.</td></tr>
+                  </tbody></table></div>
+                  <label className="historical-consent"><input type="checkbox" checked={historicalConsent} onChange={event => setHistoricalConsent(event.target.checked)} disabled={historicalKeyBusy} /><span>I have reviewed the data-use terms and consent to using my saved portal API key for Halloween event-log and detailed attack collection, including Revitalize finishing-hit proc counts and weapon chance, and sharing these event metrics with authenticated Naughty Souls faction members. Ongoing controls will live in Account Settings.</span></label>
+                  <button className="historical-connect-button" type="submit" disabled={historicalKeyBusy || !historicalConsent}>{historicalKeyBusy ? "Enabling…" : "Enable historical collection with portal key"}</button>
+                </form>
+                {historicalKeyError && <p className="historical-key-error" role="alert">{historicalKeyError}</p>}
+              </section>
+            </>
+          )}
+          {historicalKeyStatus?.previouslyConsented && !historicalConsentCurrent && (
+            <p className="historical-key-muted" role="status">Halloween history collection is currently disabled or needs updated consent. Manage its connection in <button type="button" className="settings-link-button" onClick={() => onNavigate("/settings")}>Account Settings →</button></p>
+          )}
           <div className="historical-collection-toolbar"><div><small>FACTION HISTORICAL LEADERBOARD</small><strong>{archive?.leaderboard.length ?? 0} member accounts in the archive</strong></div><button type="button" onClick={() => { void loadArchive(); void loadHistoricalKeyStatus() }} disabled={archiveBusy}>{archiveBusy ? "Refreshing…" : "Refresh archive ↻"}</button></div>
           {archiveError && <p className="historical-key-error" role="alert">{archiveError}</p>}
           {collectMessage && <p className="historical-key-message" role="status">{collectMessage}</p>}
@@ -2204,6 +2223,18 @@ type PrivateLiveConnectionStatus = {
   snapshot: { capturedAt: string } | null
 }
 
+type EventHistoryConsentStatus = {
+  connected: boolean
+  previouslyConsented: boolean
+  key: {
+    lastFour: string
+    accessLevel: string
+    consentVersion: string
+    consentedAt: string
+    lastValidatedAt: string
+  } | null
+}
+
 type AccountSettingsProps = WorkspaceProps & {
   apiBase: string
   sessionToken: string
@@ -2223,6 +2254,79 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
   const [privateLiveConsent, setPrivateLiveConsent] = useState(false)
   const [privateLiveIncludeNetworth, setPrivateLiveIncludeNetworth] = useState(false)
   const [privateLiveBusy, setPrivateLiveBusy] = useState(false)
+  const [halloweenHistoryStatus, setHalloweenHistoryStatus] = useState<EventHistoryConsentStatus | null>(null)
+  const [christmasTownHistoryStatus, setChristmasTownHistoryStatus] = useState<EventHistoryConsentStatus | null>(null)
+  const [halloweenHistoryConsent, setHalloweenHistoryConsent] = useState(false)
+  const [christmasTownHistoryConsent, setChristmasTownHistoryConsent] = useState(false)
+  const [eventHistoryBusy, setEventHistoryBusy] = useState(false)
+
+  const loadHalloweenHistoryStatus = async () => {
+    const response = await fetch(props.apiBase + "/api/me/halloween/key", {
+      headers: { Authorization: "Bearer " + props.sessionToken },
+    })
+    const payload = await response.json() as EventHistoryConsentStatus & { error?: string }
+    if (!response.ok) throw new Error(payload.error || "Could not load Halloween history settings.")
+    setHalloweenHistoryStatus(payload)
+    return payload
+  }
+
+  const loadChristmasTownHistoryStatus = async () => {
+    const response = await fetch(props.apiBase + "/api/me/christmas-town/key", {
+      headers: { Authorization: "Bearer " + props.sessionToken },
+    })
+    const payload = await response.json() as EventHistoryConsentStatus & { error?: string }
+    if (!response.ok) throw new Error(payload.error || "Could not load Christmas Town history settings.")
+    setChristmasTownHistoryStatus(payload)
+    return payload
+  }
+
+  const updateEventHistoryConsent = async (kind: "halloween" | "christmas-town") => {
+    if (eventHistoryBusy) return
+    const accepted = kind === "halloween" ? halloweenHistoryConsent : christmasTownHistoryConsent
+    if (!accepted) return
+    setEventHistoryBusy(true); setAccountError(""); setAccountNotice("")
+    try {
+      const version = kind === "halloween" ? "halloween-history-v2" : "christmas-town-history-v1"
+      const endpoint = props.apiBase + "/api/me/" + kind + "/key"
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { Authorization: "Bearer " + props.sessionToken, "Content-Type": "application/json" },
+        body: JSON.stringify({ consent: true, consentVersion: version }),
+      })
+      const payload = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not enable " + kind + " history.")
+      if (kind === "halloween") {
+        setHalloweenHistoryConsent(false)
+        await loadHalloweenHistoryStatus()
+        setAccountNotice("Halloween historical logs and detailed attack collection are enabled.")
+      } else {
+        setChristmasTownHistoryConsent(false)
+        await loadChristmasTownHistoryStatus()
+        setAccountNotice("Christmas Town personal history collection is enabled.")
+      }
+    } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not update event-history consent.") }
+    finally { setEventHistoryBusy(false) }
+  }
+
+  const disconnectEventHistory = async (kind: "halloween" | "christmas-town") => {
+    const status = kind === "halloween" ? halloweenHistoryStatus : christmasTownHistoryStatus
+    if (eventHistoryBusy || !status?.connected) return
+    const label = kind === "halloween" ? "Halloween historical" : "Christmas Town"
+    if (!window.confirm("Disable " + label + " collection? The encrypted event key will be removed, active collection jobs will stop, and previously collected records will be retained.")) return
+    setEventHistoryBusy(true); setAccountError(""); setAccountNotice("")
+    try {
+      const response = await fetch(props.apiBase + "/api/me/" + kind + "/key", {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + props.sessionToken },
+      })
+      const payload = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(payload.error || "Could not disable " + label + " collection.")
+      if (kind === "halloween") await loadHalloweenHistoryStatus()
+      else await loadChristmasTownHistoryStatus()
+      setAccountNotice(label + " collection is disabled. Your first-consent record and previously collected history were retained.")
+    } catch (caught) { setAccountError(caught instanceof Error ? caught.message : "Could not disable event-history collection.") }
+    finally { setEventHistoryBusy(false) }
+  }
 
   const loadPrivateLiveStatus = async () => {
     const response = await fetch(props.apiBase + "/api/me/private-live/key", {
@@ -2238,6 +2342,9 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
   useEffect(() => {
     void loadPrivateLiveStatus().catch(caught => {
       setAccountError(caught instanceof Error ? caught.message : "Could not load your private live connection status.")
+    })
+    void Promise.all([loadHalloweenHistoryStatus(), loadChristmasTownHistoryStatus()]).catch(caught => {
+      setAccountError(caught instanceof Error ? caught.message : "Could not load event-history settings.")
     })
   }, [props.apiBase, props.sessionToken])
 
@@ -2470,11 +2577,47 @@ export function AccountSettingsWorkspace(props: AccountSettingsProps) {
             <button type="button" disabled={privateLiveBusy} onClick={() => void disconnectPrivateLive()}>Disconnect & delete snapshot</button>
           </div>}
         </article>
-        <article className="settings-card">
+        <article className="settings-card settings-card-wide">
           <div className="settings-card-icon">♧</div><small>HALLOWEEN ARCHIVE</small><h2>Halloween historical collection</h2>
-          <p>Historical collection reuses your saved portal key, if it includes User → Log access and you opt in.</p>
-          <span className="settings-connection"><i /> Managed in Halloween workspace</span>
-          <button type="button" onClick={() => props.onNavigate("/halloween")}>Open Halloween settings →</button>
+          <p>Manage your consent for personal event logs and detailed attack outcomes. Your key is encrypted, used only for your own Torn account, and event metrics are shared with authenticated Naughty Souls members.</p>
+          <span className={halloweenHistoryStatus?.connected && halloweenHistoryStatus.key?.consentVersion === "halloween-history-v2" ? "settings-connection good" : "settings-connection"}><i /> {!halloweenHistoryStatus ? "Checking consent…" : halloweenHistoryStatus.connected && halloweenHistoryStatus.key?.consentVersion === "halloween-history-v2" ? "Enabled securely · •••• " + (halloweenHistoryStatus.key.lastFour || "••••") : halloweenHistoryStatus.previouslyConsented ? "Previously authorized · currently disabled or updated consent required" : "Initial consent not yet given"}</span>
+          {!halloweenHistoryStatus ? <p className="settings-form-hint">Loading your Halloween collection settings…</p> : !halloweenHistoryStatus.previouslyConsented ? (
+            <div className="settings-inline-form"><p className="settings-form-hint">Give the one-time initial consent from the Halloween event page. After that, enable/disable controls will remain here.</p><button type="button" onClick={() => props.onNavigate("/halloween")}>Open Halloween Dashboard →</button></div>
+          ) : halloweenHistoryStatus.connected && halloweenHistoryStatus.key?.consentVersion === "halloween-history-v2" ? (
+            <div className="settings-inline-form"><p className="settings-form-hint">Last key validation: {halloweenHistoryStatus.key.lastValidatedAt ? new Date(halloweenHistoryStatus.key.lastValidatedAt).toLocaleString() : "Not available"}. Disabling removes the encrypted event key and cancels active collection, but retains archived records.</p><button type="button" disabled={eventHistoryBusy} onClick={() => void disconnectEventHistory("halloween")}>Disable historical collection</button></div>
+          ) : (
+            <form className="settings-inline-form" onSubmit={event => { event.preventDefault(); void updateEventHistoryConsent("halloween") }}>
+              <div className="settings-private-live-disclosure"><strong>Halloween historical data use</strong><table><tbody>
+                <tr><th>Data storage</th><td>Event logs and detailed attack metrics remain in the shared historical archive. Disabling removes the encrypted key and stops active collection; saved records are retained.</td></tr>
+                <tr><th>Data sharing</th><td>Historical event metrics are available to authenticated Naughty Souls faction members.</td></tr>
+                <tr><th>Purpose</th><td>Personal event history, faction leaderboard/archive, attack outcomes, and Revitalize finishing-hit proc analysis.</td></tr>
+                <tr><th>Key access</th><td>Full Access, or Custom Access with User → Log and User → Attacks enabled and no exclusions of Halloween records.</td></tr>
+              </tbody></table></div>
+              <label className="settings-private-live-check"><input type="checkbox" checked={halloweenHistoryConsent} onChange={event => setHalloweenHistoryConsent(event.target.checked)} disabled={eventHistoryBusy} /><span>I consent to using my saved portal API key for Halloween event-log and detailed attack collection and sharing these event metrics with authenticated Naughty Souls faction members.</span></label>
+              <button type="submit" disabled={eventHistoryBusy || !halloweenHistoryConsent}>{eventHistoryBusy ? "Working…" : "Enable historical collection with portal key"}</button>
+            </form>
+          )}
+        </article>
+        <article className="settings-card settings-card-wide">
+          <div className="settings-card-icon">❄</div><small>CHRISTMAS TOWN ARCHIVE</small><h2>Christmas Town personal history</h2>
+          <p>Manage your consent for your own Christmas Town User → Log history. Records remain private to your account and are not shared in faction reports.</p>
+          <span className={christmasTownHistoryStatus?.connected && christmasTownHistoryStatus.key?.consentVersion === "christmas-town-history-v1" ? "settings-connection good" : "settings-connection"}><i /> {!christmasTownHistoryStatus ? "Checking consent…" : christmasTownHistoryStatus.connected && christmasTownHistoryStatus.key?.consentVersion === "christmas-town-history-v1" ? "Enabled securely · •••• " + (christmasTownHistoryStatus.key.lastFour || "••••") : christmasTownHistoryStatus.previouslyConsented ? "Previously authorized · currently disabled" : "Initial consent not yet given"}</span>
+          {!christmasTownHistoryStatus ? <p className="settings-form-hint">Loading your Christmas Town collection settings…</p> : !christmasTownHistoryStatus.previouslyConsented ? (
+            <div className="settings-inline-form"><p className="settings-form-hint">Give the one-time initial consent from the Christmas Town event page. After that, enable/disable controls will remain here.</p><button type="button" onClick={() => props.onNavigate("/christmas-town")}>Open Christmas Town →</button></div>
+          ) : christmasTownHistoryStatus.connected && christmasTownHistoryStatus.key?.consentVersion === "christmas-town-history-v1" ? (
+            <div className="settings-inline-form"><p className="settings-form-hint">Last key validation: {christmasTownHistoryStatus.key.lastValidatedAt ? new Date(christmasTownHistoryStatus.key.lastValidatedAt).toLocaleString() : "Not available"}. Disabling removes the encrypted event key and cancels active collection, but retains your archive.</p><button type="button" disabled={eventHistoryBusy} onClick={() => void disconnectEventHistory("christmas-town")}>Disable Christmas Town history</button></div>
+          ) : (
+            <form className="settings-inline-form" onSubmit={event => { event.preventDefault(); void updateEventHistoryConsent("christmas-town") }}>
+              <div className="settings-private-live-disclosure"><strong>Christmas Town personal data use</strong><table><tbody>
+                <tr><th>Data storage</th><td>Christmas Town event logs are stored in your personal archive. Disabling removes the encrypted key and stops active collection; saved records are retained.</td></tr>
+                <tr><th>Data sharing</th><td>Your Christmas Town records remain private to your portal account and are not included in faction reports.</td></tr>
+                <tr><th>Purpose</th><td>Personal event statistics, minigame/chest/reward history and item-value analysis.</td></tr>
+                <tr><th>Key access</th><td>Full Access or unrestricted Custom User → Log access. Restricted log categories or IDs may omit event records.</td></tr>
+              </tbody></table></div>
+              <label className="settings-private-live-check"><input type="checkbox" checked={christmasTownHistoryConsent} onChange={event => setChristmasTownHistoryConsent(event.target.checked)} disabled={eventHistoryBusy} /><span>I consent to using my saved portal API key to collect and store my personal Christmas Town event logs for this dashboard.</span></label>
+              <button type="submit" disabled={eventHistoryBusy || !christmasTownHistoryConsent}>{eventHistoryBusy ? "Working…" : "Enable Christmas Town history"}</button>
+            </form>
+          )}
         </article>
         <article className="settings-card">
           <div className="settings-card-icon">◈</div><small>ACCOUNT SECURITY</small><h2>Sessions & access</h2>

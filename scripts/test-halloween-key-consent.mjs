@@ -1,10 +1,11 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 
-const [worker, migration, historicalYearMigration, workspace, metrics] = await Promise.all([
+const [worker, migration, historicalYearMigration, consentRecordMigration, workspace, metrics] = await Promise.all([
   readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8"),
   readFile(new URL("../migrations/auth/0024_halloween_custom_key_support.sql", import.meta.url), "utf8"),
   readFile(new URL("../migrations/auth/0029_halloween_historical_event_years.sql", import.meta.url), "utf8"),
+  readFile(new URL("../migrations/auth/0030_event_history_consent_records.sql", import.meta.url), "utf8"),
   readFile(new URL("../src/components/portal/workspaces.tsx", import.meta.url), "utf8"),
   readFile(new URL("../src/lib/halloween/metrics.ts", import.meta.url), "utf8"),
 ])
@@ -14,6 +15,11 @@ assert.ok(migration.includes("ALTER TABLE halloween_historical_keys_new RENAME T
 assert.ok(migration.includes("CHECK (access_level IN ('Full Access', 'Custom Access', 'Custom'))"))
 assert.ok(migration.includes("consent_version TEXT NOT NULL"))
 assert.ok(historicalYearMigration.includes("INSERT OR IGNORE INTO halloween_event_windows"))
+assert.ok(consentRecordMigration.includes("CREATE TABLE IF NOT EXISTS event_history_consent_records"))
+assert.ok(consentRecordMigration.includes("SELECT player_id, 'halloween', consented_at FROM halloween_historical_keys"))
+assert.ok(consentRecordMigration.includes("SELECT player_id, 'christmas-town', consented_at FROM christmas_town_historical_keys"))
+assert.ok(worker.includes("previouslyConsented: Boolean(priorConsent)"), "event key status must distinguish prior consent from a currently connected key")
+assert.ok(worker.includes("INSERT OR IGNORE INTO event_history_consent_records (player_id, event_key, first_consented_at)"), "successful opt-in must persist the one-time-consent marker")
 for (const year of [2021, 2022, 2023, 2024, 2025]) assert.ok(historicalYearMigration.includes("(" + year + ", '"), "historical event window must include " + year)
 assert.ok(worker.includes('trackedTornFetch("private-live-key-validation", "https://api.torn.com/v2/key/info"'), "key ownership validation must use the sanitized request telemetry path")
 assert.ok(worker.includes('accessType !== "Full Access" && !supportsCustomArchive'))
@@ -78,7 +84,12 @@ assert.ok(workspace.includes("up to {myBoosterCooldown.theoreticalMaxEnergyCans}
 assert.ok(metrics.includes("theoreticalCooldownLimitHours"), "cooldown math must account for the final six-hour item")
 assert.ok(metrics.includes("fhcsAboveTheoreticalMaximum"), "cooldown math must expose counts beyond the theoretical maximum")
 assert.doesNotMatch(workspace, /halloween-full-access-key|Paste your own Full Access Torn API key/)
-assert.ok(workspace.includes("Disable historical collection"))
+assert.ok(workspace.includes("Disable historical collection"), "ongoing Halloween consent controls must be available in Account Settings")
+assert.ok(workspace.includes("halloweenHistoryStatus.previouslyConsented"), "Account Settings must gate ongoing consent controls on initial consent")
+assert.ok(workspace.includes("historicalKeyStatus && !historicalKeyStatus.previouslyConsented"), "the Halloween event page must show consent only before initial consent")
+assert.ok(workspace.includes("autoCollectionYearRef"), "selecting a Halloween event year must trigger an automatic collection check")
+assert.ok(workspace.includes("void startHistoricalCollection()"), "the selected Halloween year must invoke the idempotent collection endpoint")
+assert.ok(workspace.includes("Manage it in Account Settings"), "subsequent Halloween consent management must leave the event page")
 assert.ok(!workspace.includes("halloween-history-v1"))
 assert.ok(worker.includes("LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id WHERE p.faction_id = ? AND st.disabled_at IS NULL"), "disabled accounts must be excluded from the shared historical leaderboard")
 assert.ok(worker.includes("p.player_id = ? AND p.faction_id = ? AND st.disabled_at IS NULL"), "disabled accounts must not expose member event details")
