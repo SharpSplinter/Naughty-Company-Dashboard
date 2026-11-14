@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { calculateHalloweenBoosterCooldown, calculateHalloweenRevitalizeProcRate, type HalloweenEventMetrics } from "../../lib/halloween/metrics"
+import { calculateHalloweenBoosterCooldown, calculateHalloweenDashboardBoostersReceived, calculateHalloweenDashboardBoostersUsed, calculateHalloweenRevitalizeProcRate, type HalloweenEventMetrics } from "../../lib/halloween/metrics"
 import { filterAndSortWeeklyMembers, type WeeklyLeaderboardDirection, type WeeklyLeaderboardParticipationFilter, type WeeklyLeaderboardSortKey, type WeeklyLeaderboardStatusFilter } from "../../lib/faction-performance/leaderboard"
 
 type SavedCompanySummary = {
@@ -1814,12 +1814,13 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const selectedLiveComparison = selectedComparison && tab === "live"
     ? live?.leaderboard.find(snapshot => snapshot.playerId === selectedComparison.playerId && snapshot.coverage === "captured") ?? null
     : null
-  const comparisonMetricRows: Array<{ label: string; key: "totalHits" | "fhcsUsed" | "greenEggsUsed" | "energyCansUsed" | "boostersUsed" | "energyDrinkSixPacksUsed" | "alcoholSixPacksUsed" | "treatExchangeEnergyGained" | "successfulAttackEnergyUsed" | "successfulAttacks" | "revitalizeProcRate" | "revitalizeProcs" | "revitalizeAttacksReviewed" }> = [
+  const comparisonMetricRows: Array<{ label: string; key: "totalHits" | "fhcsUsed" | "greenEggsUsed" | "energyCansUsed" | "dashboardBoostersUsed" | "boostersUsed" | "energyDrinkSixPacksUsed" | "alcoholSixPacksUsed" | "treatExchangeEnergyGained" | "successfulAttackEnergyUsed" | "successfulAttacks" | "revitalizeProcRate" | "revitalizeProcs" | "revitalizeAttacksReviewed" }> = [
     { label: "Halloween hits", key: "totalHits" },
     { label: "FHCs used", key: "fhcsUsed" },
     { label: "Green Easter Eggs used", key: "greenEggsUsed" },
     { label: "Energy cans used", key: "energyCansUsed" },
-    { label: "Boosters used", key: "boostersUsed" },
+    { label: "Boosters used", key: "dashboardBoostersUsed" },
+    { label: "Other booster items used", key: "boostersUsed" },
     { label: "Energy drink six-packs opened", key: "energyDrinkSixPacksUsed" },
     { label: "Alcohol six-packs opened", key: "alcoholSixPacksUsed" },
     { label: "Energy from treat exchanges", key: "treatExchangeEnergyGained" },
@@ -1830,6 +1831,9 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     { label: "Eligible attacks reviewed", key: "revitalizeAttacksReviewed" },
   ]
   const comparisonValue = (metrics: HalloweenEventMetrics | null | undefined, hits: number | null | undefined, attackMetricsStatus: string | undefined, key: typeof comparisonMetricRows[number]["key"]) => {
+    if (key === "dashboardBoostersUsed") {
+      return metrics ? calculateHalloweenDashboardBoostersUsed(metrics).toLocaleString() : "—"
+    }
     if (key === "revitalizeProcRate") {
       if (attackMetricsStatus !== "complete") return "—"
       return revitalizeProcRateLabel(metrics)
@@ -1898,9 +1902,10 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
           {archive?.eventTotals && <section className="halloween-panel halloween-event-metrics">
             <div className="halloween-status historical"><i /> FACTION-WIDE EVENT TOTALS · {archiveYearLabel}</div>
             <h3>Combined items and energy activity</h3>
-            <p>Combined totals from {archive.eventTotals.coveredMembers} faction members with completed personal event-log collections. These totals include other members' item use and are not your personal count. Energy cans include single cans plus six cans only when a Six-Pack of Energy Drink was opened. Unopened Energy Drink and Alcohol six-packs stay separate.</p>
+            <p>Combined totals from {archive.eventTotals.coveredMembers} faction members with completed personal event-log collections. Dashboard Boosters include only Energy Cans, faction FHCs, and Green Easter Eggs. Other booster items and Alcohol items stay separate. An opened Energy Drink six-pack contributes its six individual cans; unopened six-packs are not included in Boosters.</p>
             <div className="coverage-grid">
-              <div><small>BOOSTERS RECEIVED</small><strong>{eventMetric(archive.eventTotals.boosters)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.boostersUsed) + " used" : "Used: —"}</span></div>
+              <div><small>BOOSTERS RECEIVED</small><strong>{eventMetric(calculateHalloweenDashboardBoostersReceived(archive.eventTotals))}</strong><span>{eventMetricsReady ? eventMetric(calculateHalloweenDashboardBoostersUsed(archive.eventTotals)) + " used" : "Used: —"}</span></div>
+              <div><small>OTHER BOOSTER ITEMS RECEIVED</small><strong>{eventMetric(archive.eventTotals.boosters)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.boostersUsed) + " used · excluded from Boosters" : "Used: —"}</span></div>
               <div><small>ENERGY CANS RECEIVED / OPENED</small><strong>{eventMetric(archive.eventTotals.energyCans)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.energyCansUsed) + " cans used · opened energy packs add 6" : "Used: —"}</span></div>
               <div><small>SIX-PACKS OF ENERGY DRINK</small><strong>{eventMetric(archive.eventTotals.energyDrinkSixPacks)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.energyDrinkSixPacksUsed) + " opened" : "Opened: —"}</span></div>
               <div><small>SIX-PACKS OF ALCOHOL</small><strong>{eventMetric(archive.eventTotals.alcoholSixPacks)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.alcoholSixPacksUsed) + " opened · separate from energy cans" : "Opened: —"}</span></div>
@@ -1923,7 +1928,8 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
               <div><small>FHCs USED</small><strong>{archive.myEventMetrics.fhcsUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
               <div><small>GREEN EGGS USED</small><strong>{archive.myEventMetrics.greenEggsUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
               <div><small>ENERGY CANS USED</small><strong>{archive.myEventMetrics.energyCansUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
-              <div><small>BOOSTERS USED</small><strong>{archive.myEventMetrics.boostersUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
+              <div><small>BOOSTERS USED</small><strong>{calculateHalloweenDashboardBoostersUsed(archive.myEventMetrics).toLocaleString()}</strong><span>Energy Cans + FHCs + Green Easter Eggs across completed event years</span></div>
+              <div><small>OTHER BOOSTER ITEMS USED</small><strong>{archive.myEventMetrics.boostersUsed.toLocaleString()}</strong><span>Excluded from the dashboard Boosters total</span></div>
               <div><small>ENERGY FROM TREAT EXCHANGES</small><strong>{archive.myEventMetrics.treatExchangeEnergyGained.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
               <div><small>SUCCESSFUL ATTACKS</small><strong>{archive.myEventMetrics.successfulAttacks.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
               <div><small>REVITALIZE PROCS</small><strong>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeProcs.toLocaleString() : "—"}</strong><span>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeSuccessfulAttacks.toLocaleString() + " successful attacks / hits" : "Detailed attacks incomplete for at least one completed event year"}</span></div>
