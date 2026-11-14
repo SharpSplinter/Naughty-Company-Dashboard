@@ -103,7 +103,18 @@ The prior isolated staging load run [#43536991130](https://github.com/SharpSplin
 
 The new harness refreshes only the exact synthetic administrator's `faction_verified_at` and membership-check metadata in the verified isolated staging D1 immediately before the benchmark. It runs 285 seconds at 5 requests/second (1,425 planned requests), leaving a 15-second margin inside the five-minute freshness window. The authenticated API workload itself remains GET-only; the isolated test setup performs one explicit synthetic-fixture metadata update before the run. This does not weaken application authentication or change production behavior.
 
-Latest isolated staging acceptance run: [#43544138781](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/43544138781). It was in progress at the time this report was written. Do not treat the sustained-load test as passed until that run's load step and unconditional fixture cleanup both complete successfully.
+The initial helper assertion failure in run [#43544138781](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/43544138781) was fixed: Wrangler's D1 file execution reports the actual one-row update through its result metadata rather than returning the final aliased SELECT row.
+
+The complete isolated acceptance run [#43544413963](https://github.com/SharpSplinter/Naughty-Company-Dashboard/actions/runs/43544413963) completed successfully on code head `62463d311d59d630283cc0624ea2880bca4d3243`:
+- Responsive browser checks passed.
+- Admin/non-admin E2E, semantics, request-budget smoke and 11 axe screens passed with zero violations.
+- Four portrait/landscape Android viewport emulations passed without document-level horizontal overflow. This is emulation, not a physical Android or TalkBack test.
+- Synthetic membership-freshness refresh changed exactly one intended staging fixture row.
+- Sustained load completed 1,425 authenticated read-only GET requests in 284.9 seconds at 5 requests/second, with 0 failures (0%).
+- Latencies: p50 98.3 ms, p95 137.5 ms, p99 180.9 ms, maximum 506.8 ms; observed concurrency 2 (configured maximum 8).
+- Unconditional cleanup removed synthetic users, sessions, company rows and history from isolated staging D1 successfully.
+
+This closes the synthetic session-freshness/load-test blocker on the tested code head. It does not establish production portal capacity or replace the remaining manual Android TalkBack review and pre-cutover production safeguards.
 
 ## 6. Remaining request-budget conclusions
 
