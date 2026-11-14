@@ -21,6 +21,7 @@ export type HalloweenBoosterCooldownEstimate = {
   practicalFhcTarget: number
   theoreticalMaxFhcs: number
   theoreticalMaxEnergyCans: number
+  theoreticalFhcCooldownLimitHours: number
   theoreticalEnergyCanCooldownLimitHours: number
   theoreticalCooldownLimitHours: number
   timingBufferHours: number
@@ -84,28 +85,31 @@ export function calculateHalloweenBoosterCooldown(
   // A final 6h booster may be used just below the 48h timer threshold, so
   // the total added cooldown must remain strictly below event + 48h + 6h.
   // The strict inequality matters: at exactly 48h, another item is not ready.
-  const theoreticalCooldownLimitHours =
+  const theoreticalFhcCooldownLimitHours =
     validEventHours +
     HALLOWEEN_BOOSTER_COOLDOWN_RULES.maxTimerHours +
     HALLOWEEN_BOOSTER_COOLDOWN_RULES.fhcHours
-  const otherItemHours = greenEggHours + energyCanHours
-  // The FHC-only ceiling assumes every use is a 6h item. The final FHC may
-  // overfill the 48h cap by almost 6h, so the total must remain below 222h.
-  const theoreticalMaxFhcs = Math.max(0, Math.ceil(
-    theoreticalCooldownLimitHours / HALLOWEEN_BOOSTER_COOLDOWN_RULES.fhcHours,
-  ) - 1)
-  // Energy-can-only runs can overfill the 48h cap by only one 2h can.
+  // An Energy-Can-only run can overfill the 48h cap by only one 2h can.
   const theoreticalEnergyCanCooldownLimitHours =
     validEventHours +
     HALLOWEEN_BOOSTER_COOLDOWN_RULES.maxTimerHours +
     HALLOWEEN_BOOSTER_COOLDOWN_RULES.energyCanHours
+  // When the logged mix includes a 6h item, that item could be the final
+  // overfill. A can-only run has only the smaller 2h final-can allowance.
+  const theoreticalCooldownLimitHours = fhcsUsed > 0 || greenEggsUsed > 0 || energyCansUsed === 0
+    ? theoreticalFhcCooldownLimitHours
+    : theoreticalEnergyCanCooldownLimitHours
+  const otherItemHours = greenEggHours + energyCanHours
+  const theoreticalMaxFhcs = Math.max(0, Math.ceil(
+    theoreticalFhcCooldownLimitHours / HALLOWEEN_BOOSTER_COOLDOWN_RULES.fhcHours,
+  ) - 1)
   const theoreticalMaxEnergyCans = Math.max(0, Math.ceil(
     theoreticalEnergyCanCooldownLimitHours / HALLOWEEN_BOOSTER_COOLDOWN_RULES.energyCanHours,
   ) - 1)
-  // The practical target accounts for the member's logged green eggs/cans,
-  // then keeps one additional 6h FHC as timing margin.
+  // The practical FHC target assumes the final item is an FHC, subtracts the
+  // member's logged green eggs/cans, then keeps one more 6h FHC as margin.
   const maxFhcsAfterOtherItems = Math.max(0, Math.ceil(
-    (theoreticalCooldownLimitHours - otherItemHours) / HALLOWEEN_BOOSTER_COOLDOWN_RULES.fhcHours,
+    (theoreticalFhcCooldownLimitHours - otherItemHours) / HALLOWEEN_BOOSTER_COOLDOWN_RULES.fhcHours,
   ) - 1)
   const practicalFhcTarget = Math.max(0, maxFhcsAfterOtherItems - 1)
   const timingBufferHours = theoreticalCooldownLimitHours - totalHours
@@ -127,6 +131,7 @@ export function calculateHalloweenBoosterCooldown(
     practicalFhcTarget,
     theoreticalMaxFhcs,
     theoreticalMaxEnergyCans,
+    theoreticalFhcCooldownLimitHours,
     theoreticalEnergyCanCooldownLimitHours,
     theoreticalCooldownLimitHours,
     timingBufferHours,
