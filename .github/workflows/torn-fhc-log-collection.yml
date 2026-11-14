@@ -52,7 +52,11 @@ jobs:
               await new Promise(resolve => setTimeout(resolve, delay));
             }
             const payload = await response.json().catch(() => null);
-            if (!payload || !Array.isArray(payload.data)) throw new Error('Unexpected API response on page ' + pageCount + '; body suppressed.');
+            if (!payload || !Array.isArray(payload.data)) {
+              const apiError = payload?.error && typeof payload.error === 'object' ? payload.error : {};
+              console.error('TORN_RESPONSE_DIAGNOSTIC ' + JSON.stringify({ http: response.status, contentType: response.headers.get('content-type'), topLevelKeys: payload && typeof payload === 'object' ? Object.keys(payload) : [], errorCode: apiError.code ?? null, errorMessage: apiError.error ?? apiError.message ?? null, dataType: Array.isArray(payload?.data) ? 'array' : typeof payload?.data }));
+              throw new Error('Unexpected Torn response on page ' + pageCount + '; private response content suppressed.');
+            }
             logs.push(...payload.data);
             const next = payload?._metadata?.links?.next;
             if (!next) break;
