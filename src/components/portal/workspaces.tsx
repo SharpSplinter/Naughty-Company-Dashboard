@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { calculateHalloweenBoosterCooldown, calculateHalloweenDashboardBoostersReceived, calculateHalloweenDashboardBoostersUsed, calculateHalloweenRevitalizeProcRate, type HalloweenEventMetrics } from "../../lib/halloween/metrics"
+import { calculateHalloweenBoosterCooldown, calculateHalloweenDashboardBoostersReceived, calculateHalloweenDashboardBoostersUsed, calculateHalloweenEffectiveProcRate, calculateHalloweenRevitalizeProcRate, calculateHalloweenTreatMultiplierEligibleAwards, type HalloweenEventMetrics } from "../../lib/halloween/metrics"
 import type { HalloweenExchangeMarketValue } from "../../lib/halloween/market-value"
 import { filterAndSortWeeklyMembers, type WeeklyLeaderboardDirection, type WeeklyLeaderboardParticipationFilter, type WeeklyLeaderboardSortKey, type WeeklyLeaderboardStatusFilter } from "../../lib/faction-performance/leaderboard"
 
@@ -1811,6 +1811,22 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     const rate = calculateHalloweenRevitalizeProcRate(metrics)
     return rate === null ? "—" : rate.toFixed(2) + "%"
   }
+  const perkMetricsReady = archive?.myCollection?.coverage === "complete" && archive.myEventMetrics !== null
+  const treatMultiplierOpportunities = archive?.myEventMetrics
+    ? calculateHalloweenTreatMultiplierEligibleAwards(archive.myEventMetrics)
+    : 0
+  const basketExchangeOpportunities = archive?.myEventMetrics?.basketExchangeItems ?? 0
+  const halloweenEffectiveProcRateLabel = (procs: number, opportunities: number) => {
+    if (!perkMetricsReady) return "—"
+    const rate = calculateHalloweenEffectiveProcRate(procs, opportunities)
+    return rate === null ? "—" : rate.toFixed(2) + "%"
+  }
+  const halloweenEffectiveProcRateDetail = (procs: number, opportunities: number, opportunityLabel: string) => {
+    if (!perkMetricsReady) return "Event-log coverage incomplete"
+    return opportunities > 0
+      ? procs.toLocaleString() + " procs / " + opportunities.toLocaleString() + " " + opportunityLabel
+      : "No eligible " + opportunityLabel + " recorded"
+  }
   const eventMetricsReady = (archive?.eventTotals?.coveredMembers ?? 0) > 0
   const eventMetric = (value: number | undefined) => eventMetricsReady && value !== undefined ? value.toLocaleString() : "—"
   const attackOutcomesReady = archive?.myCollection?.attackOutcomesStatus === "complete"
@@ -1932,22 +1948,22 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
             <section className="halloween-live-perk-cards">
               <div className="halloween-live-perk-card">
                 <div className="halloween-live-stat-card-heading">TREAT MULTIPLIER PERKS</div>
-                <p>Standard player attacks start at one base treat. Each unlocked multiplier rolls independently, and successful bonuses stack multiplicatively. NPC awards are decoded only when their base treat amount is known.</p>
+                <p>Standard player attacks start at one base treat. Each unlocked multiplier rolls independently, and successful bonuses stack multiplicatively. Effective rates use classifiable treat-awarding attacks as the opportunity count; Cat in Hell jackpots and unknown-base awards are excluded.</p>
                 <div className="halloween-live-perk-grid">
-                  <div><small>DOUBLER · 20% BASE CHANCE</small><strong>{archive.myEventMetrics.doublerProcs.toLocaleString()}</strong><span>Observed procs</span></div>
-                  <div><small>TRIPLER · 10% BASE CHANCE</small><strong>{archive.myEventMetrics.triplerProcs.toLocaleString()}</strong><span>Observed procs</span></div>
-                  <div><small>QUADRUPLER · 5% BASE CHANCE</small><strong>{archive.myEventMetrics.quadruplerProcs.toLocaleString()}</strong><span>Observed procs</span></div>
-                  <div><small>QUINTUPLER · 1% BASE CHANCE</small><strong>{archive.myEventMetrics.quintuplerProcs.toLocaleString()}</strong><span>Observed procs</span></div>
+                  <div><small>DOUBLER · 20% BASE CHANCE</small><strong>{halloweenEffectiveProcRateLabel(archive.myEventMetrics.doublerProcs, treatMultiplierOpportunities)}</strong><span>{halloweenEffectiveProcRateDetail(archive.myEventMetrics.doublerProcs, treatMultiplierOpportunities, "eligible treat awards")}</span></div>
+                  <div><small>TRIPLER · 10% BASE CHANCE</small><strong>{halloweenEffectiveProcRateLabel(archive.myEventMetrics.triplerProcs, treatMultiplierOpportunities)}</strong><span>{halloweenEffectiveProcRateDetail(archive.myEventMetrics.triplerProcs, treatMultiplierOpportunities, "eligible treat awards")}</span></div>
+                  <div><small>QUADRUPLER · 5% BASE CHANCE</small><strong>{halloweenEffectiveProcRateLabel(archive.myEventMetrics.quadruplerProcs, treatMultiplierOpportunities)}</strong><span>{halloweenEffectiveProcRateDetail(archive.myEventMetrics.quadruplerProcs, treatMultiplierOpportunities, "eligible treat awards")}</span></div>
+                  <div><small>QUINTUPLER · 1% BASE CHANCE</small><strong>{halloweenEffectiveProcRateLabel(archive.myEventMetrics.quintuplerProcs, treatMultiplierOpportunities)}</strong><span>{halloweenEffectiveProcRateDetail(archive.myEventMetrics.quintuplerProcs, treatMultiplierOpportunities, "eligible treat awards")}</span></div>
                 </div>
                 {archive.myEventMetrics.catInHellJackpots > 0 && <p className="halloween-live-stat-note">{archive.myEventMetrics.catInHellJackpots.toLocaleString()} Cat in Hell jackpot(s) awarded 1,000 treats each. They appear in the histogram and are excluded from multiplier proc counts.</p>}
                 {archive.myEventMetrics.unclassifiedTreatAwards > 0 && <p className="halloween-live-stat-note">{archive.myEventMetrics.unclassifiedTreatAwards.toLocaleString()} treat awards had unknown or nonstandard base amounts and are excluded from these proc totals.</p>}
               </div>
               <div className="halloween-live-perk-card">
                 <div className="halloween-live-stat-card-heading">BASKET EXCHANGE PERKS</div>
-                <p>Exact upgraded reward items recorded in Halloween basket exchanges.</p>
+                <p>Effective rates use upgraded reward items divided by all recorded eligible consumable items returned by basket exchanges.</p>
                 <div className="halloween-live-perk-grid halloween-live-exchange-grid">
-                  <div><small>MULTIPACK · 2% BASE CHANCE</small><strong>{archive.myEventMetrics.multipackProcs.toLocaleString()}</strong><span>Observed multipacks</span></div>
-                  <div><small>DEAL WITH THE DEVIL · 3% BASE CHANCE</small><strong>{archive.myEventMetrics.dealWithDevilProcs.toLocaleString()}</strong><span>Observed booster / special items</span></div>
+                  <div><small>MULTIPACK · 2% BASE CHANCE</small><strong>{halloweenEffectiveProcRateLabel(archive.myEventMetrics.multipackProcs, basketExchangeOpportunities)}</strong><span>{halloweenEffectiveProcRateDetail(archive.myEventMetrics.multipackProcs, basketExchangeOpportunities, "eligible exchange items")}</span></div>
+                  <div><small>DEAL WITH THE DEVIL · 3% BASE CHANCE</small><strong>{halloweenEffectiveProcRateLabel(archive.myEventMetrics.dealWithDevilProcs, basketExchangeOpportunities)}</strong><span>{halloweenEffectiveProcRateDetail(archive.myEventMetrics.dealWithDevilProcs, basketExchangeOpportunities, "eligible exchange items")}</span></div>
                 </div>
               </div>
             </section>
