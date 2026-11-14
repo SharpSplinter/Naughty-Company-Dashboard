@@ -1,7 +1,7 @@
 # Production backup, migration, rollback and cutover review
 
 **Original review date:** 2026-11-03  
-**State refresh:** 2026-11-13 (read-only production baseline plus successful portal staging validation)  
+**State refresh:** 2026-11-14 (read-only production baseline, successful portal staging validation, production D1 export and isolated restore rehearsal)  
 **Scope:** PR #152, branch `portal-rebuild`  
 **Decision:** The separate Naughty Family portal production cutover remains paused. The existing Company Dashboard baseline has since received PR #155 in production; this refresh updates the cutover baseline and does not perform any production mutation.
 
@@ -42,7 +42,7 @@ The intended PR #152 authorization flow is:
 
 **Operational consequence:** The new Torn-identity/administrator-registry flow cannot provide production admin access until the portal D1 migrations (including `0012_administrator_registry.sql`), the portal Worker, and the `naughtyfamily` Pages frontend are deployed together. Until then, production continues to use the legacy administrator credential step-up, which the owner reports is currently unusable. Staging acceptance of the new role flow is not proof that production has switched over.
 
-Do not attempt to work around production authorization, alter production administrator records, or change production secrets as an interim fix. The cutover remains paused until the verified external D1 backup, fresh pre-migration Time Travel bookmark, reviewed migration/deployment sequence, and explicit release approval are in place. Production remains unchanged by this documentation update.
+Do not attempt to work around production authorization, alter production administrator records, or change production secrets as an interim fix. A full production D1 export backup and isolated data restore rehearsal have now completed successfully; the exact backup/checksum and rehearsal results are recorded in Section 6. The cutover remains paused until the owner has retained the encrypted archive, a fresh Time Travel bookmark is captured immediately before migration, the migration/deployment sequence is rechecked, and explicit release approval is given. Production remains unchanged by this documentation update.
 
 ## 3. Verified production baseline
 
@@ -105,7 +105,7 @@ The portal staging D1 has successfully applied the portal branch migration chain
 
 The migration review found no intentional deletion of company history. Migrations `0019`–`0023` add the faction/private-live structures. Migration `0024` creates a replacement historical-key table, copies the old table's rows, drops the old table and renames the replacement. In the current production schema, the `halloween_historical_keys` table does not yet exist because its creating migration `0014` is still pending; consequently it will be created and then rebuilt empty during the ordered migration chain. Still verify the final table definition, row counts and database integrity after migration.
 
-**Important limitation:** the stateful migration rehearsal was against a clean isolated acceptance database, not a clone of production data. Do not describe it as a production-data restore rehearsal.
+**Important distinction:** the portal migration/feature integration rehearsal remains against a clean isolated acceptance database, not a clone of production data. Separately, the full production D1 backup was restored into a temporary isolated D1 database on 2026-11-14; see Section 6 for that production-data restore rehearsal and its validation limits.
 
 ### Required pre-migration checks
 
@@ -121,6 +121,20 @@ The migration review found no intentional deletion of company history. Migration
 ## 6. Production backup procedure
 
 D1 Time Travel provides point-in-time recovery within the preceding 30 days. A separate SQL export provides a portable backup. Cloudflare notes that a D1 export can block queries while it runs, so schedule it during a quiet release window.
+
+### Completed production export and isolated restore rehearsal (2026-11-14)
+
+A full D1-compatible SQL export was completed from production database `naughty-company-dashboard` (`bbbe128a-c5cc-46ec-b8ef-93860183e795`). The export captured Time Travel bookmark `000004ca-0000033a-00005123-06be4f012000b1afd17db773eeaf4ef8` at 2026-11-14 03:38:56 UTC. The untouched SQL export is 7,706,099 bytes with SHA-256 `8ac318ed69c22eea82d8bc5cff55fe010236a3dc9c979ed718fae3ee0282eb7e`.
+
+The first direct import attempt exposed a 4.3 MB `global_rankings_cache` statement exceeding D1's per-statement limit. The export also interleaves data for a child table before a later referenced table definition. A lossless import-normalized derivative was prepared: it breaks the 4,295,173-character JSON value into bounded hex-literal append operations, creates all 40 application tables before row data, inserts parent tables before dependants using the exported foreign-key graph, restores `sqlite_sequence` state after data, and creates all 22 explicit indexes last. The JSON value and its `fetched_at` timestamp were reconstructed and compared exactly.
+
+The normalized SQL is 12,029,770 bytes, SHA-256 `1188579647f91ad310ec9069eaedd2e896c591a2f7e3ac5365474fb790a34ab2`. It passed a complete local SQLite transaction replay in 0.48 seconds: `PRAGMA integrity_check` returned `ok`, `PRAGMA foreign_key_check` returned zero violations, 40 application tables and 934 rows were present, and the 16-entry migration ledger ended with `0012_company_ranking_snapshots.sql`.
+
+The same normalized SQL then imported successfully into temporary isolated D1 database `naughty-company-dashboard-restore-rehearsal-v3-20261113` in ENAM: 1,270 statements completed, with 40 application tables, 22 explicit indexes, 934 application rows, and 16 migration entries. All 40 per-table row counts matched the local replay. The 4,295,173-character global rankings JSON was valid and contained 15,344 array entries. Cloudflare D1's table-valued `pragma_foreign_key_check` returned zero violations. Cloudflare's D1 REST query API rejected a direct `PRAGMA integrity_check` request with `SQLITE_AUTH`; therefore the local integrity result is explicitly not represented as a direct D1 integrity-check result.
+
+All three temporary restore-rehearsal D1 databases (two failed attempts and the successful verified copy) were deleted after the checks. No rehearsal database remains. No production D1 writes, migrations, restores, Worker deployments, Pages deployments, or secret changes were performed.
+
+The refreshed encrypted archive is stored outside the repository and includes both the untouched original export and the normalized restore SQL, sanitized production metadata, checksums and this rehearsal report. Archive SHA-256: `052e5bcf352d17ae988eae15ff051e76c5380259c19dc0c694de5611c2c7fb4b`. The download reference and separately issued archive password are retained in the owner conversation; neither is committed here.
 
 From a trusted, authenticated operator environment:
 
@@ -195,7 +209,8 @@ Do not run a restore or overwrite production D1 as part of a routine application
 - [ ] Separate real-key acceptance for bars/cooldowns, detailed networth and Halloween historical logs with their required selections/consents.
 - [ ] Admin/non-admin end-to-end acceptance on the target production-like deployment.
 - [ ] Mobile, accessibility, load and request-budget review.
-- [ ] Pre-cutover D1 export backup completed, checksum verified and securely retained.
+- [x] Full production D1 export completed, SQL checksum verified, and AES-256 archive uploaded outside the repository; owner should retain a downloaded copy separately.
+- [x] Isolated production-data restore rehearsal completed; 40 application tables, 22 explicit indexes and 934 rows matched, with zero D1 foreign-key violations. Direct D1 PRAGMA integrity_check remains unavailable through the REST API; exact normalized SQL passed local SQLite integrity_check.
 - [ ] Fresh pre-cutover Time Travel bookmark captured and recorded.
 - [ ] Production migration list and current schema rechecked.
 - [ ] Production Worker secret names/readiness verified without revealing secret values.
@@ -214,13 +229,13 @@ Completed before this state refresh:
 - Automatic production/preview Git deployments on the legacy Pages project remain disabled.
 
 Not performed for the separate Naughty Family portal cutover:
-- No verified external production D1 SQL export backup has been created for this cutover.
+- Full production D1 SQL export backup has been created, checksummed, and packaged in an AES-256 archive outside the repository. An import-normalized derivative passed an isolated D1 data restore rehearsal; the original export remains unchanged in the archive.
 - No portal migrations `0012_administrator_registry.sql` or `0013`–`0025` have been applied to production.
 - No portal-branch Worker has been deployed to production.
 - No production deployment has been created for the `naughtyfamily` Pages target.
 - No production rollback/restore has been performed.
 
-The portal branch Worker deployment workflow remains manual-only and requires the explicit `naughty-company-api` target plus an operator-supplied backup reference. The backup reference is a manual gate, not proof that the backup was created or validated. This workflow safeguard becomes effective after merge. This section is a state clarification, not authorization to deploy.
+The portal branch Worker deployment workflow remains manual-only and requires the explicit `naughty-company-api` target plus an operator-supplied backup reference. That manual reference input is still not an automated check of backup contents; the owner must supply the verified archive reference at release time. The backup now exists and has passed the isolated restore rehearsal documented above. This workflow safeguard becomes effective after merge. This section is a state clarification, not authorization to deploy.
 
 ## Cloudflare references
 
