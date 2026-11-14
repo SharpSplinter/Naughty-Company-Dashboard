@@ -49,11 +49,10 @@ export type HalloweenEventMetrics = {
   successfulAttacksWithTreats: number
   lostStalematedAttacks: number
   treatsByAttack: Record<string, number>
-  doublerProcs: number
-  triplerProcs: number
-  quadruplerProcs: number
-  quintuplerProcs: number
-  unclassifiedTreatAwards: number
+  expectedDoublerProcs: number
+  expectedTriplerProcs: number
+  expectedQuadruplerProcs: number
+  expectedQuintuplerProcs: number
   multipackProcs: number
   dealWithDevilProcs: number
   revitalizeProcs: number
@@ -77,23 +76,12 @@ const ENERGY_DRINK_SIX_PACK_ITEM_ID = "818"
 const ALCOHOL_SIX_PACK_ITEM_ID = "817"
 const MULTIPACK_ITEM_IDS = new Set(["817", "818", "1298"])
 const DEAL_WITH_THE_DEVIL_ITEM_IDS = new Set(["366", "367", "396", "428"])
-const TREAT_MULTIPLIER_PROCS: Record<string, Array<"doubler" | "tripler" | "quadrupler" | "quintupler">> = {
-  "1": [],
-  "2": ["doubler"],
-  "3": ["tripler"],
-  "4": ["quadrupler"],
-  "5": ["quintupler"],
-  "6": ["doubler", "tripler"],
-  "8": ["doubler", "quadrupler"],
-  "10": ["doubler", "quintupler"],
-  "12": ["tripler", "quadrupler"],
-  "15": ["tripler", "quintupler"],
-  "20": ["quadrupler", "quintupler"],
-  "24": ["doubler", "tripler", "quadrupler"],
-  "30": ["doubler", "tripler", "quintupler"],
-  "40": ["doubler", "quadrupler", "quintupler"],
-  "60": ["doubler", "tripler", "quadrupler", "quintupler"],
-}
+export const HALLOWEEN_TREAT_MULTIPLIER_BASE_CHANCES = {
+  doubler: 0.20,
+  tripler: 0.10,
+  quadrupler: 0.05,
+  quintupler: 0.01,
+} as const
 
 export function calculateHalloweenBoosterCooldown(
   metrics: Pick<HalloweenEventMetrics, "fhcsUsed" | "greenEggsUsed" | "energyCansUsed">,
@@ -205,11 +193,10 @@ export function emptyHalloweenEventMetrics(): HalloweenEventMetrics {
     successfulAttacksWithTreats: 0,
     lostStalematedAttacks: 0,
     treatsByAttack: {},
-    doublerProcs: 0,
-    triplerProcs: 0,
-    quadruplerProcs: 0,
-    quintuplerProcs: 0,
-    unclassifiedTreatAwards: 0,
+    expectedDoublerProcs: 0,
+    expectedTriplerProcs: 0,
+    expectedQuadruplerProcs: 0,
+    expectedQuintuplerProcs: 0,
     multipackProcs: 0,
     dealWithDevilProcs: 0,
     revitalizeProcs: 0,
@@ -355,17 +342,12 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
         metrics.successfulAttacksWithTreats += 1
         const key = String(treats)
         metrics.treatsByAttack[key] = (metrics.treatsByAttack[key] ?? 0) + 1
-        const procs = TREAT_MULTIPLIER_PROCS[key]
-        if (!procs) {
-          metrics.unclassifiedTreatAwards += 1
-        } else {
-          for (const perk of procs) {
-            if (perk === "doubler") metrics.doublerProcs += 1
-            else if (perk === "tripler") metrics.triplerProcs += 1
-            else if (perk === "quadrupler") metrics.quadruplerProcs += 1
-            else if (perk === "quintupler") metrics.quintuplerProcs += 1
-          }
-        }
+        // Torn logs the final treat amount, not which multipliers activated.
+        // These are expected counts at each base chance, not observed procs.
+        metrics.expectedDoublerProcs += HALLOWEEN_TREAT_MULTIPLIER_BASE_CHANCES.doubler
+        metrics.expectedTriplerProcs += HALLOWEEN_TREAT_MULTIPLIER_BASE_CHANCES.tripler
+        metrics.expectedQuadruplerProcs += HALLOWEEN_TREAT_MULTIPLIER_BASE_CHANCES.quadrupler
+        metrics.expectedQuintuplerProcs += HALLOWEEN_TREAT_MULTIPLIER_BASE_CHANCES.quintupler
       }
     }
 
@@ -441,11 +423,10 @@ export function sumHalloweenEventMetrics(values: readonly HalloweenEventMetrics[
       counts[treats] = (counts[treats] ?? 0) + count
       return counts
     }, { ...total.treatsByAttack } as Record<string, number>),
-    doublerProcs: total.doublerProcs + value.doublerProcs,
-    triplerProcs: total.triplerProcs + value.triplerProcs,
-    quadruplerProcs: total.quadruplerProcs + value.quadruplerProcs,
-    quintuplerProcs: total.quintuplerProcs + value.quintuplerProcs,
-    unclassifiedTreatAwards: total.unclassifiedTreatAwards + value.unclassifiedTreatAwards,
+    expectedDoublerProcs: total.expectedDoublerProcs + value.expectedDoublerProcs,
+    expectedTriplerProcs: total.expectedTriplerProcs + value.expectedTriplerProcs,
+    expectedQuadruplerProcs: total.expectedQuadruplerProcs + value.expectedQuadruplerProcs,
+    expectedQuintuplerProcs: total.expectedQuintuplerProcs + value.expectedQuintuplerProcs,
     multipackProcs: total.multipackProcs + value.multipackProcs,
     dealWithDevilProcs: total.dealWithDevilProcs + value.dealWithDevilProcs,
     revitalizeProcs: total.revitalizeProcs + value.revitalizeProcs,
