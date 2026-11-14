@@ -104,7 +104,7 @@ for (const bucket of Object.values(byEndpoint)) {
 const report = {
   generatedAt: new Date().toISOString(),
   environment: "isolated staging Worker and acceptance D1 only",
-  scope: "authenticated administrator GET requests; eleven read-only diagnostics endpoints; no writes, no queue jobs, no Torn API calls",
+  scope: "authenticated administrator GET requests; eleven read-only diagnostics endpoints; one pre-test D1 membership-freshness update for the synthetic admin fixture only; no business-data writes, no queue jobs, no Torn API calls",
   plannedDurationSeconds: durationSeconds,
   elapsedSeconds: Math.round(elapsedMs / 100) / 10,
   targetRequestsPerSecond: requestsPerSecond,
@@ -148,4 +148,4 @@ assert.ok(report.latencyMs.p95 <= 1500, "Staging sustained-load p95 exceeded 1.5
 assert.ok(report.latencyMs.p99 <= 3000, "Staging sustained-load p99 exceeded 3 seconds.");
 assert.ok(report.latencyMs.max <= 10000, "A staging request exceeded the 10-second hard latency guard.");
 assert.ok(observedMaxConcurrency <= maxConcurrency, "Observed request concurrency exceeded its configured ceiling.");
-console.log("PASS five-minute paced, concurrent, read-only staging admin load test.");
+console.log("PASS paced, concurrent, read-only staging admin load test.");

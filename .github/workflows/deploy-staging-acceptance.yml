@@ -200,10 +200,16 @@ jobs:
           STAGING_API_URL: https://naughtyfamily-api-staging.kboone801.workers.dev
         run: node scripts/test-staging-admin-acceptance.mjs
 
+      - name: Refresh synthetic admin membership freshness in isolated staging
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 6c03b978ed9a59adc3f61c715bdad45c
+        run: node scripts/refresh-staging-load-fixture.mjs
+
       - name: Run sustained read-only admin API load against isolated staging
         env:
           STAGING_API_URL: https://naughtyfamily-api-staging.kboone801.workers.dev
-          STAGING_LOAD_DURATION_SECONDS: "300"
+          STAGING_LOAD_DURATION_SECONDS: "285"
           STAGING_LOAD_REQUESTS_PER_SECOND: "5"
           STAGING_LOAD_MAX_CONCURRENCY: "8"
         run: node scripts/test-staging-sustained-load.mjs
