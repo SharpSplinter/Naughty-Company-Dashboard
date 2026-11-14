@@ -118,6 +118,21 @@ export function calculateHalloweenBoosterCooldown(
   }
 }
 
+
+/** Dashboard Boosters are intentionally narrower than Torn's full booster-item category. */
+export function calculateHalloweenDashboardBoostersReceived(
+  metrics: Pick<HalloweenEventMetrics, "energyCans" | "fhcs" | "greenEggs">,
+): number {
+  return metrics.energyCans + metrics.fhcs + metrics.greenEggs
+}
+
+/** Used-count counterpart of the dashboard's Energy Cans + FHCs + Green Easter Eggs definition. */
+export function calculateHalloweenDashboardBoostersUsed(
+  metrics: Pick<HalloweenEventMetrics, "energyCansUsed" | "fhcsUsed" | "greenEggsUsed">,
+): number {
+  return metrics.energyCansUsed + metrics.fhcsUsed + metrics.greenEggsUsed
+}
+
 export function emptyHalloweenEventMetrics(): HalloweenEventMetrics {
   return {
     boosters: 0,
