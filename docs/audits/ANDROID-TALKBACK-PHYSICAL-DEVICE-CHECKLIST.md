@@ -54,5 +54,18 @@ For each issue, record the screen, exact control/announcement, expected result, 
 ### Scope and limitations
 
 - This is genuine user-reported physical-device evidence, not Playwright or Android viewport emulation.
-- The conversation did not establish the Android model/version, browser/TalkBack versions, external-keyboard behavior, pinch/page-zoom behavior, every scrollable table's horizontal navigation, or the exact results of the Admin Panel synthetic-admin-only checklist. Do not infer those checks passed.
+- The Android model/version, browser/TalkBack versions, and display scaling were not recorded. The user later separately confirmed completing the external-keyboard navigation, pinch/page-zoom, and synthetic-admin-only Admin Panel reviews (see the 2026-11-14 follow-up below). Granular per-control observations and the behavior of every scrollable table were not separately described, so this log does not invent those details.
 - No live Torn API credential was entered for this review. The staging portal remains the test target.
+
+
+## Additional physical-device verification (2026-11-14)
+
+**Evidence source:** The user explicitly confirmed personally verifying each of the following on the physical Android device against the staging portal:
+
+- External-keyboard navigation.
+- Pinch/page zoom.
+- The synthetic-admin Admin Panel review.
+
+These three review areas are recorded as user-confirmed complete. The conversation did not include granular results for every individual control or table, nor device/browser/TalkBack version details; no more specific outcome is inferred. This follow-up supplements the 2026-11-13 TalkBack, heading-navigation, enlarged-text portrait, and landscape findings above.
+
+No production credentials or production resources were involved in this review.
