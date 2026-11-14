@@ -1906,7 +1906,7 @@ async function loadHalloweenEventMetricsForPlayers(db: D1Database, eventYear: nu
   const itemRows = await db.prepare(
     `SELECT player_id AS playerId, log_type_id AS logTypeId, title, category, log_json AS logJson
      FROM halloween_event_logs
-     WHERE event_year = ? AND (log_type_id = 2535 OR lower(COALESCE(category, '')) = 'item use' OR lower(COALESCE(title, '')) LIKE 'item use %') AND player_id IN (${placeholders})`
+     WHERE event_year = ? AND (log_type_id IN (2535, 2536, 2547) OR lower(COALESCE(category, '')) = 'item use' OR lower(COALESCE(title, '')) LIKE 'item use %') AND player_id IN (${placeholders})`
   ).bind(eventYear, ...playerIds).all<{ playerId: string; logTypeId: number; title: string | null; category: string | null; logJson: string | null }>()
   const eventRowsByPlayer = new Map<string, Array<{ logTypeId: number; title: string | null; category: string | null; logJson: string | null }>>()
   for (const row of itemRows.results ?? []) {
