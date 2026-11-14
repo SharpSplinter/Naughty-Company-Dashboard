@@ -27,7 +27,6 @@ const sql = [
   "UPDATE players",
   "SET faction_verified_at = " + quote(nowIso) + ", membership_check_attempted_at = " + quote(nowIso) + ", membership_check_status = NULL",
   "WHERE player_id = " + quote(ADMIN_ID) + " AND player_name = " + quote(ADMIN_NAME) + " AND faction_id = " + quote(FACTION_ID) + ";",
-  "SELECT CASE WHEN changes() = 1 THEN 1 ELSE 0 END AS fixture_refresh_ok;",
 ].join("\n") + "\n";
 
 const tempDir = mkdtempSync(join(tmpdir(), "ncd-staging-load-freshness-"));
@@ -37,7 +36,7 @@ try {
   const output = execFileSync(process.platform === "win32" ? "npx.cmd" : "npx", [
     "wrangler", "d1", "execute", DATABASE, "--remote", "--config", CONFIG, "--file", sqlPath,
   ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: process.env });
-  assert.match(output, /fixture_refresh_ok["\s]*:\s*1/, "Expected exactly one synthetic staging administrator fixture to be refreshed.");
+  assert.match(output, /"changes":\s*1/, "Expected the exact synthetic staging administrator update to change one row.");
   console.log("PASS refreshed membership freshness for the exact synthetic staging admin fixture before load testing.");
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
