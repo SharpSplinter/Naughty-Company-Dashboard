@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { calculateHalloweenBoosterCooldown, type HalloweenEventMetrics } from "../../lib/halloween/metrics"
+import { calculateHalloweenBoosterCooldown, calculateHalloweenRevitalizeProcRate, type HalloweenEventMetrics } from "../../lib/halloween/metrics"
 import { filterAndSortWeeklyMembers, type WeeklyLeaderboardDirection, type WeeklyLeaderboardParticipationFilter, type WeeklyLeaderboardSortKey, type WeeklyLeaderboardStatusFilter } from "../../lib/faction-performance/leaderboard"
 
 type SavedCompanySummary = {
@@ -1792,8 +1792,11 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const canCapturePersonalSnapshot = Boolean(personalWindow?.configured && nowMs >= personalStartMs && nowMs < personalEndMs)
   const historicalConsentCurrent = Boolean(historicalKeyStatus?.connected && historicalKeyStatus.key?.consentVersion === "halloween-history-v2")
   const archiveYearLabel = tab === "live" ? String(eventYear) : historicalYear === "all" ? "ALL RECORDED YEARS" : historicalYear
-  const revitalizeMetricsReady = (archive?.eventTotals?.revitalizeCoveredMembers ?? 0) > 0
-  const revitalizeChanceLabel = Object.keys(archive?.eventTotals?.revitalizeChanceCounts ?? {}).sort((a, b) => Number(a) - Number(b)).map(chance => chance + "%").join(" · ") || "—"
+  const revitalizeMetricsReady = (archive?.eventTotals?.revitalizeCoveredMemberYears ?? archive?.eventTotals?.revitalizeCoveredMembers ?? 0) > 0
+  const revitalizeProcRateLabel = (metrics: HalloweenEventMetrics | null | undefined) => {
+    const rate = calculateHalloweenRevitalizeProcRate(metrics)
+    return rate === null ? "—" : rate.toFixed(2) + "%"
+  }
   const eventMetricsReady = (archive?.eventTotals?.coveredMembers ?? 0) > 0
   const eventMetric = (value: number | undefined) => eventMetricsReady && value !== undefined ? value.toLocaleString() : "—"
   const memberDetailYearScope = tab === "historical" ? historicalYear : String(eventYear)
@@ -1811,7 +1814,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const selectedLiveComparison = selectedComparison && tab === "live"
     ? live?.leaderboard.find(snapshot => snapshot.playerId === selectedComparison.playerId && snapshot.coverage === "captured") ?? null
     : null
-  const comparisonMetricRows: Array<{ label: string; key: "totalHits" | "fhcsUsed" | "greenEggsUsed" | "energyCansUsed" | "boostersUsed" | "energyDrinkSixPacksUsed" | "alcoholSixPacksUsed" | "treatExchangeEnergyGained" | "successfulAttackEnergyUsed" | "successfulAttacks" | "revitalizeProcs" | "revitalizeAttacksReviewed" }> = [
+  const comparisonMetricRows: Array<{ label: string; key: "totalHits" | "fhcsUsed" | "greenEggsUsed" | "energyCansUsed" | "boostersUsed" | "energyDrinkSixPacksUsed" | "alcoholSixPacksUsed" | "treatExchangeEnergyGained" | "successfulAttackEnergyUsed" | "successfulAttacks" | "revitalizeProcRate" | "revitalizeProcs" | "revitalizeAttacksReviewed" }> = [
     { label: "Halloween hits", key: "totalHits" },
     { label: "FHCs used", key: "fhcsUsed" },
     { label: "Green Easter Eggs used", key: "greenEggsUsed" },
@@ -1821,11 +1824,16 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     { label: "Alcohol six-packs opened", key: "alcoholSixPacksUsed" },
     { label: "Energy from treat exchanges", key: "treatExchangeEnergyGained" },
     { label: "Energy used in successful attacks", key: "successfulAttackEnergyUsed" },
-    { label: "Successful attacks", key: "successfulAttacks" },
+    { label: "Successful attacks / hits", key: "successfulAttacks" },
+    { label: "Revitalize proc rate", key: "revitalizeProcRate" },
     { label: "Revitalize procs", key: "revitalizeProcs" },
     { label: "Eligible attacks reviewed", key: "revitalizeAttacksReviewed" },
   ]
   const comparisonValue = (metrics: HalloweenEventMetrics | null | undefined, hits: number | null | undefined, attackMetricsStatus: string | undefined, key: typeof comparisonMetricRows[number]["key"]) => {
+    if (key === "revitalizeProcRate") {
+      if (attackMetricsStatus !== "complete") return "—"
+      return revitalizeProcRateLabel(metrics)
+    }
     if ((key === "revitalizeProcs" || key === "revitalizeAttacksReviewed") && attackMetricsStatus !== "complete") return "—"
     const value = key === "totalHits" ? hits : metrics?.[key]
     return value === null || value === undefined ? "—" : Number(value).toLocaleString()
@@ -1878,6 +1886,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
               <div><small>THEORETICAL FHC MAXIMUM</small><strong>{myBoosterCooldown.theoreticalMaxFhcs}</strong><span>Requires the final 6h item near the event end</span></div>
               <div><small>STRICT COOLDOWN LIMIT</small><strong>&lt; {myBoosterCooldown.theoreticalCooldownLimitHours}h</strong><span>168h event + 48h pre-use timer + 6h final-item overfill</span></div>
               <div><small>BUFFER TO THEORETICAL LIMIT</small><strong>{myBoosterCooldown.timingBufferHours}h</strong><span>{myBoosterCooldown.withinTheoreticalLimit ? "Remaining timing margin" : myBoosterCooldown.fhcsAboveTheoreticalMaximum + " FHC above the theoretical maximum"}</span></div>
+              <div><small>YOUR REVITALIZE PROC RATE</small><strong>{archive.myCollection?.attackMetricsStatus === "complete" ? revitalizeProcRateLabel(archive.myEventMetrics) : "—"}</strong><span>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeProcs.toLocaleString() + " procs / " + archive.myEventMetrics.revitalizeSuccessfulAttacks.toLocaleString() + " successful attacks or hits" : "Detailed attack collection is incomplete"}</span></div>
               <div><small>EVENT WINDOW COOLDOWN</small><strong>{myBoosterCooldown.usableHours}h / {myBoosterCooldown.eventWindowHours}h</strong><span>Maximum cooldown that can decay during the event</span></div>
               <div><small>MINIMUM AFTER-EVENT CARRYOVER</small><strong>{myBoosterCooldown.excessHours}h</strong><span>At least this much remains beyond 168h; exact timer depends on item-use times</span></div>
               <div><small>EVENT TIME UNCOVERED</small><strong>{myBoosterCooldown.uncoveredHours}h</strong><span>Event duration not covered by the total logged cooldown</span></div>
@@ -1899,12 +1908,12 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
               <div><small>GREEN EASTER EGGS</small><strong>{eventMetric(archive.eventTotals.greenEggs)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.greenEggsUsed) + " used" : "Used: —"}</span></div>
               <div><small>ENERGY FROM TREAT EXCHANGES</small><strong>{eventMetricsReady ? eventMetric(archive.eventTotals.treatExchangeEnergyGained) : "—"}</strong><span>Energy restored by Halloween basket rewards</span></div>
               <div><small>ENERGY USED IN SUCCESSFUL ATTACKS</small><strong>{eventMetricsReady ? eventMetric(archive.eventTotals.successfulAttackEnergyUsed) : "—"}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.successfulAttacks) + " successful attacks" : "Awaiting completed event logs"}</span></div>
-              <div><small>REVITALIZE WEAPON PROC CHANCE</small><strong>{revitalizeMetricsReady ? revitalizeChanceLabel : "—"}</strong><span>{revitalizeMetricsReady ? "Weapon chance reported by Torn on actual procs" : "Awaiting detailed attack collection"}</span></div>
-              <div><small>SUCCESSFUL REVITALIZE PROCS</small><strong>{revitalizeMetricsReady ? eventMetric(archive.eventTotals.revitalizeProcs) : "—"}</strong><span>{revitalizeMetricsReady ? eventMetric(archive.eventTotals.revitalizeAttacksReviewed) + " eligible outgoing attacks reviewed" : "Awaiting detailed attack collection"}</span></div>
+              <div><small>REVITALIZE PROC RATE</small><strong>{revitalizeMetricsReady ? revitalizeProcRateLabel(archive.eventTotals) : "—"}</strong><span>{revitalizeMetricsReady ? eventMetric(archive.eventTotals.revitalizeProcs) + " successful procs / " + eventMetric(archive.eventTotals.revitalizeSuccessfulAttacks) + " successful attacks or hits" : "Awaiting detailed attack collection"}</span></div>
+              <div><small>SUCCESSFUL REVITALIZE PROCS</small><strong>{revitalizeMetricsReady ? eventMetric(archive.eventTotals.revitalizeProcs) : "—"}</strong><span>{revitalizeMetricsReady ? eventMetric(archive.eventTotals.revitalizeSuccessfulAttacks) + " successful attacks or hits in the same covered group" : "Awaiting detailed attack collection"}</span></div>
             </div>
             {!eventMetricsReady && <p className="historical-key-muted">Item and event-energy totals appear after at least one faction member completes historical event-log collection. Uncollected members are not counted as zero.</p>}
             {eventMetricsReady && !revitalizeMetricsReady && <p className="historical-key-muted">Revitalize chance and proc totals are separate from event logs. They appear when detailed attack collection completes. Custom keys need User → Attacks access.</p>}
-            {revitalizeMetricsReady && <p className="historical-key-muted">Detailed attack coverage: {archive.eventTotals.revitalizeCoveredMemberYears ?? archive.eventTotals.revitalizeCoveredMembers} of {archive.eventTotals.coveredMemberYears ?? archive.eventTotals.coveredMembers} completed member-event collections. Revitalize chance is the weapon percentage Torn reports on attacks where the finishing-hit effect actually procced, not the measured proc frequency.</p>}
+            {revitalizeMetricsReady && <p className="historical-key-muted">Detailed attack coverage: {archive.eventTotals.revitalizeCoveredMemberYears ?? archive.eventTotals.revitalizeCoveredMembers} of {archive.eventTotals.coveredMemberYears ?? archive.eventTotals.coveredMembers} completed member-event collections. Proc rate is calculated as successful Revitalize procs divided by successful attack / hit log counts for that same covered group.</p>}
           </section>}
           {archiveYearLabel === "ALL RECORDED YEARS" && archive?.myEventMetrics && <section className="halloween-panel halloween-event-metrics halloween-personal-event-metrics">
             <div className="halloween-status"><i /> YOUR PERSONAL EVENT-ITEM TOTALS · ALL YEARS</div>
@@ -1917,7 +1926,8 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
               <div><small>BOOSTERS USED</small><strong>{archive.myEventMetrics.boostersUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
               <div><small>ENERGY FROM TREAT EXCHANGES</small><strong>{archive.myEventMetrics.treatExchangeEnergyGained.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
               <div><small>SUCCESSFUL ATTACKS</small><strong>{archive.myEventMetrics.successfulAttacks.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
-              <div><small>REVITALIZE PROCS</small><strong>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeProcs.toLocaleString() : "—"}</strong><span>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeAttacksReviewed.toLocaleString() + " eligible attacks reviewed" : "Detailed attacks incomplete for at least one completed event year"}</span></div>
+              <div><small>REVITALIZE PROCS</small><strong>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeProcs.toLocaleString() : "—"}</strong><span>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeSuccessfulAttacks.toLocaleString() + " successful attacks / hits" : "Detailed attacks incomplete for at least one completed event year"}</span></div>
+              <div><small>REVITALIZE PROC RATE</small><strong>{archive.myCollection?.attackMetricsStatus === "complete" ? revitalizeProcRateLabel(archive.myEventMetrics) : "—"}</strong><span>Successful Revitalize procs ÷ successful attacks / hits</span></div>
             </div>
           </section>}
       <section className="halloween-panel halloween-member-comparison">
