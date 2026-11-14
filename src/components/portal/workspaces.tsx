@@ -1803,10 +1803,14 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const myBoosterCooldown = archive?.myEventMetrics && archiveYearLabel !== "ALL RECORDED YEARS"
     ? calculateHalloweenBoosterCooldown(archive.myEventMetrics)
     : null
-  const comparisonOptions = (archive?.memberComparisons ?? []).filter(member =>
-    member.playerId !== archive?.myCollection?.playerId && member.metrics !== null
-  )
+  const comparisonOptions = (archive?.memberComparisons ?? []).filter(member => {
+    const hasCurrentSnapshot = tab === "live" && Boolean(live?.leaderboard.some(snapshot => snapshot.playerId === member.playerId && snapshot.coverage === "captured"))
+    return member.playerId !== archive?.myCollection?.playerId && (member.metrics !== null || hasCurrentSnapshot)
+  })
   const selectedComparison = comparisonOptions.find(member => member.playerId === selectedComparePlayerId) ?? null
+  const selectedLiveComparison = selectedComparison && tab === "live"
+    ? live?.leaderboard.find(snapshot => snapshot.playerId === selectedComparison.playerId && snapshot.coverage === "captured") ?? null
+    : null
   const comparisonMetricRows: Array<{ label: string; key: "totalHits" | "fhcsUsed" | "greenEggsUsed" | "energyCansUsed" | "boostersUsed" | "energyDrinkSixPacksUsed" | "alcoholSixPacksUsed" | "treatExchangeEnergyGained" | "successfulAttackEnergyUsed" | "successfulAttacks" | "revitalizeProcs" | "revitalizeAttacksReviewed" }> = [
     { label: "Halloween hits", key: "totalHits" },
     { label: "FHCs used", key: "fhcsUsed" },
@@ -1919,15 +1923,23 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
       <section className="halloween-panel halloween-member-comparison">
         <div className="halloween-status historical"><i /> OPTIONAL MEMBER COMPARISON · {archiveYearLabel}</div>
         <h2>Compare event data with another member</h2>
-        <p>Choose another member with completed records for this event scope. Only data available for both members is compared; uncollected years are not treated as zero.</p>
+        <p>Choose another member with recorded data for this event scope. Live comparisons include saved current-year treats and upgrades where snapshots exist; event-log and attack metrics are compared only where coverage is available. Missing data is not treated as zero.</p>
         <label className="halloween-comparison-select" htmlFor="halloween-compare-member">Compare against
           <select id="halloween-compare-member" value={selectedComparePlayerId} onChange={event => setSelectedComparePlayerId(event.target.value)} disabled={!comparisonOptions.length}>
             <option value="">No comparison selected</option>
-            {comparisonOptions.map(member => <option key={member.playerId} value={member.playerId}>{member.playerName} · #{member.playerId}{member.completedEventYears?.length ? " · " + member.completedEventYears.join(", ") : ""}</option>)}
+            {comparisonOptions.map(member => {
+              const hasCurrentSnapshot = tab === "live" && Boolean(live?.leaderboard.some(snapshot => snapshot.playerId === member.playerId && snapshot.coverage === "captured"))
+              return <option key={member.playerId} value={member.playerId}>{member.playerName} · #{member.playerId}{member.completedEventYears?.length ? " · " + member.completedEventYears.join(", ") : ""}{hasCurrentSnapshot ? " · Live snapshot" : ""}</option>
+            })}
           </select>
         </label>
         {selectedComparison ? <div className="historical-leaderboard halloween-comparison-table">
           <table><thead><tr><th>EVENT METRIC</th><th>YOU</th><th>{selectedComparison.playerName}</th></tr></thead><tbody>
+            {tab === "live" && <>
+              <tr><td>Current treats (latest live snapshot)</td><td>{live?.mySnapshot?.currentTreats?.toLocaleString() ?? "—"}</td><td>{selectedLiveComparison?.currentTreats?.toLocaleString() ?? "—"}</td></tr>
+              <tr><td>Total treats (latest live snapshot)</td><td>{live?.mySnapshot?.totalTreats?.toLocaleString() ?? "—"}</td><td>{selectedLiveComparison?.totalTreats?.toLocaleString() ?? "—"}</td></tr>
+              <tr><td>Upgrades unlocked (latest live snapshot)</td><td>{live?.mySnapshot?.upgradesUnlocked?.toLocaleString() ?? "—"}</td><td>{selectedLiveComparison?.upgradesUnlocked?.toLocaleString() ?? "—"}</td></tr>
+            </>}
             {comparisonMetricRows.map(row => <tr key={row.key}>
               <td>{row.label}</td>
               <td>{comparisonValue(archive?.myEventMetrics, archive?.myCollection?.totalHits, archive?.myCollection?.attackMetricsStatus, row.key)}</td>
