@@ -1,4 +1,4 @@
-name: Deploy Production Discord Bot
+name: Deploy Discord Bot to Production
 
 on:
   workflow_dispatch:
@@ -36,41 +36,6 @@ on:
       - "bot/migrations/0001_bot_schema.sql"
       - "bot/migrations/0002_daily_company_summary_history.sql"
       - ".github/workflows/production-bot-deploy.yml"
-  pull_request:
-    branches:
-      - main
-    paths:
-      - "bot/production-worker.js"
-      - "bot/alert-delivery.mjs"
-      - "bot/test-alert-delivery.mjs"
-      - "bot/financials.mjs"
-      - "bot/test-financials.mjs"
-      - "bot/daily-summary.mjs"
-      - "bot/test-daily-summary.mjs"
-      - "bot/formatting.mjs"
-      - "bot/test-formatting.mjs"
-      - "bot/wrangler.production.toml"
-      - "bot/register-commands.mjs"
-      - "bot/test-register-commands.mjs"
-      - "bot/command-schema.mjs"
-      - "bot/command-schema-contract.mjs"
-      - "bot/command-options.mjs"
-      - "bot/command-routing.mjs"
-      - "bot/dashboard-panel.mjs"
-      - "bot/test-dashboard-panel.mjs"
-      - "bot/test-command-dispatch.mjs"
-      - "bot/commands/**"
-      - "bot/test-command-contract.mjs"
-      - "bot/test-interaction-lifecycle.mjs"
-      - "bot/test-interaction-edge-cases.mjs"
-      - "bot/production-health.mjs"
-      - "bot/check-production-health.mjs"
-      - "bot/test-production-health.mjs"
-      - "bot/configure-production-endpoint.mjs"
-      - "bot/migrations/0001_bot_schema.sql"
-      - "bot/migrations/0002_daily_company_summary_history.sql"
-      - ".github/workflows/production-bot-deploy.yml"
-
 permissions:
   contents: read
 

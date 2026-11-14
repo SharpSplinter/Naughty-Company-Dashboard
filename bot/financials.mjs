@@ -190,10 +190,65 @@ export function estimateDailyProfit(dailyIncome, breakdown) {
     : null;
 }
 
-export function estimateWeeklyProfit(weeklyIncome, breakdown) {
-  return isNumber(weeklyIncome) && isNumber(breakdown?.dailyRecurringCosts) && isNumber(breakdown?.stockCosts)
-    ? weeklyIncome - breakdown.dailyRecurringCosts * 7 - breakdown.stockCosts
-    : null;
+function isValidReportingDay(day) {
+  if (typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
+  const timestamp = Date.parse(day + "T00:00:00.000Z");
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === day;
+}
+
+/** Sum each day's saved advertising, wages, and stock-order expense across seven consecutive reporting days. */
+export function estimateWeeklyProfit(weeklyIncome, history) {
+  if (!isNumber(weeklyIncome) || !Array.isArray(history)) return null;
+
+  const pointsByDay = new Map();
+  for (const point of history) {
+    if (!point || typeof point !== "object" || !isValidReportingDay(point.day)) continue;
+    const existing = pointsByDay.get(point.day);
+    const fetchedAt = Date.parse(point.fetchedAt || "");
+    const existingFetchedAt = Date.parse(existing?.fetchedAt || "");
+    if (!existing || (Number.isFinite(fetchedAt) && (!Number.isFinite(existingFetchedAt) || fetchedAt >= existingFetchedAt))) {
+      pointsByDay.set(point.day, point);
+    }
+  }
+
+  const latestSeven = Array.from(pointsByDay.values()).sort((a, b) => a.day.localeCompare(b.day)).slice(-7);
+  if (latestSeven.length !== 7) return null;
+
+  for (let index = 1; index < latestSeven.length; index++) {
+    const previous = Date.parse(latestSeven[index - 1].day + "T00:00:00.000Z");
+    const current = Date.parse(latestSeven[index].day + "T00:00:00.000Z");
+    if (current - previous !== 86400000) return null;
+  }
+
+  let totalExpenses = 0;
+  for (const point of latestSeven) {
+    const costs = [point.advertisingBudget, point.employeeWages, point.stockOrderExpense];
+    if (!costs.every(value => isNumber(value) && value >= 0)) return null;
+    totalExpenses += costs.reduce((sum, value) => sum + value, 0);
+  }
+  return weeklyIncome - totalExpenses;
+}
+
+/**
+ * Match the dashboard's daily-profit rule: calculate from current income and
+ * complete current costs; otherwise fall back to the latest saved daily value.
+ */
+export function resolveDisplayedDailyProfit(historicalProfit, dailyIncome, breakdown) {
+  const calculatedProfit = estimateDailyProfit(dailyIncome, breakdown);
+  if (isNumber(calculatedProfit)) return { value: calculatedProfit, source: "calculated" };
+  if (isNumber(historicalProfit)) return { value: historicalProfit, source: "historical" };
+  return { value: null, source: "unavailable" };
+}
+
+/**
+ * Match the dashboard's weekly-profit precedence: a complete seven-day historical
+ * expense calculation, then Torn's reported value, then the latest saved weekly value.
+ */
+export function resolveDisplayedWeeklyProfit(reportedProfit, calculatedProfit, historicalProfit) {
+  if (isNumber(calculatedProfit)) return { value: calculatedProfit, source: "calculated" };
+  if (isNumber(reportedProfit)) return { value: reportedProfit, source: "reported" };
+  if (isNumber(historicalProfit)) return { value: historicalProfit, source: "historical" };
+  return { value: null, source: "unavailable" };
 }
 
 

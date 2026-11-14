@@ -326,6 +326,19 @@ test("company overview reports complete financials and only exact consecutive-da
   const linkedRow = await encryptedSession("dashboard-session-test");
   const currentDay = reportingDayAt();
   const priorDay = previousReportingDay(currentDay);
+  const weeklyHistory = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(currentDay + "T00:00:00.000Z");
+    date.setUTCDate(date.getUTCDate() - (6 - index));
+    const day = date.toISOString().slice(0, 10);
+    return {
+      day,
+      stockQuantity: index === 5 ? 6 : index === 6 ? 8 : index + 2,
+      advertisingBudget: 100,
+      employeeWages: 300,
+      stockOrderExpense: index,
+      fetchedAt: day + "T18:10:00.000Z"
+    };
+  });
   const dashboardHandler = record => {
     const path = record.url.pathname;
     if (path === "/api/me/companies/company-123") {
@@ -348,10 +361,7 @@ test("company overview reports complete financials and only exact consecutive-da
       });
     }
     if (path === "/api/me/companies/company-123/history") {
-      return jsonResponse({ history: [
-        { day: priorDay, stockQuantity: 6, fetchedAt: priorDay + "T18:10:00.000Z" },
-        { day: currentDay, stockQuantity: 8, fetchedAt: currentDay + "T18:10:00.000Z" }
-      ] });
+      return jsonResponse({ history: weeklyHistory });
     }
     if (path === "/api/me/member-insights") {
       return jsonResponse({ summary: { rosterCount: 2, knownWageCount: 2, totalKnownWages: 300 }, roster: [] });
@@ -365,7 +375,8 @@ test("company overview reports complete financials and only exact consecutive-da
   }, { linkedRow, dashboardHandler });
   const content = finalReplyText(result);
   assert.match(content, /Company rating: 4/);
-  assert.match(content, /Daily profit: \$500/);
+  assert.match(content, /Daily profit: \$596 \(calculated from listed costs\)/);
+  assert.match(content, /Weekly profit: \$4,179 \(calculated from seven days of saved expenses\)/);
   assert.match(content, /Advertising budget: \$100/);
   assert.match(content, /Total employee wages: \$300/);
   assert.match(content, /Performance: Popularity 70 \| Efficiency 80 \| Environment 90/);

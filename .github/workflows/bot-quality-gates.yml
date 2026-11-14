@@ -1,0 +1,110 @@
+name: Discord Bot Quality Gates
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "bot/**"
+      - ".github/workflows/bot-quality-gates.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: discord-bot-quality-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate production Worker syntax
+        run: node --check bot/production-worker.js
+      - name: Validate financial helper syntax
+        run: node --check bot/financials.mjs
+      - name: Validate daily summary helper syntax
+        run: node --check bot/daily-summary.mjs
+      - name: Validate bot formatting helpers
+        run: node --check bot/formatting.mjs
+      - name: Validate alert delivery helpers and tests
+        run: |
+          node --check bot/alert-delivery.mjs
+          node --check bot/test-alert-delivery.mjs
+          node --check bot/commands/automation.mjs
+      - name: Validate command registration script
+        run: node --check bot/register-commands.mjs
+      - name: Validate command registration API tests
+        run: node --check bot/test-register-commands.mjs
+      - name: Validate canonical command schema
+        run: node --check bot/command-schema.mjs
+      - name: Validate canonical-to-live command schema comparator
+        run: node --check bot/command-schema-contract.mjs
+      - name: Validate command option builder syntax
+        run: node --check bot/command-options.mjs
+      - name: Validate nested interaction router syntax
+        run: node --check bot/command-routing.mjs
+      - name: Validate dashboard panel component contract
+        run: |
+          node --check bot/dashboard-panel.mjs
+          node --check bot/test-dashboard-panel.mjs
+      - name: Validate command dispatch integration tests
+        run: node --check bot/test-command-dispatch.mjs
+      - name: Validate individual command definitions
+        run: for file in bot/commands/*.mjs; do node --check "$file"; done
+      - name: Test Discord command contract and production safeguards
+        run: node bot/test-command-contract.mjs
+      - name: Test private dashboard panel routing and component contract
+        run: node bot/test-dashboard-panel.mjs
+      - name: Test canonical command dispatch, invalid routes, and autocomplete
+        run: node bot/test-command-dispatch.mjs
+      - name: Test Discord command registration API behavior
+        run: node bot/test-register-commands.mjs
+      - name: Test private alert delivery and retry behavior
+        run: node bot/test-alert-delivery.mjs
+      - name: Test daily company summary formatting and comparisons
+        run: node bot/test-daily-summary.mjs
+      - name: Test interaction acknowledgements, slow paths, and failure responses
+        run: node bot/test-interaction-lifecycle.mjs
+      - name: Test account linking, authorization failures, malformed requests, and multi-part replies
+        run: node bot/test-interaction-edge-cases.mjs
+      - name: Test company financial estimates
+        run: node bot/test-financials.mjs
+      - name: Test bot money and count formatting
+        run: node bot/test-formatting.mjs
+      - name: Validate production endpoint sync script
+        run: node --check bot/configure-production-endpoint.mjs
+      - name: Validate production health-check scripts
+        run: |
+          node --check bot/production-health.mjs
+          node --check bot/check-production-health.mjs
+      - name: Test production health-check contract
+        run: node bot/test-production-health.mjs
+      - name: Validate production-only target
+        run: |
+          grep -Fq 'name = "naughty-company-bot"' bot/wrangler.production.toml
+          ! grep -qi 'staging' bot/wrangler.production.toml
+          grep -Fq 'naughty-company-bot-production' bot/wrangler.production.toml
+          grep -Fq 'DISCORD_PUBLIC_KEY = "' bot/wrangler.production.toml
+          grep -Fq 'DASHBOARD_PANEL_ENABLED = "false"' bot/wrangler.production.toml
+          test -f bot/migrations/0001_bot_schema.sql
+          grep -Fq 'CREATE TABLE IF NOT EXISTS discord_links' bot/migrations/0001_bot_schema.sql
+          grep -Fq 'CREATE TABLE IF NOT EXISTS alert_preferences' bot/migrations/0001_bot_schema.sql
+          grep -Fq 'CREATE TABLE IF NOT EXISTS discord_alert_poll_state' bot/migrations/0001_bot_schema.sql
+          grep -Fq 'CREATE TABLE IF NOT EXISTS discord_alert_poll_escalations' bot/migrations/0001_bot_schema.sql
+          grep -Fq 'naughty-company-bot.kboone801.workers.dev' bot/configure-production-endpoint.mjs
+          grep -Fq '/health' bot/check-production-health.mjs
+          grep -Fq 'sub("global"' bot/commands/company.mjs
+          grep -Fq 'sub("faction"' bot/commands/company.mjs
+          grep -Fq 'str("detail"' bot/command-options.mjs
+          grep -Fq 'value: "full"' bot/command-options.mjs
+          grep -Fq 'sub("status"' bot/commands/automation.mjs
+          grep -Fq 'group("webhook"' bot/commands/automation.mjs
+          ! grep -Fq 'group("rules"' bot/commands/automation.mjs
+          ! grep -Fq 'sub("configure"' bot/commands/automation.mjs
