@@ -802,3 +802,7 @@
   .christmas-town-key-list{gap:6px}
 }
 @media(max-width:390px){.christmas-town-game-grid{grid-template-columns:minmax(0,1fr)}.christmas-town-ornament-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+
+.christmas-town-year-filter{margin:0 auto 16px;max-width:1140px}
+.christmas-town-year-filter>div span{display:block;margin-top:5px;color:#91aaa3;font-size:9px}
+@media(max-width:680px){.christmas-town-year-filter{margin:0 0 14px}.christmas-town-year-filter select{width:100%;min-width:0}}
