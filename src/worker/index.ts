@@ -2125,6 +2125,7 @@ async function loadHalloweenAllTimeArchive(db: D1Database, signedInPlayerId: str
       totalHits,
       lastCollectedAt: latestCollected,
       coverage,
+      attackMetricsStatus,
       completedEventYears: completeYears,
       recordedEventYears: eligibleYears,
     }
@@ -2143,6 +2144,7 @@ async function loadHalloweenAllTimeArchive(db: D1Database, signedInPlayerId: str
     playerName: member.playerName,
     totalHits: member.totalHits,
     coverage: member.coverage,
+    attackMetricsStatus: member.attackMetricsStatus,
     completedEventYears: member.completedEventYears,
     metrics: metricsByPlayer.get(member.playerId) ?? null,
   }))
@@ -6005,6 +6007,8 @@ export default {
         ...sumHalloweenEventMetrics(Array.from(metricsByPlayer.values())),
         coveredMembers: completeMemberIds.length,
         revitalizeCoveredMembers: Number(revitalizeCoverage?.members ?? 0),
+        coveredMemberYears: completeMemberIds.length,
+        revitalizeCoveredMemberYears: Number(revitalizeCoverage?.members ?? 0),
       }
       const myEventMetrics = metricsByPlayer.get(session.player_id) ?? null
       const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
@@ -6013,6 +6017,7 @@ export default {
         playerName: member.playerName,
         totalHits: member.totalHits,
         coverage: member.coverage,
+        attackMetricsStatus: member.attackMetricsStatus,
         completedEventYears: [yearValue].filter(() => member.coverage === "complete"),
         metrics: metricsByPlayer.get(member.playerId) ?? null,
       }))
