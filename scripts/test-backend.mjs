@@ -389,7 +389,7 @@ try {
     assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
   })
 
-  await test("Halloween Live Stats decode actual treat multiplier combinations and count exact exchange rewards", () => {
+  await test("Halloween Live Stats decode multiplicative treat combos, separate Cat in Hell, and ignore exchange bonuses", () => {
     const multiplierAmounts = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 24, 30, 40, 60, 120]
     const rows = [
       ...multiplierAmounts.map(treats => ({
@@ -398,24 +398,18 @@ try {
         category: "Halloween basket",
         logJson: JSON.stringify({ data: { treats, type: "(Trick or Treat)" }, params: { color: "green" } }),
       })),
-      ...[17, 18, 19].map(treats => ({
-        logTypeId: 2536,
-        title: "Halloween treat receive",
-        category: "Halloween basket",
-        logJson: JSON.stringify({ data: { treats, type: "(Trick or Treat)" }, params: { color: "green" } }),
-      })),
       {
         logTypeId: 2536,
         title: "Halloween treat receive",
         category: "Halloween basket",
-        logJson: JSON.stringify({ data: { treats: 100, type: "(Cashback)" }, params: { color: "green" } }),
+        logJson: JSON.stringify({ data: { treats: 1000, type: "(Trick or Treat)" }, params: { color: "green" } }),
       },
-      {
+      ...[17, 18, 19].flatMap(treats => ["Cashback", "Freebie"].map(type => ({
         logTypeId: 2536,
         title: "Halloween treat receive",
         category: "Halloween basket",
-        logJson: JSON.stringify({ data: { treats: 50, type: "(Freebie)" }, params: { color: "green" } }),
-      },
+        logJson: JSON.stringify({ data: { treats, type: "(" + type + ")" }, params: { color: "green" } }),
+      }))),
       {
         logTypeId: 2535,
         title: "Item use halloween basket",
@@ -429,8 +423,14 @@ try {
       },
     ]
     const metrics = calculateHalloweenEventMetrics(rows)
-    assert.equal(metrics.successfulAttacksWithTreats, 19)
-    assert.equal(metrics.unclassifiedTreatAwards, 3)
+    assert.equal(metrics.successfulAttacksWithTreats, 17)
+    assert.equal(metrics.unclassifiedTreatAwards, 0)
+    assert.equal(metrics.catInHellJackpots, 1)
+    assert.deepEqual(metrics.treatsByAttack, {
+      "1": 1, "2": 1, "3": 1, "4": 1, "5": 1, "6": 1, "8": 1, "10": 1,
+      "12": 1, "15": 1, "20": 1, "24": 1, "30": 1, "40": 1, "60": 1,
+      "120": 1, "1000": 1,
+    })
     assert.equal(metrics.doublerProcs, 8)
     assert.equal(metrics.triplerProcs, 8)
     assert.equal(metrics.quadruplerProcs, 8)
@@ -438,6 +438,28 @@ try {
     assert.equal(metrics.multipackProcs, 6)
     assert.equal(metrics.dealWithDevilProcs, 5)
     assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
+  })
+
+  await test("Halloween NPC treat awards decode only when their base amount is known", () => {
+    const metrics = calculateHalloweenEventMetrics([
+      {
+        logTypeId: 2536,
+        title: "Halloween treat receive",
+        category: "Halloween basket",
+        baseTreats: 2,
+        logJson: JSON.stringify({ data: { treats: 12, type: "(Trick or Treat)" } }),
+      },
+      {
+        logTypeId: 2536,
+        title: "Halloween treat receive",
+        category: "Halloween basket",
+        logJson: JSON.stringify({ data: { treats: 12, type: "(Trick or Treat)" } }),
+      },
+    ])
+    assert.equal(metrics.triplerProcs, 1)
+    assert.equal(metrics.doublerProcs, 1)
+    assert.equal(metrics.unclassifiedTreatAwards, 1,
+      "an award with unknown NPC base treats must not be misreported as a standard 12x multiplier")
   })
 
   await test("Halloween cooldown calculation counts every FHC use and applies the corrected per-item cooldown values", () => {
