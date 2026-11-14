@@ -377,6 +377,7 @@ try {
       quadruplerProcs: 0,
       quintuplerProcs: 0,
       unclassifiedTreatAwards: 0,
+      catInHellJackpots: 0,
       multipackProcs: 5,
       dealWithDevilProcs: 5,
       revitalizeProcs: 0,
