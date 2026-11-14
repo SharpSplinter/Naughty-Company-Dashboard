@@ -46,6 +46,16 @@ export type HalloweenEventMetrics = {
   treatExchangeEnergyGained: number
   successfulAttackEnergyUsed: number
   successfulAttacks: number
+  successfulAttacksWithTreats: number
+  lostStalematedAttacks: number
+  treatsByAttack: Record<string, number>
+  doublerProcs: number
+  triplerProcs: number
+  quadruplerProcs: number
+  quintuplerProcs: number
+  unclassifiedTreatAwards: number
+  multipackProcs: number
+  dealWithDevilProcs: number
   revitalizeProcs: number
   revitalizeSuccessfulAttacks: number
   revitalizeAttacksReviewed: number
@@ -65,6 +75,25 @@ const GREEN_EGG_ITEM_IDS = new Set(["473"])
 const ENERGY_CAN_ITEM_IDS = new Set(["530", "532", "533", "553", "554", "555", "985", "986", "987"])
 const ENERGY_DRINK_SIX_PACK_ITEM_ID = "818"
 const ALCOHOL_SIX_PACK_ITEM_ID = "817"
+const MULTIPACK_ITEM_IDS = new Set(["817", "818", "1298"])
+const DEAL_WITH_THE_DEVIL_ITEM_IDS = new Set(["366", "367", "396", "428"])
+const TREAT_MULTIPLIER_PROCS: Record<string, Array<"doubler" | "tripler" | "quadrupler" | "quintupler">> = {
+  "1": [],
+  "2": ["doubler"],
+  "3": ["tripler"],
+  "4": ["quadrupler"],
+  "5": ["quintupler"],
+  "6": ["doubler", "tripler"],
+  "8": ["doubler", "quadrupler"],
+  "10": ["doubler", "quintupler"],
+  "12": ["tripler", "quadrupler"],
+  "15": ["tripler", "quintupler"],
+  "20": ["quadrupler", "quintupler"],
+  "24": ["doubler", "tripler", "quadrupler"],
+  "30": ["doubler", "tripler", "quintupler"],
+  "40": ["doubler", "quadrupler", "quintupler"],
+  "60": ["doubler", "tripler", "quadrupler", "quintupler"],
+}
 
 export function calculateHalloweenBoosterCooldown(
   metrics: Pick<HalloweenEventMetrics, "fhcsUsed" | "greenEggsUsed" | "energyCansUsed">,
@@ -173,6 +202,16 @@ export function emptyHalloweenEventMetrics(): HalloweenEventMetrics {
     treatExchangeEnergyGained: 0,
     successfulAttackEnergyUsed: 0,
     successfulAttacks: 0,
+    successfulAttacksWithTreats: 0,
+    lostStalematedAttacks: 0,
+    treatsByAttack: {},
+    doublerProcs: 0,
+    triplerProcs: 0,
+    quadruplerProcs: 0,
+    quintuplerProcs: 0,
+    unclassifiedTreatAwards: 0,
+    multipackProcs: 0,
+    dealWithDevilProcs: 0,
     revitalizeProcs: 0,
     revitalizeSuccessfulAttacks: 0,
     revitalizeAttacksReviewed: 0,
@@ -295,6 +334,30 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
       addBasketItems(data.items, basketItemTotals)
     }
 
+    // Only the Trick or Treat subtype represents an attack reward. Cashback
+    // and Freebie are exchange bonuses and must not inflate attacks-with-treats
+    // or the per-attack treat histogram.
+    if (logTypeId === "2536") {
+      const treatType = String(data.type ?? "").replace(/[()]/g, "").trim().toLowerCase()
+      const treats = nonNegativeNumber(data.treats)
+      if (treatType === "trick or treat" && treats !== null && Number.isInteger(treats) && treats > 0) {
+        metrics.successfulAttacksWithTreats += 1
+        const key = String(treats)
+        metrics.treatsByAttack[key] = (metrics.treatsByAttack[key] ?? 0) + 1
+        const procs = TREAT_MULTIPLIER_PROCS[key]
+        if (!procs) {
+          metrics.unclassifiedTreatAwards += 1
+        } else {
+          for (const perk of procs) {
+            if (perk === "doubler") metrics.doublerProcs += 1
+            else if (perk === "tripler") metrics.triplerProcs += 1
+            else if (perk === "quadrupler") metrics.quadruplerProcs += 1
+            else if (perk === "quintupler") metrics.quintuplerProcs += 1
+          }
+        }
+      }
+    }
+
     if (category.toLowerCase() === "item use" || title.toLowerCase().startsWith("item use ")) {
       const itemId = data.item === undefined || data.item === null ? "" : String(data.item)
       const itemTitle = title.toLowerCase()
@@ -337,6 +400,8 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
     if (ENERGY_CAN_ITEM_IDS.has(itemId)) metrics.energyCans += quantity
     if (itemId === ENERGY_DRINK_SIX_PACK_ITEM_ID) metrics.energyDrinkSixPacks += quantity
     if (itemId === ALCOHOL_SIX_PACK_ITEM_ID) metrics.alcoholSixPacks += quantity
+    if (MULTIPACK_ITEM_IDS.has(itemId)) metrics.multipackProcs += quantity
+    if (DEAL_WITH_THE_DEVIL_ITEM_IDS.has(itemId)) metrics.dealWithDevilProcs += quantity
   }
 
   return metrics
@@ -359,6 +424,19 @@ export function sumHalloweenEventMetrics(values: readonly HalloweenEventMetrics[
     treatExchangeEnergyGained: total.treatExchangeEnergyGained + value.treatExchangeEnergyGained,
     successfulAttackEnergyUsed: total.successfulAttackEnergyUsed + value.successfulAttackEnergyUsed,
     successfulAttacks: total.successfulAttacks + value.successfulAttacks,
+    successfulAttacksWithTreats: total.successfulAttacksWithTreats + value.successfulAttacksWithTreats,
+    lostStalematedAttacks: total.lostStalematedAttacks + value.lostStalematedAttacks,
+    treatsByAttack: Object.entries(value.treatsByAttack).reduce((counts, [treats, count]) => {
+      counts[treats] = (counts[treats] ?? 0) + count
+      return counts
+    }, { ...total.treatsByAttack } as Record<string, number>),
+    doublerProcs: total.doublerProcs + value.doublerProcs,
+    triplerProcs: total.triplerProcs + value.triplerProcs,
+    quadruplerProcs: total.quadruplerProcs + value.quadruplerProcs,
+    quintuplerProcs: total.quintuplerProcs + value.quintuplerProcs,
+    unclassifiedTreatAwards: total.unclassifiedTreatAwards + value.unclassifiedTreatAwards,
+    multipackProcs: total.multipackProcs + value.multipackProcs,
+    dealWithDevilProcs: total.dealWithDevilProcs + value.dealWithDevilProcs,
     revitalizeProcs: total.revitalizeProcs + value.revitalizeProcs,
     revitalizeSuccessfulAttacks: total.revitalizeSuccessfulAttacks + value.revitalizeSuccessfulAttacks,
     revitalizeAttacksReviewed: total.revitalizeAttacksReviewed + value.revitalizeAttacksReviewed,
