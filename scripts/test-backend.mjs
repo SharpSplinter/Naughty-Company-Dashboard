@@ -74,7 +74,7 @@ try {
   } = require(join(temp, "lib/faction-performance/weekly.js"))
   const { filterAndSortWeeklyMembers } = require(join(temp, "lib/faction-performance/leaderboard.js"))
   const { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } = require(join(temp, "lib/faction-performance/private-live.js"))
-  const { calculateHalloweenBoosterCooldown, calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, emptyHalloweenEventMetrics, sumHalloweenEventMetrics } = require(join(temp, "lib/halloween/metrics.js"))
+  const { calculateHalloweenBoosterCooldown, calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, calculateHalloweenRevitalizeProcRate, emptyHalloweenEventMetrics, sumHalloweenEventMetrics } = require(join(temp, "lib/halloween/metrics.js"))
   const {
     buildPersonalStatsPath,
     categoriesForMissingPersonalStats,
@@ -370,6 +370,7 @@ try {
       successfulAttackEnergyUsed: 25,
       successfulAttacks: 2,
       revitalizeProcs: 0,
+      revitalizeSuccessfulAttacks: 0,
       revitalizeAttacksReviewed: 0,
       revitalizeChanceCounts: {},
     })
@@ -494,6 +495,17 @@ try {
       revitalizeAttacksReviewed: 2,
       revitalizeChanceCounts: { "14": 1 },
     })
+  })
+
+  await test("Halloween Revitalize proc rate uses successful procs over successful attack / hit counts", () => {
+    assert.equal(calculateHalloweenRevitalizeProcRate({
+      revitalizeProcs: 3,
+      revitalizeSuccessfulAttacks: 24,
+    }), 12.5)
+    assert.equal(calculateHalloweenRevitalizeProcRate({
+      revitalizeProcs: 0,
+      revitalizeSuccessfulAttacks: 0,
+    }), null)
   })
 
   await test("weekly windows start Sunday 00:00 UTC and remain exactly 168 hours across DST changes", () => {
