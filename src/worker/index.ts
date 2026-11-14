@@ -2033,15 +2033,18 @@ async function loadHalloweenExchangeMarketValue(
 
   const cached = await readCache()
   const cacheById = new Map((cached.results ?? []).map(row => [String(row.itemId), row]))
-  const refreshIds = itemIds
-    .filter(itemId => {
-      const attemptedAt = Number(cacheById.get(itemId)?.attemptedAt ?? 0)
-      return !Number.isFinite(attemptedAt) || attemptedAt <= 0 || now - attemptedAt >= 3600
-    })
-    .slice(0, 50)
+  const apiKey = env.TORN_API_KEY_FULL_ACCESS?.trim() ?? ""
+  const refreshIds = apiKey
+    ? itemIds
+      .filter(itemId => {
+        const attemptedAt = Number(cacheById.get(itemId)?.attemptedAt ?? 0)
+        return !Number.isFinite(attemptedAt) || attemptedAt <= 0 || now - attemptedAt >= 3600
+      })
+      .slice(0, 50)
+    : []
 
-  // The endpoint is public and globally cached by Torn. No member or service
-  // API key is sent, and requests are paced in small batches.
+  // Torn globally caches this public-access selection. Use only the
+  // service-owned Full Access key, never a member's personal API key.
   const fetcher = privateLiveFetcher(env)
   for (let offset = 0; offset < refreshIds.length; offset += 4) {
     const batch = refreshIds.slice(offset, offset + 4)
@@ -2050,7 +2053,7 @@ async function loadHalloweenExchangeMarketValue(
         const response = await trackedTornFetch(
           "halloween-exchange-market-price",
           `https://api.torn.com/v2/market/${itemId}/itemmarket?offset=0`,
-          { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(12000) },
+          { headers: { Accept: "application/json", Authorization: "ApiKey " + apiKey }, signal: AbortSignal.timeout(12000) },
           fetcher,
         )
         const payload: unknown = await response.json().catch(() => null)
