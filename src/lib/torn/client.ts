@@ -1,3 +1,4 @@
+import { buildPersonalStatsPath, type PersonalStatsRequest } from "./personalstats"
 import type {
   TornClientOptions,
   TornCompanyData,
@@ -5,6 +6,7 @@ import type {
   TornCompanyProfile,
   TornCompanyResponse,
   TornCompanySelections,
+  TornRequestOutcome,
 } from "./types"
 
 const DEFAULT_BASE_URL = "https://api.torn.com/v2"
@@ -55,26 +57,60 @@ function apiErrorMessage(code: number | undefined): string {
     case 2:
       return "The Torn API key is invalid."
     case 3:
-      return "The Torn API key does not have the required access."
+      return "Torn rejected the requested API data type."
     case 4:
-      return "The Torn company ID is invalid."
+      return "Torn rejected the requested API fields."
+    case 5:
+      return "Torn rate limit reached for this user. Retry after the limit resets."
+    case 7:
+      return "The requested Torn data is not available to this API key."
+    case 8:
+      return "Torn temporarily blocked requests from this IP address."
     case 9:
-      return "Torn API rate limit reached. Please retry shortly."
+      return "Torn's API service is currently disabled. This is not a rate-limit response."
+    case 10:
+      return "This Torn API key cannot be used while its owner is in federal jail."
+    case 13:
+      return "This Torn API key is temporarily disabled because its owner has been inactive."
+    case 14:
+      return "Torn's daily API read limit has been reached."
+    case 16:
+      return "The Torn API key does not have the required access level."
+    case 17:
+      return "Torn reported a temporary backend error. Please retry later."
+    case 18:
+      return "This Torn API key has been paused by its owner."
     default:
       return "Torn API request failed."
   }
 }
 
-function apiErrorStatus(
-  responseStatus: number,
-  code: number | undefined,
-): number {
-  if (responseStatus === 429 || code === 9) return 429
+function apiErrorStatus(responseStatus: number, code: number | undefined): number {
+  if (responseStatus === 429 || code === 5 || code === 8 || code === 14) return 429
   if (code === 2) return 401
-  if (code === 3) return 403
-  if (code === 4) return 400
-  if (responseStatus >= 500) return 502
+  if (code === 3 || code === 7 || code === 10 || code === 13 || code === 16 || code === 18) return 403
+  if (code === 4 || code === 6) return 400
+  if (code === 9 || code === 15) return 503
+  if (code === 17 || responseStatus >= 500) return 502
+  if (responseStatus === 401 || responseStatus === 403) return responseStatus
   return 502
+}
+
+function apiErrorOutcome(code: number | undefined, status: number): TornRequestOutcome {
+  if (code === 5 || code === 8 || code === 14 || status === 429) return "rate_limited"
+  if (code === 9) return "api_disabled"
+  if (code === 2) return "invalid_key"
+  if (code === 3 || code === 7 || code === 16 || code === 18 || status === 403) return "permission_denied"
+  if (code === 4 || code === 6) return "invalid_request"
+  if (code === 10 || code === 13) return "account_restricted"
+  if (status >= 500) return "upstream_error"
+  return "http_error"
+}
+
+function normalizedEndpoint(path: string): string {
+  return path.split("?")[0].split("/").map((segment) =>
+    segment.length > 0 && [...segment].every((character) => character >= "0" && character <= "9") ? ":id" : segment
+  ).join("/")
 }
 
 export class TornApiClient {
@@ -82,6 +118,9 @@ export class TornApiClient {
   private readonly baseUrl: string
   private readonly fetcher: typeof fetch
   private readonly timeoutMs: number
+  private readonly workload?: string
+  private readonly playerId?: string
+  private readonly onRequest?: TornClientOptions["onRequest"]
 
   constructor(options: TornClientOptions) {
     const apiKey = options.apiKey.trim()
@@ -95,6 +134,9 @@ export class TornApiClient {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "")
     this.fetcher = options.fetcher ?? fetch.bind(globalThis)
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    this.workload = options.workload
+    this.playerId = options.playerId
+    this.onRequest = options.onRequest
   }
 
   async getUserJob(): Promise<Record<string, unknown>> {
@@ -105,9 +147,33 @@ export class TornApiClient {
     return this.request<Record<string, unknown>>("/faction/members")
   }
 
+  async getFactionMembersForRoster(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("/faction/members?striptags=true")
+  }
+
+  async getFactionStats(): Promise<unknown> {
+    return this.request<unknown>("/faction/stats")
+  }
+
+  async getFactionGymEnergyContributors(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("/faction/contributors?stat=gymenergy")
+  }
+
   async getUserJobFor(playerId: string | number): Promise<Record<string, unknown>> {
     if (!/^\d+$/.test(String(playerId))) throw new TornApiClientError("Player ID must be numeric.", { status: 400 })
     return this.request<Record<string, unknown>>(`/user/${playerId}/job`)
+  }
+
+  async getKeyInfo(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("/key/info")
+  }
+
+  async getMyPersonalStats(selection: PersonalStatsRequest): Promise<unknown> {
+    return this.request<unknown>(buildPersonalStatsPath(null, selection))
+  }
+
+  async getUserPersonalStatsFor(playerId: string | number, selection: PersonalStatsRequest): Promise<unknown> {
+    return this.request<unknown>(buildPersonalStatsPath(playerId, selection))
   }
 
   async getCompanyProfileById(companyId: string | number): Promise<TornCompanyResponse<TornCompanyProfile>> {
@@ -168,6 +234,12 @@ export class TornApiClient {
   private async request<T>(path: string): Promise<T> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs)
+    const startedAt = Date.now()
+    let upstreamStatus: number | null = null
+    let status: number | null = null
+    let errorCode: number | undefined
+    let retryAfter: string | undefined
+    let outcome: TornRequestOutcome = "network_error"
 
     try {
       const response = await this.fetcher(`${this.baseUrl}${path}`, {
@@ -178,40 +250,63 @@ export class TornApiClient {
         },
         signal: controller.signal,
       })
+      upstreamStatus = typeof response.status === "number" ? response.status : null
+      status = upstreamStatus
+      retryAfter = response.headers.get("Retry-After") ?? undefined
 
       const payload: unknown = await response.json().catch(() => null)
       const apiError =
         isRecord(payload) && isRecord(payload.error) ? payload.error : null
 
       if (!response.ok || apiError) {
-        const upstreamStatus =
-          typeof response.status === "number" ? response.status : 502
-        const apiCode =
-          apiError && typeof apiError.code === "number"
-            ? apiError.code
-            : undefined
-        const retryAfter = response.headers.get("Retry-After") ?? undefined
-
-        throw new TornApiClientError(apiErrorMessage(apiCode), {
-          status: apiErrorStatus(upstreamStatus, apiCode),
-          code: apiCode,
+        errorCode = apiError && typeof apiError.code === "number" ? apiError.code : undefined
+        status = apiErrorStatus(upstreamStatus ?? 502, errorCode)
+        outcome = apiError ? apiErrorOutcome(errorCode, status) : status === 429 ? "rate_limited" : status >= 500 ? "upstream_error" : "http_error"
+        throw new TornApiClientError(apiErrorMessage(errorCode), {
+          status,
+          code: errorCode,
           retryAfter,
         })
       }
 
+      outcome = "success"
       return payload as T
     } catch (error) {
-      if (error instanceof TornApiClientError) throw error
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new TornApiClientError("Torn API request timed out.", {
-          status: 504,
-        })
+      if (error instanceof TornApiClientError) {
+        status = error.status
+        if (outcome === "network_error") outcome = apiErrorOutcome(error.code, error.status)
+        errorCode = error.code ?? errorCode
+        retryAfter = error.retryAfter ?? retryAfter
+        throw error
       }
-      throw new TornApiClientError("Could not reach the Torn API.", {
-        status: 502,
-      })
+      if (error instanceof Error && error.name === "AbortError") {
+        status = 504
+        outcome = "timeout"
+        throw new TornApiClientError("Torn API request timed out.", { status: 504 })
+      }
+      status = 502
+      outcome = "network_error"
+      throw new TornApiClientError("Could not reach the Torn API.", { status: 502 })
     } finally {
       clearTimeout(timeout)
+      if (this.onRequest) {
+        try {
+          await this.onRequest({
+            endpoint: normalizedEndpoint(path),
+            method: "GET",
+            ...(this.workload ? { workload: this.workload } : {}),
+            ...(this.playerId ? { playerId: this.playerId } : {}),
+            upstreamStatus,
+            status,
+            ...(errorCode === undefined ? {} : { errorCode }),
+            outcome,
+            durationMs: Math.max(0, Date.now() - startedAt),
+            ...(retryAfter ? { retryAfter } : {}),
+          })
+        } catch {
+          // Telemetry must never turn a successful Torn response into an application failure.
+        }
+      }
     }
   }
 }

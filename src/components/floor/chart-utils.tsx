@@ -66,7 +66,6 @@ export function buildChartSeriesFor(metric: SnapshotMetric, currentChartCompany:
       const currentValue = metric === "dailyIncome" ? model.company.dailyIncome : model.company.weeklyIncome
       if (currentValue !== null) ownValues.set(new Date(Date.now() - 18 * 3600000).toISOString().slice(0, 10), currentValue)
     }
-    // Canonical saved reporting points override the imported archive and live samples.
     officialHistory.forEach((point) => {
       if (!Object.prototype.hasOwnProperty.call(point, metric)) return
       const value = point[metric]

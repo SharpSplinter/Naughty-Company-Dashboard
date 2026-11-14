@@ -21,40 +21,23 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Check admin recovery helper syntax
-        run: node --check scripts/update-admin-password-hash.mjs
-      - name: Check admin recovery helper imports
-        run: |
-          node --input-type=module <<'NODE'
-          import { readFile } from "node:fs/promises";
-          import { resolve } from "node:path";
-          import { pathToFileURL } from "node:url";
-
-          const helperUrl = pathToFileURL(resolve("scripts/update-admin-password-hash.mjs"));
-          const source = await readFile(helperUrl, "utf8");
-          const expectedImport = 'import { validateAdminPassword } from "../src/lib/admin-password-policy.js";';
-          if (!source.includes(expectedImport)) {
-            throw new Error("The recovery helper password-policy import path is incorrect.");
-          }
-          const policyModule = await import(new URL("../src/lib/admin-password-policy.js", helperUrl).href);
-          if (typeof policyModule.validateAdminPassword !== "function") {
-            throw new Error("The recovery helper's password-policy import does not export validateAdminPassword.");
-          }
-          const result = policyModule.validateAdminPassword("Harbor!582Lake");
-          if (!result || result.valid !== true) throw new Error("The recovery helper password-policy smoke test failed.");
-          console.log("Admin recovery policy import and password-policy smoke test passed.");
-          NODE
+      - name: Check administrator role registry contract
+        run: node scripts/test-admin-role-registry.mjs
       - name: Type-check application
         run: npm run typecheck
       - name: Build production frontend
         run: npm run build
+      - name: Check staging integration harness syntax
+        run: |
+          node --check scripts/ensure-faction-performance-integration-queues.mjs
+          node --check scripts/run-faction-performance-staging-integration.mjs
       - name: Run backend regression suite
         run: npm test

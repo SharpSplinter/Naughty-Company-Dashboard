@@ -1,7 +1,41 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 
-type AdminTab = "overview" | "members" | "operations" | "history" | "settings" | "audit"
+type AdminTab = "overview" | "members" | "private-live" | "administrators" | "operations" | "history" | "settings" | "weekly-boundaries" | "audit"
 type AdminSettings = { maintenanceMode: boolean; manualRefreshEnabled: boolean; historyImportEnabled: boolean }
+type AdminWeeklyRunDiagnostic = {
+  runId: string
+  status: string
+  scheduledAt: string | null
+  startedAt: string | null
+  completedAt: string | null
+  lastEnqueuedAt: string | null
+  updatedAt: string | null
+  lastError: string | null
+  targetMemberCount: number
+  capturedMemberCount: number
+  completeMemberCount: number
+  firstCapturedAt: string | null
+  lastCapturedAt: string | null
+  timingDeviationSeconds: number | null
+  late: boolean
+  stale: boolean
+  nextIndex: number
+}
+type AdminWeeklyReportReference = { weekStartAt: string; weekEndAt: string; status: string; finalizedAt: string }
+type AdminWeeklyBoundary = {
+  boundaryAt: string
+  boundaryExists: boolean
+  knownMemberCount: number
+  status: string
+  stats: AdminWeeklyRunDiagnostic | null
+  gymEnergy: AdminWeeklyRunDiagnostic | null
+  endingWeekReport: AdminWeeklyReportReference | null
+  startingWeekReport: AdminWeeklyReportReference | null
+  recoverable: boolean
+  recoveryCollections: string[]
+  recoveryReason: string | null
+}
+type Administrator = { playerId: string; playerName: string; grantedBy: string; grantedByName?: string | null; grantedAt: string; revokedBy?: string | null; revokedByName?: string | null; revokedAt?: string | null }
 type AdminMember = { playerId: string; playerName: string; createdAt?: string | null; updatedAt?: string | null; companyId: string | null; companyName: string | null; companyType: string | null; companyTypeId?: number | string | null; disabled: boolean; disabledAt?: string | null; disableReason?: string | null; loginKeySaved: boolean; companyKeyCount: number; snapshotCount: number }
 type AdminJob = { jobId: string; jobType: string; targetPlayerId?: string | null; targetCompanyId?: string | null; status: string; createdAt: string; startedAt?: string | null; finishedAt?: string | null; errorMessage?: string | null; result?: unknown; refreshConfig?: AdminRefreshConfig | null }
 type AutomationRun = { runId: string; triggerName: string; status: string; startedAt: string; finishedAt?: string | null; companiesChecked: number; companiesFailed: number; alertsCreated: number; errorSummary?: string | null }
@@ -15,11 +49,32 @@ const REFRESH_ENDPOINT_OPTIONS: Array<{ value: AdminRefreshEndpoint; label: stri
   { value: "company-employees", label: "Employees", endpoint: "GET /company/employees", description: "Current employee roster and employee details.", userScoped: true },
   { value: "company-stock", label: "Stock and financial data", endpoint: "GET /company/stock", description: "Current stock quantities and available financial fields.", userScoped: true },
   { value: "global-company-rankings", label: "Shared global company rankings", endpoint: "GET /company/{typeId}/companies", description: "Refresh the shared live rankings cache from company-type lists. Does not create history.", userScoped: false },
-  { value: "faction-directory", label: "Faction and director directory", endpoint: "GET /faction/members + /user/{id}/job", description: "Refresh the shared faction/director directory batch.", userScoped: false },
+  { value: "faction-directory", label: "Faction and director directory", endpoint: "GET /faction/members + /user/{id}/job", description: "Refresh the shared faction/director directory across all 35-member batches.", userScoped: false },
 ]
 type AutomationInsights = { totalRuns: number; succeededRuns: number; failedRuns: number; partialRuns: number; runningRuns: number; completedRuns: number; successRate: number | null; avgDurationSeconds: number | null; companiesFailed: number; alertsCreated: number; latestRunAt?: string | null; recurringFailures: Array<{ errorSummary: string; occurrences: number }> }
 type AuditEvent = { id: number; actorPlayerId: string; actorPlayerName: string; action: string; targetType?: string | null; targetId?: string | null; outcome: string; summary: string; createdAt: string; details?: unknown }
 type MemberDetail = { member: AdminMember & { disabledAt?: string | null }; connections: { companies: Array<{ companyId: string; companyName?: string | null; companyType?: string | null; lastFour?: string; keyUpdatedAt?: string; fetchedAt?: string | null }>; loginKeySaved: boolean; legacyCompanyKeySaved: boolean }; history: { companySnapshots: number; directorSnapshots: number; pageRecords: number; financialRecords: number } }
+type AdminPrivateLiveFreshness = "fresh" | "ageing" | "stale" | "no_capture"
+type AdminPrivateLiveConnection = {
+  playerId: string
+  playerName: string
+  includeNetworth: boolean
+  lastValidatedAt: string | null
+  lastAttemptAt: string | null
+  lastCollectedAt: string | null
+  snapshotCapturedAt: string | null
+  ageMinutes: number | null
+  freshness: AdminPrivateLiveFreshness
+  lastError: string | null
+}
+type AdminPrivateLivePayload = {
+  generatedAt: string
+  collectionMode: "owner_triggered"
+  freshnessPolicy: { freshThroughMinutes: number; ageingThroughMinutes: number }
+  summary: { connectedCount: number; freshCount: number; ageingCount: number; staleCount: number; noCaptureCount: number; errorCount: number }
+  connections: AdminPrivateLiveConnection[]
+  truncated: boolean
+}
 
 type Props = { apiBase: string; sessionToken: string; playerId: string; playerName: string }
 
@@ -79,11 +134,17 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   const [notice, setNotice] = useState("")
   const [overview, setOverview] = useState<Record<string, unknown> | null>(null)
   const [members, setMembers] = useState<AdminMember[]>([])
+  const [administrators, setAdministrators] = useState<Administrator[]>([])
+  const [administratorPlayerId, setAdministratorPlayerId] = useState("")
+  const [administratorBusy, setAdministratorBusy] = useState(false)
   const [memberTotal, setMemberTotal] = useState(0)
   const [memberQuery, setMemberQuery] = useState("")
   const [memberSearch, setMemberSearch] = useState("")
   const [selectedMemberId, setSelectedMemberId] = useState("")
   const [memberDetail, setMemberDetail] = useState<MemberDetail | null>(null)
+  const [privateLiveDiagnostics, setPrivateLiveDiagnostics] = useState<AdminPrivateLivePayload | null>(null)
+  const [privateLiveDiagnosticsLoading, setPrivateLiveDiagnosticsLoading] = useState(false)
+  const [privateLiveDiagnosticsError, setPrivateLiveDiagnosticsError] = useState("")
   const [jobs, setJobs] = useState<AdminJob[]>([])
   const [refreshEndpoints, setRefreshEndpoints] = useState<AdminRefreshEndpoint[]>(["company-profile", "company-employees", "company-stock"])
   const [refreshScope, setRefreshScope] = useState<AdminRefreshScope>("all")
@@ -103,6 +164,9 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   const [settingsDirty, setSettingsDirty] = useState(false)
   const [historySummary, setHistorySummary] = useState<Record<string, unknown> | null>(null)
   const [audit, setAudit] = useState<AuditEvent[]>([])
+  const [weeklyBoundaries, setWeeklyBoundaries] = useState<AdminWeeklyBoundary[]>([])
+  const [weeklyBoundariesLoading, setWeeklyBoundariesLoading] = useState(false)
+  const [weeklyBoundaryRecoveryBusy, setWeeklyBoundaryRecoveryBusy] = useState("")
   const [historyTarget, setHistoryTarget] = useState("")
   const [restoreFile, setRestoreFile] = useState<File | null>(null)
   const [restorePreview, setRestorePreview] = useState<{ counts?: Record<string, number>; warnings?: string[]; exportedAt?: string; targetPlayerId?: string } | null>(null)
@@ -141,6 +205,18 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
     setError("")
     try { setMemberDetail(await adminFetch<MemberDetail>(apiBase, sessionToken, `/api/admin/members/${encodeURIComponent(id)}`)) }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load member details."); setMemberDetail(null) }
+  }, [apiBase, sessionToken])
+
+const loadPrivateLiveDiagnostics = useCallback(async () => {
+    setPrivateLiveDiagnosticsLoading(true)
+    setPrivateLiveDiagnosticsError("")
+    try {
+      const payload = await adminFetch<AdminPrivateLivePayload>(apiBase, sessionToken, "/api/admin/private-live")
+      setPrivateLiveDiagnostics(payload)
+    } catch (caught) {
+      setPrivateLiveDiagnosticsError(caught instanceof Error ? caught.message : "Could not load private-live diagnostics.")
+      setPrivateLiveDiagnostics(null)
+    } finally { setPrivateLiveDiagnosticsLoading(false) }
   }, [apiBase, sessionToken])
 
   const loadJobs = useCallback(async () => {
@@ -182,6 +258,9 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
   }, [apiBase, sessionToken, selectedMemberId])
 
   useEffect(() => { void refreshAll() }, [refreshAll])
+  useEffect(() => { if (tab === "administrators") void loadAdministrators() }, [tab])
+  useEffect(() => { if (tab === "private-live") void loadPrivateLiveDiagnostics() }, [tab, loadPrivateLiveDiagnostics])
+  useEffect(() => { if (tab === "weekly-boundaries") void loadWeeklyBoundaries() }, [tab])
   useEffect(() => { if (tab === "operations") void loadAutomationRuns() }, [tab, loadAutomationRuns])
   useEffect(() => { if (tab === "operations") void loadRefreshCandidates(refreshMemberSearch, refreshMemberOffset) }, [tab, loadRefreshCandidates, refreshMemberSearch, refreshMemberOffset])
   useEffect(() => {
@@ -326,18 +405,79 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
     finally { setHistoryBusy(false) }
   }
 
+  async function loadWeeklyBoundaries() {
+    setWeeklyBoundariesLoading(true)
+    try {
+      const payload = await adminFetch<{ generatedAt: string; windowStartAt: string; boundaries: AdminWeeklyBoundary[] }>(apiBase, sessionToken, "/api/admin/faction/weekly-boundaries?limit=12")
+      setWeeklyBoundaries(payload.boundaries || [])
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load Sunday boundary diagnostics.") }
+    finally { setWeeklyBoundariesLoading(false) }
+  }
+
+  async function recoverWeeklyBoundary(boundary: AdminWeeklyBoundary) {
+    if (!actionsArmed || weeklyBoundaryRecoveryBusy || !boundary.recoverable) return
+    const collectionNames = boundary.boundaryExists
+      ? boundary.recoveryCollections.map((kind) => kind === "personalstats" ? "public personal stats" : "gym-energy").join(" and ")
+      : "both Sunday baseline collections"
+    const detail = boundary.boundaryExists
+      ? "Retry " + collectionNames + " using the existing frozen member cohort. Captures will keep their actual timestamps and may be marked late."
+      : "Create and queue both Sunday captures for the known membership cohort. This is only available within 24 hours of the boundary."
+    if (!window.confirm("Recover the Sunday boundary " + prettyDate(boundary.boundaryAt) + "?\\n\\n" + detail + "\\n\\nFinalized weekly reports are protected and will not be changed.")) return
+    try {
+      setWeeklyBoundaryRecoveryBusy(boundary.boundaryAt); setError(""); setNotice("")
+      const payload = await adminFetch<{ created: boolean; queued?: Array<{ collection: string; runId: string }>; queuedCollections?: string[]; skipped?: Array<{ collection: string; reason: string }> }>(apiBase, sessionToken, "/api/admin/faction/weekly-boundaries/recover", {
+        method: "POST",
+        body: JSON.stringify({ boundaryAt: boundary.boundaryAt, ...(boundary.boundaryExists ? { collections: boundary.recoveryCollections } : {}) }),
+      })
+      const queued = payload.queued?.map((item) => item.collection).join(", ") || payload.queuedCollections?.join(", ") || "both collections"
+      setNotice((payload.created ? "Created missing Sunday boundary. " : "Queued recovery for " + queued + ". ") + "Refresh diagnostics to follow actual capture progress.")
+      await Promise.all([loadWeeklyBoundaries(), loadAudit()])
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not recover the Sunday boundary.") }
+    finally { setWeeklyBoundaryRecoveryBusy("") }
+  }
+
   async function loadAudit() {
     try { const payload = await adminFetch<{ events: AuditEvent[] }>(apiBase, sessionToken, "/api/admin/audit?limit=50"); setAudit(payload.events || []) }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load audit records.") }
+  }
+  async function loadHistorySummary() {
+    try {
+      const payload = await adminFetch<{ stats: Record<string, unknown>; latestCompanySnapshot?: string | null }>(apiBase, sessionToken, "/api/admin/history/summary")
+      setHistorySummary(payload)
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load history coverage.") }
+  }
+  async function loadAdministrators() {
+    try {
+      const payload = await adminFetch<{ administrators: Administrator[] }>(apiBase, sessionToken, "/api/admin/administrators")
+      setAdministrators(payload.administrators || [])
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load administrator roles.") }
+  }
+  async function changeAdministratorRole(action: "grant" | "revoke", target?: Administrator) {
+    if (!actionsArmed || administratorBusy) return
+    const targetId = action === "grant" ? administratorPlayerId.trim() : target?.playerId || ""
+    if (!/^\\d{1,20}$/.test(targetId)) { setError("Enter a valid Torn player ID."); return }
+    const targetName = target?.playerName || `Torn ID #${targetId}`
+    const confirmed = window.confirm(action === "grant"
+      ? `Grant administrator privileges to ${targetName}? The player must already have a registered Naughty Souls member account.`
+      : `Revoke administrator privileges from ${targetName}? Their current sessions will remain signed in, but admin endpoints will reject access immediately.`)
+    if (!confirmed) return
+    try {
+      setAdministratorBusy(true); setError(""); setNotice("")
+      await adminFetch(apiBase, sessionToken, `/api/admin/administrators/${action}`, { method: "POST", body: JSON.stringify({ playerId: targetId }) })
+      setNotice(action === "grant" ? `Administrator privileges granted to ${targetName}.` : `Administrator privileges revoked from ${targetName}.`)
+      setAdministratorPlayerId("")
+      await Promise.all([loadAdministrators(), loadAudit()])
+    } catch (caught) { setError(caught instanceof Error ? caught.message : `Could not ${action} administrator privileges.`) }
+    finally { setAdministratorBusy(false) }
   }
 
   const metrics = (overview?.metrics || {}) as Record<string, unknown>
   const historyStats = (historySummary?.stats || {}) as Record<string, unknown>
   const filteredAutomationRuns = useMemo(() => automationStatusFilter === "all" ? automationRuns : automationRuns.filter((run) => run.status === automationStatusFilter), [automationRuns, automationStatusFilter])
   const tabItems: Array<{ key: AdminTab; label: string; icon: string }> = [
-    { key: "overview", label: "Overview", icon: "◫" }, { key: "members", label: "Members", icon: "♙" },
+    { key: "overview", label: "Overview", icon: "◫" }, { key: "members", label: "Members", icon: "♙" }, { key: "private-live", label: "Private Live", icon: "◉" }, { key: "administrators", label: "Administrators", icon: "♛" },
     { key: "operations", label: "Operations", icon: "↻" }, { key: "history", label: "History & Backups", icon: "▤" },
-    { key: "settings", label: "Global Settings", icon: "⚙" }, { key: "audit", label: "Audit Log", icon: "≡" },
+    { key: "settings", label: "Global Settings", icon: "⚙" }, { key: "weekly-boundaries", label: "Weekly Boundaries", icon: "◷" }, { key: "audit", label: "Audit Log", icon: "≡" },
   ]
 
   return <div className="admin-console">
@@ -349,7 +489,7 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
     {actionsArmed && <p className="admin-armed-note"><strong>Administrative actions enabled for this panel session.</strong> High-impact actions still require confirmation.</p>}
     {error && <div className="error-banner" role="alert">{error}</div>}
     {notice && <div className="admin-notice" role="status">{notice}</div>}
-    <nav className="admin-tabs" aria-label="Administration sections">{tabItems.map((item) => <button key={item.key} type="button" className={tab === item.key ? "admin-tab active" : "admin-tab"} onClick={() => setTab(item.key)}><span aria-hidden="true">{item.icon}</span>{item.label}</button>)}</nav>
+    <nav className="admin-tabs" aria-label="Administration sections">{tabItems.map((item) => <button key={item.key} type="button" aria-current={tab === item.key ? "page" : undefined} className={tab === item.key ? "admin-tab active" : "admin-tab"} onClick={() => setTab(item.key)}><span aria-hidden="true">{item.icon}</span>{item.label}</button>)}</nav>
 
     {tab === "overview" && <div className="admin-section-stack">
       <div className="admin-section-heading"><div><h2>System overview</h2><p>Operational health and data coverage across the dashboard.</p></div><button type="button" className="secondary-button" onClick={() => void refreshAll()} disabled={loading}>{loading ? "Refreshing…" : "Refresh status ↻"}</button></div>
@@ -362,13 +502,64 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
     {tab === "members" && <div className="admin-section-stack">
       <div className="admin-section-heading"><div><h2>Member management</h2><p>{memberTotal.toLocaleString()} dashboard accounts. Disabling access revokes active sessions and preserves saved history.</p></div><button className="secondary-button" type="button" onClick={() => void loadMembers(memberQuery)}>Reload members</button></div>
       <form className="admin-search-row" onSubmit={(event) => { event.preventDefault(); setMemberSearch(memberQuery); void loadMembers(memberQuery) }}><input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="Search Torn name, ID, or company" aria-label="Search dashboard members" /><button className="primary-button" type="submit">Search</button></form>
-      <div className="admin-members-layout"><section className="panel admin-subpanel"><div className="table-scroll"><table className="admin-table"><thead><tr><th>MEMBER</th><th>COMPANY</th><th>CONNECTION</th><th>ACCESS</th><th>ACTIONS</th></tr></thead><tbody>{members.map((member) => <tr key={member.playerId} className={selectedMemberId === member.playerId ? "selected" : ""}><td><button type="button" className="admin-member-link" onClick={() => void loadMemberDetail(member.playerId)}><strong>{member.playerName}</strong><small>#{member.playerId}</small></button></td><td>{member.companyName || "—"}<small className="admin-cell-subtitle">{member.companyType || "Company not connected"}{member.companyTypeId ? ` · type ${member.companyTypeId}` : ""}</small></td><td><span className={member.companyKeyCount > 0 ? "admin-status good" : member.loginKeySaved ? "admin-status warning" : "admin-status neutral"}>{member.companyKeyCount > 0 ? `${member.companyKeyCount} company key(s)` : member.loginKeySaved ? "Login key only" : "No key"}</span><small className="admin-cell-subtitle">{member.snapshotCount} snapshots</small></td><td><span className={member.disabled ? "admin-status danger" : "admin-status good"}>{member.disabled ? "Disabled" : "Active"}</span></td><td><div className="admin-row-actions"><button type="button" className="text-button" onClick={() => void loadMemberDetail(member.playerId)}>Details</button><button type="button" className="text-button" disabled={!actionsArmed || member.playerId === "351311"} onClick={() => void changeMemberStatus(member)}>{member.disabled ? "Restore" : "Disable"}</button></div></td></tr>)}</tbody></table></div>{!members.length && <div className="empty-state">No matching members were found.</div>}</section>
+      <div className="admin-members-layout"><section className="panel admin-subpanel"><div className="table-scroll" tabIndex={0} role="region" aria-label="Scrollable administration table"><table className="admin-table"><thead><tr><th>MEMBER</th><th>COMPANY</th><th>CONNECTION</th><th>ACCESS</th><th>ACTIONS</th></tr></thead><tbody>{members.map((member) => <tr key={member.playerId} className={selectedMemberId === member.playerId ? "selected" : ""}><td><button type="button" className="admin-member-link" onClick={() => void loadMemberDetail(member.playerId)}><strong>{member.playerName}</strong><small>#{member.playerId}</small></button></td><td>{member.companyName || "—"}<small className="admin-cell-subtitle">{member.companyType || "Company not connected"}{member.companyTypeId ? ` · type ${member.companyTypeId}` : ""}</small></td><td><span className={member.companyKeyCount > 0 ? "admin-status good" : member.loginKeySaved ? "admin-status warning" : "admin-status neutral"}>{member.companyKeyCount > 0 ? `${member.companyKeyCount} company key(s)` : member.loginKeySaved ? "Login key only" : "No key"}</span><small className="admin-cell-subtitle">{member.snapshotCount} snapshots</small></td><td><span className={member.disabled ? "admin-status danger" : "admin-status good"}>{member.disabled ? "Disabled" : "Active"}</span></td><td><div className="admin-row-actions"><button type="button" className="text-button" onClick={() => void loadMemberDetail(member.playerId)}>Details</button><button type="button" className="text-button" disabled={!actionsArmed || member.playerId === "351311"} onClick={() => void changeMemberStatus(member)}>{member.disabled ? "Restore" : "Disable"}</button></div></td></tr>)}</tbody></table></div>{!members.length && <div className="empty-state">No matching members were found.</div>}</section>
         <aside className="panel admin-subpanel admin-member-detail"><div className="panel-heading"><div><h3>{memberDetail?.member.playerName || selectedMember?.playerName || "Member details"}</h3><p>{memberDetail ? `Torn ID ${memberDetail.member.playerId}` : "Select a member from the directory."}</p></div></div>
           {memberDetail ? <><div className="admin-detail-facts"><span><small>LOGIN KEY</small><strong>{memberDetail.connections.loginKeySaved ? "Saved" : "Missing"}</strong></span><span><small>COMPANY KEY</small><strong>{memberDetail.connections.companies.length || 0}</strong></span><span><small>COMPANY HISTORY</small><strong>{memberDetail.history.companySnapshots.toLocaleString()}</strong></span><span><small>DIRECTOR HISTORY</small><strong>{memberDetail.history.directorSnapshots.toLocaleString()}</strong></span></div><div className="admin-connection-list">{memberDetail.connections.companies.length ? memberDetail.connections.companies.map((company) => <div key={company.companyId}><strong>{company.companyName || `Company #${company.companyId}`}</strong><small>{company.companyType || "Unknown type"} · #{company.companyId}</small><small>Key updated {prettyDate(company.keyUpdatedAt)} · Snapshot {prettyDate(company.fetchedAt)}</small></div>) : <div className="empty-state">No per-company key is saved. A repair can test the already-encrypted login credential.</div>}</div><div className="admin-detail-actions"><button type="button" className="secondary-button" disabled={!actionsArmed} onClick={() => void connectionAction(memberDetail.member, "test")}>Test connection</button><button type="button" className="primary-button" disabled={!actionsArmed} onClick={() => void connectionAction(memberDetail.member, "repair")}>Repair connection</button><button type="button" className="secondary-button" disabled={!actionsArmed || !(memberDetail.connections.companies?.[0]?.companyId || selectedMember?.companyId)} onClick={() => void queueJob("company-refresh", selectedMember ? { ...selectedMember, companyId: memberDetail.connections.companies?.[0]?.companyId || selectedMember.companyId, companyName: memberDetail.connections.companies?.[0]?.companyName || selectedMember.companyName, companyType: memberDetail.connections.companies?.[0]?.companyType || selectedMember.companyType } : memberDetail.member)}>Refresh company</button></div><p className="field-hint">Credentials are tested server-side. The panel never displays or requests stored API keys.</p></> : <div className="empty-state">Choose a member to inspect connection status and saved history.</div>}
         </aside>
       </div>
     </div>}
 
+    {tab === "private-live" && <div className="admin-section-stack">
+      <div className="admin-section-heading"><div><h2>Private-live diagnostics</h2><p>Operational freshness and sanitized errors for members who explicitly opted in to faction sharing. Refreshes are owner-triggered, not scheduled.</p></div><button type="button" className="secondary-button" onClick={() => void loadPrivateLiveDiagnostics()} disabled={privateLiveDiagnosticsLoading}>{privateLiveDiagnosticsLoading ? "Loading…" : "Refresh diagnostics ↻"}</button></div>
+      {privateLiveDiagnosticsError && <div className="error-banner" role="alert">{privateLiveDiagnosticsError}</div>}
+      <p className="admin-readonly-note"><strong>Privacy boundary.</strong> This view contains timestamps, consented selection flags and sanitized errors only. Private bars, cooldowns, networth values and API credentials remain owner-only.</p>
+      {privateLiveDiagnostics && <div className="admin-metric-grid">
+        {[
+          ["Connected opt-ins", privateLiveDiagnostics.summary.connectedCount],
+          ["Fresh · 15m or less", privateLiveDiagnostics.summary.freshCount],
+          ["Ageing · 15–60m", privateLiveDiagnostics.summary.ageingCount],
+          ["Stale · over 60m", privateLiveDiagnostics.summary.staleCount],
+          ["No successful snapshot", privateLiveDiagnostics.summary.noCaptureCount],
+          ["Last error recorded", privateLiveDiagnostics.summary.errorCount],
+        ].map(([label, value]) => <article className="admin-metric-card" key={String(label)}><small>{String(label)}</small><strong>{Number(value ?? 0).toLocaleString()}</strong></article>)}
+      </div>}
+      <section className="panel admin-subpanel">
+        <div className="panel-heading"><div><h3>Opted-in member connections</h3><p>Freshness is measured from the most recent successful private-live snapshot. Age alone does not indicate a failed collector.</p></div><span className="count-chip">{privateLiveDiagnostics?.summary.connectedCount ?? 0} connected</span></div>
+        {privateLiveDiagnosticsLoading && !privateLiveDiagnostics ? <div className="empty-state">Loading private-live connection metadata…</div> : privateLiveDiagnostics?.connections.length ? <div className="table-scroll" tabIndex={0} role="region" aria-label="Scrollable private-live diagnostics table"><table className="admin-table">
+          <thead><tr><th>MEMBER</th><th>SNAPSHOT FRESHNESS</th><th>LAST ATTEMPT</th><th>LAST VALIDATED</th><th>NETWORTH OPT-IN</th><th>LAST ERROR</th></tr></thead>
+          <tbody>{privateLiveDiagnostics.connections.map(connection => {
+            const statusClass = connection.freshness === "fresh" ? "good" : connection.freshness === "ageing" ? "warning" : connection.freshness === "stale" ? "danger" : "neutral"
+            const statusLabel = connection.freshness === "fresh" ? "Fresh" : connection.freshness === "ageing" ? "Ageing" : connection.freshness === "stale" ? "Stale" : "No snapshot"
+            const ageLabel = connection.ageMinutes === null ? "No successful capture" : connection.ageMinutes < 1 ? "Under 1 minute" : formatDuration(connection.ageMinutes * 60) + " ago"
+            return <tr key={connection.playerId}>
+              <td><strong>{connection.playerName}</strong><small>#{connection.playerId}</small></td>
+              <td><span className={"admin-status " + statusClass}>{statusLabel}</span><small>{ageLabel}</small><small>{prettyDate(connection.snapshotCapturedAt)}</small></td>
+              <td>{prettyDate(connection.lastAttemptAt)}</td>
+              <td>{prettyDate(connection.lastValidatedAt)}</td>
+              <td><span className={"admin-status " + (connection.includeNetworth ? "good" : "neutral")}>{connection.includeNetworth ? "Enabled" : "Off"}</span></td>
+              <td>{connection.lastError ? <><span className="admin-status danger">Error</span><small>{connection.lastError}</small></> : <span className="field-hint">No recorded error</span>}</td>
+            </tr>
+          })}</tbody>
+        </table></div> : <div className="empty-state">No current faction members have opted in to private-live sharing.</div>}
+        {privateLiveDiagnostics?.truncated && <p className="field-hint">Showing the 200 most recently attempted connections. Narrowing by member is not available in this read-only summary.</p>}
+        {privateLiveDiagnostics && <p className="field-hint">Generated {prettyDate(privateLiveDiagnostics.generatedAt)} · freshness thresholds: fresh through {privateLiveDiagnostics.freshnessPolicy.freshThroughMinutes} minutes, ageing through {privateLiveDiagnostics.freshnessPolicy.ageingThroughMinutes} minutes. Collection mode: member-triggered.</p>}
+      </section>
+    </div>}
+    {tab === "administrators" && <div className="admin-section-stack">
+      <div className="admin-section-heading"><div><h2>Administrator management</h2><p>Privileges are attached to a verified Torn player ID and checked by the Worker on every administration request.</p></div><button type="button" className="secondary-button" onClick={() => void loadAdministrators()}>Refresh roles ↻</button></div>
+      <section className="panel admin-subpanel">
+        <div className="panel-heading"><div><h3>Grant administrator access</h3><p>Enter the Torn ID of a player who has already signed in and verified Naughty Souls membership. Administrators never handle another member's API keys.</p></div></div>
+        <form className="admin-search-row" onSubmit={(event) => { event.preventDefault(); void changeAdministratorRole("grant") }}>
+          <input inputMode="numeric" value={administratorPlayerId} onChange={(event) => setAdministratorPlayerId(event.target.value.replace(/[^0-9]/g, "").slice(0, 20))} placeholder="Torn player ID" aria-label="Torn player ID to grant administrator access" disabled={!actionsArmed || administratorBusy} />
+          <button className="primary-button" type="submit" disabled={!actionsArmed || administratorBusy || !administratorPlayerId.trim()}>{administratorBusy ? "Saving…" : "Grant administrator"}</button>
+        </form>
+        <p className="field-hint">Only a registered, non-suspended member account can receive the role. The grant is recorded in the audit log.</p>
+      </section>
+      <section className="panel admin-subpanel">
+        <div className="panel-heading"><div><h3>Role registry</h3><p>Active roles and retained revocation history.</p></div><span className="count-chip">{administrators.filter((admin) => !admin.revokedAt).length} active</span></div>
+        {administrators.length ? <div className="table-scroll" tabIndex={0} role="region" aria-label="Scrollable administration table"><table className="admin-table"><thead><tr><th>ADMINISTRATOR</th><th>GRANTED BY</th><th>GRANTED</th><th>STATUS / REVOKED</th><th>ACTIONS</th></tr></thead><tbody>{administrators.map((admin) => <tr key={admin.playerId}><td><strong>{admin.playerName}</strong><small>#{admin.playerId}</small></td><td>{admin.grantedByName || `#${admin.grantedBy}`}</td><td>{prettyDate(admin.grantedAt)}</td><td>{admin.revokedAt ? <><span className="admin-status danger">Revoked</span><small>{admin.revokedByName || (admin.revokedBy ? `#${admin.revokedBy}` : "Unknown")} · {prettyDate(admin.revokedAt)}</small></> : <span className="admin-status good">Active</span>}</td><td>{admin.revokedAt ? <span className="field-hint">Retained in history</span> : admin.playerId === playerId ? <span className="field-hint">Current account</span> : <button type="button" className="text-button" disabled={!actionsArmed || administratorBusy} onClick={() => void changeAdministratorRole("revoke", admin)}>Revoke access</button>}</td></tr>)}</tbody></table></div> : <div className="empty-state">No administrator roles were returned.</div>}
+      </section>
+    </div>}
     {tab === "operations" && <div className="admin-section-stack">
       <div className="admin-section-heading"><div><h2>Refresh and maintenance jobs</h2><p>Jobs are tracked in D1, prevent equivalent concurrent requests, and report final outcomes.</p></div><button type="button" className="secondary-button" onClick={() => void loadJobs()}>Refresh job list ↻</button></div>
       <section className="panel admin-subpanel">
@@ -404,7 +595,7 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
         <button className="primary-button" type="button" disabled={!actionsArmed || !settings.manualRefreshEnabled || endpointRefreshBusy || !refreshEndpoints.length || (REFRESH_ENDPOINT_OPTIONS.some((option) => option.userScoped && refreshEndpoints.includes(option.value)) && refreshScope === "selected" && !refreshSelectedUserIds.length)} onClick={() => void queueEndpointRefresh()}>{endpointRefreshBusy ? "Queueing refresh…" : "Queue selected endpoint refresh ↻"}</button>
       </section>
       <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Manual refresh</h3><p>Global refresh updates ranking profiles, one faction-directory batch, and the global ranking cache.</p></div><span className={settings.manualRefreshEnabled ? "admin-status good" : "admin-status danger"}>{settings.manualRefreshEnabled ? "Enabled by policy" : "Disabled by policy"}</span></div><button className="primary-button" type="button" disabled={!actionsArmed || !settings.manualRefreshEnabled} onClick={() => void queueJob("global-refresh")}>Queue global refresh ↻</button><p className="field-hint">Company-specific refresh is available from a member's detail panel. Work is performed server-side and does not depend on the browser remaining open.</p></section>
-      <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Job history</h3><p>Most recent tracked jobs and failures.</p></div><span className="count-chip">{jobs.length} jobs</span></div>{jobs.length ? <div className="table-scroll"><table className="admin-table"><thead><tr><th>JOB</th><th>TARGET</th><th>STATUS</th><th>CREATED</th><th>RESULT / ERROR</th></tr></thead><tbody>{jobs.map((job) => <tr key={job.jobId}><td><strong>{prettyStatus(job.jobType)}</strong><small>{job.jobId}</small></td><td>{job.refreshConfig ? <><strong>{job.refreshConfig.scope === "all" ? "All connected users" : `${job.refreshConfig.targetPlayerIds?.length || 0} selected user(s)`}</strong><small>{(job.refreshConfig.endpoints || []).map((endpoint) => REFRESH_ENDPOINT_OPTIONS.find((option) => option.value === endpoint)?.label || endpoint).join(", ")}</small></> : job.targetPlayerId ? `#${job.targetPlayerId}` : "Global"}{job.targetCompanyId ? <small>Company #{job.targetCompanyId}</small> : null}</td><td><span className={`admin-status ${job.status === "completed" ? "good" : job.status === "failed" ? "danger" : "warning"}`}>{job.status}</span></td><td>{prettyDate(job.createdAt)}</td><td>{job.errorMessage || (job.result && typeof job.result === "object" ? JSON.stringify(job.result) : job.status === "completed" ? "Completed" : "Waiting for result")}</td></tr>)}</tbody></table></div> : <div className="empty-state">No administrative jobs have been queued yet.</div>}</section>
+      <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Job history</h3><p>Most recent tracked jobs and failures.</p></div><span className="count-chip">{jobs.length} jobs</span></div>{jobs.length ? <div className="table-scroll" tabIndex={0} role="region" aria-label="Scrollable administration table"><table className="admin-table"><thead><tr><th>JOB</th><th>TARGET</th><th>STATUS</th><th>CREATED</th><th>RESULT / ERROR</th></tr></thead><tbody>{jobs.map((job) => <tr key={job.jobId}><td><strong>{prettyStatus(job.jobType)}</strong><small>{job.jobId}</small></td><td>{job.refreshConfig ? <><strong>{job.refreshConfig.scope === "all" ? "All connected users" : `${job.refreshConfig.targetPlayerIds?.length || 0} selected user(s)`}</strong><small>{(job.refreshConfig.endpoints || []).map((endpoint) => REFRESH_ENDPOINT_OPTIONS.find((option) => option.value === endpoint)?.label || endpoint).join(", ")}</small></> : job.targetPlayerId ? `#${job.targetPlayerId}` : "Global"}{job.targetCompanyId ? <small>Company #{job.targetCompanyId}</small> : null}</td><td><span className={`admin-status ${job.status === "completed" ? "good" : job.status === "failed" ? "danger" : "warning"}`}>{job.status}</span></td><td>{prettyDate(job.createdAt)}</td><td>{job.errorMessage || (job.result && typeof job.result === "object" ? JSON.stringify(job.result) : job.status === "completed" ? "Completed" : "Waiting for result")}</td></tr>)}</tbody></table></div> : <div className="empty-state">No administrative jobs have been queued yet.</div>}</section>
       <section className="panel admin-subpanel admin-automation-insights">
         <div className="panel-heading"><div><h3>Automation Insights</h3><p>Execution reliability, runtime, and recurring failure patterns for scheduled Worker runs.</p></div><div className="admin-insight-controls"><label>Time window<select value={automationRange} onChange={(event) => setAutomationRange(event.target.value as AutomationRange)}><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last 12 months</option><option value="all">All time</option></select></label><label>Run status<select value={automationStatusFilter} onChange={(event) => setAutomationStatusFilter(event.target.value as AutomationStatusFilter)}><option value="all">All outcomes</option><option value="succeeded">Succeeded</option><option value="partial">Partial</option><option value="failed">Failed</option><option value="running">Running</option></select></label><button type="button" className="secondary-button" onClick={() => void loadAutomationRuns()}>Refresh insights ↻</button></div></div>
         <div className="admin-metric-grid admin-automation-metrics">
@@ -417,11 +608,11 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
         </div>
         <div className="admin-insight-failures"><div className="admin-insight-subheading"><h4>Failure patterns</h4><p>Most common recorded error summaries in this time window.</p></div>{automationInsights?.recurringFailures?.length ? <div className="admin-failure-list">{automationInsights.recurringFailures.map((failure) => <article className="admin-failure-item" key={failure.errorSummary}><span className="admin-failure-count">{failure.occurrences}×</span><p>{failure.errorSummary}</p></article>)}</div> : <p className="admin-insight-empty">No recorded failure summaries for this time window.</p>}</div>
       </section>
-      <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Scheduled automation runs</h3><p>Daily refresh, company-check outcomes, and alert evaluation history.</p></div><span className="count-chip">{filteredAutomationRuns.length} shown · {Number(automationInsights?.totalRuns ?? automationRuns.length).toLocaleString()} total</span></div>{filteredAutomationRuns.length ? <div className="table-scroll"><table className="admin-table"><thead><tr><th>STARTED</th><th>TRIGGER</th><th>STATUS</th><th>DURATION</th><th>COMPANIES</th><th>ALERTS</th><th>SUMMARY</th></tr></thead><tbody>{filteredAutomationRuns.map((run) => <tr key={run.runId}><td>{prettyDate(run.startedAt)}</td><td>{prettyStatus(run.triggerName)}</td><td><span className={`admin-status ${run.status === "succeeded" ? "good" : run.status === "failed" ? "danger" : "warning"}`}>{run.status}</span></td><td>{runDuration(run)}</td><td>{run.companiesChecked} checked<small>{run.companiesFailed} failed</small></td><td>{run.alertsCreated}</td><td>{run.errorSummary || (run.finishedAt ? "Completed" : "Run in progress")}</td></tr>)}</tbody></table></div> : <div className="empty-state">{automationRuns.length ? "No runs match this status filter." : "No scheduled runs have been recorded for this time window yet."}</div>}{Number(automationInsights?.totalRuns ?? 0) > automationRuns.length && <p className="field-hint">Showing the latest {automationRuns.length} runs. Summary metrics include every run in the selected time window.</p>}</section>
+      <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Scheduled automation runs</h3><p>Daily refresh, company-check outcomes, and alert evaluation history.</p></div><span className="count-chip">{filteredAutomationRuns.length} shown · {Number(automationInsights?.totalRuns ?? automationRuns.length).toLocaleString()} total</span></div>{filteredAutomationRuns.length ? <div className="table-scroll" tabIndex={0} role="region" aria-label="Scrollable administration table"><table className="admin-table"><thead><tr><th>STARTED</th><th>TRIGGER</th><th>STATUS</th><th>DURATION</th><th>COMPANIES</th><th>ALERTS</th><th>SUMMARY</th></tr></thead><tbody>{filteredAutomationRuns.map((run) => <tr key={run.runId}><td>{prettyDate(run.startedAt)}</td><td>{prettyStatus(run.triggerName)}</td><td><span className={`admin-status ${run.status === "succeeded" ? "good" : run.status === "failed" ? "danger" : "warning"}`}>{run.status}</span></td><td>{runDuration(run)}</td><td>{run.companiesChecked} checked<small>{run.companiesFailed} failed</small></td><td>{run.alertsCreated}</td><td>{run.errorSummary || (run.finishedAt ? "Completed" : "Run in progress")}</td></tr>)}</tbody></table></div> : <div className="empty-state">{automationRuns.length ? "No runs match this status filter." : "No scheduled runs have been recorded for this time window yet."}</div>}{Number(automationInsights?.totalRuns ?? 0) > automationRuns.length && <p className="field-hint">Showing the latest {automationRuns.length} runs. Summary metrics include every run in the selected time window.</p>}</section>
     </div>}
 
     {tab === "history" && <div className="admin-section-stack">
-      <div className="admin-section-heading"><div><h2>History and backups</h2><p>Inspect record coverage, export a selected member's backup, or validate and restore a compatible backup.</p></div><button type="button" className="secondary-button" onClick={() => void refreshAll()}>Reload coverage</button></div>
+      <div className="admin-section-heading"><div><h2>History and backups</h2><p>Inspect record coverage, export a selected member's backup, or validate and restore a compatible backup.</p></div><button type="button" className="secondary-button" onClick={() => void loadHistorySummary()}>Reload coverage</button></div>
       <div className="admin-metric-grid admin-history-metrics">{[["Companies", historyStats.companies], ["Financial records", historyStats.financialRecords], ["Company snapshots", historyStats.companySnapshots], ["Director snapshots", historyStats.directorSnapshots], ["Page-data records", historyStats.pageRecords]].map(([label, value]) => <article className="admin-metric-card" key={String(label)}><small>{String(label)}</small><strong>{value == null ? "—" : Number(value).toLocaleString()}</strong></article>)}</div>
       <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Export member backup</h3><p>The JSON file contains saved company records, supported page data, and historical snapshots. API credentials, sessions, and admin settings are excluded.</p></div></div><label className="admin-field-label" htmlFor="admin-history-target">Target dashboard member</label><select id="admin-history-target" value={historyTarget} onChange={(event) => { setHistoryTarget(event.target.value); setRestorePreview(null) }}><option value="">Select a member…</option>{members.map((member) => <option value={member.playerId} key={member.playerId}>{member.playerName} · #{member.playerId}</option>)}</select><button type="button" className="primary-button" disabled={!actionsArmed || historyBusy || !historyTarget} onClick={() => void exportMemberBackup()}>Export backup ↓</button></section>
       <section className="panel admin-subpanel"><div className="panel-heading"><div><h3>Restore from backup</h3><p>Restoration is limited to the member ID encoded in the backup. Preview counts first. The operation merges data and does not delete current records.</p></div><span className={settings.historyImportEnabled ? "admin-status good" : "admin-status danger"}>{settings.historyImportEnabled ? "Imports enabled" : "Imports disabled"}</span></div><label className="admin-field-label" htmlFor="admin-restore-file">Compatible admin backup or master dashboard backup (.json)</label><input id="admin-restore-file" type="file" accept="application/json,.json" disabled={!actionsArmed || !settings.historyImportEnabled || historyBusy} onChange={(event) => { setRestoreFile(event.target.files?.[0] || null); setRestorePreview(null) }} /><div className="admin-detail-actions"><button type="button" className="secondary-button" disabled={!actionsArmed || !settings.historyImportEnabled || historyBusy || !restoreFile || !historyTarget} onClick={() => void previewRestore()}>{historyBusy ? "Validating…" : "Validate & preview"}</button><button type="button" className="primary-button" disabled={!actionsArmed || !settings.historyImportEnabled || historyBusy || !restorePreview} onClick={() => void applyRestore()}>Apply restore</button></div>{restorePreview && <div className="admin-restore-preview"><strong>Server-side preflight passed for Torn ID {restorePreview.targetPlayerId || historyTarget}</strong><div className="admin-restore-counts">{Object.entries(restorePreview.counts || {}).map(([key, value]) => <span key={key}><small>{prettyStatus(key)}</small><strong>{value}</strong></span>)}</div><ul>{(restorePreview.warnings || []).map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}</section>
@@ -437,9 +628,39 @@ export function AdminPanel({ apiBase, sessionToken, playerId, playerName }: Prop
       <p className="field-hint">Global settings affect server behavior. Audit records track updates. Member-specific sharing settings and opt-in comparisons remain independent.</p>
     </div>}
 
+    {tab === "weekly-boundaries" && <div className="admin-section-stack">
+      <div className="admin-section-heading"><div><h2>Sunday boundary diagnostics</h2><p>Scheduled UTC captures, actual collection timestamps, queue state, and immutable report locks for the most recent 12 Sundays.</p></div><button type="button" className="secondary-button" onClick={() => void loadWeeklyBoundaries()} disabled={weeklyBoundariesLoading}>{weeklyBoundariesLoading ? "Refreshing…" : "Reload diagnostics ↻"}</button></div>
+      <div className="admin-metric-grid">
+        <article className="admin-metric-card"><small>BOUNDARIES CHECKED</small><strong>{weeklyBoundaries.length}</strong></article>
+        <article className="admin-metric-card"><small>RECOVERABLE</small><strong>{weeklyBoundaries.filter((item) => item.recoverable).length}</strong></article>
+        <article className="admin-metric-card"><small>FINALIZED / LOCKED</small><strong>{weeklyBoundaries.filter((item) => item.endingWeekReport || item.startingWeekReport).length}</strong></article>
+      </div>
+      <section className="panel admin-subpanel">
+        <p className="field-hint">A missing boundary can only be created during the first 24 hours. Existing failed, partial, or stale runs can be retried for up to eight days using the original frozen cohort. Actual capture times remain visible as late when appropriate. Once either adjacent weekly report is finalized, recovery is blocked to protect its immutable results.</p>
+        {weeklyBoundariesLoading && !weeklyBoundaries.length ? <div className="empty-state">Loading Sunday boundary records…</div> : (
+          <div className="table-scroll" tabIndex={0} role="region" aria-label="Scrollable administration table"><table className="admin-table"><thead><tr><th>SUNDAY · UTC</th><th>STATS RUN</th><th>GYM ENERGY RUN</th><th>MEMBERS KNOWN</th><th>WEEKLY REPORTS</th><th>RECOVERY</th></tr></thead><tbody>
+            {weeklyBoundaries.map((boundary) => {
+              const runLabel = (run: AdminWeeklyRunDiagnostic | null) => !run ? "No run" : run.status + " · " + run.capturedMemberCount + "/" + Math.max(run.targetMemberCount, run.capturedMemberCount) + " captured · " + run.completeMemberCount + " complete"
+              const captureLabel = (run: AdminWeeklyRunDiagnostic | null) => !run?.firstCapturedAt ? "No sample captured" : "First " + prettyDate(run.firstCapturedAt) + (run.lastCapturedAt && run.lastCapturedAt !== run.firstCapturedAt ? " · last " + prettyDate(run.lastCapturedAt) : "") + (run.timingDeviationSeconds === null ? "" : " · " + (run.timingDeviationSeconds >= 0 ? "+" : "") + Math.round(run.timingDeviationSeconds / 60) + "m")
+              const reportLabel = [boundary.endingWeekReport, boundary.startingWeekReport].filter(Boolean).map((report) => report!.status + " · " + report!.weekStartAt.slice(0, 10)).join(" / ")
+              return <tr key={boundary.boundaryAt}>
+                <td><strong>{prettyDate(boundary.boundaryAt)}</strong><small>{boundary.status.replaceAll("_", " ")}</small></td>
+                <td><span className={"admin-status " + (boundary.stats?.status === "completed" ? "good" : boundary.stats?.stale || boundary.stats?.status === "failed" ? "danger" : "warning")}>{runLabel(boundary.stats)}</span><small>{captureLabel(boundary.stats)}</small>{boundary.stats?.lastError && <small>{boundary.stats.lastError}</small>}</td>
+                <td><span className={"admin-status " + (boundary.gymEnergy?.status === "completed" ? "good" : boundary.gymEnergy?.stale || boundary.gymEnergy?.status === "failed" ? "danger" : "warning")}>{runLabel(boundary.gymEnergy)}</span><small>{captureLabel(boundary.gymEnergy)}</small>{boundary.gymEnergy?.lastError && <small>{boundary.gymEnergy.lastError}</small>}</td>
+                <td>{boundary.knownMemberCount.toLocaleString()}</td>
+                <td>{reportLabel || "No adjacent finalized report"}</td>
+                <td><button type="button" className="secondary-button" disabled={!actionsArmed || !boundary.recoverable || weeklyBoundaryRecoveryBusy === boundary.boundaryAt} onClick={() => void recoverWeeklyBoundary(boundary)}>{weeklyBoundaryRecoveryBusy === boundary.boundaryAt ? "Queueing…" : boundary.boundaryExists ? "Recover run" : "Create boundary"}</button><small>{boundary.recoveryReason || "No recovery required."}</small></td>
+              </tr>
+            })}
+          </tbody></table></div>
+        )}
+        {!weeklyBoundariesLoading && !weeklyBoundaries.length && <div className="empty-state">No Sunday boundaries are available yet.</div>}
+      </section>
+    </div>}
+
     {tab === "audit" && <div className="admin-section-stack">
       <div className="admin-section-heading"><div><h2>Administrative audit log</h2><p>Append-only through the dashboard. Records show actor, action, target, result, and timestamp.</p></div><button type="button" className="secondary-button" onClick={() => void loadAudit()}>Reload audit ↻</button></div>
-      <section className="panel admin-subpanel"><div className="table-scroll"><table className="admin-table"><thead><tr><th>WHEN</th><th>ACTOR</th><th>ACTION</th><th>TARGET</th><th>OUTCOME</th><th>SUMMARY</th></tr></thead><tbody>{audit.map((event) => <tr key={event.id}><td>{prettyDate(event.createdAt)}</td><td>{event.actorPlayerName}<small>#{event.actorPlayerId}</small></td><td><code>{event.action}</code></td><td>{event.targetType ? `${event.targetType}${event.targetId ? ` · ${event.targetId}` : ""}` : "—"}</td><td><span className={`admin-status ${event.outcome === "succeeded" ? "good" : event.outcome === "failed" || event.outcome === "denied" ? "danger" : "warning"}`}>{event.outcome}</span></td><td>{event.summary}</td></tr>)}</tbody></table></div>{!audit.length && <div className="empty-state">No audit events have been recorded.</div>}</section>
+      <section className="panel admin-subpanel"><div className="table-scroll" tabIndex={0} role="region" aria-label="Scrollable administration table"><table className="admin-table"><thead><tr><th>WHEN</th><th>ACTOR</th><th>ACTION</th><th>TARGET</th><th>OUTCOME</th><th>SUMMARY</th></tr></thead><tbody>{audit.map((event) => <tr key={event.id}><td>{prettyDate(event.createdAt)}</td><td>{event.actorPlayerName}<small>#{event.actorPlayerId}</small></td><td><code>{event.action}</code></td><td>{event.targetType ? `${event.targetType}${event.targetId ? ` · ${event.targetId}` : ""}` : "—"}</td><td><span className={`admin-status ${event.outcome === "succeeded" ? "good" : event.outcome === "failed" || event.outcome === "denied" ? "danger" : "warning"}`}>{event.outcome}</span></td><td>{event.summary}</td></tr>)}</tbody></table></div>{!audit.length && <div className="empty-state">No audit events have been recorded.</div>}</section>
     </div>}
   </div>
 }

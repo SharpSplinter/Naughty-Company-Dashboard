@@ -1,19 +1,27 @@
 # Cloudflare deployment
 
-## Projects
+## Projects and release targets
 
-- **Pages project:** `naughty-company-dashboard`
-- **Pages URL:** https://naughty-company-dashboard.pages.dev
-- **API Worker:** https://naughty-company-api.kboone801.workers.dev
+- **Current production API Worker:** `naughty-company-api` at https://naughty-company-api.kboone801.workers.dev
+- **Current production D1:** `naughty-company-dashboard` (UUID `bbbe128a-c5cc-46ec-b8ef-93860183e795`)
+- **Legacy Pages rollback site:** `naughty-company-dashboard` at https://naughty-company-dashboard.pages.dev
+- **New Pages cutover target:** `naughtyfamily` at https://naughtyfamily.pages.dev
+- **Acceptance Pages:** `naughtyfamily-staging` at https://naughtyfamily-staging.pages.dev
+- **Acceptance API Worker:** `naughtyfamily-api-staging` at https://naughtyfamily-api-staging.kboone801.workers.dev
+- **Acceptance D1:** `naughtyfamily-acceptance-staging` (UUID `02cca699-1232-495f-8a0a-de525058b92a`)
 - **Git repository:** `SharpSplinter/Naughty-Company-Dashboard`
-- **Cloudflare Pages production branch:** `main`
+- **Production branch:** `main`
 
-Pages build settings:
+The legacy Pages site remains the fallback for the first cutover. Its existing canonical production deployment is preserved and automatic production/preview deployments have been disabled. The new `naughtyfamily` project is configured for `main`, but it also has automatic production/preview deployments disabled and has not yet received a production deployment. Do not point a staging Worker or acceptance database at production resources.
+
+Pages build settings for the new target:
 
 - Build command: `npm run build`
 - Output directory: `dist`
 - Root directory: repository root
-- Build variable: `VITE_API_BASE_URL=https://naughty-company-api.kboone801.workers.dev`
+- Production build variable: `VITE_API_BASE_URL=https://naughty-company-api.kboone801.workers.dev`
+
+See [PRODUCTION-CUTOVER-REVIEW.md](PRODUCTION-CUTOVER-REVIEW.md) for the release checklist, verified production baseline, backup procedure, migration order, rollback boundaries and explicit no-production-change status.
 
 ## API Worker
 
@@ -105,4 +113,4 @@ CORS restrictions are useful browser hygiene but are not a replacement for authe
 - `npm run typecheck`
 - `npm test`
 
-Cloudflare Pages production deployments build the repository's `main` branch with `npm run build` and publish `dist/`.
+Production Pages publishing is manual during this migration. Do not publish to the legacy `naughty-company-dashboard` project. After the production Worker migration/deployment and health verification are approved, build with the production API URL and explicitly publish `dist/` to the `naughtyfamily` project. Keep both projects' automatic deployments disabled until the cutover is accepted. The production Worker workflow is manual-only on the PR branch and requires an operator-supplied reference to a verified external D1 backup; see the cutover review for the exact sequence.

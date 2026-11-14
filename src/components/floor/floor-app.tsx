@@ -9,7 +9,10 @@ import { placement } from "./ranking-utils"
 import { AdminPanel } from "./admin-panel"
 import { InsightsWorkspace } from "./insights-workspace"
 import { AlertsPanel, NotificationSettingsPanel } from "./alerts-panel"
-import { companyTypeIdFromProfile, estimateWeeklyProfit, financialCosts, formatMoney, formatNumber, getObject, pretty, reportedCompanyProfit, stockPriceRows } from "./financial-utils"
+import { companyTypeIdFromProfile, estimateWeeklyProfit, financialCosts, formatMoney, formatNumber, getObject, pretty, reportedCompanyProfit, resolveDisplayedDailyProfit, stockPriceRows } from "./financial-utils"
+import { AccountSettingsWorkspace, FactionWorkspacePlaceholder, HalloweenWorkspace, PortalHome } from "../portal/workspaces"
+import { ChristmasTownWorkspace } from "../portal/christmas-town"
+import "../portal/workspaces.css"
 
 const catalog = positionsData as CompanyPositionCatalog
 const companyNames = Object.keys(catalog.companies).sort()
@@ -27,8 +30,29 @@ function formatLastSeenElapsed(timestamp: number | null, now = Date.now()): stri
   ]
   return `Last seen ${parts.join(" ")} ago`
 }
-const dashboardViews = ["overview", "employees", "catalog", "dashboard-members", "connect", "type-rankings", "faction-rankings", "charts", "data-transfer", "data-sharing", "executive", "health", "trends", "member-insights", "roster-insights", "performance-insights", "layout", "alerts", "admin"] as const
+const dashboardViews = ["overview", "employees", "catalog", "dashboard-members", "connect", "type-rankings", "faction-rankings", "charts", "data-transfer", "data-sharing", "executive", "health", "trends", "roster-insights", "performance-insights", "layout", "alerts"] as const
 type DashboardView = typeof dashboardViews[number]
+type CompanyNavigationGroup = { key: string; label: string; views: Array<{ view: DashboardView; label: string }> }
+const COMPANY_WORKSPACE_GROUPS: CompanyNavigationGroup[] = [
+  { key: "company", label: "Company", views: [
+    { view: "overview", label: "Overview" }, { view: "employees", label: "Employees" },
+    { view: "charts", label: "Trends & Charts" }, { view: "roster-insights", label: "Roster Insights" },
+    { view: "executive", label: "Executive Overview" }, { view: "layout", label: "Customize Layout" },
+  ] },
+  { key: "rankings", label: "Rankings", views: [
+    { view: "type-rankings", label: "Company Rankings" }, { view: "faction-rankings", label: "Faction Rankings" },
+  ] },
+  { key: "insights", label: "Insights", views: [
+    { view: "trends", label: "Historical Trends" }, { view: "performance-insights", label: "Performance Insights" },
+    { view: "catalog", label: "Position Catalog" }, { view: "dashboard-members", label: "Member Directory" },
+  ] },
+  { key: "settings", label: "Settings", views: [
+    { view: "connect", label: "Connections" }, { view: "data-sharing", label: "Data Sharing" },
+    { view: "data-transfer", label: "Import / Export" }, { view: "health", label: "API Health" },
+    { view: "alerts", label: "Automation Center" },
+  ] },
+]
+
 type DashboardPreferences = { density: "comfortable" | "compact"; contentWidth: "standard" | "wide" }
 const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferences = { density: "comfortable", contentWidth: "standard" }
 type TransferPageKey = "company" | "employees" | "charts" | "rankings" | "references" | "settings" | "master"
@@ -61,6 +85,7 @@ type SharedCompany = { playerId: string; directorName: string; companyId: string
 
 
 export function FloorApp() {
+  const [routePath, setRoutePath] = useState(() => window.location.pathname || "/")
   const [activeView, setActiveView] = useState<DashboardView>(() => {
     try { const saved = sessionStorage.getItem("ncd_active_view"); if (saved && dashboardViews.includes(saved as DashboardView)) return saved as DashboardView } catch { /* Storage may be disabled. */ }
     return "overview"
@@ -80,9 +105,7 @@ export function FloorApp() {
   const [search, setSearch] = useState("")
   const [selectedCompany, setSelectedCompany] = useState(companyNames[0] ?? "")
   const [apiKey, setApiKey] = useState("")
-  const [secondaryCompanyKey, setSecondaryCompanyKey] = useState("")
   const [companyKeySaved, setCompanyKeySaved] = useState(false)
-  const [needsSecondaryKey, setNeedsSecondaryKey] = useState(false)
   const [isDirector, setIsDirector] = useState(false)
   const [result, setResult] = useState<ApiResult | null>(null)
   const [error, setError] = useState("")
@@ -90,18 +113,11 @@ export function FloorApp() {
   const [showRaw, setShowRaw] = useState(false)
   const [sessionToken, setSessionToken] = useState("")
   const [sessionActionBusy, setSessionActionBusy] = useState(false)
-  const [companyKeyActionBusy, setCompanyKeyActionBusy] = useState("")
   const [authChecking, setAuthChecking] = useState(true)
   const [demoMode, setDemoMode] = useState(false)
   const [playerName, setPlayerName] = useState("")
   const [playerId, setPlayerId] = useState("")
   const [isAdmin, setIsAdmin] = useState(false)
-  const [adminElevatedUntil, setAdminElevatedUntil] = useState<number | null>(null)
-  const [adminAuthOpen, setAdminAuthOpen] = useState(false)
-  const [adminUsername, setAdminUsername] = useState("")
-  const [adminPassword, setAdminPassword] = useState("")
-  const [adminAuthError, setAdminAuthError] = useState("")
-  const [adminAuthBusy, setAdminAuthBusy] = useState(false)
   const [selectedCompanyId, setSelectedCompanyId] = useState("")
   const [showCompanySelector, setShowCompanySelector] = useState(false)
   const [keySaved, setKeySaved] = useState(false)
@@ -122,7 +138,14 @@ export function FloorApp() {
   const [factionSyncProgress, setFactionSyncProgress] = useState("")
   const [selectedRankingType, setSelectedRankingType] = useState("")
   const [snapshotHistory, setSnapshotHistory] = useState<SnapshotHistoryCompany[]>([])
-  const [officialStockHistory, setOfficialStockHistory] = useState<{ day: string; stockQuantity: number | null }[]>([])
+  const [officialStockHistory, setOfficialStockHistory] = useState<{
+    day: string
+    stockQuantity: number | null
+    advertisingBudget: number | null
+    employeeWages: number | null
+    stockOrderExpense: number | null
+    fetchedAt?: string
+  }[]>([])
   const [officialCompanyHistory, setOfficialCompanyHistory] = useState<OfficialCompanyHistoryPoint[]>([])
   const [snapshotSourceCreatedAt, setSnapshotSourceCreatedAt] = useState("")
   const [snapshotHistoryLoading, setSnapshotHistoryLoading] = useState(true)
@@ -137,6 +160,23 @@ export function FloorApp() {
   const [sharingNotice, setSharingNotice] = useState("")
   const [sharedCompanies, setSharedCompanies] = useState<SharedCompany[]>([])
   const [employeeComparePlayerId, setEmployeeComparePlayerId] = useState("")
+
+  const navigateToPath = useCallback((path: string) => {
+    if (window.location.pathname !== path) window.history.pushState({}, "", path)
+    setRoutePath(path)
+    if (path === "/company") setActiveView("overview")
+    setSidebarCollapsed(true)
+  }, [])
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = window.location.pathname || "/"
+      setRoutePath(path)
+      if (path === "/company") setActiveView("overview")
+      }
+    window.addEventListener("popstate", handlePopState)
+    return () => window.removeEventListener("popstate", handlePopState)
+  }, [])
 
   useEffect(() => {
     try { sessionStorage.setItem("ncd_active_view", activeView) } catch { /* Storage may be disabled. */ }
@@ -183,17 +223,16 @@ export function FloorApp() {
       try {
         const response = await fetch(`${API_BASE}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } })
         if (!response.ok) throw new Error("Session expired")
-        const session = await response.json() as { player: { id: string; name: string }; isAdmin?: boolean; adminElevatedUntil?: number | null; key: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
+        const session = await response.json() as { player: { id: string; name: string }; isAdmin?: boolean; key: { saved: boolean } }
         if (cancelled) return
         setSessionToken(token)
         setPlayerName(session.player.name)
         setPlayerId(session.player.id)
-        setIsAdmin(session.isAdmin === true && session.player.id === "351311")
-        setAdminElevatedUntil(typeof session.adminElevatedUntil === "number" ? session.adminElevatedUntil : null)
+        setIsAdmin(session.isAdmin === true)
         setKeySaved(session.key.saved)
-        setIsDirector(session.company?.isDirector ?? false)
-        setCompanyKeySaved(session.company?.key?.saved ?? false)
-        setNeedsSecondaryKey(session.company?.needsSecondaryKey ?? !(session.company?.key?.saved ?? false))
+        setIsDirector(false)
+        setCompanyKeySaved(false)
+
         const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${token}` } })
         if (!listResponse.ok) return
         const list = await listResponse.json() as { companies: SavedCompany[] }
@@ -226,19 +265,9 @@ export function FloorApp() {
   }, [])
 
   useEffect(() => {
-    const adminOnlyViews = ["admin", "dashboard-members", "member-insights"]
+    const adminOnlyViews = ["dashboard-members"]
     if (!authChecking && adminOnlyViews.includes(activeView) && (!isAdmin || demoMode)) setActiveView("overview")
   }, [authChecking, activeView, isAdmin, demoMode])
-
-  useEffect(() => {
-    if (!isAdmin || !adminElevatedUntil) return
-    const timeout = window.setTimeout(() => {
-      setIsAdmin(false)
-      setAdminElevatedUntil(null)
-      setActiveView((view) => ["admin", "dashboard-members", "member-insights"].includes(view) ? "overview" : view)
-    }, Math.max(0, adminElevatedUntil * 1000 - Date.now()))
-    return () => window.clearTimeout(timeout)
-  }, [isAdmin, adminElevatedUntil])
 
   useEffect(() => {
     if (!sessionToken) return
@@ -515,7 +544,7 @@ export function FloorApp() {
     return boundary
   }
   const currentChartCompany = snapshotHistory.find((company) => company.companyId === String(model?.company.id ?? result?.model.company.id ?? ""))
-  // Saved reporting history is canonical for charts, while its stock points also feed the stock-difference widget.
+  // Canonical saved reporting points feed charts, profit summaries and stock-cost history.
   useEffect(() => {
     const companyId = String(model?.company.id ?? result?.model.company.id ?? "")
     if (!sessionToken || demoMode || !companyId) {
@@ -532,29 +561,42 @@ export function FloorApp() {
         if (!response.ok) throw new Error("Could not load saved daily company history.")
         const payload = await response.json() as { history?: unknown[] }
         const history = Array.isArray(payload.history) ? payload.history : []
-        const numeric = (record: Record<string, unknown>, key: string): number | null =>
-          typeof record[key] === "number" && Number.isFinite(record[key]) ? record[key] as number : null
-        const officialRows = history.flatMap((item): OfficialCompanyHistoryPoint[] => {
+        const numberOrNull = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : null
+        const companyRows = history.flatMap((item): OfficialCompanyHistoryPoint[] => {
           if (!item || typeof item !== "object" || Array.isArray(item)) return []
           const record = item as Record<string, unknown>
           const day = typeof record.day === "string" ? record.day : ""
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return []
+          if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(day)) return []
           const point: OfficialCompanyHistoryPoint = {
             day,
-            dailyIncome: numeric(record, "dailyIncome"),
-            weeklyIncome: numeric(record, "weeklyIncome"),
-            dailyProfit: numeric(record, "dailyProfit"),
-            weeklyProfit: numeric(record, "weeklyProfit"),
-            stockQuantity: numeric(record, "stockQuantity"),
-            rating: numeric(record, "rating"),
+            dailyIncome: numberOrNull(record.dailyIncome),
+            weeklyIncome: numberOrNull(record.weeklyIncome),
+            dailyProfit: numberOrNull(record.dailyProfit),
+            weeklyProfit: numberOrNull(record.weeklyProfit),
+            stockQuantity: numberOrNull(record.stockQuantity),
+            rating: numberOrNull(record.rating),
           }
           if (typeof record.companyRank === "number" && Number.isFinite(record.companyRank)) point.companyRank = record.companyRank
           return [point]
         })
-        const stockRows = officialRows.map((point) => ({ day: point.day, stockQuantity: point.stockQuantity ?? null }))
+        const stockRows = history.flatMap((item) => {
+          if (!item || typeof item !== "object" || Array.isArray(item)) return []
+          const record = item as Record<string, unknown>
+          const day = typeof record.day === "string" ? record.day : ""
+          if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(day)) return []
+          const fetchedAt = typeof record.fetchedAt === "string" ? record.fetchedAt : undefined
+          return [{
+            day,
+            stockQuantity: numberOrNull(record.stockQuantity),
+            advertisingBudget: numberOrNull(record.advertisingBudget),
+            employeeWages: numberOrNull(record.employeeWages),
+            stockOrderExpense: numberOrNull(record.stockOrderExpense),
+            ...(fetchedAt ? { fetchedAt } : {}),
+          }]
+        })
         if (!cancelled) {
           setOfficialStockHistory(stockRows)
-          setOfficialCompanyHistory(officialRows)
+          setOfficialCompanyHistory(companyRows)
         }
       } catch {
         if (!cancelled) {
@@ -568,7 +610,9 @@ export function FloorApp() {
   }, [sessionToken, demoMode, model?.company.id, model?.fetchedAt, result?.model.company.id])
   const currentReportingDay = new Date(Date.now() - 18 * 3600000).toISOString().slice(0, 10)
   const currentOfficialProfitPoint = officialCompanyHistory.find((point) => point.day === currentReportingDay)
-  const dailyProfit = currentOfficialProfitPoint ? currentOfficialProfitPoint.dailyProfit ?? null : currentChartCompany?.history.at(-1)?.dailyProfit ?? (model?.company.dailyIncome == null || costs?.dailyCosts == null ? null : model.company.dailyIncome - costs.dailyCosts)
+  const dailyProfit = currentOfficialProfitPoint
+    ? currentOfficialProfitPoint.dailyProfit ?? null
+    : resolveDisplayedDailyProfit(currentChartCompany?.history.at(-1)?.dailyProfit, model?.company.dailyIncome, costs?.dailyCosts)
   const allDailySamples = (result?.incomeHistory ?? []).filter((item) => item.dailyIncome !== null && new Date(item.fetchedAt) <= utcNow)
   const dedupedSamples = Array.from(new Map(allDailySamples.map((item) => [new Date(new Date(item.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10), item])).values())
   const weekStart = periodStart("week")
@@ -584,13 +628,12 @@ export function FloorApp() {
   const weeklyIncome = model?.company.weeklyIncome ?? null
   const latestReportedWeeklyProfit = archivedWeekPoints.filter((point) => point.weeklyProfit !== null).at(-1)?.weeklyProfit ?? null
   const archivedMonthProfit = archivedMonthPoints.filter((point) => point.dailyProfit !== null)
-  const operatingDailyCosts = costs?.dailyRecurringCosts ?? null
   const reportedWeeklyProfit = reportedCompanyProfit(result?.profile, "weekly")
-  const estimatedWeeklyProfit = estimateWeeklyProfit(weeklyIncome, operatingDailyCosts, costs?.stockCosts)
-  const weeklyProfit = currentOfficialProfitPoint ? currentOfficialProfitPoint.weeklyProfit ?? null : reportedWeeklyProfit ?? estimatedWeeklyProfit ?? latestReportedWeeklyProfit
+  const estimatedWeeklyProfit = estimateWeeklyProfit(weeklyIncome, officialStockHistory)
+  const weeklyProfit = currentOfficialProfitPoint ? currentOfficialProfitPoint.weeklyProfit ?? null : estimatedWeeklyProfit ?? reportedWeeklyProfit ?? latestReportedWeeklyProfit
   const monthlyProfit = archivedMonthProfit.length
     ? archivedMonthProfit.reduce((sum, point) => sum + (point.dailyProfit ?? 0), 0)
-    : monthlyIncome === null || operatingDailyCosts === null || costs?.stockCosts == null || Math.max(monthSamples.length, archivedMonthPoints.length) === 0 ? null : monthlyIncome - operatingDailyCosts * Math.max(monthSamples.length, archivedMonthPoints.length) - costs.stockCosts
+    : monthlyIncome === null || costs?.dailyRecurringCosts == null || costs?.stockCosts == null || Math.max(monthSamples.length, archivedMonthPoints.length) === 0 ? null : monthlyIncome - costs.dailyRecurringCosts * Math.max(monthSamples.length, archivedMonthPoints.length) - costs.stockCosts
   const weekCoverage = new Set([...weekSamples.map((item) => new Date(new Date(item.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10)), ...archivedWeekPoints.map((point) => point.day)]).size
   const monthCoverage = new Set([...monthSamples.map((item) => new Date(new Date(item.fetchedAt).getTime() - 18 * 3600000).toISOString().slice(0, 10)), ...archivedMonthPoints.map((point) => point.day)]).size
   const expectedReportingDays = (start: Date) => Math.max(1, Math.floor((utcNow.getTime() - start.getTime()) / 86400000) + 1)
@@ -623,8 +666,13 @@ export function FloorApp() {
     }
     return series
   }
-  const activePageTitle = activeView === "executive" ? "Executive Overview" : activeView === "health" ? "API Health & Data Freshness" : activeView === "trends" ? "Historical Trends and Comparisons" : activeView === "member-insights" ? "Member Activity" : activeView === "roster-insights" ? "Roster Insights" : activeView === "performance-insights" ? "Performance & Staffing Insights" : activeView === "layout" ? "Customizable Dashboard Layout" : activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "dashboard-members" ? "Dashboard Members" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : activeView === "data-sharing" ? "Data Sharing" : activeView === "alerts" ? "Automation Center" : activeView === "admin" ? "Administration" : "Settings"
-  const activePageGroup = activeView === "member-insights" || activeView === "dashboard-members" || activeView === "catalog" || activeView === "trends" || activeView === "performance-insights" ? "References" : activeView === "roster-insights" || activeView === "overview" || activeView === "employees" || activeView === "charts" || activeView === "executive" || activeView === "layout" ? "Company" : activeView === "alerts" || activeView === "health" || activeView === "connect" || activeView === "data-transfer" || activeView === "data-sharing" ? "Settings" : activeView === "type-rankings" || activeView === "faction-rankings" ? "Rankings" : activeView === "admin" ? "Administration" : "Workspace"
+  const activePageTitle = activeView === "executive" ? "Executive Overview" : activeView === "health" ? "API Health & Data Freshness" : activeView === "trends" ? "Historical Trends and Comparisons" : activeView === "roster-insights" ? "Roster Insights" : activeView === "performance-insights" ? "Performance & Staffing Insights" : activeView === "layout" ? "Customizable Dashboard Layout" : activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "dashboard-members" ? "Dashboard Members" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : activeView === "data-sharing" ? "Data Sharing" : activeView === "alerts" ? "Automation Center" : "Settings"
+  const activePageGroup = activeView === "dashboard-members" || activeView === "catalog" || activeView === "trends" || activeView === "performance-insights" ? "Insights" : activeView === "roster-insights" || activeView === "overview" || activeView === "employees" || activeView === "charts" || activeView === "executive" || activeView === "layout" ? "Company" : activeView === "alerts" || activeView === "health" || activeView === "connect" || activeView === "data-transfer" || activeView === "data-sharing" ? "Settings" : activeView === "type-rankings" || activeView === "faction-rankings" ? "Rankings" : "Workspace"
+  const companyNavigationGroups = COMPANY_WORKSPACE_GROUPS.map((group) => ({
+    ...group,
+    views: group.views.filter((item) => isAdmin || item.view !== "dashboard-members"),
+  })).filter((group) => group.views.length > 0)
+  const activeCompanyGroup = companyNavigationGroups.find((group) => group.views.some((item) => item.view === activeView)) ?? companyNavigationGroups[0]
   const liveProfileRecord = getObject(result?.profile)
   const liveCompanyProfile = getObject(liveProfileRecord?.company) ?? getObject(liveProfileRecord?.profile) ?? liveProfileRecord ?? {}
   const rawCompanyFunds = liveCompanyProfile.funds ?? liveCompanyProfile.company_funds ?? liveCompanyProfile.companyFunds
@@ -723,27 +771,8 @@ export function FloorApp() {
   }
 
 
-  async function deleteSavedCompanyKey(company: SavedCompany) {
-    if (!sessionToken || !company.has_api_key || companyKeyActionBusy) return
-    const name = company.company_name || `Company #${company.company_id}`
-    if (!window.confirm(`Remove the saved API key for ${name}? Its saved company history will be retained.`)) return
-    setCompanyKeyActionBusy(company.company_id)
-    setError("")
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/company-key?companyId=${encodeURIComponent(company.company_id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${sessionToken}` } })
-      const payload = await response.json() as { error?: string; companyKeySaved?: boolean }
-      if (!response.ok) throw new Error(payload.error || "Could not remove this company key.")
-      setSavedCompanies((current) => current.map((item) => item.company_id === company.company_id ? { ...item, has_api_key: false, key_last_four: null, key_updated_at: null } : item))
-      setCompanyKeySaved(payload.companyKeySaved ?? false)
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not remove this company key.")
-    } finally {
-      setCompanyKeyActionBusy("")
-    }
-  }
-
   async function deleteSavedKey() {
-    if (!sessionToken || !window.confirm("Permanently delete your saved login and company keys? Your player profile and saved company data will remain.")) return
+    if (!sessionToken || !window.confirm("Delete your primary portal API key and feature opt-ins? Independent secondary company keys and saved company records will remain.")) return
     setError("")
     try {
       const response = await fetch(`${API_BASE}/api/auth/key`, { method: "DELETE", headers: { Authorization: `Bearer ${sessionToken}` } })
@@ -751,7 +780,7 @@ export function FloorApp() {
       if (!response.ok) throw new Error(payload.error || "Could not delete the saved key.")
       setKeySaved(false)
       setCompanyKeySaved(false)
-      setNeedsSecondaryKey(true)
+
       setIsDirector(false)
       setApiKey("")
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not delete the saved key.") }
@@ -788,7 +817,7 @@ export function FloorApp() {
     setKeySaved(false)
     setIsDirector(true)
     setCompanyKeySaved(true)
-    setNeedsSecondaryKey(false)
+
     setResult(demo.result)
     setSavedCompanies([demo.company])
     setSelectedCompanyId(demo.company.company_id)
@@ -808,117 +837,42 @@ export function FloorApp() {
     event.preventDefault()
     setDemoMode(false)
     setError("")
-    if (!apiKey.trim()) { setError("Enter your limited-access Torn API key to continue."); return }
+    if (!apiKey.trim()) { setError("Enter your Naughty Family Portal Torn API key to continue."); return }
     setLoading(true)
     try {
       const response = await fetch(`${API_BASE}/api/auth/sign-in`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ apiKey: apiKey.trim(), secondaryCompanyKey: secondaryCompanyKey.trim() }),
+        body: JSON.stringify({ apiKey: apiKey.trim() }),
       })
-      const payload = await response.json() as { error?: string; token?: string; isAdmin?: boolean; player?: { id: string; name: string }; key?: { saved: boolean }; company?: { isDirector?: boolean; key?: { saved?: boolean }; needsSecondaryKey?: boolean } }
-      if (!response.ok) throw new Error(payload.error || "Sign-in failed. Check that your Torn key is valid and has limited permissions.")
+      const payload = await response.json() as { error?: string; token?: string; isAdmin?: boolean; player?: { id: string; name: string }; key?: { saved: boolean } }
+      if (!response.ok) throw new Error(payload.error || "Sign-in failed. Check that your Torn custom key or Full Access key is valid and includes User profile and faction access.")
       if (!payload.token) throw new Error("The sign-in service did not return a session. Please try again.")
       localStorage.setItem("ncd_session", payload.token)
       setSessionToken(payload.token)
       setPlayerName(payload.player?.name || "Torn member")
       setPlayerId(payload.player?.id || "")
-      setIsAdmin(false)
-      setAdminElevatedUntil(null)
+      setIsAdmin(payload.isAdmin === true)
       setKeySaved(payload.key?.saved ?? true)
-      setIsDirector(payload.company?.isDirector ?? false)
-      setCompanyKeySaved(payload.company?.key?.saved ?? false)
-      setNeedsSecondaryKey(payload.company?.needsSecondaryKey ?? !(payload.company?.key?.saved ?? false))
+      setIsDirector(false)
+      setCompanyKeySaved(false)
+
       setApiKey("")
-      setSecondaryCompanyKey("")
+
       const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
-      let companies: SavedCompany[] = []
       if (listResponse.ok) {
         const list = await listResponse.json() as { companies: SavedCompany[] }
-        companies = list.companies || []
+        const companies = list.companies || []
         setSavedCompanies(companies)
+        setCompanyKeySaved(companies.length > 0)
       }
-      if (companies.length) {
-        const company = companies[0]
-        setSelectedCompanyId(company.company_id)
-        let companyResponse = await fetch(`${API_BASE}/api/me/companies/${company.company_id}`, { headers: { Authorization: `Bearer ${payload.token}` } })
-        if (!companyResponse.ok) companyResponse = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${payload.token}` }, body: JSON.stringify({ companyId: company.company_id }) })
-        if (companyResponse.ok) {
-          const data = await companyResponse.json() as { profile: unknown; employees: unknown; stock?: unknown; incomeHistory?: IncomeSnapshot[]; companyId?: string | number }
-          const normalized = runEngine(data.profile, data.employees, catalog)
-          if (normalized) {
-            setResult({ profile: data.profile, employees: data.employees, stock: data.stock, incomeHistory: data.incomeHistory, model: normalized })
-            setSelectedCompanyId(String(data.companyId ?? normalized.company.id))
-            setSelectedRankingType(normalized.company.typeName)
-          }
-          const refreshedList = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
-          if (refreshedList.ok) { const saved = await refreshedList.json() as { companies: SavedCompany[] }; setSavedCompanies(saved.companies || []) }
-        }
-      } else if (payload.company?.key?.saved) {
-        const companyResponse = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { Authorization: `Bearer ${payload.token}` } })
-        if (companyResponse.ok) {
-          const data = await companyResponse.json() as { profile: unknown; employees: unknown; stock?: unknown; companyId?: string | number; incomeHistory?: IncomeSnapshot[] }
-          const normalized = runEngine(data.profile, data.employees, catalog)
-          if (normalized) { setResult({ profile: data.profile, employees: data.employees, stock: data.stock, incomeHistory: data.incomeHistory, model: normalized }); setSelectedCompanyId(String(data.companyId ?? normalized.company.id)); setSelectedRankingType(normalized.company.typeName) }
-          const refreshedList = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${payload.token}` } })
-          if (refreshedList.ok) { const saved = await refreshedList.json() as { companies: SavedCompany[] }; setSavedCompanies(saved.companies || []) }
-        }
-      }
+      // A successful faction sign-in always lands on the portal. Company data
+      // is not requested until the member explicitly opens /company.
+      window.history.replaceState({}, "", "/")
+      setRoutePath("/")
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not sign in.")
     } finally { setLoading(false) }
-  }
-
-  async function elevateAdmin(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!sessionToken || playerId !== "351311" || adminAuthBusy) return
-    setAdminAuthBusy(true)
-    setAdminAuthError("")
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/admin/elevate`, {
-        method: "POST",
-        headers: { "content-type": "application/json", Authorization: `Bearer ${sessionToken}` },
-        body: JSON.stringify({ username: adminUsername, password: adminPassword }),
-      })
-      const payload = await response.json() as { error?: string; diagnostic?: string; isAdmin?: boolean; adminElevatedUntil?: number }
-      if (!response.ok || payload.isAdmin !== true || typeof payload.adminElevatedUntil !== "number") {
-        const diagnosticMessages: Record<string, string> = {
-          username_mismatch: "The username does not match the configured ADMIN_USERNAME secret.",
-          stored_hash_invalid: "The configured ADMIN_PASSWORD_HASH is malformed or incomplete. Generate a new hash and replace the entire hash line in Cloudflare.",
-          password_policy: "The password does not meet the current policy. Use at least 8 characters with a letter, digit, and symbol, and avoid sequences such as abc, cba, 123, or 321.",
-          password_mismatch: "The credential does not match the active Worker hash. Do not repeat resets blindly; use the direct-API recovery workflow and check its hash-binding fingerprint diagnostic. Never copy or share passwords or hashes.",
-        }
-        const detail = payload.diagnostic ? diagnosticMessages[payload.diagnostic] : undefined
-        const missingDiagnostic = response.status === 401 && payload.error === "Administrator sign-in failed."
-          ? "The API did not return an owner-only diagnostic. This usually means the active Torn session is not being recognized as the allowlisted owner, or the dashboard API deployment is out of sync. Confirm this is the owner Torn account (player ID 351311), reload the dashboard, and try only once more. Do not regenerate the password hash yet."
-          : undefined
-        throw new Error([payload.error || "Administrator sign-in failed.", detail ?? missingDiagnostic].filter(Boolean).join(" "))
-      }
-      setIsAdmin(true)
-      setAdminElevatedUntil(payload.adminElevatedUntil)
-      setAdminAuthOpen(false)
-      setAdminPassword("")
-      setAdminUsername("")
-      setActiveView("admin")
-    } catch (caught) {
-      setAdminAuthError(caught instanceof Error ? caught.message : "Administrator sign-in failed.")
-    } finally { setAdminAuthBusy(false) }
-  }
-
-  async function deElevateAdmin() {
-    if (!sessionToken || adminAuthBusy) return
-    setAdminAuthBusy(true)
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/admin/de-elevate`, { method: "POST", headers: { Authorization: `Bearer ${sessionToken}` } })
-      if (!response.ok) throw new Error("Could not lock administrator access. Try again.")
-      setIsAdmin(false)
-      setAdminElevatedUntil(null)
-      setAdminAuthOpen(false)
-      setActiveView((view) => ["admin", "dashboard-members", "member-insights"].includes(view) ? "overview" : view)
-    } catch (caught) {
-      setAdminAuthError(caught instanceof Error ? caught.message : "Could not lock administrator access.")
-      setAdminAuthOpen(true)
-    } finally { setAdminAuthBusy(false) }
   }
 
   function signOut(revokeServerSession = true) {
@@ -927,23 +881,20 @@ export function FloorApp() {
       void fetch(`${API_BASE}/api/auth/sign-out`, { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => undefined)
     }
     localStorage.removeItem("ncd_session")
+    window.history.replaceState({}, "", "/")
+    setRoutePath("/")
     setDemoMode(false)
     setSessionToken("")
     setPlayerName("")
     setPlayerId("")
     setIsAdmin(false)
-    setAdminElevatedUntil(null)
-    setAdminAuthOpen(false)
-    setAdminUsername("")
-    setAdminPassword("")
-    setAdminAuthError("")
     setSelectedCompanyId("")
     setShowCompanySelector(false)
     setKeySaved(false)
     setCompanyKeySaved(false)
-    setNeedsSecondaryKey(false)
+
     setIsDirector(false)
-    setSecondaryCompanyKey("")
+
     setSavedCompanies([])
     setResult(null)
     setRankingCompanies([])
@@ -974,31 +925,27 @@ export function FloorApp() {
   async function connectCompany(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (demoMode) { setError("Live Torn connections are disabled in the demo workspace. Exit demo to connect real data."); return }
+    if (!sessionToken) { setError("Sign in with your portal API key first."); return }
     setError("")
-    if (!sessionToken && !apiKey.trim()) { setError("Sign in with your Torn API key to create your player workspace."); return }
     setLoading(true)
     try {
-      let token = sessionToken
-      let targetCompanyId = selectedCompanyId
-      if (!secondaryCompanyKey.trim() && targetCompanyId) {
-        await loadSavedCompany(targetCompanyId)
-        return
-      }
-      if (secondaryCompanyKey.trim()) {
-        if (!token) throw new Error("Sign in with your primary Torn API key first.")
-        const keyResponse = await fetch(`${API_BASE}/api/auth/company-key`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ apiKey: secondaryCompanyKey.trim() }) })
-        const keyPayload = await keyResponse.json() as { error?: string; saved?: boolean; companyId?: string | number }
-        if (!keyResponse.ok) throw new Error(keyPayload.error || "Could not save the authorized company key.")
-        targetCompanyId = String(keyPayload.companyId ?? "")
-        setCompanyKeySaved(true)
-        setNeedsSecondaryKey(false)
-        setSecondaryCompanyKey("")
-      }
-      if (!token) throw new Error("Sign in with a Torn API key first.")
-      if (!secondaryCompanyKey.trim() && !targetCompanyId) throw new Error("No saved company data is available yet. Add the authorized company key to initialize the company, or wait for the scheduled 18:10 UTC data refresh.")
-      const response = await fetch(`${API_BASE}/api/company/refresh`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${token}` }, body: targetCompanyId ? JSON.stringify({ companyId: targetCompanyId }) : "{}" })
+      const keyResponse = await fetch(`${API_BASE}/api/auth/company-key`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({}),
+      })
+      const keyPayload = await keyResponse.json() as { error?: string; saved?: boolean; companyId?: string | number }
+      if (!keyResponse.ok) throw new Error(keyPayload.error || "Your portal API key could not connect a company.")
+      const targetCompanyId = String(keyPayload.companyId ?? "")
+      if (!/^\\d+$/.test(targetCompanyId)) throw new Error("Torn did not return a valid company ID for your portal key.")
+      setCompanyKeySaved(true)
+      const response = await fetch(`${API_BASE}/api/company/refresh`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({ companyId: targetCompanyId }),
+      })
       const payload = await response.json() as { error?: string; profile?: unknown; employees?: unknown; stock?: unknown; incomeHistory?: IncomeSnapshot[] }
-      if (!response.ok) throw new Error(payload.error || "The API request failed. Check the key and its company-data permissions.")
+      if (!response.ok) throw new Error(payload.error || "The API request failed. Check your portal key's company selections and company permissions.")
       const normalized = runEngine(payload.profile, payload.employees, catalog)
       if (!normalized) throw new Error("Torn returned an unexpected company profile. The response was not added to your saved workspace.")
       setResult({ profile: payload.profile, employees: payload.employees, stock: payload.stock, incomeHistory: payload.incomeHistory, model: normalized })
@@ -1006,7 +953,7 @@ export function FloorApp() {
       setSelectedCompanyId(String(normalized.company.id))
       setShowCompanySelector(false)
       setActiveView("overview")
-      const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${token}` } })
+      const listResponse = await fetch(`${API_BASE}/api/me/companies`, { headers: { Authorization: `Bearer ${sessionToken}` } })
       if (listResponse.ok) { const list = await listResponse.json() as { companies: SavedCompany[] }; setSavedCompanies(list.companies || []) }
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not connect to the Torn API.") }
     finally { setLoading(false) }
@@ -1017,43 +964,71 @@ export function FloorApp() {
   if (!sessionToken && !demoMode) return (
     <main className="login-screen">
       <section className="login-card" aria-labelledby="login-title">
-        <div className="login-brand"><span className="brand-mark">NC</span><span><strong>NAUGHTY</strong><small>COMPANY OPERATIONS</small></span></div>
+        <div className="login-brand"><span className="brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>FACTION PORTAL</small></span></div>
         <div className="login-eyebrow"><span className="eyebrow-line" /> FACTION MEMBER ACCESS</div>
-        <h1 id="login-title">Naughty Company Dashboard</h1>
-        <p className="login-subtitle">A private operations workspace for members of <strong>Naughty Souls</strong>.</p>
-        <div className="member-notice"><span>◆</span><p><strong>Naughty Souls members only</strong><br />Sign in with your own limited-access Torn API key. Use the minimum permissions needed for the company data you are authorized to view.</p></div>
+        <h1 id="login-title">Naughty Family Portal</h1>
+        <p className="login-subtitle">A private faction-wide portal for verified members of <strong>Naughty Souls</strong>.</p>
+        <div className="member-notice"><span>◆</span><p><strong>Naughty Souls members only</strong><br />Sign in with one Torn API key created on your own account. A Custom Access key using our recommended builder is preferred; a Full Access key is also accepted. We verify your identity and Naughty Souls membership, then reuse this same key across the portal wherever its selections permit.</p></div>
         <form className="login-form" onSubmit={signIn}>
-          <label htmlFor="login-api-key">Limited-access Torn API key</label>
+          <label htmlFor="login-api-key">Your Naughty Family Portal Torn API key</label>
           <input id="login-api-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your Torn API key" required />
           <p className="login-hint">Your key is sent securely to the dashboard API for validation. It is never stored in this browser's local storage.</p>
-          <p className="login-hint">Your login key will be checked for company access first. A secondary company key is only needed if Torn does not allow company data access with your login key.</p>
+          <p className="login-hint">This is your one portal key for sign-in, company data, private live status and optional Halloween collection. Features are enabled only when your key has the required Torn selections and you grant their separate data-sharing consent.</p>
+          <p className="login-hint"><a href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Naughty%20Family%20Portal&user=profile,faction,job,personalstats,bars,cooldowns,networth,halloween,log&faction=members,stats,contributors&company=profile,employees,stock,companies&torn=companies&key=info" target="_blank" rel="noreferrer">Create the recommended Naughty Family Portal custom key ↗</a></p>
           {error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}
           <button className="primary-button form-submit" disabled={loading}>{loading ? <><span className="spinner" /> Verifying key…</> : <>Sign in securely <span>→</span></>}</button>
         </form>
         <button className="login-demo-button" type="button" onClick={startDemo} disabled={loading}>Explore the demo dashboard <span>→</span></button>
         <p className="login-hint demo-caption">No Torn key needed. The demo uses fictional data and never contacts Torn.</p>
         <div className="policy-block"><strong>Data & API policy</strong><p>Use only a key you own and keep its access limited. The dashboard requests Torn data available to that key, which may include company and employee details, and stores retrieved company records to support your workspace. Saved keys are intended to be encrypted at rest; deleting a key does not delete previously saved company records. Data is for Naughty Souls faction operations only. Do not submit another player's key or use data you are not authorized to access.</p></div>
-        <div className="login-footer"><span>NAUGHTY COMPANY DASHBOARD</span><span>TORN API · CLOUDFLARE</span></div>
+        <div className="login-footer"><span>NAUGHTY FAMILY PORTAL</span><span>TORN API · CLOUDFLARE</span></div>
       </section>
     </main>
   )
 
+  if (routePath === "/") return <PortalHome playerName={playerName} playerId={playerId} isAdmin={isAdmin} loginKeySaved={keySaved} companyKeySaved={companyKeySaved} companies={savedCompanies} onNavigate={navigateToPath} onSignOut={() => signOut()} />
+  if (routePath === "/faction") return <FactionWorkspacePlaceholder playerName={playerName} apiBase={API_BASE} sessionToken={sessionToken} onNavigate={navigateToPath} />
+  if (routePath === "/halloween") return <HalloweenWorkspace playerName={playerName} apiBase={API_BASE} sessionToken={sessionToken} onNavigate={navigateToPath} />
+  if (routePath === "/christmas-town") return <ChristmasTownWorkspace playerName={playerName} apiBase={API_BASE} sessionToken={sessionToken} onNavigate={navigateToPath} />
+  if (routePath === "/settings") return <AccountSettingsWorkspace playerName={playerName} playerId={playerId} isAdmin={isAdmin} loginKeySaved={keySaved} companyKeySaved={companyKeySaved} companies={savedCompanies} apiBase={API_BASE} sessionToken={sessionToken} onCompaniesChanged={(companies) => { setSavedCompanies(companies); setCompanyKeySaved(companies.some(company => company.has_api_key === true)) }} onLoginKeyChanged={setKeySaved} onNavigate={navigateToPath} onSignOut={() => signOut()} />
+  if (routePath === "/admin") {
+    if (!isAdmin || demoMode) return <main className="module-page admin-portal-module"><section className="module-placeholder"><div className="portal-eyebrow"><span /> RESTRICTED WORKSPACE</div><h1>Administrator access required</h1><p>This workspace is available only to accounts with an active administrator role.</p><button type="button" className="portal-primary-button" onClick={() => navigateToPath("/")}>Return to portal →</button></section></main>
+    return (
+      <main className="module-page admin-portal-module">
+        <header className="module-topbar">
+          <a className="portal-brand" href="/" onClick={(event) => { event.preventDefault(); navigateToPath("/") }}>
+            <span className="portal-brand-mark">NF</span>
+            <span><strong>NAUGHTY FAMILY</strong><small>ADMINISTRATION PORTAL</small></span>
+          </a>
+          <button type="button" onClick={() => navigateToPath("/")}>← Return to portal</button>
+        </header>
+        <section className="module-heading admin-portal-heading">
+          <div className="portal-eyebrow"><span /> RESTRICTED ADMIN AREA</div>
+          <h1>Administration <em>Portal</em></h1>
+          <p>Member access, administrator roles, system health, and platform controls.</p>
+        </section>
+        <AdminPanel apiBase={API_BASE} sessionToken={sessionToken} playerId={playerId} playerName={playerName} />
+        <footer className="module-footer"><span>NAUGHTY FAMILY · ADMINISTRATION</span><span>RESTRICTED ACCESS</span></footer>
+      </main>
+    )
+  }
+
   return (
+    <main className="module-page faction-module company-module">
     <div className={`app-shell dashboard-density-${dashboardPreferences.density} dashboard-width-${dashboardPreferences.contentWidth}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
-      {adminAuthOpen && playerId === "351311" && !isAdmin && !demoMode && <div className="login-screen admin-elevation-screen"><section className="login-card" role="dialog" aria-modal="true" aria-labelledby="admin-elevation-title"><div className="login-brand"><span className="brand-mark">NC</span><span><strong>NAUGHTY</strong><small>ADMINISTRATOR VERIFICATION</small></span></div><div className="login-eyebrow"><span className="eyebrow-line" /> STEP-UP AUTHENTICATION</div><h1 id="admin-elevation-title">Unlock administration</h1><p className="login-subtitle">Your Torn session is standard access. Verify your separate administrator credentials to unlock privileged controls for 30 minutes.</p><form className="login-form" onSubmit={elevateAdmin}><label htmlFor="admin-username">Administrator username</label><input id="admin-username" type="text" autoComplete="username" value={adminUsername} onChange={(event) => setAdminUsername(event.target.value)} required maxLength={120} /><label htmlFor="admin-password">Administrator password</label><input id="admin-password" type="password" autoComplete="current-password" aria-describedby="admin-password-policy-hint" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} required minLength={8} maxLength={1024} /><p className="field-hint" id="admin-password-policy-hint">At least 8 characters, including a letter, digit and symbol. Avoid sequences such as abc, cba, 123 or 321.</p>{adminAuthError && <div className="error-banner" role="alert">{adminAuthError}</div>}<button className="primary-button form-submit" disabled={adminAuthBusy}>{adminAuthBusy ? "Verifying…" : "Verify and unlock"}</button><button className="text-button" type="button" disabled={adminAuthBusy} onClick={() => { setAdminAuthOpen(false); setAdminPassword(""); setAdminAuthError("") }}>Cancel</button></form><p className="login-hint">Repeated failed attempts are rate-limited. Administrator access expires automatically.</p></section></div>}
       <aside className="sidebar">
-        <a className="brand" href="#" onClick={(event) => { event.preventDefault(); setActiveView("overview") }}>
+        <a className="brand" href="/" onClick={(event) => { event.preventDefault(); navigateToPath("/") }}>
           <span className="brand-mark">NC</span>
           <span><strong>NAUGHTY</strong><small>COMPANY OPERATIONS</small></span>
         </a>
         <button className="sidebar-mobile-close" type="button" onClick={() => setSidebarCollapsed(true)} aria-label="Close navigation">×</button>
         <div className="side-label">WORKSPACE</div>
+        <button type="button" className="nav-item portal-nav-link" onClick={() => navigateToPath("/")}><span aria-hidden="true">⌂</span><span className="nav-label">Portal Home</span></button>
         <nav className="nav-list" aria-label="Main navigation">
           <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.company} onClick={() => setOpenNavGroups((groups) => ({ ...groups, company: !groups.company }))}><span>Company</span><b>{openNavGroups.company ? "⌄" : "›"}</b></button>{openNavGroups.company && <div className="nav-subitems"><button className={activeView === "overview" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("overview")}><span aria-hidden="true">◫</span><span className="nav-label">Company Details</span></button><button className={activeView === "employees" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("employees")}><span aria-hidden="true">♙</span><span className="nav-label">Employees</span></button><button className={activeView === "charts" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("charts")}><span aria-hidden="true">⌁</span><span className="nav-label">Trends & Charts</span></button><button className={activeView === "roster-insights" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("roster-insights")}><span aria-hidden="true">♙</span><span className="nav-label">Roster Insights</span></button><button className={activeView === "executive" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("executive")}><span aria-hidden="true">▤</span><span className="nav-label">Executive Overview</span></button><button className={activeView === "layout" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("layout")}><span aria-hidden="true">▤</span><span className="nav-label">Customize Layout</span></button></div>}</div>
           <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.rankings} onClick={() => setOpenNavGroups((groups) => ({ ...groups, rankings: !groups.rankings }))}><span>Rankings</span><b>{openNavGroups.rankings ? "⌄" : "›"}</b></button>{openNavGroups.rankings && <div className="nav-subitems"><button className={activeView === "type-rankings" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("type-rankings")}><span aria-hidden="true">↗</span><span className="nav-label">Company Rankings</span></button><button className={activeView === "faction-rankings" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("faction-rankings")}><span aria-hidden="true">♜</span><span className="nav-label">Faction Rankings</span></button></div>}</div>
-          <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.references} onClick={() => setOpenNavGroups((groups) => ({ ...groups, references: !groups.references }))}><span>References</span><b>{openNavGroups.references ? "⌄" : "›"}</b></button>{openNavGroups.references && <div className="nav-subitems"><button className={activeView === "catalog" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("catalog")}><span aria-hidden="true">▦</span><span className="nav-label">Position Catalog</span><em>{companyNames.length}</em></button><button className={activeView === "trends" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("trends")}><span aria-hidden="true">⌁</span><span className="nav-label">Historical Trends</span></button><button className={activeView === "performance-insights" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("performance-insights")}><span aria-hidden="true">◈</span><span className="nav-label">Performance Insights</span></button>{isAdmin && <><button className={activeView === "dashboard-members" || activeView === "member-insights" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("dashboard-members")}><span aria-hidden="true">♙</span><span className="nav-label">Dashboard Members & Activity</span><em>{dashboardMembers.length || "—"}</em></button></>}</div>}</div>
+          <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.references} onClick={() => setOpenNavGroups((groups) => ({ ...groups, references: !groups.references }))}><span>References</span><b>{openNavGroups.references ? "⌄" : "›"}</b></button>{openNavGroups.references && <div className="nav-subitems"><button className={activeView === "catalog" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("catalog")}><span aria-hidden="true">▦</span><span className="nav-label">Position Catalog</span><em>{companyNames.length}</em></button><button className={activeView === "trends" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("trends")}><span aria-hidden="true">⌁</span><span className="nav-label">Historical Trends</span></button><button className={activeView === "performance-insights" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("performance-insights")}><span aria-hidden="true">◈</span><span className="nav-label">Performance Insights</span></button>{isAdmin && <><button className={activeView === "dashboard-members" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("dashboard-members")}><span aria-hidden="true">♙</span><span className="nav-label">Member Directory</span><em>{dashboardMembers.length || "—"}</em></button></>}</div>}</div>
           <div className="nav-group"><button className="nav-group-trigger" type="button" aria-expanded={openNavGroups.settings} onClick={() => setOpenNavGroups((groups) => ({ ...groups, settings: !groups.settings }))}><span>Settings</span><b>{openNavGroups.settings ? "⌄" : "›"}</b></button>{openNavGroups.settings && <div className="nav-subitems"><button className={activeView === "connect" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("connect")}><span aria-hidden="true">⚙</span><span className="nav-label">Settings</span></button><button className={activeView === "data-sharing" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("data-sharing")}><span aria-hidden="true">⇄</span><span className="nav-label">Data Sharing</span></button><button className={activeView === "data-transfer" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("data-transfer")}><span aria-hidden="true">⇅</span><span className="nav-label">Import / Export</span></button><button className={activeView === "health" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("health")}><span aria-hidden="true">♥</span><span className="nav-label">API Health & Freshness</span></button><button className={activeView === "alerts" ? "nav-item nav-subitem active" : "nav-item nav-subitem"} onClick={() => setActiveView("alerts")}><span aria-hidden="true">◷</span><span className="nav-label">Automation Center</span></button></div>}</div>
-          {isAdmin && <div className="nav-group admin-nav-group"><div className="side-label">ADMINISTRATION</div><button type="button" className={activeView === "admin" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("admin")}><span aria-hidden="true">♜</span><span className="nav-label">Administration</span><em>ADMIN</em></button></div>}
         </nav>
         <div className="sidebar-bottom">
           <div className="connection-indicator"><span className={result ? "status-dot live" : "status-dot"} />{demoMode ? "Demo workspace · sample data" : keySaved ? `Signed in${playerName ? ` as ${playerName}` : ""}` : "Player signed in · key deleted"}</div><button className="signout-button" onClick={demoMode ? exitDemo : () => signOut()}>{demoMode ? "Exit demo" : "Sign out"}</button>
@@ -1063,22 +1038,32 @@ export function FloorApp() {
 
       <main className="main-area">
         {demoMode && <div className="demo-banner"><strong>DEMO MODE</strong><span>All player, company, employee and income data below is fictional. Live Torn connections are disabled.</span><button type="button" onClick={exitDemo}>Exit demo ×</button></div>}
-        <header className="topbar">
-          <div className="topbar-leading"><button className="sidebar-toggle" type="button" onClick={() => setSidebarCollapsed((collapsed) => !collapsed)} aria-label={sidebarCollapsed ? "Expand navigation sidebar" : "Minimize navigation sidebar"} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? "Expand navigation" : "Minimize navigation"}><span aria-hidden="true">{sidebarCollapsed ? "☰" : "‹"}</span></button><div className="breadcrumbs">Workspace <span>/</span> {activePageGroup} <span>/</span> <strong>{activePageTitle}</strong></div></div>
-          <div className="topbar-right">{playerId === "351311" && !demoMode && <button className="admin-step-up-button" type="button" aria-label={isAdmin ? "Lock administration" : "Unlock administration"} title={isAdmin ? "Lock administration" : "Unlock administration"} disabled={adminAuthBusy} onClick={() => isAdmin ? void deElevateAdmin() : (setAdminAuthError(""), setAdminAuthOpen(true))}>{adminAuthBusy ? "Please wait…" : isAdmin ? "Lock admin" : "Unlock admin"}</button>}<span className="environment-pill"><i /> {demoMode ? "DEMO DATA" : "CLOUDFLARE WORKER"}</span><div className="user-company-switcher"><button className="user-company-trigger" type="button" aria-expanded={showCompanySelector} onClick={() => setShowCompanySelector((open) => !open)}><span className="avatar">{playerName.slice(0, 2).toUpperCase() || "NC"}</span><span className="user-company-label"><strong>{playerName || "Connected user"}</strong><small>Torn ID {playerId || "—"} · {result?.model.company.name || "No company loaded"} · {result?.model.company.typeName || "No company type"}</small></span><span className="switch-chevron">⌄</span></button>{showCompanySelector && <div className="company-switcher-menu"><div className="company-switcher-menu-heading"><strong>Choose a company</strong><button type="button" className="company-connect-plus" onClick={() => { setShowCompanySelector(false); setActiveView("connect") }} aria-label="Connect company" title="Connect company">＋</button></div>{savedCompanies.length ? savedCompanies.map((company) => <button key={company.company_id} type="button" className={selectedCompanyId === company.company_id ? "company-switcher-option selected" : "company-switcher-option"} onClick={() => void loadSavedCompany(company.company_id)}><span>{company.company_name || `Company #${company.company_id}`}</span><small>{company.company_type || "Company"} · #{company.company_id}</small></button>) : <p>No saved companies yet. Connect a company key to add one.</p>}</div>}</div></div>
+        <header className="module-topbar company-module-topbar">
+          <div className="topbar-leading company-module-brand"><a className="portal-brand" href="/" onClick={(event) => { event.preventDefault(); navigateToPath("/") }}><span className="portal-brand-mark">NF</span><span><strong>NAUGHTY FAMILY</strong><small>COMPANY OPERATIONS</small></span></a><button type="button" className="company-module-return" onClick={() => navigateToPath("/")}>← Portal</button></div>
+          <div className="topbar-right">{isAdmin && !demoMode && <span className="admin-role-indicator">ADMINISTRATOR</span>}<span className="environment-pill"><i /> {demoMode ? "DEMO DATA" : "CLOUDFLARE WORKER"}</span><div className="user-company-switcher"><button className="user-company-trigger" type="button" aria-expanded={showCompanySelector} onClick={() => setShowCompanySelector((open) => !open)}><span className="avatar">{playerName.slice(0, 2).toUpperCase() || "NC"}</span><span className="user-company-label"><strong>{playerName || "Connected user"}</strong><small>Torn ID {playerId || "—"} · {result?.model.company.name || "No company loaded"} · {result?.model.company.typeName || "No company type"}</small></span><span className="switch-chevron">⌄</span></button>{showCompanySelector && <div className="company-switcher-menu"><div className="company-switcher-menu-heading"><strong>Choose a company</strong><button type="button" className="company-connect-plus" onClick={() => { setShowCompanySelector(false); setActiveView("connect") }} aria-label="Connect company" title="Connect company">＋</button></div>{savedCompanies.length ? savedCompanies.map((company) => <button key={company.company_id} type="button" className={selectedCompanyId === company.company_id ? "company-switcher-option selected" : "company-switcher-option"} onClick={() => void loadSavedCompany(company.company_id)}><span>{company.company_name || `Company #${company.company_id}`}</span><small>{company.company_type || "Company"} · #{company.company_id}</small></button>) : <p>No saved companies yet. Connect a company key to add one.</p>}</div>}</div></div>
         </header>
 
         <div className="page-content">
-          <section className="welcome-row">
-            <div><div className="eyebrow"><span className="eyebrow-line" /> COMPANY INTELLIGENCE</div><h1>{activeView === "executive" ? "Executive Overview" : activeView === "health" ? "API Health & Data Freshness" : activeView === "trends" ? "Historical Trends and Comparisons" : activeView === "member-insights" ? "Member Activity" : activeView === "roster-insights" ? "Roster Insights" : activeView === "performance-insights" ? "Performance & Staffing Insights" : activeView === "layout" ? "Customizable Dashboard Layout" : activeView === "alerts" ? "Automation Center" : activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "dashboard-members" ? "Dashboard Members" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : activeView === "data-sharing" ? "Data Sharing" : activeView === "admin" ? "Administration" : "Settings"}</h1><p className="subtitle">{activeView === "executive" ? "A decision-ready summary of performance, operational health, staffing, alerts, and competitive context." : activeView === "health" ? "Worker availability, database connectivity, and company data freshness in one place." : activeView === "trends" ? "Compare income, star rating, and roster size across historical snapshots." : activeView === "performance-insights" ? "Find material performance changes, evidence-based staffing reviews, and track follow-through." : activeView === "member-insights" ? "Dashboard account activity and saved company-data coverage." : activeView === "roster-insights" ? "Workforce capacity, role mix, employee skills, wages, and tenure for the selected company." : activeView === "layout" ? "Customize the dashboard-wide reading experience and separately arrange Executive Overview widgets." : activeView === "overview" ? "A focused view of company performance, income, and star-level progress." : activeView === "employees" ? "Employee details, role fit, and position projections in one dedicated workspace." : activeView === "catalog" ? "Explore role requirements across the Torn company ecosystem." : activeView === "dashboard-members" ? "Directory of dashboard accounts and their latest saved Torn company details." : activeView === "type-rankings" ? "Compare companies within the same Torn company type, ranked by weekly income." : activeView === "faction-rankings" ? "See all confirmed faction directors, including members who do not use this dashboard." : activeView === "charts" ? "Track daily income, profit, stock levels, and historical company performance." : activeView === "data-transfer" ? "Import legacy company history or export page-by-page JSON backups of your saved dashboard data." : activeView === "data-sharing" ? "Choose exactly which dashboard members can see your trends, financial details, and employee data." : activeView === "admin" ? "Restricted administration for dashboard operations, data maintenance, and access management." : "Manage your Torn API connection and saved company keys."}</p></div>
+          <section className="module-heading company-module-heading">
+            <div><div className="portal-eyebrow"><span /> COMPANY INTELLIGENCE</div><h1>{activeView === "executive" ? "Executive Overview" : activeView === "health" ? "API Health & Data Freshness" : activeView === "trends" ? "Historical Trends and Comparisons" : activeView === "roster-insights" ? "Roster Insights" : activeView === "performance-insights" ? "Performance & Staffing Insights" : activeView === "layout" ? "Customizable Dashboard Layout" : activeView === "alerts" ? "Automation Center" : activeView === "overview" ? "Company Details" : activeView === "employees" ? "Employees" : activeView === "catalog" ? "Position Catalog" : activeView === "dashboard-members" ? "Dashboard Members" : activeView === "type-rankings" ? "Company Rankings" : activeView === "faction-rankings" ? "Faction Rankings" : activeView === "charts" ? "Trends & Charts" : activeView === "data-transfer" ? "Import / Export" : activeView === "data-sharing" ? "Data Sharing" : "Settings"}</h1><p className="subtitle">{activeView === "executive" ? "A decision-ready summary of performance, operational health, staffing, alerts, and competitive context." : activeView === "health" ? "Worker availability, database connectivity, and company data freshness in one place." : activeView === "trends" ? "Compare income, star rating, and roster size across historical snapshots." : activeView === "performance-insights" ? "Find material performance changes, evidence-based staffing reviews, and track follow-through." : activeView === "roster-insights" ? "Workforce capacity, role mix, employee skills, wages, and tenure for the selected company." : activeView === "layout" ? "Customize the dashboard-wide reading experience and separately arrange Executive Overview widgets." : activeView === "overview" ? "A focused view of company performance, income, and star-level progress." : activeView === "employees" ? "Employee details, role fit, and position projections in one dedicated workspace." : activeView === "catalog" ? "Explore role requirements across the Torn company ecosystem." : activeView === "dashboard-members" ? "Directory of dashboard accounts and their latest saved Torn company details." : activeView === "type-rankings" ? "Compare companies within the same Torn company type, ranked by weekly income." : activeView === "faction-rankings" ? "See all confirmed faction directors, including members who do not use this dashboard." : activeView === "charts" ? "Track daily income, profit, stock levels, and historical company performance." : activeView === "data-transfer" ? "Import legacy company history or export page-by-page JSON backups of your saved dashboard data." : activeView === "data-sharing" ? "Choose exactly which dashboard members can see your trends, financial details, and employee data." : "Manage your Torn API connection and saved company keys."}</p></div>
           </section>
+
+          <nav className="faction-workspace-tabs company-workspace-groups" aria-label="Company dashboard categories">
+            {companyNavigationGroups.map((group) => {
+              const selected = activeCompanyGroup?.key === group.key
+              return <button key={group.key} type="button" className={selected ? "active" : ""} aria-current={selected ? "page" : undefined} onClick={() => setActiveView(group.views[0].view)}>{group.label}</button>
+            })}
+          </nav>
+          {activeCompanyGroup && activeCompanyGroup.views.length > 1 && (
+            <nav className="faction-workspace-tabs company-workspace-views" aria-label={activeCompanyGroup.label + " pages"}>
+              {activeCompanyGroup.views.map((item) => <button key={item.view} type="button" className={activeView === item.view ? "active" : ""} aria-current={activeView === item.view ? "page" : undefined} onClick={() => setActiveView(item.view)}>{item.label}</button>)}
+            </nav>
+          )}
 
           {activeView === "alerts" && !demoMode ? (
             <AlertsPanel apiBase={API_BASE} sessionToken={sessionToken} companies={savedCompanies} selectedCompanyId={selectedCompanyId} demoMode={demoMode} onNavigateCharts={() => setActiveView("charts")} />
-          ) : activeView === "executive" && !demoMode || activeView === "health" && !demoMode || activeView === "trends" || activeView === "member-insights" && isAdmin && !demoMode || activeView === "roster-insights" || activeView === "performance-insights" || activeView === "layout" ? (
+          ) : activeView === "executive" && !demoMode || activeView === "health" && !demoMode || activeView === "trends" || activeView === "roster-insights" || activeView === "performance-insights" || activeView === "layout" ? (
             <InsightsWorkspace view={activeView} apiBase={API_BASE} sessionToken={sessionToken} isAdmin={isAdmin && !demoMode} demoMode={demoMode} companyId={selectedCompanyId} sharedRosterCompanies={sharedCompanies.filter((company) => company.shareEmployeeData)} model={model ?? null} companyRank={currentRankingCompany ? placement(currentRankingCompany, "type", globalRankingCompanies) : "—"} starRank={currentRankingCompany ? placement(currentRankingCompany, "stars", globalRankingCompanies) : "—"} nextStarGap={nextStarGap} sameTypeCount={companyPeerRows.length} dashboardPreferences={dashboardPreferences} onDashboardPreferencesChange={updateDashboardPreferences} onNavigate={(next) => setActiveView(next)} />
-          ) : activeView === "admin" && isAdmin && !demoMode ? (
-            <AdminPanel apiBase={API_BASE} sessionToken={sessionToken} playerId={playerId} playerName={playerName} />
           ) : activeView === "type-rankings" || activeView === "faction-rankings" ? (
             <section className="panel ranking-panel">
               <div className="panel-heading ranking-heading"><div><h2>{activeView === "type-rankings" ? "Rank within company type" : "Faction directors by company type"}</h2><p>{activeView === "type-rankings" ? "Companies matching the connected company type, ranked by weekly income." : "Confirmed directors from the faction roster, whether or not they use this dashboard. Select Compare to open income and stock graphs."}</p></div>{activeView === "type-rankings" ? <span className="count-chip">{selectedRankingType || "Connected company type"}</span> : <span className="count-chip">{factionDirectors.length} faction directors</span>}</div>
@@ -1131,8 +1116,7 @@ export function FloorApp() {
               <div className="panel-heading"><div><h2>Dashboard member directory</h2><p>Every account that has signed into the dashboard, including members who have not saved a company profile yet.</p></div><span className="count-chip">{dashboardMembers.length} members</span></div>
               {!sessionToken || demoMode ? <div className="empty-state">Sign in to view the dashboard member directory. It is unavailable in demo mode.</div> : dashboardMembersLoading ? <div className="empty-state">Loading dashboard members…</div> : dashboardMembersError ? <div className="error-banner" role="alert">{dashboardMembersError}</div> : dashboardMembers.length ? <div className="table-scroll"><table className="dashboard-members-table"><thead><tr><th>TORN PLAYER NAME</th><th>PLAYER ID</th><th>COMPANY NAME</th><th>COMPANY TYPE</th><th>COMPANY TYPE_ID</th></tr></thead><tbody>{dashboardMembers.map((member) => <tr key={member.playerId}><td><strong>{member.playerName}</strong></td><td>{member.playerId}</td><td>{member.companyName || "—"}</td><td>{member.companyType || "—"}</td><td>{member.companyTypeId ?? "—"}</td></tr>)}</tbody></table></div> : <div className="empty-state">No dashboard accounts found.</div>}
             </section>
-            <InsightsWorkspace view="member-insights" apiBase={API_BASE} sessionToken={sessionToken} isAdmin={isAdmin && !demoMode} demoMode={demoMode} companyId={selectedCompanyId} sharedRosterCompanies={sharedCompanies.filter((company) => company.shareEmployeeData)} model={model ?? null} companyRank={currentRankingCompany ? placement(currentRankingCompany, "type", globalRankingCompanies) : "—"} starRank={currentRankingCompany ? placement(currentRankingCompany, "stars", globalRankingCompanies) : "—"} nextStarGap={nextStarGap} sameTypeCount={companyPeerRows.length} dashboardPreferences={dashboardPreferences} onDashboardPreferencesChange={updateDashboardPreferences} onNavigate={(next) => setActiveView(next)} />
-            </>
+                        </>
           ) : activeView === "catalog" ? (
             <section className="panel catalog-panel">
               <div className="panel-heading"><div><h2>Company role library</h2><p>{companyNames.length} company types · position requirements reference</p></div><div className="search-wrap"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search company types..." /></div></div>
@@ -1158,7 +1142,7 @@ export function FloorApp() {
             </section>
           ) : activeView === "connect" ? (
             <div className="settings-workspace"><NotificationSettingsPanel apiBase={API_BASE} sessionToken={sessionToken} demoMode={demoMode} /><section className="connect-layout">
-              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Torn API & company connections</h2><p>Manage your player login and authorized company keys for companies you direct.</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><label htmlFor="company-key">{needsSecondaryKey ? "First company API key" : "Add another company API key"}</label><input id="company-key" type="password" autoComplete="off" value={secondaryCompanyKey} onChange={(event) => setSecondaryCompanyKey(event.target.value)} placeholder={demoMode ? "Disabled in demo mode" : "Paste an authorized API key for a company you are permitted to manage"} disabled={demoMode} /><p className="field-hint"><span>♥</span> "Each key is validated for company profile and employee access, then saved against that company. Only add keys you have permission to use."</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}{demoMode && <p className="demo-caption">This tutorial workspace is read-only. Exit demo to connect real Torn data.</p>}<button className="primary-button form-submit" disabled={loading || demoMode}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>"Company keys are encrypted and stored separately, so adding another company does not replace your other saved company keys."</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <div key={company.company_id} className="saved-company-row"><button type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}><span className="saved-company-title">{company.company_name || `Company #${company.company_id}`}</span><span>#{company.company_id}</span></button>{company.has_api_key && <button type="button" className="text-button danger-text saved-company-remove" disabled={companyKeyActionBusy !== ""} onClick={() => void deleteSavedCompanyKey(company)}>{companyKeyActionBusy === company.company_id ? "Removing…" : "Remove key"}</button>}</div>)}</div>}</div>}{sessionToken && <div className="key-store-panel"><div><strong>Account security</strong><p>Sign out of all active dashboard sessions while keeping saved keys and company history.</p></div><button className="text-button danger-text" type="button" disabled={sessionActionBusy || demoMode} onClick={() => void signOutEverywhere()}>{sessionActionBusy ? "Revoking sessions…" : "Sign out all devices"}</button></div>}</div>
+              <div className="panel connect-panel"><div className="panel-heading"><div><h2>Torn API & company connections</h2><p>Your single saved portal key is reused for company data wherever your Torn permissions allow.</p></div><span className="big-icon">⌁</span></div><form onSubmit={connectCompany}><p className="field-hint">Connect or refresh your own company using the same API key you used to sign in. Torn must allow the Company profile, employees and stock selections, and you must have the required company role.</p>{error && <div className={`error-banner${error.startsWith("ACCESS DENIED:") ? " access-denied-banner" : ""}`} role="alert">{error.startsWith("ACCESS DENIED:") && <strong>ACCESS DENIED · NAUGHTY SOULS MEMBERSHIP REQUIRED</strong>}{error.startsWith("ACCESS DENIED:") && <br />}{error}</div>}{demoMode && <p className="demo-caption">This tutorial workspace is read-only. Exit demo to connect real Torn data.</p>}<button className="primary-button form-submit" disabled={loading || demoMode}>{loading ? <><span className="spinner" /> Connecting...</> : <>Fetch company data <span>↗</span></>}</button></form>{sessionToken && <div className="key-store-panel"><div><strong>{keySaved ? "Torn API key saved" : "No Torn API key saved"}</strong><p>Your single portal key is stored encrypted and reused for supported dashboard features.</p></div>{(keySaved || companyKeySaved) && <button className="text-button danger-text" type="button" onClick={deleteSavedKey}>Permanently delete saved keys</button>}{savedCompanies.length > 0 && <div className="saved-company-list"><strong>Saved company records</strong>{savedCompanies.map((company) => <div key={company.company_id} className="saved-company-row"><button type="button" className="saved-company-link" onClick={() => void loadSavedCompany(company.company_id)}><span className="saved-company-title">{company.company_name || `Company #${company.company_id}`}</span><span>#{company.company_id}</span></button></div>)}</div>}</div>}{sessionToken && <div className="key-store-panel"><div><strong>Account security</strong><p>Sign out of all active dashboard sessions while keeping saved keys and company history.</p></div><button className="text-button danger-text" type="button" disabled={sessionActionBusy || demoMode} onClick={() => void signOutEverywhere()}>{sessionActionBusy ? "Revoking sessions…" : "Sign out all devices"}</button></div>}</div>
               <div className="panel guide-panel"><span className="guide-icon">✓</span><h2>Before you connect</h2><ul><li>Use a Torn API key with the access needed for your company.</li><li>Private employee stats may only be available to authorized company directors.</li><li>Requests pass through the Cloudflare Worker to Torn's API.</li></ul><div className="guide-note"><strong>Privacy by design</strong><p>Your player account is identified by Torn. Deleting the saved key does not delete recorded company data.</p></div></div>
             </section></div>
           ) : (
@@ -1181,5 +1165,6 @@ export function FloorApp() {
         </div>
       </main>
     </div>
+    </main>
   )
 }

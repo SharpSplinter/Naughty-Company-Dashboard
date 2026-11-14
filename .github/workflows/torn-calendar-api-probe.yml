@@ -1,0 +1,117 @@
+name: Probe Torn current-year calendar API
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - portal-rebuild
+    paths:
+      - ".github/workflows/torn-calendar-api-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe-calendar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Query Torn calendar endpoints with the repository API key
+        shell: bash
+        env:
+          TORN_API_KEY: ${{ secrets['torn_api_key'] }}
+        run: |
+          node --input-type=module <<'NODE'
+          const apiKey = process.env.TORN_API_KEY?.trim();
+          if (!apiKey) {
+            console.error("The repository secret torn_api_key is missing.");
+            process.exit(1);
+          }
+
+          const base = "https://api.torn.com/v2";
+          const endpoints = [
+            { name: "torn", path: "/torn/calendar" },
+            { name: "user", path: "/user/calendar" },
+          ];
+
+          async function query(endpoint) {
+            try {
+              const response = await fetch(base + endpoint.path, {
+                method: "GET",
+                headers: {
+                  Authorization: "ApiKey " + apiKey,
+                  Accept: "application/json",
+                },
+                signal: AbortSignal.timeout(20000),
+              });
+              const body = await response.json().catch(() => null);
+              if (!response.ok || !body || body.error) {
+                const code = body?.error?.code ?? null;
+                return { name: endpoint.name, path: endpoint.path, status: response.status, errorCode: code };
+              }
+              return { name: endpoint.name, path: endpoint.path, status: response.status, body };
+            } catch (error) {
+              return { name: endpoint.name, path: endpoint.path, status: 0, networkError: error instanceof Error ? error.name : "request-failed" };
+            }
+          }
+
+          const results = await Promise.all(endpoints.map(query));
+          const report = {
+            probedAt: new Date().toISOString(),
+            note: "Timestamps are Unix seconds; ISO values below are UTC renderings of those timestamps.",
+            results: {},
+          };
+
+          const torn = results.find(item => item.name === "torn");
+          if (torn?.body) {
+            const calendar = torn.body.calendar ?? {};
+            const normalize = (items) => Array.isArray(items) ? items.map(item => ({
+              title: item.title ?? null,
+              description: item.description ?? null,
+              start: item.start ?? null,
+              startUtc: Number.isFinite(Number(item.start)) ? new Date(Number(item.start) * 1000).toISOString() : null,
+              end: item.end ?? null,
+              endUtc: Number.isFinite(Number(item.end)) ? new Date(Number(item.end) * 1000).toISOString() : null,
+              earliest_start: item.earliest_start ?? null,
+              earliestStartUtc: Number.isFinite(Number(item.earliest_start)) ? new Date(Number(item.earliest_start) * 1000).toISOString() : null,
+              latest_end: item.latest_end ?? null,
+              latestEndUtc: Number.isFinite(Number(item.latest_end)) ? new Date(Number(item.latest_end) * 1000).toISOString() : null,
+              fixed_start_time: item.fixed_start_time ?? null,
+              returnedFields: Object.keys(item),
+            })) : [];
+            report.results.tornCalendar = {
+              status: torn.status,
+              topLevelFields: Object.keys(torn.body),
+              calendarFields: Object.keys(calendar),
+              competitionsCount: Array.isArray(calendar.competitions) ? calendar.competitions.length : null,
+              eventsCount: Array.isArray(calendar.events) ? calendar.events.length : null,
+              competitions: normalize(calendar.competitions),
+              events: normalize(calendar.events),
+            };
+          } else {
+            report.results.tornCalendar = { status: torn?.status ?? 0, errorCode: torn?.errorCode ?? null, networkError: torn?.networkError ?? null };
+          }
+
+          const user = results.find(item => item.name === "user");
+          report.results.userCalendar = user?.body
+            ? {
+                status: user.status,
+                topLevelFields: Object.keys(user.body),
+                calendarFields: Object.keys(user.body.calendar ?? {}),
+                start_time: user.body.calendar?.start_time ?? null,
+                note: "start_time is the personal event start time, expressed in TCT.",
+              }
+            : { status: user?.status ?? 0, errorCode: user?.errorCode ?? null, networkError: user?.networkError ?? null };
+
+          const output = JSON.stringify(report, null, 2);
+          console.log(output);
+          const { appendFile } = await import("node:fs/promises");
+          await appendFile(process.env.GITHUB_STEP_SUMMARY, "## Torn calendar API probe\n\n~~~json\n" + output + "\n~~~\n");
+
+          if (!Array.isArray(report.results.tornCalendar.competitions) ||
+              !Array.isArray(report.results.tornCalendar.events) ||
+              typeof report.results.userCalendar.start_time !== "string") {
+            console.error("One or both Torn calendar endpoints did not return their expected calendar structure.");
+            process.exit(1);
+          }
+          NODE
