@@ -266,6 +266,7 @@ function parseLogJson(value: string | null): Record<string, unknown> | null {
 export type HalloweenAttackMetric = {
   attacker?: { id?: number | string | null } | null
   ended?: number | null
+  result?: string | null
   is_interrupted?: boolean
   finishing_hit_effects?: Array<{ name?: string; value?: number }> | null
 }
@@ -273,6 +274,8 @@ export type HalloweenAttackMetric = {
 export type HalloweenRevitalizeMetrics = {
   revitalizeProcs: number
   revitalizeAttacksReviewed: number
+  successfulAttacks: number
+  lostStalematedAttacks: number
   revitalizeChanceCounts: Record<string, number>
 }
 
@@ -294,6 +297,8 @@ export function calculateHalloweenRevitalizeMetrics(
   const result: HalloweenRevitalizeMetrics = {
     revitalizeProcs: 0,
     revitalizeAttacksReviewed: 0,
+    successfulAttacks: 0,
+    lostStalematedAttacks: 0,
     revitalizeChanceCounts: {},
   }
   for (const attack of attacks) {
@@ -302,6 +307,12 @@ export function calculateHalloweenRevitalizeMetrics(
     if (!Number.isFinite(ended) || ended < windowStart || ended >= windowEnd) continue
     if (attack.is_interrupted === true) continue
     result.revitalizeAttacksReviewed += 1
+    const outcome = String(attack.result ?? "").toLowerCase()
+    if (["attacked", "mugged", "hospitalized", "arrested"].includes(outcome)) {
+      result.successfulAttacks += 1
+    } else if (outcome === "lost" || outcome === "stalemate") {
+      result.lostStalematedAttacks += 1
+    }
     for (const effect of attack.finishing_hit_effects ?? []) {
       if (effect?.name !== "revitalize") continue
       result.revitalizeProcs += 1
