@@ -50,7 +50,7 @@ assert.ok(workspace.includes("YOUR PERSONAL EVENT-ITEM USE"), "historical dashbo
 assert.ok(workspace.includes("FACTION-WIDE EVENT TOTALS"), "historical dashboard must label aggregated faction totals")
 assert.ok(workspace.includes("PRACTICAL FHC TARGET"), "personal cooldown summary must distinguish the buffered FHC target")
 assert.ok(workspace.includes("THEORETICAL FHC MAXIMUM"), "personal cooldown summary must show the strict theoretical FHC limit")
-assert.ok(workspace.includes("final 6h FHC of timing margin"), "personal cooldown summary must explain the practical FHC buffer")
+assert.ok(workspace.includes("one extra 6h FHC of timing margin"), "personal cooldown summary must explain the practical FHC buffer")
 assert.ok(workspace.includes("THEORETICAL ENERGY CAN MAXIMUM"), "personal cooldown summary must show the separate Energy Can-only ceiling")
 assert.ok(workspace.includes("no Energy Cans or Green Easter Eggs"), "FHC-only theoretical maximum must state its assumptions")
 assert.ok(workspace.includes("no FHCs or Green Easter Eggs"), "Energy Can-only theoretical maximum must state its assumptions")
