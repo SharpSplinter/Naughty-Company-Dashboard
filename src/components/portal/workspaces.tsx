@@ -1595,6 +1595,9 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [memberDetail, setMemberDetail] = useState<{ collection: { status: string; coverage: string; logsCollected?: number; completedEventYears?: number[]; recordedEventYears?: number[] }; dailyActivity: Array<{ eventYear?: number; eventDay: string; totalHits: number; relevantLogs: number }>; metrics: Pick<HalloweenEventMetrics, "fhcsUsed" | "greenEggsUsed" | "energyCansUsed"> | null; logs: Array<{ eventYear?: number; logId: string; timestamp: number; title: string; category: string; labels: string[]; isHit: boolean; details: Record<string, unknown> | null }> } | null>(null)
   const [memberDetailBusy, setMemberDetailBusy] = useState(false)
 
+  const historicalCollectionYear = historicalYear === "all"
+    ? archive?.eventYears?.[0] ?? null
+    : Number.isInteger(Number(historicalYear)) ? Number(historicalYear) : null
   const loadHistoricalKeyStatus = async () => {
     try {
       const response = await fetch(apiBase + "/api/me/halloween/key", { headers: { Authorization: "Bearer " + sessionToken } })
@@ -1789,9 +1792,6 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const canCapturePersonalSnapshot = Boolean(personalWindow?.configured && nowMs >= personalStartMs && nowMs < personalEndMs)
   const historicalConsentCurrent = Boolean(historicalKeyStatus?.connected && historicalKeyStatus.key?.consentVersion === "halloween-history-v2")
   const archiveYearLabel = tab === "live" ? String(eventYear) : historicalYear === "all" ? "ALL RECORDED YEARS" : historicalYear
-  const historicalCollectionYear = historicalYear === "all"
-    ? archive?.eventYears?.[0] ?? null
-    : Number.isInteger(Number(historicalYear)) ? Number(historicalYear) : null
   const revitalizeMetricsReady = (archive?.eventTotals?.revitalizeCoveredMemberYears ?? archive?.eventTotals?.revitalizeCoveredMembers ?? 0) > 0
   const revitalizeProcRateLabel = (metrics: HalloweenEventMetrics | null | undefined) => {
     const rate = calculateHalloweenRevitalizeProcRate(metrics)
