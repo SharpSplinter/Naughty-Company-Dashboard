@@ -371,9 +371,10 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
         }
         // Multiplier decoding uses the known base amount. Standard player
         // attacks default to one; callers may provide the base for NPC attacks.
-        const baseTreats = nonNegativeNumber(
-          row.baseTreats ?? data.base_treats ?? data.baseTreats ?? 1,
-        )
+        const baseTreatValue = row.baseTreats !== undefined
+          ? row.baseTreats
+          : data.base_treats ?? data.baseTreats ?? 1
+        const baseTreats = nonNegativeNumber(baseTreatValue)
         const multiplier = baseTreats !== null && Number.isInteger(baseTreats) && baseTreats > 0 &&
           treats % baseTreats === 0
           ? treats / baseTreats
