@@ -1764,17 +1764,20 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   }
 
   const startHistoricalCollection = async () => {
-    if (collectBusy || historicalYear === "all" || !Number.isInteger(Number(historicalYear))) return
+    const targetYear = historicalCollectionYear
+    if (collectBusy || targetYear === null) return
     setCollectBusy(true); setArchiveError(""); setCollectMessage("")
     try {
       const response = await fetch(apiBase + "/api/me/halloween/collect", {
         method: "POST",
         headers: { Authorization: "Bearer " + sessionToken, "Content-Type": "application/json" },
-        body: JSON.stringify({ year: Number(historicalYear) }),
+        body: JSON.stringify({ year: targetYear }),
       })
       const payload = await response.json() as { error?: string; queued?: boolean; alreadyComplete?: boolean; logCollection?: { status: string; logsCollected: number }; attackCollection?: { status: string; attacksReviewed: number } }
       if (!response.ok) throw new Error(payload.error || "Could not start historical collection.")
-      setCollectMessage(payload.alreadyComplete ? "Your event-year logs and detailed attack outcomes are up to date." : "This event year's historical logs and detailed attacks are queued independently. Attack totals, the zero-treat histogram bucket and Revitalize metrics will update when collection completes.")
+      setCollectMessage(payload.alreadyComplete
+        ? "Your " + targetYear + " event logs and detailed attack outcomes are already up to date."
+        : "Your " + targetYear + " event logs and detailed attacks are queued independently. Attack totals, the zero-treat histogram bucket and Revitalize metrics will update when collection completes.")
       await loadArchive(historicalYear)
     } catch (caught) { setArchiveError(caught instanceof Error ? caught.message : "Could not start historical collection.") }
     finally { setCollectBusy(false) }
@@ -1806,6 +1809,9 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const canCapturePersonalSnapshot = Boolean(personalWindow?.configured && nowMs >= personalStartMs && nowMs < personalEndMs)
   const historicalConsentCurrent = Boolean(historicalKeyStatus?.connected && historicalKeyStatus.key?.consentVersion === "halloween-history-v2")
   const archiveYearLabel = tab === "live" ? String(eventYear) : historicalYear === "all" ? "ALL RECORDED YEARS" : historicalYear
+  const historicalCollectionYear = historicalYear === "all"
+    ? archive?.eventYears?.[0] ?? null
+    : Number.isInteger(Number(historicalYear)) ? Number(historicalYear) : null
   const revitalizeMetricsReady = (archive?.eventTotals?.revitalizeCoveredMemberYears ?? archive?.eventTotals?.revitalizeCoveredMembers ?? 0) > 0
   const revitalizeProcRateLabel = (metrics: HalloweenEventMetrics | null | undefined) => {
     const rate = calculateHalloweenRevitalizeProcRate(metrics)
@@ -2155,7 +2161,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
           <div className="historical-collection-toolbar"><div><small>FACTION HISTORICAL LEADERBOARD</small><strong>{archive?.leaderboard.length ?? 0} member accounts in the archive</strong></div><button type="button" onClick={() => { void loadArchive(); void loadHistoricalKeyStatus() }} disabled={archiveBusy}>{archiveBusy ? "Refreshing…" : "Refresh archive ↻"}</button></div>
           {archiveError && <p className="historical-key-error" role="alert">{archiveError}</p>}
           {collectMessage && <p className="historical-key-message" role="status">{collectMessage}</p>}
-          {historicalYear !== "all" && (archive?.myCollection?.coverage !== "complete" || archive?.myCollection?.attackMetricsStatus !== "complete" || archive?.myCollection?.attackOutcomesStatus !== "complete") && historicalConsentCurrent && <div className="historical-collect-banner"><div><strong>Contribute or refresh Halloween event stats</strong><span>Collection follows your saved personal window, from your selected October 25 start time through November 1 at the same TCT time. Detailed attacks provide outcome totals, the zero-treat histogram bucket, and Revitalize finishing-hit effects.</span></div><button type="button" onClick={startHistoricalCollection} disabled={collectBusy || archive?.myCollection?.coverage === "collecting" || archive?.myCollection?.attackMetricsStatus === "queued" || archive?.myCollection?.attackMetricsStatus === "running" || !archive?.myWindow?.configured}>{collectBusy ? "Queueing…" : archive?.myCollection?.coverage === "collecting" || archive?.myCollection?.attackMetricsStatus === "queued" || archive?.myCollection?.attackMetricsStatus === "running" ? "Collection running…" : !archive?.myWindow?.configured ? "Set this event year's time above" : "Collect / refresh event history"}</button></div>}
+          {historicalConsentCurrent && <div className="historical-collect-banner"><div><strong>{historicalYear === "all" ? "Contribute or refresh " + (historicalCollectionYear ?? "Halloween") + " event stats" : "Contribute or refresh Halloween event stats"}</strong><span>{historicalYear === "all" ? "All-time view automatically targets the newest configured event year. Choose a different year in Display to collect another event." : "Collection follows your saved personal window, from your selected October 25 start time through November 1 at the same TCT time."} Detailed attacks provide outcome totals, the zero-treat histogram bucket, and Revitalize finishing-hit effects.</span></div><button type="button" onClick={startHistoricalCollection} disabled={collectBusy || historicalCollectionYear === null || archive?.myCollection?.coverage === "collecting" || archive?.myCollection?.attackMetricsStatus === "queued" || archive?.myCollection?.attackMetricsStatus === "running" || !archive?.myWindow?.configured}>{collectBusy ? "Queueing…" : archive?.myCollection?.coverage === "collecting" || archive?.myCollection?.attackMetricsStatus === "queued" || archive?.myCollection?.attackMetricsStatus === "running" ? "Collection running…" : !historicalCollectionYear ? "No configured event year" : !archive?.myWindow?.configured ? "Set this event year's time above" : "Collect / refresh " + historicalCollectionYear + " history"}</button></div>}
           <div className="historical-leaderboard">
             {!archive && archiveBusy ? <p className="historical-key-muted">Loading faction archive…</p> : archive?.leaderboard.length ? <table><thead><tr><th>RANK</th><th>MEMBER</th><th>TOTAL HITS</th><th>LOGS</th><th>COVERAGE</th></tr></thead><tbody>
               {archive.leaderboard.map((member, index) => <tr key={member.playerId} className={selectedMember?.playerId === member.playerId ? "selected" : ""}>
