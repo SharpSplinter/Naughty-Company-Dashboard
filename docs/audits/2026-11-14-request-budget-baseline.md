@@ -33,7 +33,7 @@ Daily bins (New York local midnight; first and last bins are partial):
 
 The telemetry usage endpoint reports account-wide events across datasets and services. This report isolates the `cloudflare-workers` dataset and `naughty-company-api` service from its breakdown rows. Its ABR-adjusted event count is a separate telemetry measure, not the exact request total.
 
-A second, request-level query against Cloudflare's Workers GraphQL Analytics API (`workersInvocationsAdaptive`) returned the following for `naughty-company-api` over 2026-11-07 00:00:00 UTC through 2026-11-14 00:00:00 UTC:
+A second query against Cloudflare's Workers GraphQL Analytics API adaptive invocation dataset (`workersInvocationsAdaptive`) reported the following for `naughty-company-api` over 2026-11-07 00:00:00 UTC through 2026-11-14 00:00:00 UTC. These are request-oriented invocation metrics and quantiles, but the dataset is adaptive; treat the totals and quantiles as Cloudflare analytics aggregates rather than an exact per-request ledger:
 
 | Metric | Value |
 |---|---:|
@@ -52,7 +52,7 @@ A second, request-level query against Cloudflare's Workers GraphQL Analytics API
 | Isolate memory p50 | 2.17 MB |
 | Isolate memory p95 | 2.43 MB |
 
-Cloudflare's GraphQL schema describes request duration, wall time and CPU time quantiles in microseconds; memory quantiles are bytes. Values above are converted to milliseconds/megabytes. Wall time represents the time the Worker JavaScript context remained open, including I/O waits and waitUntil work; it is not identical to time until the final response byte reaches the browser. These request-level counts supersede the approximate event count when describing incoming request volume. The two measurements use slightly different UTC window boundaries and should not be added together.
+Cloudflare's GraphQL schema describes request duration, wall time and CPU time quantiles in microseconds; memory quantiles are bytes. Values above are converted to milliseconds/megabytes. Wall time represents the time the Worker JavaScript context remained open, including I/O waits and waitUntil work; it is not identical to time until the final response byte reaches the browser. The adaptive invocation total is more directly request-oriented than the separate observability event count, but neither is a canonical application request ledger. The two measurements use slightly different UTC window boundaries and should not be added together.
 
 Sources: [Cloudflare Workers GraphQL metrics tutorial](https://developers.cloudflare.com/analytics/graphql-api/tutorials/querying-workers-metrics/) and [Workers metrics and analytics](https://developers.cloudflare.com/workers/observability/metrics-and-analytics/).
 
