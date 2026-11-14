@@ -1842,12 +1842,17 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
               <div><small>YOUR FHCs USED · 6H EACH</small><strong>{myBoosterCooldown.fhcsUsed}</strong><span>{myBoosterCooldown.fhcHours}h of booster cooldown</span></div>
               <div><small>YOUR GREEN EGGS USED · 6H EACH</small><strong>{myBoosterCooldown.greenEggsUsed}</strong><span>{myBoosterCooldown.greenEggHours}h of booster cooldown</span></div>
               <div><small>YOUR ENERGY CANS USED · 2H EACH</small><strong>{myBoosterCooldown.energyCansUsed}</strong><span>{myBoosterCooldown.energyCanHours}h of booster cooldown</span></div>
-              <div><small>YOUR TOTAL ITEM COOLDOWN</small><strong>{myBoosterCooldown.totalHours}h</strong><span>Event opened at 0h; 48h timer cap is handled separately</span></div>
-              <div><small>EVENT WINDOW LENGTH</small><strong>{myBoosterCooldown.eventWindowHours}h</strong><span>Oct 25 12:00 to Nov 1 12:00 TCT</span></div>
-              <div><small>COOLDOWN ABOVE EVENT LENGTH</small><strong>{myBoosterCooldown.excessHours}h</strong><span>{myBoosterCooldown.excessHours > 0 ? "Can carry forward after the event ends" : myBoosterCooldown.uncoveredHours + "h of item cooldown still needed"}</span></div>
-              <div><small>EVENT-HOUR COOLDOWN SHORTFALL</small><strong>{myBoosterCooldown.uncoveredHours}h</strong><span>Based on total item cooldown compared with the event length</span></div>
+              <div><small>YOUR TOTAL ITEM COOLDOWN</small><strong>{myBoosterCooldown.totalHours}h</strong><span>Combined cooldown added by your logged item uses</span></div>
+              <div><small>PRACTICAL FHC TARGET</small><strong>{myBoosterCooldown.practicalFhcTarget}</strong><span>One extra 6h timing margin below the theoretical maximum</span></div>
+              <div><small>THEORETICAL FHC MAXIMUM</small><strong>{myBoosterCooldown.theoreticalMaxFhcs}</strong><span>Requires the final 6h item near the event end</span></div>
+              <div><small>STRICT COOLDOWN LIMIT</small><strong>&lt; {myBoosterCooldown.theoreticalCooldownLimitHours}h</strong><span>168h event + 48h pre-use timer + 6h final-item overfill</span></div>
+              <div><small>BUFFER TO THEORETICAL LIMIT</small><strong>{myBoosterCooldown.timingBufferHours}h</strong><span>{myBoosterCooldown.withinTheoreticalLimit ? "Remaining timing margin" : myBoosterCooldown.fhcsAboveTheoreticalMaximum + " FHC above the theoretical maximum"}</span></div>
+              <div><small>EVENT WINDOW COOLDOWN</small><strong>{myBoosterCooldown.usableHours}h / {myBoosterCooldown.eventWindowHours}h</strong><span>Maximum cooldown that can decay during the event</span></div>
+              <div><small>MINIMUM AFTER-EVENT CARRYOVER</small><strong>{myBoosterCooldown.excessHours}h</strong><span>At least this much remains beyond 168h; exact timer depends on item-use times</span></div>
+              <div><small>EVENT TIME UNCOVERED</small><strong>{myBoosterCooldown.uncoveredHours}h</strong><span>Event duration not covered by the total logged cooldown</span></div>
+              <div><small>THEORETICAL LIMIT STATUS</small><strong>{myBoosterCooldown.withinTheoreticalLimit ? "WITHIN LIMIT" : "OVER LIMIT"}</strong><span>{myBoosterCooldown.hoursBeyondTheoreticalLimit}h beyond the strict cooldown boundary</span></div>
             </div>
-            <p>The 48h limit is checked immediately before each item use. A 6h FHC or green egg used just below 48h can raise the active timer to nearly 54h. Any remaining cooldown continues after the event ends, so hours above the 168h event length are carryover, not impossible event-window usage.</p>
+            <p>The 48h threshold is checked immediately before each item use. The final 6h FHC or Green Easter Egg can overfill the timer to nearly 54h, so the total added cooldown must stay strictly below {myBoosterCooldown.theoreticalCooldownLimitHours}h. With your 2 eggs and 2 energy drinks, that gives a 33-FHC practical target and a 34-FHC theoretical maximum. Your 34th FHC is possible only with tight timing and a final 6h booster near the end; 35 exceeds the limit. Hours above the 168h event length are carryover, not impossible event-window use. The exact ending timer depends on item-use timestamps.</p>
           </section>}
           {archive?.myCollection?.coverage === "complete" && !archive.myEventMetrics && <p className="historical-key-muted">Your personal item-use metrics are still being prepared. The faction totals below are separate.</p>}
           {archive?.eventTotals && <section className="halloween-panel halloween-event-metrics">
@@ -1897,10 +1902,16 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
                     <div><small>GREEN EASTER EGGS · 6H EACH</small><strong>{memberBoosterCooldown.greenEggsUsed} used · {memberBoosterCooldown.greenEggHours}h</strong></div>
                     <div><small>ENERGY CANS · 2H EACH</small><strong>{memberBoosterCooldown.energyCansUsed} used · {memberBoosterCooldown.energyCanHours}h</strong></div>
                     <div><small>TOTAL ITEM COOLDOWN</small><strong>{memberBoosterCooldown.totalHours}h</strong></div>
-                    <div><small>USABLE IN 168H EVENT</small><strong>{memberBoosterCooldown.usableHours}h / {memberBoosterCooldown.eventWindowHours}h</strong></div>
+                    <div><small>PRACTICAL FHC TARGET</small><strong>{memberBoosterCooldown.practicalFhcTarget}</strong></div>
+                    <div><small>THEORETICAL FHC MAX</small><strong>{memberBoosterCooldown.theoreticalMaxFhcs}</strong></div>
+                    <div><small>STRICT COOLDOWN LIMIT</small><strong>&lt; {memberBoosterCooldown.theoreticalCooldownLimitHours}h</strong></div>
+                    <div><small>BUFFER TO THEORETICAL LIMIT</small><strong>{memberBoosterCooldown.timingBufferHours}h</strong></div>
+                    <div><small>COOLDOWN IN EVENT WINDOW</small><strong>{memberBoosterCooldown.usableHours}h / {memberBoosterCooldown.eventWindowHours}h</strong></div>
+                    <div><small>MINIMUM AFTER-EVENT CARRYOVER</small><strong>{memberBoosterCooldown.excessHours}h</strong></div>
                     <div><small>EVENT TIME UNCOVERED</small><strong>{memberBoosterCooldown.uncoveredHours}h</strong></div>
+                    <div><small>THEORETICAL LIMIT STATUS</small><strong>{memberBoosterCooldown.withinTheoreticalLimit ? "WITHIN LIMIT" : "OVER LIMIT"}</strong></div>
                   </div>
-                  <p>Event opening cooldown is 0h. The 48h maximum applies to the active timer when an item is used, not to the total cooldown accumulated across the event. Use the first items up to 48h, then use another cooldown item whenever the timer drops below 48h. A 6h item used just below 48h can leave nearly 54h on the timer, which carries past the event end. Counts come from this member’s completed event-window item-use logs.</p>
+                  <p>Event opening cooldown is 0h. The 48h threshold is checked immediately before each item use. A final 6h FHC or Green Easter Egg can be used just below 48h and raise the timer to nearly 54h, so the strict theoretical total is less than event length + 48h + 6h. The practical target is one FHC below the theoretical maximum to leave another 6h of timing margin. Carryover is a minimum based on the total item hours; the exact ending timer depends on each item-use timestamp. Counts come from this member’s completed event-window item-use logs.</p>
                 </section>
               ) : <p className="historical-key-muted">Booster cooldown totals appear when this member’s Halloween event-log collection is complete.</p>}
               <div className="historical-daily-activity"><h3>Daily hit history</h3>{memberDetail.dailyActivity.length ? memberDetail.dailyActivity.map(day => <div className="historical-day-row" key={day.eventDay}><span>{day.eventDay}</span><div><i style={{ width: ((Number(day.totalHits || 0) / maxDailyHits) * 100) + "%" }} /></div><strong>{Number(day.totalHits || 0).toLocaleString()}</strong></div>) : <p className="historical-key-muted">Daily activity is not available for this member yet.</p>}</div>

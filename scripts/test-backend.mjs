@@ -413,7 +413,49 @@ try {
       usableHours: 160,
       uncoveredHours: 8,
       excessHours: 0,
+      practicalFhcTarget: 33,
+      theoreticalMaxFhcs: 34,
+      theoreticalCooldownLimitHours: 222,
+      timingBufferHours: 62,
+      hoursBeyondTheoreticalLimit: 0,
+      fhcsAboveTheoreticalMaximum: 0,
+      withinTheoreticalLimit: true,
     })
+
+    const combinedEstimate = (fhcsUsed) => calculateHalloweenBoosterCooldown({
+      fhcsUsed,
+      greenEggsUsed: 2,
+      energyCansUsed: 2,
+    })
+    const practical = combinedEstimate(33)
+    assert.equal(practical.totalHours, 214)
+    assert.equal(practical.practicalFhcTarget, 33)
+    assert.equal(practical.theoreticalMaxFhcs, 34)
+    assert.equal(practical.timingBufferHours, 8)
+    assert.equal(practical.withinTheoreticalLimit, true)
+
+    const theoretical = combinedEstimate(34)
+    assert.equal(theoretical.totalHours, 220)
+    assert.equal(theoretical.timingBufferHours, 2)
+    assert.equal(theoretical.fhcsAboveTheoreticalMaximum, 0)
+    assert.equal(theoretical.withinTheoreticalLimit, true)
+
+    const impossible = combinedEstimate(35)
+    assert.equal(impossible.totalHours, 226)
+    assert.equal(impossible.timingBufferHours, -4)
+    assert.equal(impossible.hoursBeyondTheoreticalLimit, 4)
+    assert.equal(impossible.fhcsAboveTheoreticalMaximum, 1)
+    assert.equal(impossible.withinTheoreticalLimit, false)
+
+    const plainFhcs = (fhcsUsed) => calculateHalloweenBoosterCooldown({
+      fhcsUsed,
+      greenEggsUsed: 0,
+      energyCansUsed: 0,
+    })
+    assert.equal(plainFhcs(35).practicalFhcTarget, 35)
+    assert.equal(plainFhcs(35).theoreticalMaxFhcs, 36)
+    assert.equal(plainFhcs(36).withinTheoreticalLimit, true)
+    assert.equal(plainFhcs(37).withinTheoreticalLimit, false)
   })
 
   await test("Halloween Revitalize proc parsing counts only the member's actual finishing-hit procs in their event window", () => {

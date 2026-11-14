@@ -18,6 +18,13 @@ export type HalloweenBoosterCooldownEstimate = {
   usableHours: number
   uncoveredHours: number
   excessHours: number
+  practicalFhcTarget: number
+  theoreticalMaxFhcs: number
+  theoreticalCooldownLimitHours: number
+  timingBufferHours: number
+  hoursBeyondTheoreticalLimit: number
+  fhcsAboveTheoreticalMaximum: number
+  withinTheoreticalLimit: boolean
 }
 
 export type HalloweenEventMetrics = {
@@ -70,6 +77,24 @@ export function calculateHalloweenBoosterCooldown(
   const greenEggHours = greenEggsUsed * HALLOWEEN_BOOSTER_COOLDOWN_RULES.greenEggHours
   const energyCanHours = energyCansUsed * HALLOWEEN_BOOSTER_COOLDOWN_RULES.energyCanHours
   const totalHours = fhcHours + greenEggHours + energyCanHours
+
+  // A final 6h booster may be used just below the 48h timer threshold, so
+  // the total added cooldown must remain strictly below event + 48h + 6h.
+  // The strict inequality matters: at exactly 48h, another item is not ready.
+  const theoreticalCooldownLimitHours =
+    validEventHours +
+    HALLOWEEN_BOOSTER_COOLDOWN_RULES.maxTimerHours +
+    HALLOWEEN_BOOSTER_COOLDOWN_RULES.fhcHours
+  const otherItemHours = greenEggHours + energyCanHours
+  const theoreticalMaxFhcs = Math.max(0, Math.ceil(
+    (theoreticalCooldownLimitHours - otherItemHours) / HALLOWEEN_BOOSTER_COOLDOWN_RULES.fhcHours,
+  ) - 1)
+  // Keep one 6h FHC of extra timing margin for a practical planning target.
+  const practicalFhcTarget = Math.max(0, theoreticalMaxFhcs - 1)
+  const timingBufferHours = theoreticalCooldownLimitHours - totalHours
+  const withinTheoreticalLimit = totalHours < theoreticalCooldownLimitHours &&
+    fhcsUsed <= theoreticalMaxFhcs
+
   return {
     fhcsUsed,
     greenEggsUsed,
@@ -82,6 +107,13 @@ export function calculateHalloweenBoosterCooldown(
     usableHours: Math.min(totalHours, validEventHours),
     uncoveredHours: Math.max(0, validEventHours - totalHours),
     excessHours: Math.max(0, totalHours - validEventHours),
+    practicalFhcTarget,
+    theoreticalMaxFhcs,
+    theoreticalCooldownLimitHours,
+    timingBufferHours,
+    hoursBeyondTheoreticalLimit: Math.max(0, totalHours - theoreticalCooldownLimitHours),
+    fhcsAboveTheoreticalMaximum: Math.max(0, fhcsUsed - theoreticalMaxFhcs),
+    withinTheoreticalLimit,
   }
 }
 
