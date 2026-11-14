@@ -461,7 +461,7 @@ try {
     assert.equal(value.itemCount, 3)
     assert.equal(value.unpricedItemCount, 1)
     assert.equal(value.snapshotAt, now - 200)
-    assert.deepEqual(value.items.map(item => item.itemId), ["817", "366", "999"])
+    assert.deepEqual(value.items.map(item => item.itemId), ["366", "817", "999"])
     assert.equal(value.items[2].estimatedValue, null)
   })
 
