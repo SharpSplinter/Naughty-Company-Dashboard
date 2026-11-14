@@ -1,0 +1,103 @@
+name: Temporary Halloween treat-to-attack correlation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Correlate unusual treat awards to attack targets
+        env:
+          TORN_API_KEY: ${{ secrets.TORN_API_KEY_FULL_ACCESS }}
+        run: |
+          node <<'NODE'
+          const start = 1792929600;
+          const end = 1793534400;
+          if (!process.env.TORN_API_KEY) throw new Error("Required repository secret unavailable.");
+          const fetchPages = async (path, queryName, queryValue, out) => {
+            let url = new URL("https://api.torn.com/v2/" + path);
+            url.searchParams.set("from", String(start));
+            url.searchParams.set("to", String(end));
+            url.searchParams.set(queryName, queryValue);
+            url.searchParams.set("limit", "100");
+            url.searchParams.set("sort", "DESC");
+            for (let page = 0; page < 100; page++) {
+              const response = await fetch(url, {
+                headers: { Authorization: "ApiKey " + process.env.TORN_API_KEY, Accept: "application/json" }
+              });
+              const payload = await response.json();
+              if (!response.ok || payload?.error) throw new Error("Torn " + path + " request failed (HTTP " + response.status + ").");
+              const rows = path === "user/log" ? payload?.log : payload?.attacks;
+              if (!Array.isArray(rows)) throw new Error("Unexpected " + path + " response.");
+              out.push(...rows);
+              const older = payload?._metadata?.links?.prev;
+              if (!older) return page + 1;
+              const next = new URL(older, url);
+              if (next.protocol !== "https:" || next.hostname !== "api.torn.com" || next.pathname !== "/v2/" + path || next.searchParams.has("key")) throw new Error("Unsafe pagination URL.");
+              url = next;
+              if (page === 99) throw new Error("Pagination limit reached.");
+            }
+            return 100;
+          };
+          const [logs, attacks] = [[], []];
+          const [logPages, attackPages] = await Promise.all([
+            fetchPages("user/log", "log", "2536,2540", logs),
+            fetchPages("user/attacks", "filters", "outgoing", attacks)
+          ]);
+          const unusual = [];
+          const upgradeIds = {};
+          const awardTypes = {};
+          const exactDistanceBuckets = {};
+          const nearestTargets = {};
+          const nearestTolerance = 180;
+          for (const row of logs) {
+            const type = String(row?.details?.id ?? "");
+            const data = row?.data && typeof row.data === "object" ? row.data : {};
+            if (type === "2540") {
+              const id = String(data.upgrade ?? "missing");
+              upgradeIds[id] = (upgradeIds[id] ?? 0) + 1;
+            }
+            if (type !== "2536") continue;
+            const awardType = String(data.type ?? "missing").replace(/[()]/g,"").trim();
+            awardTypes[awardType] = (awardTypes[awardType] ?? 0) + 1;
+            const treats = Number(data.treats);
+            if (!Number.isFinite(treats)) continue;
+            if (treats < 15 && treats !== 1000) continue;
+            const timestamp = Number(row.timestamp);
+            let nearest = null;
+            for (const attack of attacks) {
+              const ended = Number(attack?.ended);
+              const delta = Math.abs(ended - timestamp);
+              if (Number.isFinite(delta) && (!nearest || delta < nearest.delta)) nearest = {delta,attack};
+            }
+            const a = nearest && nearest.delta <= nearestTolerance ? nearest.attack : null;
+            const defender = a?.defender ?? {};
+            const item = {
+              treats,
+              awardType,
+              logTimestamp: Number.isFinite(timestamp) ? timestamp : null,
+              attackDeltaSeconds: a ? nearest.delta : null,
+              attackResult: a?.result ?? null,
+              defenderName: defender?.name ?? null,
+              defenderId: defender?.id ?? null,
+              defenderLevel: defender?.level ?? null,
+              defenderFaction: defender?.faction?.name ?? null,
+              isNpcName: typeof defender?.name === "string" && /(m'aol|maol|halloween|trick|treat)/i.test(defender.name)
+            };
+            unusual.push(item);
+            const key = String(treats) + "|" + (a ? (item.isNpcName ? "named_npc" : "other_target") : "unmatched");
+            nearestTargets[key] = (nearestTargets[key] ?? 0) + 1;
+            const distance = item.attackDeltaSeconds === null ? "unmatched" : item.attackDeltaSeconds <= 2 ? "0-2s" : item.attackDeltaSeconds <= 10 ? "3-10s" : item.attackDeltaSeconds <= 30 ? "11-30s" : item.attackDeltaSeconds <= 180 ? "31-180s" : "unmatched";
+            exactDistanceBuckets[distance] = (exactDistanceBuckets[distance] ?? 0) + 1;
+          }
+          console.log("HALLOWEEN_TREAT_CORRELATION " + JSON.stringify({
+            window:{from:start,to:end},
+            logPages,attackPages,logRecords:logs.length,attackRecords:attacks.length,
+            awardTypes,upgradeIds,unusualTreatAwards:unusual,nearestTargets,matchDistanceBuckets:exactDistanceBuckets
+          }));
+          NODE
