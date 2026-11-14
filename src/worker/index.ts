@@ -2041,9 +2041,9 @@ async function loadHalloweenAllTimeArchive(db: D1Database, signedInPlayerId: str
        FROM halloween_collection_jobs WHERE event_year IN (${placeholders}) ORDER BY updated_at DESC`
     ).bind(...eventYears).all<{ playerId: string; eventYear: number; status: string; pagesCollected: number; updatedAt: string }>(),
     db.prepare(
-      `SELECT player_id AS playerId, event_year AS eventYear, status
+      `SELECT player_id AS playerId, event_year AS eventYear, status, outcomes_version AS outcomesVersion
        FROM halloween_attack_metrics_jobs WHERE event_year IN (${placeholders})`
-    ).bind(...eventYears).all<{ playerId: string; eventYear: number; status: string }>(),
+    ).bind(...eventYears).all<{ playerId: string; eventYear: number; status: string; outcomesVersion: number }>(),
     db.prepare(
       `SELECT player_id AS playerId, event_year AS eventYear, COUNT(*) AS logsCollected,
               COALESCE(SUM(is_hit), 0) AS totalHits, MAX(collected_at) AS lastCollectedAt
@@ -2062,8 +2062,13 @@ async function loadHalloweenAllTimeArchive(db: D1Database, signedInPlayerId: str
     const key = keyFor(row.playerId, Number(row.eventYear))
     if (!latestJobs.has(key)) latestJobs.set(key, { status: row.status, pagesCollected: Number(row.pagesCollected ?? 0) })
   }
-  const attackJobs = new Map<string, string>()
-  for (const row of attackResult.results ?? []) attackJobs.set(keyFor(row.playerId, Number(row.eventYear)), row.status)
+  const attackJobs = new Map<string, { status: string; outcomesVersion: number }>()
+  for (const row of attackResult.results ?? []) {
+    attackJobs.set(keyFor(row.playerId, Number(row.eventYear)), {
+      status: row.status,
+      outcomesVersion: Number(row.outcomesVersion ?? 0),
+    })
+  }
   const logSummary = new Map<string, { logsCollected: number; totalHits: number; lastCollectedAt: string | null }>()
   for (const row of logResult.results ?? []) {
     logSummary.set(keyFor(row.playerId, Number(row.eventYear)), {
@@ -2095,7 +2100,7 @@ async function loadHalloweenAllTimeArchive(db: D1Database, signedInPlayerId: str
       coveredMemberYears += 1
     }
     for (const playerId of completedIds) {
-      if (attackJobs.get(keyFor(playerId, eventYear)) === "complete") {
+      if (attackJobs.get(keyFor(playerId, eventYear))?.status === "complete") {
         revitalizeMemberIds.add(playerId)
         revitalizeCoveredMemberYears += 1
       }
@@ -2118,12 +2123,26 @@ async function loadHalloweenAllTimeArchive(db: D1Database, signedInPlayerId: str
       : completeYears.length > 0 || logsCollected > 0
         ? "partial"
         : hasRunning ? "collecting" : "not_collected"
-    const attackCompleteYears = completeYears.filter((year) => attackJobs.get(keyFor(member.playerId, year)) === "complete")
+    const attackCompleteYears = completeYears.filter((year) => attackJobs.get(keyFor(member.playerId, year))?.status === "complete")
     const attackMetricsStatus = completeYears.length > 0 && attackCompleteYears.length === completeYears.length
       ? "complete"
       : attackCompleteYears.length > 0 ? "partial"
-        : eligibleYears.some((year) => ["queued", "running"].includes(attackJobs.get(keyFor(member.playerId, year)) ?? "")) ? "running"
+        : eligibleYears.some((year) => ["queued", "running"].includes(attackJobs.get(keyFor(member.playerId, year))?.status ?? "")) ? "running"
           : "not_collected"
+    const attackOutcomeCompleteYears = completeYears.filter((year) => {
+      const job = attackJobs.get(keyFor(member.playerId, year))
+      return job?.status === "complete" && job.outcomesVersion >= 1
+    })
+    const hasOutcomeRefreshRequired = completeYears.some((year) => {
+      const job = attackJobs.get(keyFor(member.playerId, year))
+      return job?.status === "complete" && job.outcomesVersion < 1
+    })
+    const attackOutcomesStatus = completeYears.length > 0 && attackOutcomeCompleteYears.length === completeYears.length
+      ? "complete"
+      : hasOutcomeRefreshRequired ? "refresh_required"
+        : attackOutcomeCompleteYears.length > 0 ? "partial"
+          : eligibleYears.some((year) => ["queued", "running"].includes(attackJobs.get(keyFor(member.playerId, year))?.status ?? "")) ? "running"
+            : "not_collected"
     const slot = latestSlots.get(member.playerId)
     const latestCollected = knownLogs.map((row) => row.lastCollectedAt).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null
     const pagesCollected = eligibleYears.reduce((total, year) => total + Number(latestJobs.get(keyFor(member.playerId, year))?.pagesCollected ?? 0), 0)
@@ -2140,6 +2159,7 @@ async function loadHalloweenAllTimeArchive(db: D1Database, signedInPlayerId: str
       lastCollectedAt: latestCollected,
       coverage,
       attackMetricsStatus,
+      attackOutcomesStatus,
       completedEventYears: completeYears,
       recordedEventYears: eligibleYears,
     }
@@ -5929,7 +5949,7 @@ export default {
       if (!event) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
       const rows = await db.prepare(
         "SELECT p.player_id AS playerId, p.player_name AS playerName, es.start_minute_of_day AS startMinuteOfDay, (SELECT s.treats_current FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsCurrent, (SELECT s.treats_total FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS treatsTotal, (SELECT s.upgrades_json FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS upgradesJson, (SELECT s.captured_at FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS capturedAt, (SELECT s.snapshot_kind FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS snapshotKind, (SELECT s.source_timestamp FROM halloween_live_snapshots s WHERE s.event_year = ? AND s.player_id = p.player_id ORDER BY s.captured_at DESC LIMIT 1) AS sourceTimestamp FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id LEFT JOIN halloween_member_event_slots es ON es.player_id = p.player_id AND es.event_year = ? WHERE p.faction_id = ? AND st.disabled_at IS NULL"
-      ).bind(yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
+      ).bind(yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
       const leaderboard = (rows.results ?? []).map((row) => {
         const memberWindow = row.startMinuteOfDay == null ? null : buildHalloweenMemberEventWindow(event, Number(row.startMinuteOfDay))
         const snapshotMs = row.capturedAt == null ? Number.NaN : Date.parse(String(row.capturedAt))
@@ -5993,7 +6013,7 @@ export default {
         .bind(yearValue).first<{ eventYear: number; startAt: string; endAt: string }>()
       if (!event) return jsonResponse({ error: "No Halloween event window is configured for that year." }, 404, origin)
       const members = await db.prepare(
-        "SELECT p.player_id AS playerId, p.player_name AS playerName, es.start_minute_of_day AS startMinuteOfDay, EXISTS(SELECT 1 FROM halloween_historical_keys k WHERE k.player_id = p.player_id) AS keyConnected, (SELECT j.status FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS collectionStatus, (SELECT j.pages_collected FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS pagesCollected, (SELECT j.status FROM halloween_attack_metrics_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS attackMetricsStatus, (SELECT COUNT(*) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedLogCount, (SELECT COALESCE(SUM(l.is_hit), 0) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedHitCount, (SELECT MAX(l.collected_at) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS lastCollectedAt FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id LEFT JOIN halloween_member_event_slots es ON es.player_id = p.player_id AND es.event_year = ? WHERE p.faction_id = ? AND st.disabled_at IS NULL"
+        "SELECT p.player_id AS playerId, p.player_name AS playerName, es.start_minute_of_day AS startMinuteOfDay, EXISTS(SELECT 1 FROM halloween_historical_keys k WHERE k.player_id = p.player_id) AS keyConnected, (SELECT j.status FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS collectionStatus, (SELECT j.pages_collected FROM halloween_collection_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS pagesCollected, (SELECT j.status FROM halloween_attack_metrics_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS attackMetricsStatus, (SELECT j.outcomes_version FROM halloween_attack_metrics_jobs j WHERE j.player_id = p.player_id AND j.event_year = ? ORDER BY j.updated_at DESC LIMIT 1) AS attackOutcomesVersion, (SELECT COUNT(*) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedLogCount, (SELECT COALESCE(SUM(l.is_hit), 0) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS storedHitCount, (SELECT MAX(l.collected_at) FROM halloween_event_logs l WHERE l.event_year = ? AND l.player_id = p.player_id) AS lastCollectedAt FROM players p LEFT JOIN dashboard_member_status st ON st.player_id = p.player_id LEFT JOIN halloween_member_event_slots es ON es.player_id = p.player_id AND es.event_year = ? WHERE p.faction_id = ? AND st.disabled_at IS NULL"
       ).bind(yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, yearValue, NAUGHTY_SOULS_FACTION_ID).all<Record<string, unknown>>()
       const leaderboard = (members.results ?? []).map((row) => {
         const status = typeof row.collectionStatus === "string" ? row.collectionStatus : null
@@ -6007,6 +6027,9 @@ export default {
           keyConnected: row.keyConnected === 1,
           collectionStatus: statusText,
           attackMetricsStatus: typeof row.attackMetricsStatus === "string" ? row.attackMetricsStatus : "not_collected",
+          attackOutcomesStatus: row.attackMetricsStatus === "complete"
+            ? Number(row.attackOutcomesVersion ?? 0) >= 1 ? "complete" : "refresh_required"
+            : typeof row.attackMetricsStatus === "string" ? row.attackMetricsStatus : "not_collected",
           pagesCollected: Number(row.pagesCollected ?? 0),
           logsCollected: Number(row.storedLogCount ?? 0),
           totalHits: complete ? Number(row.storedHitCount ?? 0) : null,
