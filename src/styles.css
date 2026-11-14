@@ -905,3 +905,56 @@ th.numeric-cell {
   .company-module .user-company-label { max-width: 170px; }
   .company-module .user-company-label small { max-width: 170px; }
 }
+
+
+/* Live Halloween Stats */
+.halloween-live-total-attacks-card,
+.halloween-live-revitalize-card,
+.halloween-live-histogram-card,
+.halloween-live-perk-card{border:1px solid #ffffff19;border-radius:10px;background:#0d171f;padding:17px;margin-top:12px}
+.halloween-live-stat-card-heading{color:#84b8aa;font-size:8px;font-weight:700;letter-spacing:.16em}
+.halloween-live-total-attacks-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px}
+.halloween-live-total-attacks-grid>div{padding:12px;border:1px solid #ffffff15;border-radius:8px;background:#121f28}
+.halloween-live-total-attacks-grid small,
+.halloween-live-total-attacks-grid strong,
+.halloween-live-revitalize-card small,
+.halloween-live-revitalize-card strong,
+.halloween-live-perk-grid small,
+.halloween-live-perk-grid strong,
+.halloween-live-perk-grid span{display:block}
+.halloween-live-total-attacks-grid small,
+.halloween-live-revitalize-card small,
+.halloween-live-perk-grid small{color:#849ca7;font-size:8px;letter-spacing:.1em;font-weight:700;line-height:1.5}
+.halloween-live-total-attacks-grid strong{margin-top:7px;color:#e6f2ed;font:600 20px 'Space Grotesk',sans-serif}
+.halloween-live-stat-note{color:#8ea3ad;font-size:9px;line-height:1.65;margin:12px 0 0}
+.halloween-live-revitalize-card{display:flex;align-items:center;justify-content:space-between;gap:18px}
+.halloween-live-revitalize-card strong{margin-top:6px;color:#f1d39a;font:600 22px 'Space Grotesk',sans-serif}
+.halloween-live-revitalize-card>span{max-width:55%;color:#9aadb6;font-size:9px;line-height:1.65;text-align:right}
+.halloween-live-histogram-card>p,
+.halloween-live-perk-card>p{color:#95a8b2;font-size:9px;line-height:1.65;margin:8px 0 14px}
+.halloween-live-histogram{display:grid;gap:9px}
+.halloween-live-histogram-row{display:grid;grid-template-columns:76px minmax(60px,1fr) 52px;align-items:center;gap:10px}
+.halloween-live-histogram-row>span{color:#aebdc4;font-size:9px}
+.halloween-live-histogram-row>strong{color:#e7eee9;font-size:10px;text-align:right;font-variant-numeric:tabular-nums}
+.halloween-live-histogram-track{height:10px;overflow:hidden;border-radius:999px;background:#1b2c35}
+.halloween-live-histogram-track>i{display:block;height:100%;min-width:0;border-radius:999px;background:linear-gradient(90deg,#4eaa94,#d5b16d)}
+.halloween-live-perk-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}
+.halloween-live-perk-card{margin-top:0}
+.halloween-live-perk-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.halloween-live-perk-grid>div{padding:11px;border:1px solid #ffffff15;border-radius:8px;background:#121f28}
+.halloween-live-perk-grid strong{margin-top:7px;color:#e6f1eb;font:600 18px 'Space Grotesk',sans-serif;font-variant-numeric:tabular-nums}
+.halloween-live-perk-grid span{margin-top:4px;color:#8da3ad;font-size:8px}
+.halloween-live-exchange-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:700px){
+  .halloween-live-total-attacks-grid{grid-template-columns:1fr}
+  .halloween-live-total-attacks-grid>div{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .halloween-live-total-attacks-grid strong{margin-top:0}
+  .halloween-live-revitalize-card{align-items:flex-start;flex-direction:column;gap:8px}
+  .halloween-live-revitalize-card>span{max-width:none;text-align:left}
+  .halloween-live-perk-cards{grid-template-columns:1fr}
+}
+@media(max-width:390px){
+  .halloween-live-histogram-row{grid-template-columns:64px minmax(42px,1fr) 42px;gap:7px}
+  .halloween-live-histogram-row>span{font-size:8px}
+  .halloween-live-perk-grid strong{font-size:16px}
+}
