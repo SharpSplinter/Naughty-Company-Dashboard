@@ -44,6 +44,7 @@ export type HalloweenEventMetrics = {
   successfulAttackEnergyUsed: number
   successfulAttacks: number
   revitalizeProcs: number
+  revitalizeSuccessfulAttacks: number
   revitalizeAttacksReviewed: number
   revitalizeChanceCounts: Record<string, number>
 }
@@ -135,6 +136,7 @@ export function emptyHalloweenEventMetrics(): HalloweenEventMetrics {
     successfulAttackEnergyUsed: 0,
     successfulAttacks: 0,
     revitalizeProcs: 0,
+    revitalizeSuccessfulAttacks: 0,
     revitalizeAttacksReviewed: 0,
     revitalizeChanceCounts: {},
   }
@@ -195,6 +197,15 @@ export type HalloweenRevitalizeMetrics = {
   revitalizeProcs: number
   revitalizeAttacksReviewed: number
   revitalizeChanceCounts: Record<string, number>
+}
+
+export function calculateHalloweenRevitalizeProcRate(
+  metrics: Pick<HalloweenEventMetrics, "revitalizeProcs" | "revitalizeSuccessfulAttacks"> | null | undefined,
+): number | null {
+  const successfulProcs = Number(metrics?.revitalizeProcs)
+  const successfulAttacks = Number(metrics?.revitalizeSuccessfulAttacks)
+  if (!Number.isFinite(successfulProcs) || successfulProcs < 0 || !Number.isFinite(successfulAttacks) || successfulAttacks <= 0) return null
+  return (successfulProcs / successfulAttacks) * 100
 }
 
 export function calculateHalloweenRevitalizeMetrics(
@@ -311,6 +322,7 @@ export function sumHalloweenEventMetrics(values: readonly HalloweenEventMetrics[
     successfulAttackEnergyUsed: total.successfulAttackEnergyUsed + value.successfulAttackEnergyUsed,
     successfulAttacks: total.successfulAttacks + value.successfulAttacks,
     revitalizeProcs: total.revitalizeProcs + value.revitalizeProcs,
+    revitalizeSuccessfulAttacks: total.revitalizeSuccessfulAttacks + value.revitalizeSuccessfulAttacks,
     revitalizeAttacksReviewed: total.revitalizeAttacksReviewed + value.revitalizeAttacksReviewed,
     revitalizeChanceCounts: Object.entries(value.revitalizeChanceCounts).reduce((counts, [chance, count]) => {
       counts[chance] = (counts[chance] ?? 0) + count
