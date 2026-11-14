@@ -1805,7 +1805,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     member.playerId !== archive?.myCollection?.playerId && member.metrics !== null
   )
   const selectedComparison = comparisonOptions.find(member => member.playerId === selectedComparePlayerId) ?? null
-  const comparisonMetricRows: Array<{ label: string; key: "totalHits" | "fhcsUsed" | "greenEggsUsed" | "energyCansUsed" | "boostersUsed" | "energyDrinkSixPacksUsed" | "alcoholSixPacksUsed" | "treatExchangeEnergyGained" | "successfulAttackEnergyUsed" | "successfulAttacks" | "revitalizeProcs" }> = [
+  const comparisonMetricRows: Array<{ label: string; key: "totalHits" | "fhcsUsed" | "greenEggsUsed" | "energyCansUsed" | "boostersUsed" | "energyDrinkSixPacksUsed" | "alcoholSixPacksUsed" | "treatExchangeEnergyGained" | "successfulAttackEnergyUsed" | "successfulAttacks" | "revitalizeProcs" | "revitalizeAttacksReviewed" }> = [
     { label: "Halloween hits", key: "totalHits" },
     { label: "FHCs used", key: "fhcsUsed" },
     { label: "Green Easter Eggs used", key: "greenEggsUsed" },
@@ -1817,8 +1817,10 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     { label: "Energy used in successful attacks", key: "successfulAttackEnergyUsed" },
     { label: "Successful attacks", key: "successfulAttacks" },
     { label: "Revitalize procs", key: "revitalizeProcs" },
+    { label: "Eligible attacks reviewed", key: "revitalizeAttacksReviewed" },
   ]
-  const comparisonValue = (metrics: HalloweenEventMetrics | null | undefined, hits: number | null | undefined, key: typeof comparisonMetricRows[number]["key"]) => {
+  const comparisonValue = (metrics: HalloweenEventMetrics | null | undefined, hits: number | null | undefined, attackMetricsStatus: string | undefined, key: typeof comparisonMetricRows[number]["key"]) => {
+    if ((key === "revitalizeProcs" || key === "revitalizeAttacksReviewed") && attackMetricsStatus !== "complete") return "—"
     const value = key === "totalHits" ? hits : metrics?.[key]
     return value === null || value === undefined ? "—" : Number(value).toLocaleString()
   }
@@ -1926,8 +1928,8 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
           <table><thead><tr><th>EVENT METRIC</th><th>YOU</th><th>{selectedComparison.playerName}</th></tr></thead><tbody>
             {comparisonMetricRows.map(row => <tr key={row.key}>
               <td>{row.label}</td>
-              <td>{comparisonValue(archive?.myEventMetrics, archive?.myCollection?.totalHits, row.key)}</td>
-              <td>{comparisonValue(selectedComparison.metrics, selectedComparison.totalHits, row.key)}</td>
+              <td>{comparisonValue(archive?.myEventMetrics, archive?.myCollection?.totalHits, archive?.myCollection?.attackMetricsStatus, row.key)}</td>
+              <td>{comparisonValue(selectedComparison.metrics, selectedComparison.totalHits, selectedComparison.attackMetricsStatus, row.key)}</td>
             </tr>)}
           </tbody></table>
           <p className="historical-key-muted">Comparison member coverage: {selectedComparison.coverage}. Completed event years: {selectedComparison.completedEventYears?.join(", ") || "Not available"}.</p>
@@ -2020,7 +2022,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
             {memberDetailBusy ? <p className="historical-key-muted">Loading member history…</p> : memberDetail ? <>
               <div className="historical-detail-metrics"><div><small>COLLECTION STATUS</small><strong>{coverageLabel(memberDetail.collection.coverage)}</strong></div><div><small>DAILY HIT DAYS</small><strong>{memberDetail.dailyActivity.filter(day => Number(day.totalHits) > 0).length}</strong></div><div><small>EVENT LOGS</small><strong>{memberDetail.logs.length.toLocaleString()}</strong></div></div>
               {memberBoosterCooldown ? (
-                {historicalYear !== "all" && <section className="historical-booster-cooldown" aria-label="Personal booster cooldown calculation">
+                <section className="historical-booster-cooldown" aria-label="Personal booster cooldown calculation">
                   <div className="halloween-status historical"><i /> PERSONAL BOOSTER COOLDOWN</div>
                   <h3>Cooldown from items used in this event window</h3>
                   <div className="historical-detail-cooldown-grid">
@@ -2038,7 +2040,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
                     <div><small>THEORETICAL LIMIT STATUS</small><strong>{memberBoosterCooldown.withinTheoreticalLimit ? "WITHIN LIMIT" : "OVER LIMIT"}</strong></div>
                   </div>
                   <p>Event opening cooldown is 0h. The 48h threshold is checked immediately before each item use. A final 6h FHC or Green Easter Egg can be used just below 48h and raise the timer to nearly 54h, so the strict theoretical total is less than event length + 48h + 6h. The practical target is one FHC below the theoretical maximum to leave another 6h of timing margin. Carryover is a minimum based on the total item hours; the exact ending timer depends on each item-use timestamp. Counts come from this member’s completed event-window item-use logs.</p>
-                </section>}
+                </section>
               ) : <p className="historical-key-muted">Booster cooldown totals appear when this member’s event-log collection is complete for an individual event year.</p>}
               <div className="historical-daily-activity"><h3>Daily hit history</h3>{memberDetail.dailyActivity.length ? memberDetail.dailyActivity.map(day => <div className="historical-day-row" key={String(day.eventYear ?? historicalYear) + "-" + day.eventDay}><span>{historicalYear === "all" && day.eventYear ? day.eventYear + " · " : ""}{day.eventDay}</span><div><i style={{ width: ((Number(day.totalHits || 0) / maxDailyHits) * 100) + "%" }} /></div><strong>{Number(day.totalHits || 0).toLocaleString()}</strong></div>) : <p className="historical-key-muted">Daily activity is not available for this member yet.</p>}</div>
               <div className="historical-event-feed"><h3>Event log feed</h3>{memberDetail.logs.length ? memberDetail.logs.slice(0, 80).map(log => <article key={log.logId}><div><strong>{log.title || "Halloween-related activity"}</strong><small>{log.eventYear ? "Event " + log.eventYear + " · " : ""}{formatWhen(log.timestamp)} · Log #{log.logId}</small></div><div>{log.isHit && <span className="event-hit-pill">HIT</span>}{(log.labels || []).map(label => <span className="event-label-pill" key={label}>{label.replaceAll("_", " ")}</span>)}</div></article>) : <p className="historical-key-muted">No event logs are available for this member yet.</p>}</div>
