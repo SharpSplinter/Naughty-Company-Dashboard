@@ -1921,10 +1921,10 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
                 <div className="halloween-live-stat-card-heading">TREAT MULTIPLIER PERKS</div>
                 <p>Each awarded treat starts from a base of 1. The final amount identifies which multiplier upgrades procced, including stacked combinations.</p>
                 <div className="halloween-live-perk-grid">
-                  <div><small>DOUBLER · 20% BASE CHANCE</small><strong>{archive.myEventMetrics.doublerProcs.toFixed(1)}</strong><span>Observed procs</span></div>
-                  <div><small>TRIPLER · 10% BASE CHANCE</small><strong>{archive.myEventMetrics.triplerProcs.toFixed(1)}</strong><span>Observed procs</span></div>
-                  <div><small>QUADRUPLER · 5% BASE CHANCE</small><strong>{archive.myEventMetrics.quadruplerProcs.toFixed(1)}</strong><span>Observed procs</span></div>
-                  <div><small>QUINTUPLER · 1% BASE CHANCE</small><strong>{archive.myEventMetrics.quintuplerProcs.toFixed(1)}</strong><span>Observed procs</span></div>
+                  <div><small>DOUBLER · 20% BASE CHANCE</small><strong>{archive.myEventMetrics.doublerProcs.toLocaleString()}</strong><span>Observed procs</span></div>
+                  <div><small>TRIPLER · 10% BASE CHANCE</small><strong>{archive.myEventMetrics.triplerProcs.toLocaleString()}</strong><span>Observed procs</span></div>
+                  <div><small>QUADRUPLER · 5% BASE CHANCE</small><strong>{archive.myEventMetrics.quadruplerProcs.toLocaleString()}</strong><span>Observed procs</span></div>
+                  <div><small>QUINTUPLER · 1% BASE CHANCE</small><strong>{archive.myEventMetrics.quintuplerProcs.toLocaleString()}</strong><span>Observed procs</span></div>
                 </div>
                 {archive.myEventMetrics.unclassifiedTreatAwards > 0 && <p className="halloween-live-stat-note">{archive.myEventMetrics.unclassifiedTreatAwards.toLocaleString()} treat awards had amounts that do not match a known multiplier combination and are excluded from these proc totals.</p>}
               </div>
