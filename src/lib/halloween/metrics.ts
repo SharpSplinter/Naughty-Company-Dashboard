@@ -305,14 +305,14 @@ export function calculateHalloweenRevitalizeMetrics(
     if (String(attack.attacker?.id ?? "") !== playerId) continue
     const ended = Number(attack.ended)
     if (!Number.isFinite(ended) || ended < windowStart || ended >= windowEnd) continue
-    if (attack.is_interrupted === true) continue
-    result.revitalizeAttacksReviewed += 1
     const outcome = String(attack.result ?? "").toLowerCase()
     if (["attacked", "mugged", "hospitalized", "arrested"].includes(outcome)) {
       result.successfulAttacks += 1
     } else if (outcome === "lost" || outcome === "stalemate") {
       result.lostStalematedAttacks += 1
     }
+    if (attack.is_interrupted === true) continue
+    result.revitalizeAttacksReviewed += 1
     for (const effect of attack.finishing_hit_effects ?? []) {
       if (effect?.name !== "revitalize") continue
       result.revitalizeProcs += 1
