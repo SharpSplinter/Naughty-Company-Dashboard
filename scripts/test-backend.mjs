@@ -389,9 +389,16 @@ try {
     assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
   })
 
-  await test("Halloween Live Stats count treat awards, estimate multiplier procs, and count exact exchange rewards", () => {
+  await test("Halloween Live Stats decode actual treat multiplier combinations and count exact exchange rewards", () => {
+    const multiplierAmounts = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 24, 30, 40, 60, 120]
     const rows = [
-      ...[1, 2, 3, 5, 24].map(treats => ({
+      ...multiplierAmounts.map(treats => ({
+        logTypeId: 2536,
+        title: "Halloween treat receive",
+        category: "Halloween basket",
+        logJson: JSON.stringify({ data: { treats, type: "(Trick or Treat)" }, params: { color: "green" } }),
+      })),
+      ...[17, 18, 19].map(treats => ({
         logTypeId: 2536,
         title: "Halloween treat receive",
         category: "Halloween basket",
@@ -422,12 +429,12 @@ try {
       },
     ]
     const metrics = calculateHalloweenEventMetrics(rows)
-    assert.equal(metrics.successfulAttacksWithTreats, 5)
-    assert.deepEqual(metrics.treatsByAttack, { "1": 1, "2": 1, "3": 1, "5": 1, "24": 1 })
-    assert.equal(metrics.doublerProcs, 1)
-    assert.equal(metrics.triplerProcs, 0.5)
-    assert.equal(metrics.quadruplerProcs, 0.25)
-    assert.equal(metrics.quintuplerProcs, 0.05)
+    assert.equal(metrics.successfulAttacksWithTreats, 19)
+    assert.equal(metrics.unclassifiedTreatAwards, 3)
+    assert.equal(metrics.doublerProcs, 8)
+    assert.equal(metrics.triplerProcs, 8)
+    assert.equal(metrics.quadruplerProcs, 8)
+    assert.equal(metrics.quintuplerProcs, 8)
     assert.equal(metrics.multipackProcs, 6)
     assert.equal(metrics.dealWithDevilProcs, 5)
     assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
