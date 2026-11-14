@@ -74,7 +74,7 @@ try {
   } = require(join(temp, "lib/faction-performance/weekly.js"))
   const { filterAndSortWeeklyMembers } = require(join(temp, "lib/faction-performance/leaderboard.js"))
   const { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } = require(join(temp, "lib/faction-performance/private-live.js"))
-  const { calculateHalloweenBoosterCooldown, calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, calculateHalloweenRevitalizeProcRate, emptyHalloweenEventMetrics, sumHalloweenEventMetrics } = require(join(temp, "lib/halloween/metrics.js"))
+  const { calculateHalloweenBoosterCooldown, calculateHalloweenDashboardBoostersReceived, calculateHalloweenDashboardBoostersUsed, calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, calculateHalloweenRevitalizeProcRate, emptyHalloweenEventMetrics, sumHalloweenEventMetrics } = require(join(temp, "lib/halloween/metrics.js"))
   const {
     buildPersonalStatsPath,
     categoriesForMissingPersonalStats,
@@ -374,6 +374,8 @@ try {
       revitalizeAttacksReviewed: 0,
       revitalizeChanceCounts: {},
     })
+    assert.equal(calculateHalloweenDashboardBoostersReceived(metrics), 16)
+    assert.equal(calculateHalloweenDashboardBoostersUsed(metrics), 9)
     assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
   })
 
