@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/test-backend.mjs && node scripts/test-admin-role-registry.mjs && node scripts/test-halloween-key-consent.mjs && node scripts/test-private-live-consent.mjs"
+    "test": "node scripts/test-backend.mjs && node scripts/test-admin-role-registry.mjs && node scripts/test-halloween-key-consent.mjs && node scripts/test-christmas-town-consent.mjs && node scripts/test-private-live-consent.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.7.0",

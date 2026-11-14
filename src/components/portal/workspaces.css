@@ -692,3 +692,15 @@
   .halloween-year-filter{align-items:stretch;flex-direction:column}
   .halloween-year-filter label,.halloween-year-filter select,.halloween-comparison-select,.halloween-comparison-select select{width:100%;max-width:none}
 }
+
+.christmas-town-collection-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end}
+.christmas-town-collection-actions button.secondary{border-color:#435b61;background:#1b3037;color:#c9ded8}
+.christmas-town-collection-actions button:disabled{opacity:.55;cursor:not-allowed}
+.christmas-town-coverage-note{max-width:1140px;margin:9px auto 0;padding:9px 12px;border:1px solid #76633b;border-radius:7px;background:#272316;color:#f0d59a;font-size:8px;line-height:1.6;font-weight:700;letter-spacing:.04em}
+@media(max-width:700px){.christmas-town-collection-actions{justify-content:flex-start}}
+
+.christmas-town-coupon-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}
+.christmas-town-coupon-summary>div{padding:11px;border:1px solid #ffffff14;border-radius:7px;background:#101b22}
+.christmas-town-coupon-summary small,.christmas-town-coupon-summary strong{display:block}
+.christmas-town-coupon-summary small{color:#91aaa3;font-size:7px;font-weight:700;letter-spacing:.12em}
+.christmas-town-coupon-summary strong{margin-top:7px;color:#e8efe8;font:600 20px 'Space Grotesk',sans-serif}

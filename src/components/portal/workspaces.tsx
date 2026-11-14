@@ -125,6 +125,13 @@ const workspaces = [
     label: "EVENT INTELLIGENCE",
   },
   {
+    path: "/christmas-town",
+    icon: "❄",
+    title: "Christmas Town",
+    description: "Your personal minigame, chest, ornament, currency and market-value history.",
+    label: "EVENT INTELLIGENCE",
+  },
+  {
     path: "/faction",
     icon: "♜",
     title: "Faction Dashboard",
@@ -163,7 +170,7 @@ export function PortalHome(props: WorkspaceProps) {
       </section>
 
       <section className="portal-workspaces" aria-label="Available workspaces">
-        <div className="portal-section-heading"><div><span>YOUR WORKSPACES</span><h2>Choose where to go</h2></div><small>04 MODULES</small></div>
+        <div className="portal-section-heading"><div><span>YOUR WORKSPACES</span><h2>Choose where to go</h2></div><small>05 MODULES</small></div>
         <div className="portal-card-grid">
           {workspaces.map((workspace, index) => (
             <button type="button" key={workspace.path} className={`portal-card portal-card-${index + 1}`} onClick={() => props.onNavigate(workspace.path)}>

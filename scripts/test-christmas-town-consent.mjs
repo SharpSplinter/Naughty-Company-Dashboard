@@ -1,0 +1,57 @@
+import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
+
+const read = path => readFileSync(resolve(process.cwd(), path), "utf8")
+const worker = read("src/worker/index.ts")
+const metrics = read("src/lib/christmas-town/metrics.ts")
+const page = read("src/components/portal/christmas-town.tsx")
+const floor = read("src/components/floor/floor-app.tsx")
+const portal = read("src/components/portal/workspaces.tsx")
+const migration = read("migrations/auth/0028_christmas_town_archive.sql")
+
+assert.match(worker, /\/api\/me\/christmas-town\/key/)
+assert.match(worker, /\/api\/me\/christmas-town\/collect/)
+assert.match(worker, /\/api\/me\/christmas-town\/archive/)
+assert.match(worker, /christmas-town-history-v1/)
+assert.match(worker, /userSelections\.includes\("log"\)/)
+assert.match(worker, /logAccess\?\.custom_permissions === true/)
+assert.match(worker, /unrestricted Custom User → Log selection/)
+assert.match(worker, /String\(owner \?\? ""\) !== session\.player_id/)
+assert.match(worker, /christmas-town-log-collection/)
+assert.match(worker, /const seasonStart = Date\.UTC\(year, 11, 1\)/)
+assert.match(worker, /const seasonEnd = Date\.UTC\(year \+ 1, 0, 1\)/)
+assert.match(page, /const seasonStart = Date\.UTC\(year, 11, 1\)/)
+assert.match(page, /const seasonEnd = Date\.UTC\(year \+ 1, 0, 1\)/)
+assert.match(worker, /christmas_town_event_logs WHERE player_id = \? AND event_timestamp >= \? AND event_timestamp < \?/)
+assert.match(worker, /parsedUrl\.pathname !== "\/v2\/user\/log"/)
+assert.match(worker, /Christmas Town history collection exhausted its background queue retries/)
+assert.match(worker, /DELETE FROM christmas_town_event_logs WHERE player_id = \?/)
+
+assert.match(migration, /CREATE TABLE IF NOT EXISTS christmas_town_historical_keys/)
+assert.match(migration, /CREATE TABLE IF NOT EXISTS christmas_town_collection_jobs/)
+assert.match(migration, /CREATE TABLE IF NOT EXISTS christmas_town_event_logs/)
+assert.match(migration, /UNIQUE \(player_id, event_year\)/)
+
+assert.match(metrics, /calculateChristmasTownMetrics/)
+assert.match(metrics, /applyChristmasTownMarketPrices/)
+assert.match(metrics, /valuePerChest/)
+assert.match(metrics, /prizeCouponItemsById/)
+assert.match(metrics, /potDepositedById/)
+
+assert.match(page, /christmas-town-history-v1/)
+assert.match(page, /I consent to collecting and storing my personal Christmas Town event logs/)
+assert.match(page, /apiBase \+ "\/api\/me\/christmas-town\/archive/)
+assert.match(page, /Collect selected seasons/)
+assert.match(page, /FROM/)
+assert.match(page, /TO/)
+assert.match(page, /Received items/)
+assert.match(page, /Minigames/)
+assert.match(page, /Chests/)
+assert.match(page, /Christmas Bucks/)
+assert.doesNotMatch(page, /input[^>]+type=["']password["'][^>]+Torn API key/i)
+
+assert.match(floor, /routePath === "\/christmas-town"/)
+assert.match(portal, /path: "\/christmas-town"/)
+
+console.log("PASS Christmas Town has separate personal consent, bounded seasonal collection, authenticated endpoints, and a dedicated archive page")

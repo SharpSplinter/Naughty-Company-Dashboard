@@ -21,6 +21,7 @@ const sourceFiles = [
   "src/lib/faction-performance/leaderboard.ts",
   "src/lib/faction-performance/private-live.ts",
   "src/lib/halloween/metrics.ts",
+  "src/lib/christmas-town/metrics.ts",
   "src/lib/torn/types.ts",
   "src/worker/index.ts",
   "src/worker/snapshot-provenance.ts",
@@ -76,6 +77,7 @@ try {
   const { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } = require(join(temp, "lib/faction-performance/private-live.js"))
   const { calculateHalloweenBoosterCooldown, calculateHalloweenDashboardBoostersReceived, calculateHalloweenDashboardBoostersUsed, calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, calculateHalloweenRevitalizeProcRate, emptyHalloweenEventMetrics, sumHalloweenEventMetrics } = require(join(temp, "lib/halloween/metrics.js"))
   const { calculateHalloweenExchangeMarketValue } = require(join(temp, "lib/halloween/market-value.js"))
+  const { calculateChristmasTownMetrics, applyChristmasTownMarketPrices } = require(join(temp, "lib/christmas-town/metrics.js"))
   const {
     buildPersonalStatsPath,
     categoriesForMissingPersonalStats,
@@ -486,6 +488,134 @@ try {
     assert.equal(unavailable.status, "unavailable")
     assert.equal(unavailable.estimatedGrossValue, null)
     assert.equal(unavailable.unpricedItemCount, 1)
+  })
+
+
+  await test("Christmas Town metrics count minigames, chest openings, currencies and rewards without duplicating currency totals", () => {
+    const rows = [
+      {
+        logId: "ct-1",
+        timestamp: 1_671_100_000,
+        title: "Opened Bronze Chest",
+        category: "Christmas Town",
+        logJson: JSON.stringify({ data: { items: { "101": 1, "102": 2, "104": 2, "105": 1, "106": 1 } } }),
+      },
+      {
+        logId: "ct-2",
+        timestamp: 1_671_186_400,
+        title: "Present Pick",
+        category: "Christmas Town",
+        logJson: JSON.stringify({ data: { prize_coupons: 1 } }),
+      },
+      {
+        logId: "ct-3",
+        timestamp: 1_671_186_400,
+        title: "Spin The Wheel",
+        category: "Christmas Town",
+        logJson: JSON.stringify({ data: { christmas_bucks_gained: 5 } }),
+      },
+      {
+        logId: "ct-4",
+        timestamp: 1_671_186_400,
+        title: "Completed Santa Claws and received Prize Coupon",
+        category: "Christmas Town",
+        logJson: JSON.stringify({ data: { prize_coupons: 1 } }),
+      },
+      {
+        logId: "ct-5",
+        timestamp: 1_671_186_400,
+        title: "Visited Santa's Grotto",
+        category: "Christmas Town",
+        logJson: JSON.stringify({ data: { items: [{ id: 107, quantity: 1, name: "Glass of Beer" }] } }),
+      },
+      {
+        logId: "ct-6",
+        timestamp: 1_671_186_400,
+        title: "Bought Festive Socks with Christmas Bucks",
+        category: "Christmas Town",
+        logJson: JSON.stringify({ data: { christmas_bucks_spent: 3, items: [{ id: 108, quantity: 1, name: "Festive Socks" }] } }),
+      },
+      {
+        logId: "ct-7",
+        timestamp: 1_671_186_400,
+        title: "Exchanged 2 Prize Coupons for items",
+        category: "Christmas Town",
+        logJson: JSON.stringify({ data: { items: [{ id: 109, quantity: 2, name: "Bag of Candy Kisses" }] } }),
+      },
+      {
+        logId: "ct-8",
+        timestamp: 1_671_100_000,
+        title: "Opened Bronze Chest and received 1 Christmas Buck",
+        category: "Christmas Town",
+        logJson: JSON.stringify({ data: { item: { id: 110, quantity: 1, name: "Christmas Buck" } } }),
+      },
+    ]
+    const metrics = calculateChristmasTownMetrics(rows)
+    assert.equal(metrics.days, 2)
+    assert.equal(metrics.minigames.find(game => game.key === "present_pick")?.count, 1)
+    assert.equal(metrics.minigames.find(game => game.key === "spin_the_wheel")?.count, 1)
+    assert.equal(metrics.minigames.find(game => game.key === "santa_claws")?.count, 1)
+    assert.equal(metrics.santaVisits, 1)
+    assert.equal(metrics.chests.find(chest => chest.key === "bronze")?.opened, 1)
+    assert.equal(metrics.chests.find(chest => chest.key === "bronze")?.items, 7)
+    assert.equal(metrics.christmasBucksGained, 6, "separate chest bonus log should add Bucks without adding an item")
+    assert.equal(metrics.christmasBucksSpent, 3)
+    assert.equal(metrics.prizeCouponsGained, 2)
+    assert.equal(metrics.prizeCouponsSpent, 2)
+    assert.equal(metrics.prizeCouponsExchanged, 1)
+    assert.equal(metrics.prizeCouponItems, 2)
+    assert.equal(metrics.totalItems, 10, "saleable items exclude currencies and spent items")
+    assert.equal(metrics.chests.find(chest => chest.key === "bronze")?.items, 7, "separate Bucks log must not inflate chest reward items")
+    assert.equal(metrics.items.some(item => item.itemId === "108"), false, "Bucks-shop purchases are outgoing items, not received rewards")
+  })
+
+  await test("Christmas Town market valuation enriches item names and excludes missing prices from totals", () => {
+    const base = calculateChristmasTownMetrics([
+      {
+        logId: "ct-price-1",
+        timestamp: 1_671_100_000,
+        title: "Opened Bronze Chest",
+        category: "Christmas Town",
+        logJson: JSON.stringify({ data: { items: { "101": 1, "102": 2, "104": 2, "105": 1, "106": 1 } } }),
+      },
+    ])
+    const valued = applyChristmasTownMarketPrices(base, [
+      { itemId: "101", itemName: "Six-Pack of Energy Drink", averagePrice: 1000 },
+      { itemId: "102", itemName: "Can of X-MASS", averagePrice: 2000 },
+      { itemId: "104", itemName: "Christmas Tree Ornament", averagePrice: 500 },
+      { itemId: "105", itemName: "Bronze Key", averagePrice: 100 },
+      { itemId: "106", itemName: "Horny Bonnet", averagePrice: 300 },
+    ])
+    assert.equal(valued.estimatedValue, 6400)
+    assert.equal(valued.totalPricedItems, 7)
+    assert.equal(valued.unpricedItems, 0)
+    assert.equal(valued.estimatedValuePerItem, 6400 / 7)
+    assert.equal(valued.keysFound.bronze, 1)
+    assert.equal(valued.ornamentsAdded, 2)
+    assert.equal(valued.ornamentsOther, 2)
+    assert.equal(valued.hatsAdded, 1)
+    assert.equal(valued.chests.find(chest => chest.key === "bronze")?.estimatedValue, 6400)
+    assert.equal(valued.chests.find(chest => chest.key === "bronze")?.best?.estimatedValue, 6400)
+  })
+
+  await test("Christmas Town market valuation leaves unknown item prices out of the subtotal", () => {
+    const base = calculateChristmasTownMetrics([
+      {
+        logId: "ct-price-2",
+        timestamp: 1_671_100_000,
+        title: "Found an item in Christmas Town",
+        category: "Christmas Town",
+        logJson: JSON.stringify({ data: { items: { "201": 2, "202": 1 } } }),
+      },
+    ])
+    const valued = applyChristmasTownMarketPrices(base, [
+      { itemId: "201", itemName: "Known Reward", averagePrice: 2500 },
+      { itemId: "202", itemName: "Unknown Reward", averagePrice: null },
+    ])
+    assert.equal(valued.estimatedValue, 5000)
+    assert.equal(valued.totalPricedItems, 2)
+    assert.equal(valued.unpricedItems, 1)
+    assert.equal(valued.items.find(item => item.itemId === "202")?.estimatedValue, null)
   })
 
   await test("Halloween NPC treat awards decode only when their base amount is known", () => {

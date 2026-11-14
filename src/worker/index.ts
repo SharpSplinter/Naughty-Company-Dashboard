@@ -24,6 +24,7 @@ import { PERSONAL_STATS_HISTORICAL_NAMES } from "../lib/torn/personalstats"
 import { classifyFactionInactivity } from "../lib/faction-performance/activity"
 import { calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, emptyHalloweenEventMetrics, sumHalloweenEventMetrics, type HalloweenAttackMetric, type HalloweenEventMetrics } from "../lib/halloween/metrics"
 import { calculateHalloweenExchangeMarketValue, type HalloweenExchangeMarketPriceRecord, type HalloweenExchangeMarketValue } from "../lib/halloween/market-value"
+import { applyChristmasTownMarketPrices, calculateChristmasTownMetrics, type ChristmasTownEventLogRow } from "../lib/christmas-town/metrics"
 import { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } from "../lib/faction-performance/private-live"
 import { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } from "./snapshot-provenance"
 import { withRollingWeeklyProfit, type DailyProfitHistoryPoint } from "./company-history"
@@ -427,6 +428,9 @@ async function invalidateMemberKeyDependents(env: WorkerEnv, playerId: string, p
   await db.prepare("DELETE FROM halloween_historical_keys WHERE player_id = ?").bind(playerId).run()
   await db.prepare("UPDATE halloween_collection_jobs SET status = 'cancelled', last_error = ?, updated_at = ? WHERE player_id = ? AND status IN ('queued', 'running')")
     .bind("The member's portal API key changed or was removed. Re-enable historical collection with the current key.", now, playerId).run()
+  await db.prepare("DELETE FROM christmas_town_historical_keys WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("UPDATE christmas_town_collection_jobs SET status = 'cancelled', last_error = ?, updated_at = ? WHERE player_id = ? AND status IN ('queued', 'running')")
+    .bind("The member's portal API key changed or was removed. Re-enable Christmas Town history with the current key.", now, playerId).run()
 
   // Secondary company keys are independent member-owned credentials. Remove
   // only per-company/legacy copies that contain the old primary portal key.
@@ -1840,6 +1844,9 @@ async function purgeHalloweenMemberData(env: WorkerEnv, playerId: string): Promi
   await db.prepare("DELETE FROM halloween_live_snapshot_jobs WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM halloween_member_event_slots WHERE player_id = ?").bind(playerId).run()
   await db.prepare("DELETE FROM halloween_api_throttles WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM christmas_town_historical_keys WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM christmas_town_event_logs WHERE player_id = ?").bind(playerId).run()
+  await db.prepare("DELETE FROM christmas_town_collection_jobs WHERE player_id = ?").bind(playerId).run()
   await db.prepare("UPDATE administrators SET revoked_by = 'system', revoked_at = ? WHERE player_id = ? AND revoked_at IS NULL")
     .bind(new Date().toISOString(), playerId).run()
 }
@@ -2638,6 +2645,185 @@ async function runHalloweenLogCollectionPage(env: WorkerEnv, jobId: string): Pro
     .bind(pages, logs, now, now, jobId).run()
 }
 
+
+function classifyChristmasTownLog(row: Record<string, unknown>): boolean {
+  const details = isRecord(row.details) ? row.details : {}
+  const title = typeof details.title === "string" ? details.title.toLowerCase() : ""
+  const category = typeof details.category === "string" ? details.category.toLowerCase() : ""
+  const dataText = JSON.stringify(row.data ?? {}).toLowerCase()
+  const paramsText = JSON.stringify(row.params ?? {}).toLowerCase()
+  const searchable = title + " " + category + " " + dataText + " " + paramsText
+  if (category.includes("christmas town") || title.includes("christmas town") || searchable.includes("christmas town")) return true
+  return /present pick|picked out (?:a )?present|spin(?:ned)? the (?:christmas )?wheel|garland assemble|santa claws|gingerbread men|gingerbread man|word fixer|christmas wreath|snowball shooter|typocalypse|combination chest|bronze chest|silver chest|gold(?:en)? chest|prize coupon|christmas buck|visited santa|santa's grotto|christmas town'?s pot|ornament/.test(searchable)
+}
+
+async function sendChristmasTownCollectionJob(env: WorkerEnv, jobId: string): Promise<void> {
+  if (!env.GLOBAL_RANKINGS_QUEUE) throw new Error("The background collection queue is not configured.")
+  await env.GLOBAL_RANKINGS_QUEUE.send({ kind: "christmas-town-log-collection", jobId })
+}
+
+async function runChristmasTownLogCollectionPage(env: WorkerEnv, jobId: string): Promise<void> {
+  const db = requireDb(env)
+  const job = await db.prepare(
+    "SELECT job_id, player_id, event_year, status, cursor_ts, cursor_url, cursor_direction, pages_collected, logs_collected, window_start_at, window_end_at FROM christmas_town_collection_jobs WHERE job_id = ?",
+  ).bind(jobId).first<{
+    job_id: string
+    player_id: string
+    event_year: number
+    status: string
+    cursor_ts: number
+    cursor_url: string | null
+    cursor_direction: string | null
+    pages_collected: number
+    logs_collected: number
+    window_start_at: string
+    window_end_at: string
+  }>()
+  if (!job || ["complete", "failed", "cancelled"].includes(job.status)) return
+
+  const memberStatus = await db.prepare("SELECT disabled_at FROM dashboard_member_status WHERE player_id = ?")
+    .bind(job.player_id).first<{ disabled_at: string | null }>()
+  if (memberStatus?.disabled_at) {
+    await db.prepare("UPDATE christmas_town_collection_jobs SET status = 'cancelled', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("Collection was cancelled because this member's dashboard access is disabled.", new Date().toISOString(), jobId).run()
+    return
+  }
+
+  const keyRow = await db.prepare("SELECT consent_version FROM christmas_town_historical_keys WHERE player_id = ?")
+    .bind(job.player_id).first<{ consent_version: string }>()
+  const apiKey = keyRow?.consent_version === "christmas-town-history-v1" ? await savedKey(env, job.player_id) : null
+  if (!apiKey) {
+    await db.prepare("UPDATE christmas_town_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("The Christmas Town history permission is no longer connected. Re-enable it with your saved portal key.", new Date().toISOString(), jobId).run()
+    return
+  }
+
+  await throttleHalloweenRequest(env, job.player_id)
+  const factionId = await verifyFactionMembershipWithKey(apiKey)
+  if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
+    await applyConfirmedFactionDeparture(env, job.player_id, factionId)
+    return
+  }
+
+  const eventStart = Math.floor(Date.parse(job.window_start_at) / 1000)
+  const eventEnd = Math.floor(Date.parse(job.window_end_at) / 1000)
+  const dayStart = Number(job.cursor_ts)
+  if (!Number.isFinite(eventStart) || !Number.isFinite(eventEnd) || eventEnd <= eventStart ||
+      !Number.isFinite(dayStart) || dayStart < eventStart) {
+    await db.prepare("UPDATE christmas_town_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+      .bind("The Christmas Town collection window is invalid.", new Date().toISOString(), jobId).run()
+    return
+  }
+  if (dayStart >= eventEnd) {
+    const now = new Date().toISOString()
+    await db.prepare("UPDATE christmas_town_collection_jobs SET status = 'complete', completed_at = ?, updated_at = ?, last_error = NULL WHERE job_id = ?")
+      .bind(now, now, jobId).run()
+    return
+  }
+
+  const dayEnd = Math.min(dayStart + 86400, eventEnd)
+  const requestUrl = job.cursor_url || (() => {
+    const url = new URL("https://api.torn.com/v2/user/log")
+    url.searchParams.set("from", String(dayStart))
+    url.searchParams.set("to", String(dayEnd - 1))
+    url.searchParams.set("limit", "100")
+    url.searchParams.set("sort", "desc")
+    return url.toString()
+  })()
+  const parsedUrl = new URL(requestUrl)
+  if (parsedUrl.protocol !== "https:" || parsedUrl.hostname !== "api.torn.com" ||
+      parsedUrl.pathname !== "/v2/user/log" || parsedUrl.searchParams.has("key")) {
+    throw new Error("Torn returned an unsafe Christmas Town pagination URL. The API key was not sent.")
+  }
+
+  await throttleHalloweenRequest(env, job.player_id)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 15000)
+  let response: Response
+  let payload: unknown
+  try {
+    response = await trackedTornFetch("christmas-town-historical-log", parsedUrl.toString(), {
+      headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+      signal: controller.signal,
+    }, fetch, job.player_id)
+    payload = await response.json().catch(() => null)
+  } finally {
+    clearTimeout(timeout)
+  }
+
+  const apiError = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+  if (!response.ok || apiError) {
+    const code = typeof apiError?.code === "number" ? apiError.code : undefined
+    if (code === 2 || code === 16 || code === 18) {
+      await db.prepare("UPDATE christmas_town_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+        .bind("Torn rejected the saved key. Reconnect a key that includes User → Log access.", new Date().toISOString(), jobId).run()
+      return
+    }
+    throw new Error(code === 5 || code === 8 || code === 14
+      ? "Torn rate limit reached during Christmas Town collection."
+      : code === 9 ? "Torn's API is currently disabled." : "Torn Christmas Town log request failed.")
+  }
+  if (!isRecord(payload) || !Array.isArray(payload.log)) {
+    throw new Error("Torn returned an unexpected Christmas Town user log response.")
+  }
+
+  const collectedAt = new Date().toISOString()
+  let inserted = 0
+  for (const raw of payload.log) {
+    if (!isRecord(raw) || raw.id == null || !Number.isFinite(Number(raw.timestamp))) continue
+    const timestamp = Number(raw.timestamp)
+    if (timestamp < eventStart || timestamp >= eventEnd || !classifyChristmasTownLog(raw)) continue
+    const details = isRecord(raw.details) ? raw.details : {}
+    const parsedLogType = details.id == null ? null : Number(details.id)
+    const logTypeId = parsedLogType !== null && Number.isFinite(parsedLogType) ? parsedLogType : null
+    const result = await db.prepare(
+      "INSERT OR IGNORE INTO christmas_town_event_logs (player_id, event_year, log_id, event_timestamp, log_type_id, category, title, log_json, collected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).bind(
+      job.player_id,
+      job.event_year,
+      String(raw.id),
+      timestamp,
+      logTypeId,
+      typeof details.category === "string" ? details.category : null,
+      typeof details.title === "string" ? details.title : null,
+      asJson(raw),
+      collectedAt,
+    ).run()
+    inserted += Number(result.meta?.changes ?? 0)
+  }
+
+  const metadata = isRecord(payload._metadata) ? payload._metadata : {}
+  const links = isRecord(metadata.links) ? metadata.links : {}
+  const direction = job.cursor_direction || (typeof links.prev === "string" ? "prev" : "next")
+  const candidate = links[direction]
+  const nextUrl = typeof candidate === "string" ? candidate : null
+  const pages = Number(job.pages_collected ?? 0) + 1
+  const logs = Number(job.logs_collected ?? 0) + inserted
+  const now = new Date().toISOString()
+
+  if (nextUrl) {
+    const next = new URL(nextUrl, parsedUrl)
+    if (next.protocol !== "https:" || next.hostname !== "api.torn.com" ||
+        next.pathname !== "/v2/user/log" || next.searchParams.has("key")) {
+      throw new Error("Torn returned an unsafe Christmas Town pagination link.")
+    }
+    await db.prepare("UPDATE christmas_town_collection_jobs SET status = 'running', cursor_url = ?, cursor_direction = ?, pages_collected = ?, logs_collected = ?, last_error = NULL, updated_at = ? WHERE job_id = ?")
+      .bind(next.toString(), direction, pages, logs, now, jobId).run()
+    await sendChristmasTownCollectionJob(env, jobId)
+    return
+  }
+
+  if (dayEnd < eventEnd) {
+    await db.prepare("UPDATE christmas_town_collection_jobs SET status = 'queued', cursor_ts = ?, cursor_url = NULL, cursor_direction = NULL, pages_collected = ?, logs_collected = ?, last_error = NULL, updated_at = ? WHERE job_id = ?")
+      .bind(dayEnd, pages, logs, now, jobId).run()
+    await sendChristmasTownCollectionJob(env, jobId)
+    return
+  }
+
+  await db.prepare("UPDATE christmas_town_collection_jobs SET status = 'complete', pages_collected = ?, logs_collected = ?, last_error = NULL, completed_at = ?, updated_at = ? WHERE job_id = ?")
+    .bind(pages, logs, now, now, jobId).run()
+}
+
 async function runHalloweenLiveSnapshot(env: WorkerEnv, playerId: string, eventYear: number, snapshotKind: "opening" | "periodic" | "closing" | "manual"): Promise<Record<string, unknown>> {
   const db = requireDb(env)
   const personal = await getHalloweenMemberEventWindow(env, playerId, eventYear)
@@ -2893,6 +3079,9 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
       } else if (body.kind === "halloween-live-snapshot" && liveSnapshotJobId) {
         await requireDb(env).prepare("UPDATE halloween_live_snapshot_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
           .bind("Live Halloween snapshot exhausted its queue retries.", new Date().toISOString(), liveSnapshotJobId).run()
+      } else if (body.kind === "christmas-town-log-collection" && halloweenJobId) {
+        await requireDb(env).prepare("UPDATE christmas_town_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ? AND status NOT IN ('complete', 'cancelled')")
+          .bind("Christmas Town history collection exhausted its background queue retries.", new Date().toISOString(), halloweenJobId).run()
       } else if (body.kind === "halloween-log-collection" && halloweenJobId) {
         await requireDb(env).prepare("UPDATE halloween_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ? AND status NOT IN ('complete', 'cancelled')")
           .bind("Historical collection exhausted its queue retries. Check the saved Full Access key and retry.", new Date().toISOString(), halloweenJobId).run()
@@ -2985,6 +3174,21 @@ async function handleGlobalRankingQueueBatch(batch: { messages: QueueMessage[]; 
         else {
           await requireDb(env).prepare("UPDATE halloween_live_snapshot_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
             .bind("Live Halloween snapshot failed after repeated Torn API errors.", new Date().toISOString(), liveSnapshotJobId).run()
+          message.ack()
+        }
+      }
+      continue
+    }
+    if (body.kind === "christmas-town-log-collection" && halloweenJobId) {
+      try {
+        await runChristmasTownLogCollectionPage(env, halloweenJobId)
+        message.ack()
+      } catch {
+        const attempts = Number(message.attempts ?? 1)
+        if (attempts < 4) message.retry({ delaySeconds: Math.min(30, attempts * 5) })
+        else {
+          await requireDb(env).prepare("UPDATE christmas_town_collection_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
+            .bind("Christmas Town history collection failed after repeated Torn API errors. Retry collection from the Christmas Town page.", new Date().toISOString(), halloweenJobId).run()
           message.ack()
         }
       }
@@ -5933,6 +6137,258 @@ export default {
       await requireDb(env).prepare("DELETE FROM faction_member_private_live_snapshots WHERE player_id = ?").bind(session.player_id).run()
       await requireDb(env).prepare("DELETE FROM member_private_live_keys WHERE player_id = ?").bind(session.player_id).run()
       return jsonResponse({ disconnected: true, factionSnapshotRemoved: true }, 200, origin)
+    }
+
+
+    if (url.pathname === "/api/me/christmas-town/key" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const row = await requireDb(env).prepare(
+        "SELECT last_four, access_level, consent_version, consented_at, last_validated_at, updated_at FROM christmas_town_historical_keys WHERE player_id = ?",
+      ).bind(session.player_id).first<{
+        last_four: string; access_level: string; consent_version: string
+        consented_at: string; last_validated_at: string; updated_at: string
+      }>()
+      return jsonResponse({
+        connected: Boolean(row),
+        key: row ? {
+          lastFour: row.last_four,
+          accessLevel: row.access_level,
+          consentVersion: row.consent_version,
+          consentedAt: row.consented_at,
+          lastValidatedAt: row.last_validated_at,
+          updatedAt: row.updated_at,
+        } : null,
+      }, 200, origin)
+    }
+
+    if (url.pathname === "/api/me/christmas-town/key" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      try {
+        const body: unknown = await request.json().catch(() => null)
+        const consent = isRecord(body) && body.consent === true
+        const consentVersion = isRecord(body) && typeof body.consentVersion === "string" ? body.consentVersion : ""
+        const apiKey = await savedKey(env, session.player_id) ?? ""
+        if (!apiKey) return jsonResponse({ error: "Sign in with your Naughty Family Portal Torn API key before enabling Christmas Town history." }, 409, origin)
+        if (!consent || consentVersion !== "christmas-town-history-v1") {
+          return jsonResponse({ error: "Please review and accept the Christmas Town personal event-history terms before enabling collection." }, 400, origin)
+        }
+
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 12000)
+        let response: Response
+        let payload: unknown
+        try {
+          response = await trackedTornFetch("christmas-town-key-validation", "https://api.torn.com/v2/key/info", {
+            headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
+            signal: controller.signal,
+          }, fetch, session.player_id)
+          payload = await response.json().catch(() => null)
+        } finally {
+          clearTimeout(timeout)
+        }
+        const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+        if (!response.ok || error) {
+          const code = typeof error?.code === "number" ? error.code : undefined
+          const rateLimited = code === 5 || code === 8 || code === 14
+          return jsonResponse({
+            error: rateLimited
+              ? "Torn request limit reached. Please retry after the limit resets."
+              : code === 9 ? "Torn's API is currently disabled." : "Torn could not validate your saved portal API key.",
+          }, rateLimited ? 429 : code === 9 ? 503 : 400, origin)
+        }
+
+        const root = isRecord(payload) && isRecord(payload.info) ? payload.info : null
+        const owner = isRecord(root?.user) ? root.user.id : undefined
+        const access = isRecord(root?.access) ? root.access : null
+        const selections = isRecord(root?.selections) ? root.selections : null
+        const userSelections = Array.isArray(selections?.user) ? selections.user : []
+        if (String(owner ?? "") !== session.player_id) {
+          return jsonResponse({ error: "Your saved portal key does not belong to this Torn account. Sign in again with your own key." }, 403, origin)
+        }
+        const accessType = typeof access?.type === "string" ? access.type : ""
+        const logAccess = isRecord(access?.log) ? access.log : null
+        const hasCustomLogRestrictions = logAccess?.custom_permissions === true
+        const supportsLog = userSelections.includes("log") &&
+          (accessType === "Full Access" || accessType === "Custom") &&
+          !hasCustomLogRestrictions
+        if (!supportsLog) {
+          return jsonResponse({
+            error: hasCustomLogRestrictions
+              ? "This API key limits User → Log to selected categories or log IDs. Christmas Town history needs unrestricted User → Log access so the archive cannot silently miss event records."
+              : "Christmas Town history needs Full Access or an unrestricted Custom User → Log selection. Custom category or log-ID restrictions can omit event records.",
+          }, 400, origin)
+        }
+        const factionId = await verifyFactionMembershipWithKey(apiKey)
+        if (factionId !== NAUGHTY_SOULS_FACTION_ID) {
+          await applyConfirmedFactionDeparture(env, session.player_id, factionId)
+          return jsonResponse({ error: "Your Naughty Souls membership could not be confirmed." }, 403, origin)
+        }
+
+        const encrypted = await encryptKey(env, apiKey)
+        const now = new Date().toISOString()
+        await requireDb(env).prepare(
+          "INSERT INTO christmas_town_historical_keys (player_id, ciphertext, iv, last_four, access_level, consent_version, consented_at, last_validated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(player_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, last_four = excluded.last_four, access_level = excluded.access_level, consent_version = excluded.consent_version, consented_at = excluded.consented_at, last_validated_at = excluded.last_validated_at, updated_at = excluded.updated_at",
+        ).bind(
+          session.player_id, encrypted.ciphertext, encrypted.iv, apiKey.slice(-4), accessType,
+          "christmas-town-history-v1", now, now, now, now,
+        ).run()
+        return jsonResponse({
+          saved: true,
+          lastFour: apiKey.slice(-4),
+          accessLevel: accessType,
+          consentedAt: now,
+          lastValidatedAt: now,
+        }, 200, origin)
+      } catch (error) {
+        return tornError(error, origin)
+      }
+    }
+
+    if (url.pathname === "/api/me/christmas-town/key" && request.method === "DELETE") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const now = new Date().toISOString()
+      const db = requireDb(env)
+      await db.prepare("DELETE FROM christmas_town_historical_keys WHERE player_id = ?").bind(session.player_id).run()
+      await db.prepare("UPDATE christmas_town_collection_jobs SET status = 'cancelled', last_error = ?, updated_at = ? WHERE player_id = ? AND status IN ('queued', 'running')")
+        .bind("The member disconnected Christmas Town history collection. Previously collected records were retained.", now, session.player_id).run()
+      return jsonResponse({ deleted: true, historicalRecordsRetained: true }, 200, origin)
+    }
+
+    if (url.pathname === "/api/me/christmas-town/collect" && request.method === "POST") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      if (!env.GLOBAL_RANKINGS_QUEUE) return jsonResponse({ error: "The background collection queue is not configured." }, 503, origin)
+      const body: unknown = await request.json().catch(() => null)
+      const fromDate = isRecord(body) && typeof body.fromDate === "string" ? body.fromDate : ""
+      const toDate = isRecord(body) && typeof body.toDate === "string" ? body.toDate : ""
+      const datePattern = /^\d{4}-\d{2}-\d{2}$/
+      const fromMs = datePattern.test(fromDate) ? Date.parse(fromDate + "T00:00:00Z") : Number.NaN
+      const toMs = datePattern.test(toDate) ? Date.parse(toDate + "T00:00:00Z") : Number.NaN
+      const today = new Date().toISOString().slice(0, 10)
+      if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) ||
+          new Date(fromMs).toISOString().slice(0, 10) !== fromDate ||
+          new Date(toMs).toISOString().slice(0, 10) !== toDate ||
+          fromMs > toMs || fromDate < "2021-12-10" || toDate > today) {
+        return jsonResponse({ error: "Choose a valid date range from 10 December 2021 through today." }, 400, origin)
+      }
+      const key = await requireDb(env).prepare(
+        "SELECT consent_version FROM christmas_town_historical_keys WHERE player_id = ?",
+      ).bind(session.player_id).first<{ consent_version: string }>()
+      if (key?.consent_version !== "christmas-town-history-v1") {
+        return jsonResponse({ error: "Enable Christmas Town history and accept its data-sharing terms before collecting." }, 409, origin)
+      }
+
+      const toExclusive = toMs + 86400 * 1000
+      const firstSeason = Math.max(2021, new Date(fromMs).getUTCFullYear())
+      const lastSeason = new Date(toMs).getUTCFullYear()
+      const now = new Date().toISOString()
+      const jobs: Array<{ eventYear: number; status: string; jobId: string; logsCollected: number }> = []
+      for (let year = firstSeason; year <= lastSeason; year++) {
+        const seasonStart = Date.UTC(year, 11, 1)
+        const seasonEnd = Date.UTC(year + 1, 0, 1)
+        if (seasonEnd <= fromMs || seasonStart >= toExclusive) continue
+        const startAt = new Date(seasonStart).toISOString()
+        const endAt = new Date(seasonEnd).toISOString()
+        const existing = await requireDb(env).prepare(
+          "SELECT job_id AS jobId, status, logs_collected AS logsCollected, window_start_at AS windowStartAt, window_end_at AS windowEndAt FROM christmas_town_collection_jobs WHERE player_id = ? AND event_year = ?",
+        ).bind(session.player_id, year).first<{
+          jobId: string; status: string; logsCollected: number; windowStartAt: string; windowEndAt: string
+        }>()
+        if (existing?.status === "complete" &&
+            existing.windowStartAt === startAt && existing.windowEndAt === endAt) {
+          jobs.push({ eventYear: year, status: "complete", jobId: existing.jobId, logsCollected: Number(existing.logsCollected ?? 0) })
+          continue
+        }
+        if (existing && ["queued", "running"].includes(existing.status)) {
+          jobs.push({ eventYear: year, status: existing.status, jobId: existing.jobId, logsCollected: Number(existing.logsCollected ?? 0) })
+          continue
+        }
+
+        const jobId = existing?.jobId || crypto.randomUUID()
+        const cursor = Math.floor(seasonStart / 1000)
+        if (existing) {
+          await requireDb(env).prepare(
+            "UPDATE christmas_town_collection_jobs SET status = 'queued', cursor_ts = ?, cursor_url = NULL, cursor_direction = NULL, pages_collected = 0, logs_collected = 0, window_start_at = ?, window_end_at = ?, last_error = NULL, completed_at = NULL, updated_at = ? WHERE job_id = ?",
+          ).bind(cursor, startAt, endAt, now, jobId).run()
+        } else {
+          await requireDb(env).prepare(
+            "INSERT INTO christmas_town_collection_jobs (job_id, player_id, event_year, status, cursor_ts, cursor_url, cursor_direction, pages_collected, logs_collected, window_start_at, window_end_at, created_at, updated_at) VALUES (?, ?, ?, 'queued', ?, NULL, NULL, 0, 0, ?, ?, ?, ?)",
+          ).bind(jobId, session.player_id, year, cursor, startAt, endAt, now, now).run()
+        }
+        await sendChristmasTownCollectionJob(env, jobId)
+        jobs.push({ eventYear: year, status: "queued", jobId, logsCollected: 0 })
+      }
+      return jsonResponse({ queued: jobs.some(job => job.status === "queued"), jobs }, 202, origin)
+    }
+
+    if (url.pathname === "/api/me/christmas-town/archive" && request.method === "GET") {
+      const session = await authenticate(request, env)
+      if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
+      const fromDate = url.searchParams.get("from") || "2021-12-10"
+      const toDate = url.searchParams.get("to") || new Date().toISOString().slice(0, 10)
+      const datePattern = /^\d{4}-\d{2}-\d{2}$/
+      const fromMs = datePattern.test(fromDate) ? Date.parse(fromDate + "T00:00:00Z") : Number.NaN
+      const toMs = datePattern.test(toDate) ? Date.parse(toDate + "T00:00:00Z") : Number.NaN
+      if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) ||
+          new Date(fromMs).toISOString().slice(0, 10) !== fromDate ||
+          new Date(toMs).toISOString().slice(0, 10) !== toDate || fromMs > toMs) {
+        return jsonResponse({ error: "Choose a valid Christmas Town date range." }, 400, origin)
+      }
+      const db = requireDb(env)
+      const keyRow = await db.prepare(
+        "SELECT last_four AS lastFour, access_level AS accessLevel, consent_version AS consentVersion, consented_at AS consentedAt, last_validated_at AS lastValidatedAt FROM christmas_town_historical_keys WHERE player_id = ?",
+      ).bind(session.player_id).first<{
+        lastFour: string; accessLevel: string; consentVersion: string; consentedAt: string; lastValidatedAt: string
+      }>()
+      const upperSeconds = Math.floor((toMs + 86400 * 1000) / 1000)
+      const lowerSeconds = Math.floor(fromMs / 1000)
+      const rows = await db.prepare(
+        "SELECT log_id AS logId, event_timestamp AS timestamp, title, category, log_json AS logJson FROM christmas_town_event_logs WHERE player_id = ? AND event_timestamp >= ? AND event_timestamp < ? ORDER BY event_timestamp, log_id",
+      ).bind(session.player_id, lowerSeconds, upperSeconds).all<ChristmasTownEventLogRow>()
+      const baseMetrics = calculateChristmasTownMetrics(rows.results ?? [])
+      const marketItemIds = {
+        ...baseMetrics.receivedItemsById,
+        ...baseMetrics.purchasedItemsById,
+        ...baseMetrics.potDepositedById,
+        ...baseMetrics.potWonById,
+      }
+      const market = await loadHalloweenExchangeMarketValue(env, db, marketItemIds)
+      const prices = market.items.map(item => ({
+        itemId: item.itemId,
+        itemName: item.itemName,
+        averagePrice: item.unitPrice,
+      }))
+      const metrics = applyChristmasTownMarketPrices(baseMetrics, prices)
+      const jobs = await db.prepare(
+        "SELECT event_year AS eventYear, status, pages_collected AS pagesCollected, logs_collected AS logsCollected, last_error AS lastError, window_start_at AS windowStartAt, window_end_at AS windowEndAt, updated_at AS updatedAt FROM christmas_town_collection_jobs WHERE player_id = ? ORDER BY event_year",
+      ).bind(session.player_id).all<{
+        eventYear: number; status: string; pagesCollected: number; logsCollected: number
+        lastError: string | null; windowStartAt: string; windowEndAt: string; updatedAt: string
+      }>()
+      return jsonResponse({
+        fromDate,
+        toDate,
+        key: keyRow ? {
+          connected: true,
+          lastFour: keyRow.lastFour,
+          accessLevel: keyRow.accessLevel,
+          consentVersion: keyRow.consentVersion,
+          consentedAt: keyRow.consentedAt,
+          lastValidatedAt: keyRow.lastValidatedAt,
+        } : { connected: false },
+        metrics,
+        market: {
+          status: market.status,
+          snapshotAt: market.snapshotAt,
+          pricedItemCount: market.pricedItemCount,
+          itemCount: market.itemCount,
+          unpricedItemCount: market.unpricedItemCount,
+        },
+        collection: jobs.results ?? [],
+      }, 200, origin)
     }
 
     if (url.pathname === "/api/me/halloween/key" && request.method === "GET") {
