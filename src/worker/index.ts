@@ -2119,7 +2119,6 @@ async function loadHalloweenAllTimeArchive(db: D1Database, signedInPlayerId: str
       startTime: slot ? formatHalloweenStartTime(slot.startMinuteOfDay) : null,
       keyConnected: member.keyConnected === 1,
       collectionStatus: coverage === "complete" ? "complete" : coverage === "partial" ? hasFailed ? "failed" : "partial" : coverage === "collecting" ? "running" : "not_collected",
-      attackMetricsStatus,
       pagesCollected,
       logsCollected,
       totalHits,
