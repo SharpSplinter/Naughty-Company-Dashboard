@@ -57,7 +57,7 @@ assert.ok(workspace.includes("PRACTICAL FHC TARGET"), "personal cooldown summary
 assert.ok(workspace.includes("THEORETICAL FHC MAXIMUM"), "personal cooldown summary must show the strict theoretical FHC limit")
 assert.ok(workspace.includes("TOTAL ATTACKS"), "Live Halloween Stats must show the attack summary card")
 assert.ok(workspace.includes("TREATS PER SUCCESSFUL ATTACK"), "Live Halloween Stats must show the treat histogram")
-assert.ok(workspace.includes("OBSERVED PROCS"), "multiplier cards must show observed, not expected, proc counts")
+assert.ok(workspace.includes("Observed procs"), "multiplier cards must show observed, not expected, proc counts")
 assert.ok(workspace.includes("unclassifiedTreatAwards"), "unclassifiable awards must be disclosed separately")
 assert.ok(workspace.includes("BASKET EXCHANGE PERKS"), "Live Halloween Stats must include basket exchange perks")
 
