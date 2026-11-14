@@ -25,24 +25,41 @@ jobs:
           url.searchParams.set("log", "2535,2536,2540");
           url.searchParams.set("limit", "100");
           const records = [];
-          for (let page = 0; page < 100; page++) {
-            const response = await fetch(url, {
-              headers: { Authorization: "ApiKey " + process.env.TORN_API_KEY, Accept: "application/json" }
-            });
-            const payload = await response.json();
-            if (!response.ok || payload?.error) throw new Error("Torn log request failed (HTTP " + response.status + ").");
-            if (!Array.isArray(payload?.log)) throw new Error("Unexpected Torn user-log response shape.");
-            records.push(...payload.log);
-            const next = payload?._metadata?.links?.next;
-            if (!next) break;
-            const parsed = new URL(next, url);
-            if (parsed.protocol !== "https:" || parsed.hostname !== "api.torn.com" || parsed.pathname !== "/v2/user/log" || parsed.searchParams.has("key")) throw new Error("Unsafe pagination URL.");
-            url = parsed;
-            if (page === 99) throw new Error("Pagination safety limit reached.");
-          }
+          const attackRecords = [];
+          const fetchPages = async (path, queryName, out) => {
+            let requestUrl = new URL("https://api.torn.com/v2/" + path);
+            requestUrl.searchParams.set("from", String(start));
+            requestUrl.searchParams.set("to", String(end));
+            requestUrl.searchParams.set(queryName, queryName === "log" ? "2535,2536,2540" : "outgoing");
+            requestUrl.searchParams.set("limit", "100");
+            if (queryName === "sort") requestUrl.searchParams.set("sort", "DESC");
+            if (queryName !== "log") requestUrl.searchParams.set("sort", "DESC");
+            for (let page = 0; page < 100; page++) {
+              const response = await fetch(requestUrl, {
+                headers: { Authorization: "ApiKey " + process.env.TORN_API_KEY, Accept: "application/json" }
+              });
+              const payload = await response.json();
+              if (!response.ok || payload?.error) throw new Error("Torn " + path + " request failed (HTTP " + response.status + ").");
+              const pageRows = queryName === "log" ? payload?.log : payload?.attacks;
+              if (!Array.isArray(pageRows)) throw new Error("Unexpected Torn " + path + " response shape.");
+              out.push(...pageRows);
+              const links = payload?._metadata?.links ?? {};
+              const older = links.prev ?? links.next;
+              if (!older) return page + 1;
+              const parsed = new URL(older, requestUrl);
+              if (parsed.protocol !== "https:" || parsed.hostname !== "api.torn.com" || parsed.pathname !== "/v2/" + path || parsed.searchParams.has("key")) throw new Error("Unsafe pagination URL.");
+              requestUrl = parsed;
+              if (page === 99) throw new Error("Pagination safety limit reached for " + path + ".");
+            }
+            return 100;
+          };
+          const logPages = await fetchPages("user/log", "log", records);
+          const attackPages = await fetchPages("user/attacks", "filters", attackRecords);
           const byType = {};
           const itemTotals = {};
           const treatDistribution = {};
+          const treatTypeDistribution = {};
+          const exchangeItemShape = {};
           const fieldShapes = {};
           for (const row of records) {
             const id = String(row?.details?.id ?? "unknown");
@@ -60,20 +77,45 @@ jobs:
             if (id === "2536") {
               const n = Number(data.treats);
               if (Number.isFinite(n) && n >= 0) treatDistribution[String(n)] = (treatDistribution[String(n)] ?? 0) + 1;
+              const type = String(data.type ?? "missing");
+              treatTypeDistribution[type] = (treatTypeDistribution[type] ?? 0) + 1;
             }
-            if (id === "2535" && data.items && typeof data.items === "object" && !Array.isArray(data.items)) {
-              for (const [itemId, quantity] of Object.entries(data.items)) {
+            if (id === "2535") {
+              const items = data.items && typeof data.items === "object" ? data.items : {};
+              const keys = Object.keys(items).sort();
+              const shape = keys.length ? keys.map(k => k + ":" + (Array.isArray(items[k]) ? "array" : items[k] === null ? "null" : typeof items[k])).join(",") : "empty";
+              exchangeItemShape[shape] = (exchangeItemShape[shape] ?? 0) + 1;
+              for (const [itemId, quantity] of Object.entries(items)) {
                 const n = Number(quantity);
                 if (/^\\d+$/.test(itemId) && Number.isFinite(n) && n >= 0) itemTotals[itemId] = (itemTotals[itemId] ?? 0) + n;
               }
             }
           }
+          const attackResults = {};
+          let attackShape = null;
+          for (const row of attackRecords) {
+            const result = String(row?.result ?? "missing");
+            attackResults[result] = (attackResults[result] ?? 0) + 1;
+            if (!attackShape) attackShape = {
+              keys: Object.keys(row ?? {}).sort(),
+              attackerKeys: Object.keys(row?.attacker ?? {}).sort(),
+              endedType: typeof row?.ended,
+              interruptedType: typeof row?.is_interrupted
+            };
+          }
           console.log("HALLOWEEN_STATS_SCHEMA " + JSON.stringify({
             window: { from: start, to: end },
-            pagesRecords: records.length,
+            logPages,
+            attackPages,
+            logRecords: records.length,
             recordsByType: byType,
             fieldShapes,
             treatAwardDistribution: treatDistribution,
-            exchangeItemTotalsById: itemTotals
+            treatAwardTypeDistribution: treatTypeDistribution,
+            exchangeItemTotalsById: itemTotals,
+            exchangeItemsShapeDistribution: exchangeItemShape,
+            attackRecords: attackRecords.length,
+            attackResultDistribution: attackResults,
+            attackShape
           }));
           NODE
