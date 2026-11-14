@@ -92,13 +92,33 @@ jobs:
             }
           }
           const attackResults = {};
+          const modifierNames = {};
+          const finishingHitEffectNames = {};
           let attackShape = null;
           for (const row of attackRecords) {
             const result = String(row?.result ?? "missing");
             attackResults[result] = (attackResults[result] ?? 0) + 1;
+            for (const effect of Array.isArray(row?.finishing_hit_effects) ? row.finishing_hit_effects : []) {
+              const name = String(effect?.name ?? "missing");
+              finishingHitEffectNames[name] = (finishingHitEffectNames[name] ?? 0) + 1;
+            }
+            const modifiers = row?.modifiers;
+            if (Array.isArray(modifiers)) {
+              for (const modifier of modifiers) {
+                const name = String(modifier?.name ?? modifier?.type ?? modifier?.id ?? "unlabelled");
+                modifierNames[name] = (modifierNames[name] ?? 0) + 1;
+              }
+            } else if (modifiers && typeof modifiers === "object") {
+              for (const [name, value] of Object.entries(modifiers)) {
+                modifierNames[name] = (modifierNames[name] ?? 0) + (typeof value === "number" ? value : 1);
+              }
+            }
             if (!attackShape) attackShape = {
               keys: Object.keys(row ?? {}).sort(),
               attackerKeys: Object.keys(row?.attacker ?? {}).sort(),
+              modifierKind: Array.isArray(modifiers) ? "array" : modifiers === null ? "null" : typeof modifiers,
+              modifierItemKeys: Array.isArray(modifiers) && modifiers[0] && typeof modifiers[0] === "object" ? Object.keys(modifiers[0]).sort() : [],
+              finishingEffectItemKeys: Array.isArray(row?.finishing_hit_effects) && row.finishing_hit_effects[0] ? Object.keys(row.finishing_hit_effects[0]).sort() : [],
               endedType: typeof row?.ended,
               interruptedType: typeof row?.is_interrupted
             };
@@ -116,6 +136,8 @@ jobs:
             exchangeItemsShapeDistribution: exchangeItemShape,
             attackRecords: attackRecords.length,
             attackResultDistribution: attackResults,
+            modifierNames,
+            finishingHitEffectNames,
             attackShape
           }));
           NODE
