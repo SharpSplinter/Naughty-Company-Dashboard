@@ -18,6 +18,7 @@ on:
       - ".github/workflows/deploy-staging-acceptance.yml"
       - "scripts/test-staging-admin-acceptance.mjs"
       - "scripts/test-staging-sustained-load.mjs"
+      - "scripts/refresh-staging-load-fixture.mjs"
 
 permissions:
   contents: read
