@@ -453,6 +453,7 @@ try {
         logTypeId: 2536,
         title: "Halloween treat receive",
         category: "Halloween basket",
+        baseTreats: null,
         logJson: JSON.stringify({ data: { treats: 12, type: "(Trick or Treat)" } }),
       },
     ])
