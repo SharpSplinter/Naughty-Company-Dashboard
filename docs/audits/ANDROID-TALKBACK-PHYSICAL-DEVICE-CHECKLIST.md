@@ -33,3 +33,26 @@ Record the Android version, device model, Chrome version, TalkBack version, disp
 For each issue, record the screen, exact control/announcement, expected result, actual result, and a screenshot or short screen recording with synthetic data only. Do not include account secrets or private Torn data.
 
 **Exit criteria:** No focus trap; all actionable controls have meaningful spoken names/states; heading/landmark order is understandable; no essential information is available only by color; portrait/landscape and enlarged text remain usable; and scrollable data regions can be discovered and operated.
+
+## Physical Android review log (2026-11-13)
+
+**Evidence source:** User-performed review on a physical Android phone against the isolated staging portal. Device model, Android/Chrome/TalkBack versions, and display scaling were not recorded in the conversation.
+
+### TalkBack results reported
+
+- The user personally reviewed the dashboard pages and tabs and reported that TalkBack correctly stated the purpose/function of the features, functions, and selections.
+- On Faction Weekly Rankings, the `Rank by` control was announced as a “mini popup button” with an activation instruction. After activation, choices were announced with their selected state and radio-button role. The selected option was spoken as “Checked, Xanax, Radio Button”; other choices were announced as “Unchecked.”
+- The user reported that the other controls and selections, including the Data status filter, announced their purpose and classification correctly.
+- The user confirmed the dashboard’s TalkBack features were working properly overall.
+- **Spoken heading-role observation:** When asked whether TalkBack appended the word “heading” after “Faction Weekly Rankings,” the user answered “No.” The implementation uses an `<h1>` for that title. This is recorded as a targeted follow-up observation, not as a confirmed semantic-markup defect; heading-navigation behavior was not separately established during the conversation.
+
+### Physical layout results reported
+
+- Portrait mode with Android font size increased: passed; the user reported the layout continued to work properly.
+- Landscape mode: passed; the user reported the view continued to work properly.
+
+### Scope and limitations
+
+- This is genuine user-reported physical-device evidence, not Playwright or Android viewport emulation.
+- The conversation did not establish the Android model/version, browser/TalkBack versions, external-keyboard behavior, pinch/page-zoom behavior, every scrollable table's horizontal navigation, or the exact results of the Admin Panel synthetic-admin-only checklist. Do not infer those checks passed.
+- No live Torn API credential was entered for this review. The staging portal remains the test target.
