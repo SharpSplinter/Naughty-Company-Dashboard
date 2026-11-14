@@ -1,0 +1,59 @@
+name: Owner-authorized Halloween history collection (staging only)
+
+on:
+  push:
+    branches:
+      - portal-rebuild
+    paths:
+      - ".github/HALLOWEEN_COLLECTION_RUN_NOW"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: owner-halloween-history-collection-staging
+  cancel-in-progress: false
+
+jobs:
+  collect-owner-history:
+    if: github.ref == 'refs/heads/portal-rebuild' && github.event.deleted != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      TORN_API_KEY_FULL_ACCESS: \${{ secrets.TORN_API_KEY_FULL_ACCESS }}
+      STAGING_API_URL: https://naughtyfamily-api-staging.kboone801.workers.dev
+      EXPECTED_TORN_PLAYER_ID: "351311"
+      HALLOWEEN_EVENT_YEARS: "2026"
+    steps:
+      - name: Check out the reviewed portal branch
+        uses: actions/checkout@v7
+        with:
+          ref: portal-rebuild
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Confirm isolated staging API target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$STAGING_API_URL" = "https://naughtyfamily-api-staging.kboone801.workers.dev"
+          node --input-type=module <<'NODE'
+          const base = process.env.STAGING_API_URL;
+          const response = await fetch(base + "/health", {
+            headers: { accept: "application/json" },
+            signal: AbortSignal.timeout(15000),
+          });
+          const body = await response.json().catch(() => null);
+          console.log("Staging health -> HTTP " + response.status +
+            "; database=" + (body?.database || "unknown") +
+            "; keyEncryption=" + (body?.keyEncryption || "unknown"));
+          if (!response.ok || body?.ok !== true || body?.database !== "ok" || body?.keyEncryption !== "ok") {
+            throw new Error("The isolated staging Worker is not ready for encrypted member credentials.");
+          }
+          NODE
+
+      - name: Validate owner key and collect the 2026 personal event history
+        run: node scripts/collect-halloween-history-staging.mjs
