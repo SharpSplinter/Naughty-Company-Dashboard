@@ -1,9 +1,10 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 
-const [worker, migration, workspace, metrics] = await Promise.all([
+const [worker, migration, historicalYearMigration, workspace, metrics] = await Promise.all([
   readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8"),
   readFile(new URL("../migrations/auth/0024_halloween_custom_key_support.sql", import.meta.url), "utf8"),
+  readFile(new URL("../migrations/auth/0029_halloween_historical_event_years.sql", import.meta.url), "utf8"),
   readFile(new URL("../src/components/portal/workspaces.tsx", import.meta.url), "utf8"),
   readFile(new URL("../src/lib/halloween/metrics.ts", import.meta.url), "utf8"),
 ])
@@ -12,6 +13,8 @@ assert.ok(migration.includes("CREATE TABLE halloween_historical_keys_new"))
 assert.ok(migration.includes("ALTER TABLE halloween_historical_keys_new RENAME TO halloween_historical_keys"))
 assert.ok(migration.includes("CHECK (access_level IN ('Full Access', 'Custom Access', 'Custom'))"))
 assert.ok(migration.includes("consent_version TEXT NOT NULL"))
+assert.ok(historicalYearMigration.includes("INSERT OR IGNORE INTO halloween_event_windows"))
+for (const year of [2021, 2022, 2023, 2024, 2025]) assert.ok(historicalYearMigration.includes("(" + year + ", '"), "historical event window must include " + year)
 assert.ok(worker.includes('trackedTornFetch("private-live-key-validation", "https://api.torn.com/v2/key/info"'), "key ownership validation must use the sanitized request telemetry path")
 assert.ok(worker.includes('accessType !== "Full Access" && !supportsCustomArchive'))
 assert.ok(worker.includes('supportsCustomArchive = (accessType === "Custom Access" || accessType === "Custom") && userSelections.includes("log") && userSelections.includes("attacks")'))
@@ -82,6 +85,14 @@ assert.ok(worker.includes("p.player_id = ? AND p.faction_id = ? AND st.disabled_
 assert.ok(worker.includes("Collection was cancelled because this member's dashboard access is disabled."), "queued historical collection must stop for disabled accounts")
 assert.ok(worker.includes("Snapshot was cancelled because this member's dashboard access is disabled."), "queued live snapshots must stop for disabled accounts")
 assert.ok(worker.includes("AS snapshotKind") && worker.includes("AS sourceTimestamp"))
+const liveBoardQuery = worker.match(/"SELECT p\\.player_id AS playerId, p\\.player_name AS playerName,[\\s\\S]*?AND st\\.disabled_at IS NULL"\\s*\\)\\.bind\\(([^)]*)\\)\\.all<Record<string, unknown>>\\(\\)/)
+assert.ok(liveBoardQuery, "the live faction leaderboard query must remain paired with its D1 bindings")
+const liveBoardSql = liveBoardQuery[0].match(/"([^"]+)"/)[1]
+const livePlaceholderCount = (liveBoardSql.match(/\\?/g) ?? []).length
+const liveBindValues = liveBoardQuery[1].split(",").map(value => value.trim())
+assert.equal(livePlaceholderCount, liveBindValues.length, "the live leaderboard must bind exactly one value per SQL placeholder")
+assert.equal(liveBindValues.filter(value => value === "yearValue").length, 7)
+assert.equal(liveBindValues.at(-1), "NAUGHTY_SOULS_FACTION_ID")
 assert.ok(worker.includes("if (hasSnapshotInWindow && row.upgradesJson != null)") && worker.includes("upgradesUnlocked: upgrades === null ? null : upgrades.length"), "members without a snapshot inside their own event window must retain unknown upgrade counts")
 assert.ok(workspace.includes("/api/me/halloween/live?year="), "the Live tab must load the faction leaderboard API")
 assert.ok(workspace.includes("live.leaderboard.map"), "the Live tab must render per-member snapshot rows")
