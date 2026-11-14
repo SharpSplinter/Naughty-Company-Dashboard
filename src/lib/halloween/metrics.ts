@@ -50,6 +50,8 @@ export type HalloweenEventMetrics = {
   lostStalematedAttacks: number
   treatsByAttack: Record<string, number>
   basketItemsById: Record<string, number>
+  /** Total consumable item rewards returned by Halloween basket exchanges. */
+  basketExchangeItems: number
   doublerProcs: number
   triplerProcs: number
   quadruplerProcs: number
@@ -215,6 +217,7 @@ export function emptyHalloweenEventMetrics(): HalloweenEventMetrics {
     lostStalematedAttacks: 0,
     treatsByAttack: {},
     basketItemsById: {},
+    basketExchangeItems: 0,
     doublerProcs: 0,
     triplerProcs: 0,
     quadruplerProcs: 0,
@@ -241,12 +244,16 @@ function nonNegativeNumber(value: unknown): number | null {
   return Number.isFinite(number) && number >= 0 ? number : null
 }
 
-function addBasketItems(itemValue: unknown, totals: Map<string, number>): void {
+function addBasketItems(itemValue: unknown, totals: Map<string, number>): number {
+  let addedItems = 0
   const add = (itemId: string, quantity: unknown) => {
     if (!/^\d+$/.test(itemId)) return
     const parsed = nonNegativeNumber(quantity)
     const count = parsed === null ? 1 : Math.floor(parsed)
-    if (count > 0) totals.set(itemId, (totals.get(itemId) ?? 0) + count)
+    if (count > 0) {
+      totals.set(itemId, (totals.get(itemId) ?? 0) + count)
+      addedItems += count
+    }
   }
 
   // Torn's v2 log payload has appeared as both an item-ID list and an
@@ -256,19 +263,18 @@ function addBasketItems(itemValue: unknown, totals: Map<string, number>): void {
       const itemId = rawId.trim()
       if (itemId) add(itemId, 1)
     }
-    return
+    return addedItems
   }
   if (Array.isArray(itemValue)) {
     for (const rawId of itemValue) {
       if (typeof rawId === "number" || typeof rawId === "string") add(String(rawId), 1)
     }
-    return
+    return addedItems
   }
   const items = asRecord(itemValue)
-  if (!items) return
-  for (const [itemId, quantity] of Object.entries(items)) add(itemId, quantity)
+  if (items) for (const [itemId, quantity] of Object.entries(items)) add(itemId, quantity)
+  return addedItems
 }
-
 function parseLogJson(value: string | null): Record<string, unknown> | null {
   if (!value) return null
   try { return asRecord(JSON.parse(value)) } catch { return null }
@@ -288,6 +294,32 @@ export type HalloweenRevitalizeMetrics = {
   successfulAttacks: number
   lostStalematedAttacks: number
   revitalizeChanceCounts: Record<string, number>
+}
+
+/** 
+ * Effective multiplier chance is measured only on treat-awarding attacks
+ * where the multiplier outcome can be decoded. Cat in Hell jackpots never
+ * roll multipliers, and unknown-base awards cannot be classified reliably.
+ */
+export function calculateHalloweenTreatMultiplierEligibleAwards(
+  metrics: Pick<HalloweenEventMetrics, "successfulAttacksWithTreats" | "catInHellJackpots" | "unclassifiedTreatAwards"> | null | undefined,
+): number {
+  const awarded = Number(metrics?.successfulAttacksWithTreats ?? 0)
+  const jackpots = Number(metrics?.catInHellJackpots ?? 0)
+  const unclassified = Number(metrics?.unclassifiedTreatAwards ?? 0)
+  if (![awarded, jackpots, unclassified].every(value => Number.isFinite(value) && value >= 0)) return 0
+  return Math.max(0, Math.floor(awarded - jackpots - unclassified))
+}
+
+/** Returns an observed proc percentage, or null when there were no eligible rolls. */
+export function calculateHalloweenEffectiveProcRate(
+  procs: number | null | undefined,
+  eligibleOpportunities: number | null | undefined,
+): number | null {
+  const count = Number(procs)
+  const opportunities = Number(eligibleOpportunities)
+  if (!Number.isFinite(count) || count < 0 || !Number.isFinite(opportunities) || opportunities <= 0) return null
+  return (count / opportunities) * 100
 }
 
 export function calculateHalloweenRevitalizeProcRate(
@@ -353,7 +385,7 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
     const color = typeof params.color === "string" ? params.color.toLowerCase() : ""
 
     if (logTypeId === "2535" || title.toLowerCase() === "item use halloween basket") {
-      addBasketItems(data.items, basketItemTotals)
+      metrics.basketExchangeItems += addBasketItems(data.items, basketItemTotals)
     }
 
     // Only the Trick or Treat subtype represents an attack reward. Cashback
@@ -473,6 +505,7 @@ export function sumHalloweenEventMetrics(values: readonly HalloweenEventMetrics[
       counts[itemId] = (counts[itemId] ?? 0) + count
       return counts
     }, { ...total.basketItemsById } as Record<string, number>),
+    basketExchangeItems: total.basketExchangeItems + value.basketExchangeItems,
     doublerProcs: total.doublerProcs + value.doublerProcs,
     triplerProcs: total.triplerProcs + value.triplerProcs,
     quadruplerProcs: total.quadruplerProcs + value.quadruplerProcs,
