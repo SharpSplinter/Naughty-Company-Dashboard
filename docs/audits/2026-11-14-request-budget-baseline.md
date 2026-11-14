@@ -44,6 +44,22 @@ The mean duration is Cloudflare's `queryDurationMs`, which measures SQL executio
 
 Staging totals include the portal integration and acceptance activity in the selected window. They are not a like-for-like workload comparison with production.
 
+### Highest-volume production query shapes
+
+The top production D1 query patterns by count included:
+| Query pattern | Executions | Rows read | Rows written | Mean SQL duration |
+|---|---:|---:|---:|---:|
+| Session + player lookup | 30,532 | 61,060 | 0 | 0.347 ms |
+| Admin setting lookup | 30,493 | 30,493 | 0 | 0.280 ms |
+| Member disabled-state lookup | 30,313 | 0 | 0 | 0.230 ms |
+| Discord poll-history retention delete | 10,284 | 1,573,452 | 10,284 | 0.421 ms |
+| Discord poll-history insert | 10,186 | 0 | 30,558 | 0.338 ms |
+| Discord poll-health upsert | 9,986 | 9,986 | 9,986 | 0.555 ms |
+
+The Discord retention delete reads exactly 153 rows per execution in this sample. The schema already has `idx_discord_alert_poll_history_owner_completed` on `(owner_player_id, discord_user_id, poll_completed_at DESC)`, which matches the filter and ordered subquery. This points to the expected bounded retention scan rather than an obvious missing-index defect. Its mean SQL duration is about 0.42 ms. Revisit only if the retained-history cap or polling frequency changes.
+
+The three most frequent session/admin reads each execute around 30k times in this seven-day window and have sub-millisecond mean SQL duration. This is useful baseline evidence, but these SQL durations do not include the full Worker request path.
+
 ## 4. Current database metadata and migration ledgers
 
 Read-only D1 details:
