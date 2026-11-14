@@ -911,7 +911,8 @@ th.numeric-cell {
 .halloween-live-total-attacks-card,
 .halloween-live-revitalize-card,
 .halloween-live-histogram-card,
-.halloween-live-perk-card{border:1px solid #ffffff19;border-radius:10px;background:#0d171f;padding:17px;margin-top:12px}
+.halloween-live-perk-card,
+.halloween-live-market-card{border:1px solid #ffffff19;border-radius:10px;background:#0d171f;padding:17px;margin-top:12px}
 .halloween-live-stat-card-heading{color:#84b8aa;font-size:8px;font-weight:700;letter-spacing:.16em}
 .halloween-live-total-attacks-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px}
 .halloween-live-total-attacks-grid>div{padding:12px;border:1px solid #ffffff15;border-radius:8px;background:#121f28}
@@ -945,6 +946,17 @@ th.numeric-cell {
 .halloween-live-perk-grid strong{margin-top:7px;color:#e6f1eb;font:600 18px 'Space Grotesk',sans-serif;font-variant-numeric:tabular-nums}
 .halloween-live-perk-grid span{margin-top:4px;color:#8da3ad;font-size:8px}
 .halloween-live-exchange-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.halloween-live-market-total{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-top:10px}
+.halloween-live-market-total>strong{color:#f1d39a;font:600 24px 'Space Grotesk',sans-serif;font-variant-numeric:tabular-nums}
+.halloween-live-market-total>span{color:#8da3ad;font-size:9px;text-align:right}
+.halloween-live-market-items{display:grid;gap:7px;margin-top:13px}
+.halloween-live-market-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 10px;border:1px solid #ffffff12;border-radius:7px;background:#121f28}
+.halloween-live-market-item>div{min-width:0}
+.halloween-live-market-item>div>strong,
+.halloween-live-market-item>div>small{display:block}
+.halloween-live-market-item>div>strong{color:#e6f1eb;font-size:10px;overflow-wrap:anywhere}
+.halloween-live-market-item>div>small{color:#8da3ad;font-size:8px;margin-top:3px}
+.halloween-live-market-item>strong{flex:0 0 auto;color:#d8e6df;font-size:10px;font-variant-numeric:tabular-nums;text-align:right}
 @media(max-width:700px){
   .halloween-live-total-attacks-grid{grid-template-columns:1fr}
   .halloween-live-total-attacks-grid>div{display:flex;align-items:center;justify-content:space-between;gap:10px}
@@ -957,4 +969,6 @@ th.numeric-cell {
   .halloween-live-histogram-row{grid-template-columns:64px minmax(42px,1fr) 42px;gap:7px}
   .halloween-live-histogram-row>span{font-size:8px}
   .halloween-live-perk-grid strong{font-size:16px}
+  .halloween-live-market-total{align-items:flex-start;flex-direction:column;gap:4px}
+  .halloween-live-market-item{align-items:flex-start}
 }

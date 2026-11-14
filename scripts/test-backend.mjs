@@ -75,6 +75,7 @@ try {
   const { filterAndSortWeeklyMembers } = require(join(temp, "lib/faction-performance/leaderboard.js"))
   const { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } = require(join(temp, "lib/faction-performance/private-live.js"))
   const { calculateHalloweenBoosterCooldown, calculateHalloweenDashboardBoostersReceived, calculateHalloweenDashboardBoostersUsed, calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, calculateHalloweenRevitalizeProcRate, emptyHalloweenEventMetrics, sumHalloweenEventMetrics } = require(join(temp, "lib/halloween/metrics.js"))
+  const { calculateHalloweenExchangeMarketValue } = require(join(temp, "lib/halloween/market-value.js"))
   const {
     buildPersonalStatsPath,
     categoriesForMissingPersonalStats,
@@ -372,6 +373,7 @@ try {
       successfulAttacksWithTreats: 0,
       lostStalematedAttacks: 0,
       treatsByAttack: {},
+      basketItemsById: { "366": 2, "367": 3, "368": 1, "473": 2, "530": 4, "561": 1, "563": 1, "817": 3, "818": 2, "987": 1 },
       doublerProcs: 0,
       triplerProcs: 0,
       quadruplerProcs: 0,
@@ -439,6 +441,51 @@ try {
     assert.equal(metrics.multipackProcs, 6)
     assert.equal(metrics.dealWithDevilProcs, 5)
     assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
+  })
+
+
+  await test("Halloween exchange market valuation sums item quantities and leaves missing prices out of the gross estimate", () => {
+    const now = 1_800_000_000
+    const value = calculateHalloweenExchangeMarketValue(
+      { "366": 2, "817": 1, "999": 3 },
+      [
+        { itemId: "366", itemName: "Erotic DVD", averagePrice: 1000, marketCacheTimestamp: now - 100, fetchedAt: now - 90 },
+        { itemId: "817", itemName: "Six Pack of Alcohol", averagePrice: 2000, marketCacheTimestamp: now - 200, fetchedAt: now - 190 },
+        { itemId: "999", itemName: "Unpriced reward", averagePrice: null, marketCacheTimestamp: null, fetchedAt: now - 50 },
+      ],
+      now,
+    )
+    assert.equal(value.status, "partial")
+    assert.equal(value.estimatedGrossValue, 4000)
+    assert.equal(value.pricedItemCount, 2)
+    assert.equal(value.itemCount, 3)
+    assert.equal(value.unpricedItemCount, 1)
+    assert.equal(value.snapshotAt, now - 200)
+    assert.deepEqual(value.items.map(item => item.itemId), ["817", "366", "999"])
+    assert.equal(value.items[2].estimatedValue, null)
+  })
+
+  await test("Halloween exchange market valuation marks old Torn market snapshots as stale", () => {
+    const now = 1_800_000_000
+    const value = calculateHalloweenExchangeMarketValue(
+      { "366": 2 },
+      [{ itemId: "366", itemName: "Erotic DVD", averagePrice: 1000, marketCacheTimestamp: now - 7201, fetchedAt: now - 7000 }],
+      now,
+    )
+    assert.equal(value.status, "stale")
+    assert.equal(value.items[0].stale, true)
+    assert.equal(value.estimatedGrossValue, 2000)
+  })
+
+  await test("Halloween exchange market valuation distinguishes unavailable prices from no recorded rewards", () => {
+    assert.equal(calculateHalloweenExchangeMarketValue({}, []).status, "empty")
+    const unavailable = calculateHalloweenExchangeMarketValue(
+      { "366": 1 },
+      [{ itemId: "366", itemName: "Erotic DVD", averagePrice: null, marketCacheTimestamp: null, fetchedAt: null }],
+    )
+    assert.equal(unavailable.status, "unavailable")
+    assert.equal(unavailable.estimatedGrossValue, null)
+    assert.equal(unavailable.unpricedItemCount, 1)
   })
 
   await test("Halloween NPC treat awards decode only when their base amount is known", () => {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { calculateHalloweenBoosterCooldown, calculateHalloweenDashboardBoostersReceived, calculateHalloweenDashboardBoostersUsed, calculateHalloweenRevitalizeProcRate, type HalloweenEventMetrics } from "../../lib/halloween/metrics"
+import type { HalloweenExchangeMarketValue } from "../../lib/halloween/market-value"
 import { filterAndSortWeeklyMembers, type WeeklyLeaderboardDirection, type WeeklyLeaderboardParticipationFilter, type WeeklyLeaderboardSortKey, type WeeklyLeaderboardStatusFilter } from "../../lib/faction-performance/leaderboard"
 
 type SavedCompanySummary = {
@@ -72,6 +73,7 @@ type HalloweenArchivePayload = {
   leaderboard: HalloweenArchiveMember[]
   myCollection: HalloweenArchiveMember | null
   myEventMetrics: HalloweenEventMetrics | null
+  myExchangeMarketValue: HalloweenExchangeMarketValue | null
   eventTotals: (HalloweenEventMetrics & { coveredMembers: number; revitalizeCoveredMembers: number; coveredMemberYears?: number; revitalizeCoveredMemberYears?: number }) | null
   memberComparisons: Array<{
     playerId: string
@@ -93,6 +95,8 @@ const halloweenStartTimeOptions = Array.from({ length: 25 }, (_, index) => {
 const formatTctDateTime = (value: string) => new Intl.DateTimeFormat(undefined, {
   timeZone: "UTC", dateStyle: "medium", timeStyle: "short", hour12: false,
 }).format(new Date(value))
+const formatHalloweenMarketMoney = (value: number) => "$" + Math.round(value).toLocaleString()
+const formatHalloweenMarketTimestamp = (value: number) => new Date(value * 1000).toLocaleString()
 
 type WorkspaceProps = {
   playerName: string
@@ -1809,6 +1813,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
       .sort((a, b) => a.treats - b.treats)
     : []
   const maxTreatHistogramCount = Math.max(1, ...treatHistogramRows.map(row => row.count))
+  const exchangeMarketValue = archive?.myExchangeMarketValue ?? null
   const memberDetailYearScope = tab === "historical" ? historicalYear : String(eventYear)
   const memberBoosterCooldown = memberDetail?.metrics && memberDetailYearScope !== "all"
     ? calculateHalloweenBoosterCooldown(memberDetail.metrics)
@@ -1938,6 +1943,37 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
                 </div>
               </div>
             </section>
+            {exchangeMarketValue && <section className="halloween-live-market-card">
+              <div className="halloween-live-stat-card-heading">ESTIMATED EXCHANGE PROFIT</div>
+              <div className="halloween-live-market-total">
+                <strong>{exchangeMarketValue.estimatedGrossValue === null
+                  ? "—"
+                  : (exchangeMarketValue.status === "partial" ? "At least ≈ " : "≈ ") + formatHalloweenMarketMoney(exchangeMarketValue.estimatedGrossValue)}</strong>
+                <span>{exchangeMarketValue.pricedItemCount.toLocaleString()} of {exchangeMarketValue.itemCount.toLocaleString()} reward item types priced</span>
+              </div>
+              <p className="halloween-live-stat-note">
+                {exchangeMarketValue.status === "empty"
+                  ? "No basket reward items were recorded for this event range."
+                  : exchangeMarketValue.status === "unavailable"
+                    ? "No usable Torn item-market average prices are available yet."
+                    : exchangeMarketValue.status === "partial"
+                      ? exchangeMarketValue.unpricedItemCount.toLocaleString() + " reward item type(s) have no usable market average and are excluded from this subtotal."
+                      : exchangeMarketValue.status === "stale"
+                        ? "One or more market snapshots are more than two hours old. Treat this value as a dated estimate."
+                        : "Values use Torn's globally cached item-market average prices."}
+              </p>
+              {exchangeMarketValue.items.length > 0 && <div className="halloween-live-market-items">
+                {exchangeMarketValue.items.map(item => <div className="halloween-live-market-item" key={item.itemId}>
+                  <div>
+                    <strong>{item.itemName}</strong>
+                    <small>{item.quantity.toLocaleString()} × {item.unitPrice === null ? "No market average" : formatHalloweenMarketMoney(item.unitPrice)}{item.stale ? " · stale snapshot" : ""}</small>
+                  </div>
+                  <strong>{item.estimatedValue === null ? "—" : formatHalloweenMarketMoney(item.estimatedValue)}</strong>
+                </div>)}
+              </div>}
+              {exchangeMarketValue.snapshotAt !== null && <p className="halloween-live-stat-note">Oldest priced-item market snapshot: {formatHalloweenMarketTimestamp(exchangeMarketValue.snapshotAt)}.</p>}
+              <p className="halloween-live-stat-note">Gross reward value only. This does not subtract the treats spent, listing fees, or other transaction costs.</p>
+            </section>}
             {myBoosterCooldown && <div className="coverage-grid">
               <div><small>YOUR FHCs USED · 6H EACH</small><strong>{myBoosterCooldown.fhcsUsed}</strong><span>{myBoosterCooldown.fhcHours}h of booster cooldown</span></div>
               <div><small>YOUR GREEN EGGS USED · 6H EACH</small><strong>{myBoosterCooldown.greenEggsUsed}</strong><span>{myBoosterCooldown.greenEggHours}h of booster cooldown</span></div>

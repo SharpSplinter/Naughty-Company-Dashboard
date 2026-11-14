@@ -23,6 +23,7 @@ import {
 import { PERSONAL_STATS_HISTORICAL_NAMES } from "../lib/torn/personalstats"
 import { classifyFactionInactivity } from "../lib/faction-performance/activity"
 import { calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, emptyHalloweenEventMetrics, sumHalloweenEventMetrics, type HalloweenAttackMetric, type HalloweenEventMetrics } from "../lib/halloween/metrics"
+import { calculateHalloweenExchangeMarketValue, type HalloweenExchangeMarketPriceRecord, type HalloweenExchangeMarketValue } from "../lib/halloween/market-value"
 import { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } from "../lib/faction-performance/private-live"
 import { officialSnapshotSourceTime, manualRecoverySnapshotSourceTime } from "./snapshot-provenance"
 import { withRollingWeeklyProfit, type DailyProfitHistoryPoint } from "./company-history"
@@ -2001,6 +2002,113 @@ async function loadHalloweenEventMetricsForPlayers(db: D1Database, eventYear: nu
 }
 
 
+async function loadHalloweenExchangeMarketValue(
+  env: WorkerEnv,
+  db: D1Database,
+  basketItemsById: Record<string, number> | null | undefined,
+): Promise<HalloweenExchangeMarketValue> {
+  const quantities = Object.fromEntries(
+    Object.entries(basketItemsById ?? {})
+      .filter(([itemId, quantity]) => /^\\d+$/.test(itemId) && Number.isSafeInteger(Number(quantity)) && Number(quantity) > 0),
+  )
+  const itemIds = Object.keys(quantities)
+  const now = Math.floor(Date.now() / 1000)
+  if (!itemIds.length) return calculateHalloweenExchangeMarketValue({}, [], now)
+
+  const placeholders = itemIds.map(() => "?").join(", ")
+  const readCache = async () => db.prepare(
+    `SELECT item_id AS itemId, item_name AS itemName, average_price AS averagePrice,
+            market_cache_timestamp AS marketCacheTimestamp, fetched_at AS fetchedAt,
+            attempted_at AS attemptedAt
+     FROM halloween_exchange_market_price_cache
+     WHERE item_id IN (${placeholders})`,
+  ).bind(...itemIds).all<{
+    itemId: string
+    itemName: string
+    averagePrice: number | null
+    marketCacheTimestamp: number | null
+    fetchedAt: number | null
+    attemptedAt: number | null
+  }>()
+
+  const cached = await readCache()
+  const cacheById = new Map((cached.results ?? []).map(row => [String(row.itemId), row]))
+  const refreshIds = itemIds
+    .filter(itemId => {
+      const attemptedAt = Number(cacheById.get(itemId)?.attemptedAt ?? 0)
+      return !Number.isFinite(attemptedAt) || attemptedAt <= 0 || now - attemptedAt >= 3600
+    })
+    .slice(0, 50)
+
+  // The endpoint is public and globally cached by Torn. No member or service
+  // API key is sent, and requests are paced in small batches.
+  const fetcher = privateLiveFetcher(env)
+  for (let offset = 0; offset < refreshIds.length; offset += 4) {
+    const batch = refreshIds.slice(offset, offset + 4)
+    await Promise.all(batch.map(async itemId => {
+      try {
+        const response = await trackedTornFetch(
+          "halloween-exchange-market-price",
+          `https://api.torn.com/v2/market/${itemId}/itemmarket?offset=0`,
+          { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(12000) },
+          fetcher,
+        )
+        const payload: unknown = await response.json().catch(() => null)
+        const apiError = isRecord(payload) && isRecord(payload.error) ? payload.error : null
+        if (!response.ok || apiError) throw new Error("Torn item-market request failed.")
+        const root = isRecord(payload) && isRecord(payload.itemmarket) ? payload.itemmarket : null
+        const item = isRecord(root?.item) ? root.item : null
+        if (!item) throw new Error("Torn returned no item-market item details.")
+
+        const name = typeof item.name === "string" && item.name.trim() ? item.name.trim().slice(0, 120) : "Item #" + itemId
+        const rawAverage = typeof item.average_price === "number" || typeof item.average_price === "string"
+          ? Number(item.average_price)
+          : Number.NaN
+        const averagePrice = Number.isFinite(rawAverage) && rawAverage > 0 ? rawAverage : null
+        const rawTimestamp = root?.cache_timestamp
+        const parsedTimestamp = typeof rawTimestamp === "number" || typeof rawTimestamp === "string"
+          ? Number(rawTimestamp)
+          : Number.NaN
+        const marketCacheTimestamp = Number.isFinite(parsedTimestamp) && parsedTimestamp > 0
+          ? Math.floor(parsedTimestamp)
+          : null
+
+        await db.prepare(
+          `INSERT INTO halloween_exchange_market_price_cache
+             (item_id, item_name, average_price, market_cache_timestamp, fetched_at, attempted_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(item_id) DO UPDATE SET
+             item_name = excluded.item_name,
+             average_price = excluded.average_price,
+             market_cache_timestamp = excluded.market_cache_timestamp,
+             fetched_at = excluded.fetched_at,
+             attempted_at = excluded.attempted_at`,
+        ).bind(itemId, name, averagePrice, marketCacheTimestamp, now, now).run()
+      } catch {
+        // Retain any last successful market price and suppress a retry storm.
+        try {
+          await db.prepare(
+            `INSERT INTO halloween_exchange_market_price_cache
+               (item_id, item_name, average_price, market_cache_timestamp, fetched_at, attempted_at)
+             VALUES (?, ?, NULL, NULL, NULL, ?)
+             ON CONFLICT(item_id) DO UPDATE SET attempted_at = excluded.attempted_at`,
+          ).bind(itemId, "Item #" + itemId, now).run()
+        } catch { /* A temporary cache-write failure must not hide the Halloween archive. */ }
+      }
+    }))
+  }
+
+  const refreshed = await readCache()
+  const prices: HalloweenExchangeMarketPriceRecord[] = (refreshed.results ?? []).map(row => ({
+    itemId: String(row.itemId),
+    itemName: String(row.itemName ?? "Item #" + row.itemId),
+    averagePrice: row.averagePrice === null || row.averagePrice === undefined ? null : Number(row.averagePrice),
+    marketCacheTimestamp: row.marketCacheTimestamp === null || row.marketCacheTimestamp === undefined ? null : Number(row.marketCacheTimestamp),
+    fetchedAt: row.fetchedAt === null || row.fetchedAt === undefined ? null : Number(row.fetchedAt),
+  }))
+  return calculateHalloweenExchangeMarketValue(quantities, prices, now)
+}
+
 async function loadRecordedHalloweenEventWindows(db: D1Database): Promise<Array<{ eventYear: number; startAt: string; endAt: string }>> {
   const rows = await db.prepare(
     `SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt
@@ -2014,7 +2122,7 @@ async function loadRecordedHalloweenEventWindows(db: D1Database): Promise<Array<
   return rows.results ?? []
 }
 
-async function loadHalloweenAllTimeArchive(db: D1Database, signedInPlayerId: string) {
+async function loadHalloweenAllTimeArchive(env: WorkerEnv, db: D1Database, signedInPlayerId: string) {
   const events = await loadRecordedHalloweenEventWindows(db)
   const eventYears = events.map((event) => Number(event.eventYear))
   const membersResult = await db.prepare(
@@ -2029,6 +2137,7 @@ async function loadHalloweenAllTimeArchive(db: D1Database, signedInPlayerId: str
     return {
       event: null, events: [], eventYears: [], myWindow: null, leaderboard: [],
       myCollection: null, myEventMetrics: null,
+      myExchangeMarketValue: await loadHalloweenExchangeMarketValue(env, db, {}),
       eventTotals: { ...emptyHalloweenEventMetrics(), coveredMembers: 0, revitalizeCoveredMembers: 0, coveredMemberYears: 0, revitalizeCoveredMemberYears: 0 },
       memberComparisons: [],
     }
@@ -2166,6 +2275,7 @@ async function loadHalloweenAllTimeArchive(db: D1Database, signedInPlayerId: str
   }).sort((a, b) => (b.totalHits ?? -1) - (a.totalHits ?? -1) || a.playerName.localeCompare(b.playerName))
 
   const myEventMetrics = metricsByPlayer.get(signedInPlayerId) ?? null
+  const myExchangeMarketValue = await loadHalloweenExchangeMarketValue(env, db, myEventMetrics?.basketItemsById ?? {})
   const eventTotals = {
     ...sumHalloweenEventMetrics(Array.from(metricsByPlayer.values())),
     coveredMembers: completedMemberIds.size,
@@ -2190,6 +2300,7 @@ async function loadHalloweenAllTimeArchive(db: D1Database, signedInPlayerId: str
     leaderboard,
     myCollection: leaderboard.find((member) => member.playerId === signedInPlayerId) ?? null,
     myEventMetrics,
+    myExchangeMarketValue,
     eventTotals,
     memberComparisons,
   }
@@ -6006,7 +6117,7 @@ export default {
       if (!session) return jsonResponse({ error: "Session expired. Sign in again with your Torn API key." }, 401, origin)
       const db = requireDb(env)
       const requestedYear = (url.searchParams.get("year") || String(new Date().getUTCFullYear())).trim().toLowerCase()
-      if (requestedYear === "all") return jsonResponse(await loadHalloweenAllTimeArchive(db, session.player_id), 200, origin)
+      if (requestedYear === "all") return jsonResponse(await loadHalloweenAllTimeArchive(env, db, session.player_id), 200, origin)
       const yearValue = Number(requestedYear)
       if (!Number.isInteger(yearValue) || yearValue < 2000 || yearValue > 2100) return jsonResponse({ error: "A valid Halloween event year is required." }, 400, origin)
       const event = await db.prepare("SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt FROM halloween_event_windows WHERE event_year = ?")
@@ -6052,6 +6163,7 @@ export default {
         revitalizeCoveredMemberYears: Number(revitalizeCoverage?.members ?? 0),
       }
       const myEventMetrics = metricsByPlayer.get(session.player_id) ?? null
+      const myExchangeMarketValue = await loadHalloweenExchangeMarketValue(env, db, myEventMetrics?.basketItemsById ?? {})
       const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
       const memberComparisons = leaderboard.map((member) => ({
         playerId: member.playerId,
@@ -6071,6 +6183,7 @@ export default {
         leaderboard,
         myCollection: leaderboard.find((row) => row.playerId === session.player_id) ?? null,
         myEventMetrics,
+        myExchangeMarketValue,
         eventTotals,
         memberComparisons,
       }, 200, origin)

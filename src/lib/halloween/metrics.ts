@@ -49,6 +49,7 @@ export type HalloweenEventMetrics = {
   successfulAttacksWithTreats: number
   lostStalematedAttacks: number
   treatsByAttack: Record<string, number>
+  basketItemsById: Record<string, number>
   doublerProcs: number
   triplerProcs: number
   quadruplerProcs: number
@@ -213,6 +214,7 @@ export function emptyHalloweenEventMetrics(): HalloweenEventMetrics {
     successfulAttacksWithTreats: 0,
     lostStalematedAttacks: 0,
     treatsByAttack: {},
+    basketItemsById: {},
     doublerProcs: 0,
     triplerProcs: 0,
     quadruplerProcs: 0,
@@ -428,6 +430,8 @@ export function calculateHalloweenEventMetrics(rows: readonly HalloweenEventMetr
     }
   }
 
+  metrics.basketItemsById = Object.fromEntries(basketItemTotals)
+
   for (const [itemId, quantity] of basketItemTotals) {
     if (BOOSTER_ITEM_IDS.has(itemId)) metrics.boosters += quantity
     if (FHC_ITEM_IDS.has(itemId)) metrics.fhcs += quantity
@@ -465,6 +469,10 @@ export function sumHalloweenEventMetrics(values: readonly HalloweenEventMetrics[
       counts[treats] = (counts[treats] ?? 0) + count
       return counts
     }, { ...total.treatsByAttack } as Record<string, number>),
+    basketItemsById: Object.entries(value.basketItemsById).reduce((counts, [itemId, count]) => {
+      counts[itemId] = (counts[itemId] ?? 0) + count
+      return counts
+    }, { ...total.basketItemsById } as Record<string, number>),
     doublerProcs: total.doublerProcs + value.doublerProcs,
     triplerProcs: total.triplerProcs + value.triplerProcs,
     quadruplerProcs: total.quadruplerProcs + value.quadruplerProcs,
