@@ -114,6 +114,6 @@ assert.ok(workspace.includes("Total treats (latest live snapshot)"), "Live compa
 assert.ok(workspace.includes("Upgrades unlocked (latest live snapshot)"), "Live comparisons must include upgrades where snapshots exist")
 assert.ok(workspace.includes("selectedLiveComparison?.currentTreats"), "Live comparison rows must bind to the selected member's saved snapshot")
 assert.ok(workspace.includes("attackMetricsStatus !== \"complete\""), "missing detailed attack coverage must display as unavailable, not zero")
-assert.ok(workspace.includes("historicalYear !== \"all\""), "per-event cooldown calculations must not combine different years")
+assert.ok(workspace.includes('memberDetailYearScope !== "all"'), "per-event cooldown calculations must not combine different years")
 assert.ok(workspace.includes("log.eventYear ? \"Event \" + log.eventYear"), "all-time event feeds must label each log's event year")
 console.log("PASS Halloween authentication, consent, event-year archive, all-time/member detail, shared live metrics, optional comparisons and coverage semantics")
