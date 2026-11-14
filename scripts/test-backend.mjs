@@ -75,7 +75,7 @@ try {
   } = require(join(temp, "lib/faction-performance/weekly.js"))
   const { filterAndSortWeeklyMembers } = require(join(temp, "lib/faction-performance/leaderboard.js"))
   const { parsePrivateLiveBars, parsePrivateLiveCooldowns, parsePrivateLiveNetworth } = require(join(temp, "lib/faction-performance/private-live.js"))
-  const { calculateHalloweenBoosterCooldown, calculateHalloweenDashboardBoostersReceived, calculateHalloweenDashboardBoostersUsed, calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, calculateHalloweenRevitalizeProcRate, emptyHalloweenEventMetrics, sumHalloweenEventMetrics } = require(join(temp, "lib/halloween/metrics.js"))
+  const { calculateHalloweenBoosterCooldown, calculateHalloweenDashboardBoostersReceived, calculateHalloweenDashboardBoostersUsed, calculateHalloweenEffectiveProcRate, calculateHalloweenEventMetrics, calculateHalloweenRevitalizeMetrics, calculateHalloweenRevitalizeProcRate, calculateHalloweenTreatMultiplierEligibleAwards, emptyHalloweenEventMetrics, sumHalloweenEventMetrics } = require(join(temp, "lib/halloween/metrics.js"))
   const { calculateHalloweenExchangeMarketValue } = require(join(temp, "lib/halloween/market-value.js"))
   const { calculateChristmasTownMetrics, applyChristmasTownMarketPrices } = require(join(temp, "lib/christmas-town/metrics.js"))
   const {
@@ -376,6 +376,7 @@ try {
       lostStalematedAttacks: 0,
       treatsByAttack: {},
       basketItemsById: { "366": 2, "367": 3, "368": 1, "473": 2, "530": 4, "561": 1, "563": 1, "817": 3, "818": 2, "987": 1 },
+      basketExchangeItems: 20,
       doublerProcs: 0,
       triplerProcs: 0,
       quadruplerProcs: 0,
@@ -442,6 +443,17 @@ try {
     assert.equal(metrics.quintuplerProcs, 8)
     assert.equal(metrics.multipackProcs, 6)
     assert.equal(metrics.dealWithDevilProcs, 5)
+    assert.equal(metrics.basketExchangeItems, 11)
+    const multiplierOpportunities = calculateHalloweenTreatMultiplierEligibleAwards(metrics)
+    assert.equal(multiplierOpportunities, 16, "Cat in Hell jackpots are not multiplier roll opportunities")
+    assert.equal(calculateHalloweenEffectiveProcRate(metrics.doublerProcs, multiplierOpportunities), 50)
+    assert.equal(calculateHalloweenEffectiveProcRate(metrics.quintuplerProcs, multiplierOpportunities), 50)
+    assert.equal(calculateHalloweenEffectiveProcRate(metrics.multipackProcs, metrics.basketExchangeItems), 600 / 11)
+    assert.equal(calculateHalloweenEffectiveProcRate(metrics.dealWithDevilProcs, metrics.basketExchangeItems), 500 / 11)
+    assert.equal(calculateHalloweenEffectiveProcRate(0, 0), null, "no eligible rolls are not a zero-percent rate")
+    const combined = sumHalloweenEventMetrics([metrics, metrics])
+    assert.equal(combined.basketExchangeItems, 22, "all-time opportunity counts sum before rates are calculated")
+    assert.equal(calculateHalloweenEffectiveProcRate(combined.multipackProcs, combined.basketExchangeItems), 600 / 11)
     assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
   })
 
