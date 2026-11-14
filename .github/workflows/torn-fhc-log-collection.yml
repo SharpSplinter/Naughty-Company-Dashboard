@@ -1,6 +1,10 @@
 name: One-off Torn FHC-use log collection (encrypted)
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/torn-fhc-log-collection.yml"
   workflow_dispatch:
     inputs:
       public_key_b64:
@@ -19,7 +23,7 @@ jobs:
       - name: Fetch every page of FHC-use logs and encrypt the records
         env:
           TORN_API_KEY: ${{ secrets.TORN_API_KEY }}
-          PUBLIC_KEY_B64: ${{ inputs.public_key_b64 }}
+          PUBLIC_KEY_B64: ${{ inputs.public_key_b64 || 'LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQm9qQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FZOEFNSUlCaWdLQ0FZRUErZWdtamN3SzV6OUg3SThjQ2liNgo4NmlNcXNKcXhld0RHTUg5d0k5RDlVeDdhZVZHejdQbnpVSENTVHZFZnBpUFlDVHlwUFdaZ2Z3bFFNaVNJeEVHCkljR1Q1RTVlbFYvV3I4ZndEaG9neWUwTGw3SGYrY3hjZ2MzT2ZBS0pVWlBLdFFPN2hBV09xdVR3RVlDZGUvRnYKbHd2UXdNdThEbFcwamJFQS92STJ3NUJTeVRQdy9zTUVaZENoQndiUXNaMGZHWnJJVnFIcWdEUmRFRnhlSFVzbQozbXBvaEFuOTBnL0lrUHBtczQ1WHN2aVdsMUNFb3hybmFPTThUaFBDa3pDMldsNU1KbXBmcUFRTUkzanZlYlJFCkFWYkxRUEdSd3BTVWhVYVkzZForcGY0T2EwSmt5QlhKTlhsWkt0YUw1WTBLN3R6b2pBcmEyeXo2NzJEYlkwemYKUXdreUIxOGtUL3dXQUhQU21DRXhNL3NDTTc2a3lDcjhrdHRpdlAyczVvbkZaTlpubmxBTE4xTXQ4aEl3a3pyOAovYmVlK0JLVzNvZ1lLQ2dPQ01tNS9pR0ZObStVNUpmbmxzSkVxQW1PVm9JNEFyWk5WT0lIVmw3YXlZTURKcFVaCjgxRGVidk1vTHg4YXR1WVF2UFRsSWNYK3QxZXB3VFBRdEhSNFF3bE5mRWcvQWdNQkFBRT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==' }}
         shell: bash
         run: |
           set -euo pipefail
