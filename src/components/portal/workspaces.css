@@ -243,6 +243,8 @@
 .historical-detail-metrics small{font-size:7px;letter-spacing:.12em;color:#82999e}
 .historical-detail-metrics strong{font:600 14px 'Space Grotesk',sans-serif;color:#d9eee4;margin-top:6px}
 .historical-booster-cooldown{margin-top:16px;padding:15px;border:1px solid #594f3d;border-radius:9px;background:#171e23}
+.halloween-personal-event-metrics{border-color:#355448;background:linear-gradient(145deg,#142821,#111d25)}
+.halloween-personal-event-metrics .coverage-grid{margin-bottom:4px}
 .historical-booster-cooldown h3{margin:9px 0 12px;font:600 13px 'Space Grotesk',sans-serif;color:#e7e0d1}
 .historical-booster-cooldown>p{margin:12px 0 0;color:#aab2ad;font-size:9px;line-height:1.7}
 .historical-detail-cooldown-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}

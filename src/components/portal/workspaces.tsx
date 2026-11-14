@@ -1563,7 +1563,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [liveBusy, setLiveBusy] = useState(true)
   const [liveCaptureBusy, setLiveCaptureBusy] = useState(false)
   const [liveError, setLiveError] = useState("")
-  const [archive, setArchive] = useState<{ event: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard: Array<{ playerId: string; playerName: string; eventWindowConfigured?: boolean; startTime?: string | null; keyConnected: boolean; collectionStatus: string; attackMetricsStatus?: string; pagesCollected: number; logsCollected: number; totalHits: number | null; lastCollectedAt: string | null; coverage: string }>; myCollection: { playerId: string; collectionStatus: string; attackMetricsStatus?: string; coverage: string; totalHits: number | null } | null; eventTotals: (HalloweenEventMetrics & { coveredMembers: number; revitalizeCoveredMembers: number }) | null } | null>(null)
+  const [archive, setArchive] = useState<{ event: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard: Array<{ playerId: string; playerName: string; eventWindowConfigured?: boolean; startTime?: string | null; keyConnected: boolean; collectionStatus: string; attackMetricsStatus?: string; pagesCollected: number; logsCollected: number; totalHits: number | null; lastCollectedAt: string | null; coverage: string }>; myCollection: { playerId: string; collectionStatus: string; attackMetricsStatus?: string; coverage: string; totalHits: number | null } | null; myEventMetrics: HalloweenEventMetrics | null; eventTotals: (HalloweenEventMetrics & { coveredMembers: number; revitalizeCoveredMembers: number }) | null } | null>(null)
   const [archiveBusy, setArchiveBusy] = useState(false)
   const [archiveError, setArchiveError] = useState("")
   const [collectBusy, setCollectBusy] = useState(false)
@@ -1585,10 +1585,10 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     setArchiveBusy(true); setArchiveError("")
     try {
       const response = await fetch(apiBase + "/api/me/halloween/archive?year=" + eventYear, { headers: { Authorization: "Bearer " + sessionToken } })
-      const payload = await response.json() as { error?: string; event?: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard?: typeof archive extends infer T ? T extends { leaderboard: infer L } ? L : never : never; myCollection?: { playerId: string; collectionStatus: string; coverage: string; totalHits: number | null } | null; eventTotals?: (HalloweenEventMetrics & { coveredMembers: number; revitalizeCoveredMembers: number }) | null }
+      const payload = await response.json() as { error?: string; event?: { eventYear: number; startAt: string; endAt: string }; myWindow?: HalloweenMemberEventWindow | null; leaderboard?: typeof archive extends infer T ? T extends { leaderboard: infer L } ? L : never : never; myCollection?: { playerId: string; playerName?: string; collectionStatus: string; coverage: string; totalHits: number | null } | null; myEventMetrics?: HalloweenEventMetrics | null; eventTotals?: (HalloweenEventMetrics & { coveredMembers: number; revitalizeCoveredMembers: number }) | null }
       if (!response.ok) throw new Error(payload.error || "Could not load the faction Halloween archive.")
       if (!payload.event) throw new Error("This Halloween event year is not configured yet.")
-      setArchive({ event: payload.event, myWindow: payload.myWindow ?? null, leaderboard: (payload.leaderboard || []) as NonNullable<typeof archive>["leaderboard"], myCollection: payload.myCollection ?? null, eventTotals: payload.eventTotals ?? null })
+      setArchive({ event: payload.event, myWindow: payload.myWindow ?? null, leaderboard: (payload.leaderboard || []) as NonNullable<typeof archive>["leaderboard"], myCollection: payload.myCollection ?? null, myEventMetrics: payload.myEventMetrics ?? null, eventTotals: payload.eventTotals ?? null })
       if (payload.myWindow) { setPersonalWindow(payload.myWindow); if (payload.myWindow.startTime) setPersonalStartTime(payload.myWindow.startTime) }
     } catch (caught) { setArchiveError(caught instanceof Error ? caught.message : "Could not load the faction Halloween archive.") }
     finally { setArchiveBusy(false) }
@@ -1739,6 +1739,9 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const memberBoosterCooldown = memberDetail?.metrics
     ? calculateHalloweenBoosterCooldown(memberDetail.metrics)
     : null
+  const myBoosterCooldown = archive?.myEventMetrics
+    ? calculateHalloweenBoosterCooldown(archive.myEventMetrics)
+    : null
 
   return (
     <main className="module-page halloween-module">
@@ -1831,16 +1834,30 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
             {!historicalKeyStatus && <p className="historical-key-muted">Checking your saved key status…</p>}
           </section>
           <div className="historical-collection-toolbar"><div><small>FACTION HISTORICAL LEADERBOARD</small><strong>{archive?.leaderboard.length ?? 0} member accounts in the archive</strong></div><button type="button" onClick={() => { void loadArchive(); void loadHistoricalKeyStatus() }} disabled={archiveBusy}>{archiveBusy ? "Refreshing…" : "Refresh archive ↻"}</button></div>
+          {archive?.myEventMetrics && myBoosterCooldown && <section className="halloween-panel halloween-event-metrics halloween-personal-event-metrics">
+            <div className="halloween-status"><i /> YOUR PERSONAL EVENT-ITEM USE · {eventYear}</div>
+            <h3>Your booster cooldown from event-window item use</h3>
+            <p>These counts come only from your own completed event-window logs. They are separate from the faction-wide totals below.</p>
+            <div className="coverage-grid">
+              <div><small>YOUR FHCs USED · 6H EACH</small><strong>{myBoosterCooldown.fhcsUsed}</strong><span>{myBoosterCooldown.fhcHours}h of booster cooldown</span></div>
+              <div><small>YOUR GREEN EGGS USED · 6H EACH</small><strong>{myBoosterCooldown.greenEggsUsed}</strong><span>{myBoosterCooldown.greenEggHours}h of booster cooldown</span></div>
+              <div><small>YOUR ENERGY CANS USED · 2H EACH</small><strong>{myBoosterCooldown.energyCansUsed}</strong><span>{myBoosterCooldown.energyCanHours}h of booster cooldown</span></div>
+              <div><small>YOUR TOTAL ITEM COOLDOWN</small><strong>{myBoosterCooldown.totalHours}h</strong><span>Event opened at 0h; 48h timer cap is handled separately</span></div>
+              <div><small>USABLE IN 168H EVENT</small><strong>{myBoosterCooldown.usableHours}h</strong><span>Of {myBoosterCooldown.eventWindowHours} event hours</span></div>
+              <div><small>YOUR UNCOVERED EVENT TIME</small><strong>{myBoosterCooldown.uncoveredHours}h</strong><span>{myBoosterCooldown.excessHours > 0 ? myBoosterCooldown.excessHours + "h beyond the event window" : "Cooldown still needed to cover the full event"}</span></div>
+            </div>
+          </section>}
+          {archive?.myCollection?.coverage === "complete" && !archive.myEventMetrics && <p className="historical-key-muted">Your personal item-use metrics are still being prepared. The faction totals below are separate.</p>}
           {archive?.eventTotals && <section className="halloween-panel halloween-event-metrics">
-            <div className="halloween-status historical"><i /> EVENT PERIOD TOTALS · {eventYear}</div>
-            <h3>Items and energy activity</h3>
-            <p>Totals from completed personal event-log collections for {archive.eventTotals.coveredMembers} faction members. Energy cans include single cans plus six cans only when a Six-Pack of Energy Drink was opened. Unopened Energy Drink and Alcohol six-packs stay separate.</p>
+            <div className="halloween-status historical"><i /> FACTION-WIDE EVENT TOTALS · {eventYear}</div>
+            <h3>Combined items and energy activity</h3>
+            <p>Combined totals from {archive.eventTotals.coveredMembers} faction members with completed personal event-log collections. These totals include other members' item use and are not your personal count. Energy cans include single cans plus six cans only when a Six-Pack of Energy Drink was opened. Unopened Energy Drink and Alcohol six-packs stay separate.</p>
             <div className="coverage-grid">
               <div><small>BOOSTERS RECEIVED</small><strong>{eventMetric(archive.eventTotals.boosters)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.boostersUsed) + " used" : "Used: —"}</span></div>
               <div><small>ENERGY CANS RECEIVED / OPENED</small><strong>{eventMetric(archive.eventTotals.energyCans)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.energyCansUsed) + " cans used · opened energy packs add 6" : "Used: —"}</span></div>
               <div><small>SIX-PACKS OF ENERGY DRINK</small><strong>{eventMetric(archive.eventTotals.energyDrinkSixPacks)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.energyDrinkSixPacksUsed) + " opened" : "Opened: —"}</span></div>
               <div><small>SIX-PACKS OF ALCOHOL</small><strong>{eventMetric(archive.eventTotals.alcoholSixPacks)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.alcoholSixPacksUsed) + " opened · separate from energy cans" : "Opened: —"}</span></div>
-              <div><small>FEATHERY HOTEL COUPONS</small><strong>{eventMetric(archive.eventTotals.fhcs)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.fhcsUsed) + " used" : "Used: —"}</span></div>
+              <div><small>FACTION FHCs RECEIVED</small><strong>{eventMetric(archive.eventTotals.fhcs)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.fhcsUsed) + " used across all covered members" : "Used: —"}</span></div>
               <div><small>GREEN EASTER EGGS</small><strong>{eventMetric(archive.eventTotals.greenEggs)}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.greenEggsUsed) + " used" : "Used: —"}</span></div>
               <div><small>ENERGY FROM TREAT EXCHANGES</small><strong>{eventMetricsReady ? eventMetric(archive.eventTotals.treatExchangeEnergyGained) : "—"}</strong><span>Energy restored by Halloween basket rewards</span></div>
               <div><small>ENERGY USED IN SUCCESSFUL ATTACKS</small><strong>{eventMetricsReady ? eventMetric(archive.eventTotals.successfulAttackEnergyUsed) : "—"}</strong><span>{eventMetricsReady ? eventMetric(archive.eventTotals.successfulAttacks) + " successful attacks" : "Awaiting completed event logs"}</span></div>

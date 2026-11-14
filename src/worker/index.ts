@@ -5829,8 +5829,16 @@ export default {
         coveredMembers: completeMemberIds.length,
         revitalizeCoveredMembers: Number(revitalizeCoverage?.members ?? 0),
       }
+      const myEventMetrics = metricsByPlayer.get(session.player_id) ?? null
       const personal = await getHalloweenMemberEventWindow(env, session.player_id, yearValue)
-      return jsonResponse({ event, myWindow: personal?.window ?? null, leaderboard, myCollection: leaderboard.find((row) => row.playerId === session.player_id) ?? null, eventTotals }, 200, origin)
+      return jsonResponse({
+        event,
+        myWindow: personal?.window ?? null,
+        leaderboard,
+        myCollection: leaderboard.find((row) => row.playerId === session.player_id) ?? null,
+        myEventMetrics,
+        eventTotals,
+      }, 200, origin)
     }
     const halloweenMemberMatch = url.pathname.match(/^\/api\/me\/halloween\/members\/(\d+)$/)
     if (halloweenMemberMatch && request.method === "GET") {
