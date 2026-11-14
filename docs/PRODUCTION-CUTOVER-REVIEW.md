@@ -118,7 +118,7 @@ The migration review found no intentional deletion of company history. Migration
 7. Confirm required production Worker secret names exist without printing or disclosing their values. In particular, verify the configured encryption secret and the service-owned Torn keys required by the production runtime. Do not run `wrangler secret put` as a substitute; secret changes can deploy the currently targeted Worker.
 8. Obtain explicit release approval before dispatching the production workflow.
 
-## 5. Production backup procedure
+## 6. Production backup procedure
 
 D1 Time Travel provides point-in-time recovery within the preceding 30 days. A separate SQL export provides a portable backup. Cloudflare notes that a D1 export can block queries while it runs, so schedule it during a quiet release window.
 
@@ -141,7 +141,7 @@ Requirements:
 
 Cloudflare Wrangler documents that `d1 migrations apply` captures a backup and that a failed migration is rolled back while earlier successful migrations remain applied. Treat this as an additional safety net, not as a replacement for the verified external export and Time Travel bookmark.
 
-## 6. Migration and deployment order
+## 7. Migration and deployment order
 
 After the preceding checks and explicit approval:
 
@@ -190,7 +190,7 @@ Prefer forward fixes for schema/application defects. If restoring is unavoidable
 
 Do not run a restore or overwrite production D1 as part of a routine application rollback.
 
-## 8. Remaining production gates
+## 9. Remaining production gates
 
 - [ ] Separate real-key acceptance for bars/cooldowns, detailed networth and Halloween historical logs with their required selections/consents.
 - [ ] Admin/non-admin end-to-end acceptance on the target production-like deployment.
@@ -202,7 +202,7 @@ Do not run a restore or overwrite production D1 as part of a routine application
 - [ ] Explicit approval to merge/deploy and to publish the new Pages target.
 - [ ] Post-deployment smoke tests completed and rollback operator available.
 
-## 9. Current production changes versus the separate portal cutover
+## 10. Current production changes versus the separate portal cutover
 
 The existing Company Dashboard release is live; the Naughty Family portal branch is not.
 
