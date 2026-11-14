@@ -77,6 +77,7 @@ type HalloweenArchivePayload = {
     playerName: string
     totalHits: number | null
     coverage: string
+    attackMetricsStatus?: string
     completedEventYears?: number[]
     metrics: HalloweenEventMetrics | null
   }>
@@ -1898,7 +1899,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
             </div>
             {!eventMetricsReady && <p className="historical-key-muted">Item and event-energy totals appear after at least one faction member completes historical event-log collection. Uncollected members are not counted as zero.</p>}
             {eventMetricsReady && !revitalizeMetricsReady && <p className="historical-key-muted">Revitalize chance and proc totals are separate from event logs. They appear when detailed attack collection completes. Custom keys need User → Attacks access.</p>}
-            {revitalizeMetricsReady && <p className="historical-key-muted">Revitalize chance is the weapon percentage Torn reports on attacks where the finishing-hit effect actually procced. This is the weapon's chance value, not the measured proc frequency.</p>}
+            {revitalizeMetricsReady && <p className="historical-key-muted">Detailed attack coverage: {archive.eventTotals.revitalizeCoveredMemberYears ?? archive.eventTotals.revitalizeCoveredMembers} of {archive.eventTotals.coveredMemberYears ?? archive.eventTotals.coveredMembers} completed member-event collections. Revitalize chance is the weapon percentage Torn reports on attacks where the finishing-hit effect actually procced, not the measured proc frequency.</p>}
           </section>}
           {archiveYearLabel === "ALL RECORDED YEARS" && archive?.myEventMetrics && <section className="halloween-panel halloween-event-metrics halloween-personal-event-metrics">
             <div className="halloween-status"><i /> YOUR PERSONAL EVENT-ITEM TOTALS · ALL YEARS</div>
@@ -1948,6 +1949,9 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
             </div>
           </div>
           {liveError && <p className="historical-key-error" role="alert">{liveError}</p>}
+          {archiveError && <p className="historical-key-error" role="alert">{archiveError}</p>}
+          {archiveBusy && <p className="historical-key-muted">Loading current-year event metrics…</p>}
+          {collectMessage && <p className="historical-key-message" role="status">{collectMessage}</p>}
           {liveBusy && !live ? <p className="historical-key-muted">Loading live faction snapshots…</p> : live ? <>
             {live.mySnapshot?.capturedAt ? <div className="coverage-grid">
               <div><small>MY CURRENT TREATS</small><strong>{live.mySnapshot.currentTreats?.toLocaleString() ?? "—"}</strong><span>Latest saved current count</span></div>
