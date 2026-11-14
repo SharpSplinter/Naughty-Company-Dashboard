@@ -113,6 +113,24 @@ function rewardLines(
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
+const CHRISTMAS_GAME_GLYPHS: Record<string, string> = {
+  present_pick: "🎁", spin_the_wheel: "🎡", garland_assemble: "🎀", santa_claws: "🧑‍🎄",
+  gingerbread_men: "🍪", word_fixer: "🔤", hangman: "🧩", christmas_wreath: "❄",
+  snowball_shooter: "☃", typocalypse: "⌨",
+}
+function christmasTownGameGlyph(key: string): string { return CHRISTMAS_GAME_GLYPHS[key] ?? "✦" }
+function christmasTownOrnamentGlyph(name: string): string {
+  const value = name.toLowerCase()
+  if (/(tree|pine|fir)/.test(value)) return "🎄"
+  if (/(wreath|garland)/.test(value)) return "❇"
+  if (/(snow|frost|ice)/.test(value)) return "❄"
+  if (/(gift|present|box)/.test(value)) return "🎁"
+  if (/(bell|chime)/.test(value)) return "🔔"
+  if (/(star|angel)/.test(value)) return "✧"
+  if (/(candy|cane|sweet)/.test(value)) return "🍬"
+  if (/(santa|snowman)/.test(value)) return "☃"
+  return "✦"
+}
 export function ChristmasTownWorkspace({
   playerName,
   onNavigate,
@@ -373,13 +391,19 @@ export function ChristmasTownWorkspace({
             <div className="christmas-town-panel-heading"><div><div className="christmas-town-section-kicker">DAILY GAMES</div><h2>Minigames</h2></div><span>{formatCount(metrics.minigames.reduce((sum, game) => sum + game.count, 0))} recorded plays</span></div>
             <div className="christmas-town-game-grid christmas-town-game-grid-daily">
               {metrics.minigames.filter(game => ["present_pick", "spin_the_wheel"].includes(game.key)).map(game => (
-                <article key={game.key}><small>{game.label.toUpperCase()}</small><strong>{formatCount(game.count)}</strong><span>{game.key === "spin_the_wheel" ? "spins" : "picks"}</span></article>
+                <article className={"christmas-town-game-tile christmas-town-game-" + game.key} key={game.key}>
+                  <span className="christmas-town-game-art" aria-hidden="true">{christmasTownGameGlyph(game.key)}</span>
+                  <div className="christmas-town-game-copy"><small>{game.label.toUpperCase()}</small><strong>{formatCount(game.count)}</strong><span>{game.key === "spin_the_wheel" ? "spins" : "picks"}</span></div>
+                </article>
               ))}
             </div>
             <div className="christmas-town-panel-heading christmas-town-subheading"><div><div className="christmas-town-section-kicker">OTHER GAMES</div><h3>Season activity</h3></div></div>
             <div className="christmas-town-game-grid">
               {metrics.minigames.filter(game => !["present_pick", "spin_the_wheel"].includes(game.key)).map(game => (
-                <article key={game.key}><small>{game.label.toUpperCase()}</small><strong>{formatCount(game.count)}</strong><span>wins / plays</span></article>
+                <article className={"christmas-town-game-tile christmas-town-game-" + game.key} key={game.key}>
+                  <span className="christmas-town-game-art" aria-hidden="true">{christmasTownGameGlyph(game.key)}</span>
+                  <div className="christmas-town-game-copy"><small>{game.label.toUpperCase()}</small><strong>{formatCount(game.count)}</strong><span>wins / plays</span></div>
+                </article>
               ))}
             </div>
           </section>
@@ -397,20 +421,47 @@ export function ChristmasTownWorkspace({
               <div className="christmas-town-big-number"><strong>{formatCount(metrics.santaVisits)}</strong><span>visits</span></div>
               <p className="christmas-town-muted">Gift / present events: {formatCount(metrics.gifts)} · Other item finds: {formatCount(metrics.itemFinds)}</p>
             </article>
-            <article className="christmas-town-panel">
-              <div className="christmas-town-section-kicker">ORNAMENTS</div><h2>Decorations added</h2>
-              <div className="christmas-town-big-number"><strong>{formatCount(metrics.ornamentsAdded)}</strong><span>ornaments added</span></div>
-              <p className="christmas-town-muted">Bought: {formatCount(metrics.ornamentsBought)} · Other additions: {formatCount(metrics.ornamentsOther)}</p>
+
+          </section>
+
+          <section className="christmas-town-collectibles-grid">
+            <article className="christmas-town-panel christmas-town-ornament-panel">
+              <div className="christmas-town-panel-heading">
+                <div><div className="christmas-town-section-kicker">ORNAMENT COLLECTION</div><h2>Decorations added</h2></div>
+                <span>{formatCount(metrics.ornamentsAdded)} added</span>
+              </div>
+              <div className="christmas-town-ornament-summary">
+                <strong>{formatCount(metrics.ornamentsAdded)}</strong>
+                <div><span>ornaments added</span><small>{formatCount(metrics.ornamentsBought)} bought · {formatCount(metrics.ornamentsOther)} other finds</small></div>
+              </div>
               {Object.entries(metrics.ornaments).length
-                ? <div className="christmas-town-name-list">{Object.entries(metrics.ornaments).sort((a,b)=>b[1]-a[1]).map(([name,count])=><div key={name}><span>{name}</span><strong>{count}</strong></div>)}</div>
+                ? <div className="christmas-town-ornament-grid">
+                    {Object.entries(metrics.ornaments).sort((a,b)=>b[1]-a[1]).map(([name,count], index) => (
+                      <div className={"christmas-town-ornament-tile christmas-town-ornament-tone-" + (index % 6)} key={name}>
+                        <span aria-hidden="true">{christmasTownOrnamentGlyph(name)}</span>
+                        <strong>{name}</strong>
+                        <small>×{formatCount(count)}</small>
+                      </div>
+                    ))}
+                  </div>
                 : <p className="christmas-town-muted">No ornament additions were identified in the selected logs.</p>}
             </article>
-            <article className="christmas-town-panel">
-              <div className="christmas-town-section-kicker">KEYS FOUND</div><h2>Chest keys</h2>
-              <div className="christmas-town-key-grid">
-                <div><small>BRONZE</small><strong>{metrics.keysFound.bronze}</strong></div>
-                <div><small>SILVER</small><strong>{metrics.keysFound.silver}</strong></div>
-                <div><small>GOLD</small><strong>{metrics.keysFound.gold}</strong></div>
+            <article className="christmas-town-panel christmas-town-keys-panel">
+              <div className="christmas-town-section-kicker">CHEST KEYS</div><h2>Keys found</h2>
+              <div className="christmas-town-key-total">
+                <strong>{formatCount(metrics.keysFound.bronze + metrics.keysFound.silver + metrics.keysFound.gold)}</strong>
+                <span>keys found</span>
+              </div>
+              <div className="christmas-town-key-list">
+                {([
+                  ["bronze", "Bronze", "♙"],
+                  ["silver", "Silver", "⚿"],
+                  ["gold", "Gold", "🗝"],
+                ] as const).map(([key, label, glyph]) => (
+                  <div className={"christmas-town-key-row christmas-town-key-" + key} key={key}>
+                    <span aria-hidden="true">{glyph}</span><strong>{label}</strong><b>{formatCount(metrics.keysFound[key])}</b>
+                  </div>
+                ))}
               </div>
             </article>
           </section>
