@@ -20,6 +20,8 @@ export type HalloweenBoosterCooldownEstimate = {
   excessHours: number
   practicalFhcTarget: number
   theoreticalMaxFhcs: number
+  theoreticalMaxEnergyCans: number
+  theoreticalEnergyCanCooldownLimitHours: number
   theoreticalCooldownLimitHours: number
   timingBufferHours: number
   hoursBeyondTheoreticalLimit: number
@@ -87,11 +89,25 @@ export function calculateHalloweenBoosterCooldown(
     HALLOWEEN_BOOSTER_COOLDOWN_RULES.maxTimerHours +
     HALLOWEEN_BOOSTER_COOLDOWN_RULES.fhcHours
   const otherItemHours = greenEggHours + energyCanHours
+  // The FHC-only ceiling assumes every use is a 6h item. The final FHC may
+  // overfill the 48h cap by almost 6h, so the total must remain below 222h.
   const theoreticalMaxFhcs = Math.max(0, Math.ceil(
+    theoreticalCooldownLimitHours / HALLOWEEN_BOOSTER_COOLDOWN_RULES.fhcHours,
+  ) - 1)
+  // Energy-can-only runs can overfill the 48h cap by only one 2h can.
+  const theoreticalEnergyCanCooldownLimitHours =
+    validEventHours +
+    HALLOWEEN_BOOSTER_COOLDOWN_RULES.maxTimerHours +
+    HALLOWEEN_BOOSTER_COOLDOWN_RULES.energyCanHours
+  const theoreticalMaxEnergyCans = Math.max(0, Math.ceil(
+    theoreticalEnergyCanCooldownLimitHours / HALLOWEEN_BOOSTER_COOLDOWN_RULES.energyCanHours,
+  ) - 1)
+  // The practical target accounts for the member's logged green eggs/cans,
+  // then keeps one additional 6h FHC as timing margin.
+  const maxFhcsAfterOtherItems = Math.max(0, Math.ceil(
     (theoreticalCooldownLimitHours - otherItemHours) / HALLOWEEN_BOOSTER_COOLDOWN_RULES.fhcHours,
   ) - 1)
-  // Keep one 6h FHC of extra timing margin for a practical planning target.
-  const practicalFhcTarget = Math.max(0, theoreticalMaxFhcs - 1)
+  const practicalFhcTarget = Math.max(0, maxFhcsAfterOtherItems - 1)
   const timingBufferHours = theoreticalCooldownLimitHours - totalHours
   const withinTheoreticalLimit = totalHours < theoreticalCooldownLimitHours &&
     fhcsUsed <= theoreticalMaxFhcs
@@ -110,6 +126,8 @@ export function calculateHalloweenBoosterCooldown(
     excessHours: Math.max(0, totalHours - validEventHours),
     practicalFhcTarget,
     theoreticalMaxFhcs,
+    theoreticalMaxEnergyCans,
+    theoreticalEnergyCanCooldownLimitHours,
     theoreticalCooldownLimitHours,
     timingBufferHours,
     hoursBeyondTheoreticalLimit: Math.max(0, totalHours - theoreticalCooldownLimitHours),
