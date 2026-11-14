@@ -1796,7 +1796,8 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const revitalizeChanceLabel = Object.keys(archive?.eventTotals?.revitalizeChanceCounts ?? {}).sort((a, b) => Number(a) - Number(b)).map(chance => chance + "%").join(" · ") || "—"
   const eventMetricsReady = (archive?.eventTotals?.coveredMembers ?? 0) > 0
   const eventMetric = (value: number | undefined) => eventMetricsReady && value !== undefined ? value.toLocaleString() : "—"
-  const memberBoosterCooldown = memberDetail?.metrics && historicalYear !== "all"
+  const memberDetailYearScope = tab === "historical" ? historicalYear : String(eventYear)
+  const memberBoosterCooldown = memberDetail?.metrics && memberDetailYearScope !== "all"
     ? calculateHalloweenBoosterCooldown(memberDetail.metrics)
     : null
   const myBoosterCooldown = archive?.myEventMetrics && archiveYearLabel !== "ALL RECORDED YEARS"
@@ -1904,7 +1905,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
           {archiveYearLabel === "ALL RECORDED YEARS" && archive?.myEventMetrics && <section className="halloween-panel halloween-event-metrics halloween-personal-event-metrics">
             <div className="halloween-status"><i /> YOUR PERSONAL EVENT-ITEM TOTALS · ALL YEARS</div>
             <h3>Your recorded Halloween item use across all event years</h3>
-            <p>Totals combine only your completed personal event-log collections. Cooldown estimates remain per event year because separate events must not be treated as one continuous event window.</p>
+            <p>Totals combine your completed personal event-log collections for these years: {archive.myCollection?.completedEventYears?.join(", ") || "None"}. Cooldown estimates remain per event year because separate events must not be treated as one continuous event window.</p>
             <div className="coverage-grid">
               <div><small>FHCs USED</small><strong>{archive.myEventMetrics.fhcsUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
               <div><small>GREEN EGGS USED</small><strong>{archive.myEventMetrics.greenEggsUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
@@ -1912,7 +1913,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
               <div><small>BOOSTERS USED</small><strong>{archive.myEventMetrics.boostersUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
               <div><small>ENERGY FROM TREAT EXCHANGES</small><strong>{archive.myEventMetrics.treatExchangeEnergyGained.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
               <div><small>SUCCESSFUL ATTACKS</small><strong>{archive.myEventMetrics.successfulAttacks.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
-              <div><small>REVITALIZE PROCS</small><strong>{archive.myEventMetrics.revitalizeProcs.toLocaleString()}</strong><span>{archive.myEventMetrics.revitalizeAttacksReviewed.toLocaleString()} eligible attacks reviewed</span></div>
+              <div><small>REVITALIZE PROCS</small><strong>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeProcs.toLocaleString() : "—"}</strong><span>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeAttacksReviewed.toLocaleString() + " eligible attacks reviewed" : "Detailed attacks incomplete for at least one completed event year"}</span></div>
             </div>
           </section>}
       <section className="halloween-panel halloween-member-comparison">
