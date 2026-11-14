@@ -2329,17 +2329,23 @@ async function throttleHalloweenRequest(env: WorkerEnv, playerId: string): Promi
 }
 
 async function getHalloweenHistoricalCollectionKey(env: WorkerEnv, playerId: string, requireUpdatedConsent = false): Promise<string | null> {
-  const row = await requireDb(env).prepare(
-    "SELECT access_level AS accessLevel, consent_version AS consentVersion FROM halloween_historical_keys WHERE player_id = ?"
-  ).bind(playerId).first<{ accessLevel: string; consentVersion: string }>()
-  if (!row || (requireUpdatedConsent && row.consentVersion !== "halloween-history-v2")) return null
+  const db = requireDb(env)
+  const existingKey = await db.prepare(
+    "SELECT player_id FROM halloween_historical_keys WHERE player_id = ?"
+  ).bind(playerId).first<{ player_id: string }>()
+  if (!existingKey) return null
 
   // The service-owned Full Access secret is used only for its verified owner,
   // and only after the owner has accepted the current Halloween data-sharing terms.
-  // Other members continue to use their own encrypted portal sign-in key.
-  if (playerId === ADMIN_PLAYER_ID) {
-    const apiKey = env.TORN_API_KEY_FULL_ACCESS?.trim() ?? ""
-    if (!apiKey || row.accessLevel !== "Full Access" || row.consentVersion !== "halloween-history-v2") return null
+  // Detailed attacks require the current consent version for every member.
+  if (playerId === ADMIN_PLAYER_ID || requireUpdatedConsent) {
+    const consent = await db.prepare(
+      "SELECT access_level AS accessLevel, consent_version AS consentVersion FROM halloween_historical_keys WHERE player_id = ?"
+    ).bind(playerId).first<{ accessLevel: string; consentVersion: string }>()
+    if (!consent || consent.consentVersion !== "halloween-history-v2") return null
+    if (playerId === ADMIN_PLAYER_ID) {
+      const apiKey = env.TORN_API_KEY_FULL_ACCESS?.trim() ?? ""
+      if (!apiKey || consent.accessLevel !== "Full Access") return null
     const response = await trackedTornFetch("halloween-owner-key-validation", "https://api.torn.com/v2/key/info", {
       headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
     }, fetch, playerId)
@@ -2348,8 +2354,9 @@ async function getHalloweenHistoricalCollectionKey(env: WorkerEnv, playerId: str
     const info = isRecord(payload) && isRecord(payload.info) ? payload.info : null
     const owner = isRecord(info?.user) ? String(info.user.id ?? "") : ""
     const access = isRecord(info?.access) ? String(info.access.type ?? "") : ""
-    if (!response.ok || error || owner !== playerId || access !== "Full Access") return null
-    return apiKey
+      if (!response.ok || error || owner !== playerId || access !== "Full Access") return null
+      return apiKey
+    }
   }
 
   return savedKey(env, playerId)
