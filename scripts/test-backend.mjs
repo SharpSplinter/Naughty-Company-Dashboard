@@ -417,7 +417,10 @@ try {
       uncoveredHours: 8,
       excessHours: 0,
       practicalFhcTarget: 33,
-      theoreticalMaxFhcs: 34,
+      theoreticalMaxFhcs: 36,
+      theoreticalMaxEnergyCans: 108,
+      theoreticalFhcCooldownLimitHours: 222,
+      theoreticalEnergyCanCooldownLimitHours: 218,
       theoreticalCooldownLimitHours: 222,
       timingBufferHours: 62,
       hoursBeyondTheoreticalLimit: 0,
@@ -433,7 +436,8 @@ try {
     const practical = combinedEstimate(33)
     assert.equal(practical.totalHours, 214)
     assert.equal(practical.practicalFhcTarget, 33)
-    assert.equal(practical.theoreticalMaxFhcs, 34)
+    assert.equal(practical.theoreticalMaxFhcs, 36)
+    assert.equal(practical.theoreticalMaxEnergyCans, 108)
     assert.equal(practical.timingBufferHours, 8)
     assert.equal(practical.withinTheoreticalLimit, true)
 
@@ -447,7 +451,7 @@ try {
     assert.equal(impossible.totalHours, 226)
     assert.equal(impossible.timingBufferHours, -4)
     assert.equal(impossible.hoursBeyondTheoreticalLimit, 4)
-    assert.equal(impossible.fhcsAboveTheoreticalMaximum, 1)
+    assert.equal(impossible.fhcsAboveTheoreticalMaximum, 0, "35 FHCs are below the FHC-only maximum even though the mixed item cooldown total is over the combined limit")
     assert.equal(impossible.withinTheoreticalLimit, false)
 
     const plainFhcs = (fhcsUsed) => calculateHalloweenBoosterCooldown({
@@ -459,6 +463,21 @@ try {
     assert.equal(plainFhcs(35).theoreticalMaxFhcs, 36)
     assert.equal(plainFhcs(36).withinTheoreticalLimit, true)
     assert.equal(plainFhcs(37).withinTheoreticalLimit, false)
+
+    const plainEnergyCans = (energyCansUsed) => calculateHalloweenBoosterCooldown({
+      fhcsUsed: 0,
+      greenEggsUsed: 0,
+      energyCansUsed,
+    })
+    const maximumEnergyCanRun = plainEnergyCans(108)
+    assert.equal(maximumEnergyCanRun.theoreticalEnergyCanCooldownLimitHours, 218)
+    assert.equal(maximumEnergyCanRun.theoreticalMaxEnergyCans, 108)
+    assert.equal(maximumEnergyCanRun.totalHours, 216)
+    assert.equal(maximumEnergyCanRun.withinTheoreticalLimit, true)
+    const overLimitEnergyCanRun = plainEnergyCans(109)
+    assert.equal(overLimitEnergyCanRun.totalHours, 218)
+    assert.equal(overLimitEnergyCanRun.theoreticalCooldownLimitHours, 218)
+    assert.equal(overLimitEnergyCanRun.withinTheoreticalLimit, false, "the strict can-only limit excludes a 109th can at the 218h boundary")
   })
 
   await test("Halloween Revitalize proc parsing counts only the member's actual finishing-hit procs in their event window", () => {
