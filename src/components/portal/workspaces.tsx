@@ -1919,13 +1919,14 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
             <section className="halloween-live-perk-cards">
               <div className="halloween-live-perk-card">
                 <div className="halloween-live-stat-card-heading">TREAT MULTIPLIER PERKS</div>
-                <p>Expected proc totals use the base chance for each perk across your recorded Trick or Treat awards. Torn does not expose each actual multiplier trigger in the returned event logs.</p>
+                <p>Each awarded treat starts from a base of 1. The final amount identifies which multiplier upgrades procced, including stacked combinations.</p>
                 <div className="halloween-live-perk-grid">
-                  <div><small>DOUBLER · 20% BASE CHANCE</small><strong>{archive.myEventMetrics.expectedDoublerProcs.toFixed(1)}</strong><span>Expected procs</span></div>
-                  <div><small>TRIPLER · 10% BASE CHANCE</small><strong>{archive.myEventMetrics.expectedTriplerProcs.toFixed(1)}</strong><span>Expected procs</span></div>
-                  <div><small>QUADRUPLER · 5% BASE CHANCE</small><strong>{archive.myEventMetrics.expectedQuadruplerProcs.toFixed(1)}</strong><span>Expected procs</span></div>
-                  <div><small>QUINTUPLER · 1% BASE CHANCE</small><strong>{archive.myEventMetrics.expectedQuintuplerProcs.toFixed(1)}</strong><span>Expected procs</span></div>
+                  <div><small>DOUBLER · 20% BASE CHANCE</small><strong>{archive.myEventMetrics.doublerProcs.toFixed(1)}</strong><span>Observed procs</span></div>
+                  <div><small>TRIPLER · 10% BASE CHANCE</small><strong>{archive.myEventMetrics.triplerProcs.toFixed(1)}</strong><span>Observed procs</span></div>
+                  <div><small>QUADRUPLER · 5% BASE CHANCE</small><strong>{archive.myEventMetrics.quadruplerProcs.toFixed(1)}</strong><span>Observed procs</span></div>
+                  <div><small>QUINTUPLER · 1% BASE CHANCE</small><strong>{archive.myEventMetrics.quintuplerProcs.toFixed(1)}</strong><span>Observed procs</span></div>
                 </div>
+                {archive.myEventMetrics.unclassifiedTreatAwards > 0 && <p className="halloween-live-stat-note">{archive.myEventMetrics.unclassifiedTreatAwards.toLocaleString()} treat awards had amounts that do not match a known multiplier combination and are excluded from these proc totals.</p>}
               </div>
               <div className="halloween-live-perk-card">
                 <div className="halloween-live-stat-card-heading">BASKET EXCHANGE PERKS</div>
