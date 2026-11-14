@@ -2126,6 +2126,7 @@ async function loadRecordedHalloweenEventWindows(db: D1Database): Promise<Array<
   const rows = await db.prepare(
     `SELECT event_year AS eventYear, start_at AS startAt, end_at AS endAt
      FROM halloween_event_windows
+     WHERE historical_collection_enabled = 1
      ORDER BY event_year DESC`
   ).all<{ eventYear: number; startAt: string; endAt: string }>()
   return rows.results ?? []
@@ -2327,17 +2328,18 @@ async function throttleHalloweenRequest(env: WorkerEnv, playerId: string): Promi
     .bind(playerId, startedAt).run()
 }
 
-async function getHalloweenHistoricalCollectionKey(env: WorkerEnv, playerId: string): Promise<string | null> {
+async function getHalloweenHistoricalCollectionKey(env: WorkerEnv, playerId: string, requireUpdatedConsent = false): Promise<string | null> {
   const row = await requireDb(env).prepare(
     "SELECT access_level AS accessLevel, consent_version AS consentVersion FROM halloween_historical_keys WHERE player_id = ?"
   ).bind(playerId).first<{ accessLevel: string; consentVersion: string }>()
-  if (!row || row.consentVersion !== "halloween-history-v2") return null
+  if (!row || (requireUpdatedConsent && row.consentVersion !== "halloween-history-v2")) return null
 
-  // The service-owned Full Access secret is used only for its verified owner.
+  // The service-owned Full Access secret is used only for its verified owner,
+  // and only after the owner has accepted the current Halloween data-sharing terms.
   // Other members continue to use their own encrypted portal sign-in key.
   if (playerId === ADMIN_PLAYER_ID) {
     const apiKey = env.TORN_API_KEY_FULL_ACCESS?.trim() ?? ""
-    if (!apiKey || row.accessLevel !== "Full Access") return null
+    if (!apiKey || row.accessLevel !== "Full Access" || row.consentVersion !== "halloween-history-v2") return null
     const response = await trackedTornFetch("halloween-owner-key-validation", "https://api.torn.com/v2/key/info", {
       headers: { Authorization: "ApiKey " + apiKey, Accept: "application/json" },
     }, fetch, playerId)
@@ -2400,7 +2402,7 @@ async function runHalloweenAttackMetricsPage(env: WorkerEnv, jobId: string): Pro
     return
   }
 
-  const apiKey = await getHalloweenHistoricalCollectionKey(env, job.player_id)
+  const apiKey = await getHalloweenHistoricalCollectionKey(env, job.player_id, true)
   if (!apiKey) {
     await db.prepare("UPDATE halloween_attack_metrics_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?")
       .bind("The member must accept the updated Halloween collection terms with a key that includes User → Attacks.", new Date().toISOString(), jobId).run()
