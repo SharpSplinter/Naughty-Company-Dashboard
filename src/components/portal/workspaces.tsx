@@ -54,6 +54,7 @@ type HalloweenArchiveMember = {
   keyConnected: boolean
   collectionStatus: string
   attackMetricsStatus?: string
+  attackOutcomesStatus?: string
   pagesCollected: number
   logsCollected: number
   totalHits: number | null
@@ -78,6 +79,7 @@ type HalloweenArchivePayload = {
     totalHits: number | null
     coverage: string
     attackMetricsStatus?: string
+    attackOutcomesStatus?: string
     completedEventYears?: number[]
     metrics: HalloweenEventMetrics | null
   }>
@@ -1799,6 +1801,14 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   }
   const eventMetricsReady = (archive?.eventTotals?.coveredMembers ?? 0) > 0
   const eventMetric = (value: number | undefined) => eventMetricsReady && value !== undefined ? value.toLocaleString() : "—"
+  const attackOutcomesReady = archive?.myCollection?.attackOutcomesStatus === "complete"
+  const treatHistogramRows = attackOutcomesReady && archive?.myEventMetrics
+    ? Object.entries(archive.myEventMetrics.treatsByAttack)
+      .map(([treats, count]) => ({ treats: Number(treats), count: Number(count) }))
+      .filter(row => Number.isInteger(row.treats) && row.treats >= 0 && Number.isFinite(row.count) && row.count >= 0)
+      .sort((a, b) => a.treats - b.treats)
+    : []
+  const maxTreatHistogramCount = Math.max(1, ...treatHistogramRows.map(row => row.count))
   const memberDetailYearScope = tab === "historical" ? historicalYear : String(eventYear)
   const memberBoosterCooldown = memberDetail?.metrics && memberDetailYearScope !== "all"
     ? calculateHalloweenBoosterCooldown(memberDetail.metrics)
@@ -1877,11 +1887,56 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
                 </div>
               </section>
       )}
-          {archive?.myEventMetrics && myBoosterCooldown && <section className="halloween-panel halloween-event-metrics halloween-personal-event-metrics">
-            <div className="halloween-status"><i /> YOUR PERSONAL EVENT-ITEM USE · {archiveYearLabel}</div>
-            <h3>Your booster cooldown from event-window item use</h3>
-            <p>These counts come only from your own completed event-window logs. They are separate from the faction-wide totals below.</p>
-            <div className="coverage-grid">
+          {archive?.myEventMetrics && <section className="halloween-panel halloween-event-metrics halloween-personal-event-metrics">
+            <div className="halloween-status"><i /> YOUR PERSONAL HALLOWEEN STATS · {archiveYearLabel}</div>
+            <h3>Live Halloween Stats</h3>
+            <p>These stats use your own completed event-window logs and detailed attack records. They are separate from the faction-wide totals below.</p>
+            <div className="halloween-live-total-attacks-card">
+              <div className="halloween-live-stat-card-heading">TOTAL ATTACKS</div>
+              <div className="halloween-live-total-attacks-grid">
+                <div><small>SUCCESSFUL ATTACKS</small><strong>{attackOutcomesReady ? archive.myEventMetrics.successfulAttacks.toLocaleString() : "—"}</strong></div>
+                <div><small>SUCCESSFUL ATTACKS WITH TREATS</small><strong>{attackOutcomesReady ? archive.myEventMetrics.successfulAttacksWithTreats.toLocaleString() : "—"}</strong></div>
+                <div><small>LOST / STALEMATED ATTACKS</small><strong>{attackOutcomesReady ? archive.myEventMetrics.lostStalematedAttacks.toLocaleString() : "—"}</strong></div>
+              </div>
+              {!attackOutcomesReady && <p className="halloween-live-stat-note">{archive.myCollection?.attackOutcomesStatus === "refresh_required" ? "Refresh your detailed attack collection to populate the outcome totals and zero-treat bucket." : "Detailed attack outcome collection is incomplete."}</p>}
+            </div>
+            <div className="halloween-live-revitalize-card">
+              <div><small>REVITALIZE PROC RATE</small><strong>{archive.myCollection?.attackMetricsStatus === "complete" ? revitalizeProcRateLabel(archive.myEventMetrics) : "—"}</strong></div>
+              <span>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeProcs.toLocaleString() + " procs / " + archive.myEventMetrics.revitalizeSuccessfulAttacks.toLocaleString() + " successful attacks" : "Detailed attack effects are incomplete"}</span>
+            </div>
+            <section className="halloween-live-histogram-card">
+              <div className="halloween-live-stat-card-heading">TREATS PER SUCCESSFUL ATTACK</div>
+              <p>Number of successful attacks that awarded each treat amount, including attacks that received zero treats.</p>
+              {attackOutcomesReady ? <div className="halloween-live-histogram">
+                {treatHistogramRows.map(row => <div className="halloween-live-histogram-row" key={row.treats}>
+                  <span>{row.treats} {row.treats === 1 ? "treat" : "treats"}</span>
+                  <div className="halloween-live-histogram-track"><i style={{ width: (row.count / maxTreatHistogramCount * 100) + "%" }} /></div>
+                  <strong>{row.count.toLocaleString()}</strong>
+                </div>)}
+                {!treatHistogramRows.length && <span className="historical-key-muted">No treat-award distribution is available for this event window.</span>}
+              </div> : <p className="halloween-live-stat-note">The histogram will appear after detailed attack outcomes are refreshed.</p>}
+            </section>
+            <section className="halloween-live-perk-cards">
+              <div className="halloween-live-perk-card">
+                <div className="halloween-live-stat-card-heading">TREAT MULTIPLIER PERKS</div>
+                <p>Expected proc totals use the base chance for each perk across your recorded Trick or Treat awards. Torn does not expose each actual multiplier trigger in the returned event logs.</p>
+                <div className="halloween-live-perk-grid">
+                  <div><small>DOUBLER · 20% BASE CHANCE</small><strong>{archive.myEventMetrics.expectedDoublerProcs.toFixed(1)}</strong><span>Expected procs</span></div>
+                  <div><small>TRIPLER · 10% BASE CHANCE</small><strong>{archive.myEventMetrics.expectedTriplerProcs.toFixed(1)}</strong><span>Expected procs</span></div>
+                  <div><small>QUADRUPLER · 5% BASE CHANCE</small><strong>{archive.myEventMetrics.expectedQuadruplerProcs.toFixed(1)}</strong><span>Expected procs</span></div>
+                  <div><small>QUINTUPLER · 1% BASE CHANCE</small><strong>{archive.myEventMetrics.expectedQuintuplerProcs.toFixed(1)}</strong><span>Expected procs</span></div>
+                </div>
+              </div>
+              <div className="halloween-live-perk-card">
+                <div className="halloween-live-stat-card-heading">BASKET EXCHANGE PERKS</div>
+                <p>Exact upgraded reward items recorded in Halloween basket exchanges.</p>
+                <div className="halloween-live-perk-grid halloween-live-exchange-grid">
+                  <div><small>MULTIPACK · 2% BASE CHANCE</small><strong>{archive.myEventMetrics.multipackProcs.toLocaleString()}</strong><span>Observed multipacks</span></div>
+                  <div><small>DEAL WITH THE DEVIL · 3% BASE CHANCE</small><strong>{archive.myEventMetrics.dealWithDevilProcs.toLocaleString()}</strong><span>Observed booster / special items</span></div>
+                </div>
+              </div>
+            </section>
+            {myBoosterCooldown && <div className="coverage-grid">
               <div><small>YOUR FHCs USED · 6H EACH</small><strong>{myBoosterCooldown.fhcsUsed}</strong><span>{myBoosterCooldown.fhcHours}h of booster cooldown</span></div>
               <div><small>YOUR GREEN EGGS USED · 6H EACH</small><strong>{myBoosterCooldown.greenEggsUsed}</strong><span>{myBoosterCooldown.greenEggHours}h of booster cooldown</span></div>
               <div><small>YOUR ENERGY CANS USED · 2H EACH</small><strong>{myBoosterCooldown.energyCansUsed}</strong><span>{myBoosterCooldown.energyCanHours}h of booster cooldown</span></div>
@@ -1891,7 +1946,6 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
               <div><small>THEORETICAL ENERGY CAN MAXIMUM</small><strong>{myBoosterCooldown.theoreticalMaxEnergyCans}</strong><span>Can-only: no FHCs or Green Easter Eggs; less than {myBoosterCooldown.theoreticalEnergyCanCooldownLimitHours}h cooldown</span></div>
               <div><small>STRICT COOLDOWN LIMIT</small><strong>&lt; {myBoosterCooldown.theoreticalCooldownLimitHours}h</strong><span>{myBoosterCooldown.eventWindowHours}h event + 48h pre-use timer + {myBoosterCooldown.fhcsUsed > 0 || myBoosterCooldown.greenEggsUsed > 0 || myBoosterCooldown.energyCansUsed === 0 ? 6 : 2}h final-item overfill</span></div>
               <div><small>BUFFER TO THEORETICAL LIMIT</small><strong>{myBoosterCooldown.timingBufferHours}h</strong><span>{myBoosterCooldown.withinTheoreticalLimit ? "Remaining timing margin" : myBoosterCooldown.totalHours === myBoosterCooldown.theoreticalCooldownLimitHours ? "At the strict cooldown boundary" : "Beyond the strict cooldown boundary"}</span></div>
-              <div><small>YOUR REVITALIZE PROC RATE</small><strong>{archive.myCollection?.attackMetricsStatus === "complete" ? revitalizeProcRateLabel(archive.myEventMetrics) : "—"}</strong><span>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeProcs.toLocaleString() + " procs / " + archive.myEventMetrics.revitalizeSuccessfulAttacks.toLocaleString() + " successful attacks or hits" : "Detailed attack collection is incomplete"}</span></div>
               <div><small>EVENT WINDOW COOLDOWN</small><strong>{myBoosterCooldown.usableHours}h / {myBoosterCooldown.eventWindowHours}h</strong><span>Maximum cooldown that can decay during the event</span></div>
               <div><small>MINIMUM AFTER-EVENT CARRYOVER</small><strong>{myBoosterCooldown.excessHours}h</strong><span>At least this much remains beyond 168h; exact timer depends on item-use times</span></div>
               <div><small>EVENT TIME UNCOVERED</small><strong>{myBoosterCooldown.uncoveredHours}h</strong><span>Event duration not covered by the total logged cooldown</span></div>
