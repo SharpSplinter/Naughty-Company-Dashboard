@@ -110,41 +110,11 @@ type WorkspaceProps = {
 }
 
 const workspaces = [
-  {
-    path: "/company",
-    icon: "▦",
-    title: "Company Dashboard",
-    description: "Company performance, employees, income, rankings, and operational intelligence.",
-    label: "COMPANY OPERATIONS",
-  },
-  {
-    path: "/halloween",
-    icon: "♧",
-    title: "Halloween Dashboard",
-    description: "Current event standings alongside the faction's growing historical event archive.",
-    label: "EVENT INTELLIGENCE",
-  },
-  {
-    path: "/christmas-town",
-    icon: "❄",
-    title: "Christmas Town",
-    description: "Your personal minigame, chest, ornament, currency and market-value history.",
-    label: "EVENT INTELLIGENCE",
-  },
-  {
-    path: "/faction",
-    icon: "♜",
-    title: "Faction Dashboard",
-    description: "A shared view of faction activity and member intelligence.",
-    label: "FACTION WORKSPACE",
-  },
-  {
-    path: "/settings",
-    icon: "⚙",
-    title: "Account Settings",
-    description: "Your API connections, permissions, account security, and preferences.",
-    label: "YOUR ACCOUNT",
-  },
+  { path: "/faction", icon: "♜", title: "Faction Dashboard", description: "Faction activity, member intelligence, company leadership, and shared performance.", label: "FACTION WORKSPACE" },
+  { path: "/company", icon: "▦", title: "Company Dashboard", description: "Company performance, employees, income, rankings, and operational intelligence.", label: "COMPANY OPERATIONS" },
+  { path: "/halloween", icon: "♧", title: "Halloween Dashboard", description: "Current event standings alongside the faction's growing historical event archive.", label: "EVENT INTELLIGENCE" },
+  { path: "/christmas-town", icon: "❄", title: "Christmas Town", description: "Your personal minigame, chest, ornament, currency and market-value history.", label: "EVENT INTELLIGENCE" },
+  { path: "/settings", icon: "⚙", title: "Account Settings", description: "Your API connections, permissions, account security, and preferences.", label: "YOUR ACCOUNT" },
 ]
 
 export function PortalHome(props: WorkspaceProps) {
@@ -173,7 +143,7 @@ export function PortalHome(props: WorkspaceProps) {
         <div className="portal-section-heading"><div><span>YOUR WORKSPACES</span><h2>Choose where to go</h2></div><small>05 MODULES</small></div>
         <div className="portal-card-grid">
           {workspaces.map((workspace, index) => (
-            <button type="button" key={workspace.path} className={`portal-card portal-card-${index + 1}`} onClick={() => props.onNavigate(workspace.path)}>
+            <button type="button" key={workspace.path} className={`portal-card portal-card-${workspace.path.slice(1)}`} onClick={() => props.onNavigate(workspace.path)}>
               <div className="portal-card-top"><span className="portal-card-icon">{workspace.icon}</span><span className="portal-card-arrow">↗</span></div>
               <span className="portal-card-label">{workspace.label}</span>
               <strong>{workspace.title}</strong>
@@ -1601,6 +1571,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
   const [historicalYear, setHistoricalYear] = useState("all")
   const [selectedComparePlayerId, setSelectedComparePlayerId] = useState("")
   const [personalWindow, setPersonalWindow] = useState<HalloweenMemberEventWindow | null>(null)
+  const [personalWindowYear, setPersonalWindowYear] = useState<number | null>(null)
   const [personalStartTime, setPersonalStartTime] = useState("")
   const [eventWindowLocked, setEventWindowLocked] = useState(false)
   const [eventWindowBusy, setEventWindowBusy] = useState(false)
@@ -1654,6 +1625,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
       })
       if (yearScope !== "all" && payload.myWindow) {
         setPersonalWindow(payload.myWindow)
+        setPersonalWindowYear(Number(yearScope))
         if (payload.myWindow.startTime) setPersonalStartTime(payload.myWindow.startTime)
       }
     } catch (caught) { setArchiveError(caught instanceof Error ? caught.message : "Could not load the faction Halloween archive.") }
@@ -1690,37 +1662,45 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
     finally { setMemberDetailBusy(false) }
   }
 
-  const loadPersonalEventWindow = async () => {
+  const loadPersonalEventWindow = async (year = eventYear) => {
     try {
-      const response = await fetch(apiBase + "/api/me/halloween/event-window?year=" + eventYear, { headers: { Authorization: "Bearer " + sessionToken } })
+      const response = await fetch(apiBase + "/api/me/halloween/event-window?year=" + year, { headers: { Authorization: "Bearer " + sessionToken } })
       const payload = await response.json() as { error?: string; myWindow?: HalloweenMemberEventWindow | null; locked?: boolean }
       if (!response.ok) throw new Error(payload.error || "Could not load your personal event time.")
       setPersonalWindow(payload.myWindow ?? null)
+      setPersonalWindowYear(year)
       setPersonalStartTime(payload.myWindow?.startTime ?? "")
       setEventWindowLocked(payload.locked === true)
+      setEventWindowError("")
     } catch (caught) { setEventWindowError(caught instanceof Error ? caught.message : "Could not load your personal event time.") }
   }
 
   const savePersonalEventWindow = async () => {
+    const targetYear = personalWindowYear ?? eventYear
     if (!personalStartTime || eventWindowBusy || eventWindowLocked) return
     setEventWindowBusy(true); setEventWindowError(""); setEventWindowNotice("")
     try {
       const response = await fetch(apiBase + "/api/me/halloween/event-window", {
         method: "POST",
         headers: { Authorization: "Bearer " + sessionToken, "Content-Type": "application/json" },
-        body: JSON.stringify({ year: eventYear, startTime: personalStartTime }),
+        body: JSON.stringify({ year: targetYear, startTime: personalStartTime }),
       })
       const payload = await response.json() as { error?: string; saved?: boolean; locked?: boolean; myWindow?: HalloweenMemberEventWindow }
       if (!response.ok) throw new Error(payload.error || "Could not save your personal event time.")
       setPersonalWindow(payload.myWindow ?? null)
+      setPersonalWindowYear(targetYear)
       setEventWindowLocked(payload.locked === true)
-      setEventWindowNotice("Your personal event window is saved. The end time uses the same TCT clock time on November 1.")
-      await Promise.all([loadLive(), loadArchive()])
+      setEventWindowNotice("Your " + targetYear + " personal event window is saved. The end time uses the same TCT clock time on November 1.")
+      if (tab === "live") await Promise.all([loadLive(), loadArchive(String(targetYear))])
+      else await loadArchive(historicalYear)
     } catch (caught) { setEventWindowError(caught instanceof Error ? caught.message : "Could not save your personal event time.") }
     finally { setEventWindowBusy(false) }
   }
 
-  useEffect(() => { void loadPersonalEventWindow() }, [eventYear, apiBase, sessionToken])
+  useEffect(() => {
+    const targetYear = tab === "historical" ? historicalCollectionYear : eventYear
+    if (targetYear !== null) void loadPersonalEventWindow(targetYear)
+  }, [tab, historicalYear, historicalCollectionYear, eventYear, apiBase, sessionToken])
   useEffect(() => {
     if (tab === "live") {
       void loadLive()
@@ -1765,7 +1745,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
 
   const startHistoricalCollection = async () => {
     const targetYear = historicalCollectionYear
-    if (collectBusy || targetYear === null) return
+    if (collectBusy || targetYear === null || personalWindowYear !== targetYear || !personalWindow?.configured) return
     setCollectBusy(true); setArchiveError(""); setCollectMessage("")
     try {
       const response = await fetch(apiBase + "/api/me/halloween/collect", {
@@ -1896,10 +1876,10 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
         <button type="button" className={tab === "live" ? "active" : ""} onClick={() => setTab("live")}><span>◉</span> Live / Current Year</button>
         <button type="button" className={tab === "historical" ? "active" : ""} onClick={() => setTab("historical")}><span>◷</span> Historical</button>
       </nav>
-      {(tab === "live" || historicalYear === String(eventYear)) && (
+      {(tab === "live" || (tab === "historical" && historicalCollectionYear !== null)) && (
               <section className="halloween-personal-window" aria-labelledby="halloween-personal-window-title">
                 <div className="halloween-personal-window-copy">
-                  <div className="halloween-status"><i /> YOUR PERSONAL EVENT WINDOW · {eventYear}</div>
+                  <div className="halloween-status"><i /> YOUR PERSONAL EVENT WINDOW · {personalWindowYear ?? eventYear}</div>
                   <h2 id="halloween-personal-window-title">Your Trick or Treat start time</h2>
                   <p>Choose the same start time you selected in Torn's Calendar. TCT is UTC. Your personal window starts on October 25 and ends on November 1 at the same selected clock time, so members can have different start and finish times.</p>
                   {personalWindow?.configured && personalWindow.startAt && personalWindow.endAt ? (
@@ -2022,6 +2002,22 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
             {myBoosterCooldown && <p>The 48h threshold is checked immediately before each item use. Your practical FHC target of {myBoosterCooldown.practicalFhcTarget} accounts for {myBoosterCooldown.greenEggsUsed} Green Eggs and {myBoosterCooldown.energyCansUsed} Energy Cans already used, while keeping one extra 6h FHC of timing margin. The independent theoretical maximum is {myBoosterCooldown.theoreticalMaxFhcs} FHCs if no Energy Cans or Green Easter Eggs were used. Alternatively, an Energy-Can-only run could use up to {myBoosterCooldown.theoreticalMaxEnergyCans} cans, with no FHCs or Green Easter Eggs. Those are separate all-in scenarios, not additive. Hours above the 168h event length are carryover, and exact timer behavior depends on item-use timestamps.</p>}
           </section>}
           {archive?.myCollection?.coverage === "complete" && !archive.myEventMetrics && <p className="historical-key-muted">Your personal item-use metrics are still being prepared. The faction totals below are separate.</p>}
+          {archiveYearLabel === "ALL RECORDED YEARS" && archive?.myEventMetrics && <section className="halloween-panel halloween-event-metrics halloween-personal-event-metrics">
+            <div className="halloween-status"><i /> YOUR PERSONAL EVENT-ITEM TOTALS · ALL YEARS</div>
+            <h3>Your recorded Halloween item use across all event years</h3>
+            <p>Totals combine your completed personal event-log collections for these years: {archive.myCollection?.completedEventYears?.join(", ") || "None"}. Cooldown estimates remain per event year because separate events must not be treated as one continuous event window.</p>
+            <div className="coverage-grid">
+              <div><small>FHCs USED</small><strong>{archive.myEventMetrics.fhcsUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
+              <div><small>GREEN EGGS USED</small><strong>{archive.myEventMetrics.greenEggsUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
+              <div><small>ENERGY CANS USED</small><strong>{archive.myEventMetrics.energyCansUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
+              <div><small>BOOSTERS USED</small><strong>{calculateHalloweenDashboardBoostersUsed(archive.myEventMetrics).toLocaleString()}</strong><span>Energy Cans + FHCs + Green Easter Eggs across completed event years</span></div>
+              <div><small>OTHER BOOSTER ITEMS USED</small><strong>{archive.myEventMetrics.boostersUsed.toLocaleString()}</strong><span>Excluded from the dashboard Boosters total</span></div>
+              <div><small>ENERGY FROM TREAT EXCHANGES</small><strong>{archive.myEventMetrics.treatExchangeEnergyGained.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
+              <div><small>SUCCESSFUL ATTACKS</small><strong>{archive.myEventMetrics.successfulAttacks.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
+              <div><small>REVITALIZE PROCS</small><strong>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeProcs.toLocaleString() : "—"}</strong><span>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeSuccessfulAttacks.toLocaleString() + " successful attacks / hits" : "Detailed attacks incomplete for at least one completed event year"}</span></div>
+              <div><small>REVITALIZE PROC RATE</small><strong>{archive.myCollection?.attackMetricsStatus === "complete" ? revitalizeProcRateLabel(archive.myEventMetrics) : "—"}</strong><span>Successful Revitalize procs ÷ successful attacks / hits</span></div>
+            </div>
+          </section>}
           {archive?.eventTotals && <section className="halloween-panel halloween-event-metrics">
             <div className="halloween-status historical"><i /> FACTION-WIDE EVENT TOTALS · {archiveYearLabel}</div>
             <h3>Combined items and energy activity</h3>
@@ -2043,22 +2039,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
             {eventMetricsReady && !revitalizeMetricsReady && <p className="historical-key-muted">Revitalize chance and proc totals are separate from event logs. They appear when detailed attack collection completes. Custom keys need User → Attacks access.</p>}
             {revitalizeMetricsReady && <p className="historical-key-muted">Detailed attack coverage: {archive.eventTotals.revitalizeCoveredMemberYears ?? archive.eventTotals.revitalizeCoveredMembers} of {archive.eventTotals.coveredMemberYears ?? archive.eventTotals.coveredMembers} completed member-event collections. Proc rate is calculated as successful Revitalize procs divided by successful attack / hit log counts for that same covered group.</p>}
           </section>}
-          {archiveYearLabel === "ALL RECORDED YEARS" && archive?.myEventMetrics && <section className="halloween-panel halloween-event-metrics halloween-personal-event-metrics">
-            <div className="halloween-status"><i /> YOUR PERSONAL EVENT-ITEM TOTALS · ALL YEARS</div>
-            <h3>Your recorded Halloween item use across all event years</h3>
-            <p>Totals combine your completed personal event-log collections for these years: {archive.myCollection?.completedEventYears?.join(", ") || "None"}. Cooldown estimates remain per event year because separate events must not be treated as one continuous event window.</p>
-            <div className="coverage-grid">
-              <div><small>FHCs USED</small><strong>{archive.myEventMetrics.fhcsUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
-              <div><small>GREEN EGGS USED</small><strong>{archive.myEventMetrics.greenEggsUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
-              <div><small>ENERGY CANS USED</small><strong>{archive.myEventMetrics.energyCansUsed.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
-              <div><small>BOOSTERS USED</small><strong>{calculateHalloweenDashboardBoostersUsed(archive.myEventMetrics).toLocaleString()}</strong><span>Energy Cans + FHCs + Green Easter Eggs across completed event years</span></div>
-              <div><small>OTHER BOOSTER ITEMS USED</small><strong>{archive.myEventMetrics.boostersUsed.toLocaleString()}</strong><span>Excluded from the dashboard Boosters total</span></div>
-              <div><small>ENERGY FROM TREAT EXCHANGES</small><strong>{archive.myEventMetrics.treatExchangeEnergyGained.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
-              <div><small>SUCCESSFUL ATTACKS</small><strong>{archive.myEventMetrics.successfulAttacks.toLocaleString()}</strong><span>Across completed recorded event years</span></div>
-              <div><small>REVITALIZE PROCS</small><strong>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeProcs.toLocaleString() : "—"}</strong><span>{archive.myCollection?.attackMetricsStatus === "complete" ? archive.myEventMetrics.revitalizeSuccessfulAttacks.toLocaleString() + " successful attacks / hits" : "Detailed attacks incomplete for at least one completed event year"}</span></div>
-              <div><small>REVITALIZE PROC RATE</small><strong>{archive.myCollection?.attackMetricsStatus === "complete" ? revitalizeProcRateLabel(archive.myEventMetrics) : "—"}</strong><span>Successful Revitalize procs ÷ successful attacks / hits</span></div>
-            </div>
-          </section>}
+          
       <section className="halloween-panel halloween-member-comparison">
         <div className="halloween-status historical"><i /> OPTIONAL MEMBER COMPARISON · {archiveYearLabel}</div>
         <h2>Compare event data with another member</h2>
@@ -2161,7 +2142,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
           <div className="historical-collection-toolbar"><div><small>FACTION HISTORICAL LEADERBOARD</small><strong>{archive?.leaderboard.length ?? 0} member accounts in the archive</strong></div><button type="button" onClick={() => { void loadArchive(); void loadHistoricalKeyStatus() }} disabled={archiveBusy}>{archiveBusy ? "Refreshing…" : "Refresh archive ↻"}</button></div>
           {archiveError && <p className="historical-key-error" role="alert">{archiveError}</p>}
           {collectMessage && <p className="historical-key-message" role="status">{collectMessage}</p>}
-          {historicalConsentCurrent && <div className="historical-collect-banner"><div><strong>{historicalYear === "all" ? "Contribute or refresh " + (historicalCollectionYear ?? "Halloween") + " event stats" : "Contribute or refresh Halloween event stats"}</strong><span>{historicalYear === "all" ? "All-time view automatically targets the newest configured event year. Choose a different year in Display to collect another event." : "Collection follows your saved personal window, from your selected October 25 start time through November 1 at the same TCT time."} Detailed attacks provide outcome totals, the zero-treat histogram bucket, and Revitalize finishing-hit effects.</span></div><button type="button" onClick={startHistoricalCollection} disabled={collectBusy || historicalCollectionYear === null || archive?.myCollection?.coverage === "collecting" || archive?.myCollection?.attackMetricsStatus === "queued" || archive?.myCollection?.attackMetricsStatus === "running" || !personalWindow?.configured}>{collectBusy ? "Queueing…" : archive?.myCollection?.coverage === "collecting" || archive?.myCollection?.attackMetricsStatus === "queued" || archive?.myCollection?.attackMetricsStatus === "running" ? "Collection running…" : !historicalCollectionYear ? "No configured event year" : !archive?.myWindow?.configured ? "Set this event year's time above" : "Collect / refresh " + historicalCollectionYear + " history"}</button></div>}
+          {historicalConsentCurrent && <div className="historical-collect-banner"><div><strong>{historicalYear === "all" ? "Contribute or refresh " + (historicalCollectionYear ?? "Halloween") + " event stats" : "Contribute or refresh Halloween event stats"}</strong><span>{historicalYear === "all" ? "All-time view automatically targets the newest configured event year. Choose a different year in Display to collect another event." : "Collection follows your saved personal window, from your selected October 25 start time through November 1 at the same TCT time."} Detailed attacks provide outcome totals, the zero-treat histogram bucket, and Revitalize finishing-hit effects.</span></div><button type="button" onClick={startHistoricalCollection} disabled={collectBusy || historicalCollectionYear === null || archive?.myCollection?.coverage === "collecting" || archive?.myCollection?.attackMetricsStatus === "queued" || archive?.myCollection?.attackMetricsStatus === "running" || !personalWindow?.configured || personalWindowYear !== historicalCollectionYear}>{collectBusy ? "Queueing…" : archive?.myCollection?.coverage === "collecting" || archive?.myCollection?.attackMetricsStatus === "queued" || archive?.myCollection?.attackMetricsStatus === "running" ? "Collection running…" : !historicalCollectionYear ? "No configured event year" : (!personalWindow?.configured || personalWindowYear !== historicalCollectionYear) ? "Set this event year's time above" : "Collect / refresh " + historicalCollectionYear + " history"}</button></div>}
           <div className="historical-leaderboard">
             {!archive && archiveBusy ? <p className="historical-key-muted">Loading faction archive…</p> : archive?.leaderboard.length ? <table><thead><tr><th>RANK</th><th>MEMBER</th><th>TOTAL HITS</th><th>LOGS</th><th>COVERAGE</th></tr></thead><tbody>
               {archive.leaderboard.map((member, index) => <tr key={member.playerId} className={selectedMember?.playerId === member.playerId ? "selected" : ""}>
