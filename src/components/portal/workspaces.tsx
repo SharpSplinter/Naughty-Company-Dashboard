@@ -1641,6 +1641,7 @@ export function HalloweenWorkspace({ playerName, onNavigate, apiBase, sessionTok
         leaderboard: payload.leaderboard ?? [],
         myCollection: payload.myCollection ?? null,
         myEventMetrics: payload.myEventMetrics ?? null,
+        myExchangeMarketValue: payload.myExchangeMarketValue ?? null,
         eventTotals: payload.eventTotals ?? null,
         memberComparisons: payload.memberComparisons ?? [],
       })
