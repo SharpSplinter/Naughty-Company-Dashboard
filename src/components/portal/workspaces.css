@@ -704,3 +704,101 @@
 .christmas-town-coupon-summary small,.christmas-town-coupon-summary strong{display:block}
 .christmas-town-coupon-summary small{color:#91aaa3;font-size:7px;font-weight:700;letter-spacing:.12em}
 .christmas-town-coupon-summary strong{margin-top:7px;color:#e8efe8;font:600 20px 'Space Grotesk',sans-serif}
+
+/* Compact portal cards: readable at phone width without wasting a screenful. */
+.portal-card-faction .portal-card-icon{background:#3b3150;color:#d4bbff}
+.portal-card-faction .portal-card-label{color:#c4a7f6}
+.portal-card-company .portal-card-icon{background:#23423f;color:#8de2ca}
+.portal-card-company .portal-card-label{color:#79bdb0}
+.portal-card-halloween .portal-card-icon{background:#413626;color:#f6cd87}
+.portal-card-halloween .portal-card-label{color:#e2b96e}
+.portal-card-christmas-town .portal-card-icon{background:#2b354d;color:#a7baff}
+.portal-card-christmas-town .portal-card-label{color:#9cb4ff}
+.portal-card-settings .portal-card-icon{background:#34414b;color:#c4d4de}
+@media(max-width:760px){
+  .portal-card-grid{grid-template-columns:minmax(0,1fr);gap:9px}
+  .portal-card{min-height:0;padding:13px 15px 12px;border-radius:12px}
+  .portal-card-top{margin-bottom:8px}
+  .portal-card-icon{width:32px;height:32px;border-radius:9px;font-size:17px}
+  .portal-card-label{font-size:7px;margin-bottom:5px}
+  .portal-card>strong{font-size:16px;line-height:1.25}
+  .portal-card>p{font-size:10px;line-height:1.45;margin:5px 0 8px}
+  .portal-card-open{font-size:9px}
+  .portal-card-admin{min-height:0}
+}
+/* Christmas Town: winter-night collection dashboard. */
+.christmas-town-module{
+  background:radial-gradient(ellipse at 12% 16%,rgba(46,132,107,.18),transparent 34%),radial-gradient(ellipse at 94% 28%,rgba(88,113,178,.16),transparent 33%),linear-gradient(180deg,#0b1118 0%,#101a1e 52%,#0b1218 100%);
+}
+.christmas-town-heading{position:relative;overflow:hidden;padding:48px 0 32px}
+.christmas-town-heading:after{content:"✦   ·   ❄   ·   ✧   ·   ❄   ·   ✦";position:absolute;right:2%;top:20px;max-width:45%;color:#d9f2e8;opacity:.2;font-size:clamp(14px,3vw,28px);letter-spacing:.7em;pointer-events:none;white-space:nowrap}
+.christmas-town-summary{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:9px;margin:0 auto 14px;max-width:1140px;padding:11px;border:1px solid #4c806e;border-radius:14px;background:linear-gradient(145deg,rgba(22,46,43,.96),rgba(17,26,34,.97));box-shadow:0 14px 36px rgba(0,0,0,.2)}
+.christmas-town-summary>article{min-width:0;padding:14px 12px;border:1px solid rgba(202,231,218,.11);border-radius:10px;background:linear-gradient(150deg,rgba(35,66,61,.7),rgba(17,29,36,.84))}
+.christmas-town-summary>article small{display:block;color:#a1cdb8;font-size:8px;font-weight:800;letter-spacing:.14em}
+.christmas-town-summary>article strong{display:block;margin:9px 0 5px;color:#f1f8f2;font:600 clamp(17px,2vw,24px)/1.15 'Space Grotesk',sans-serif;overflow-wrap:anywhere}
+.christmas-town-summary>article span{display:block;color:#98b1a8;font-size:9px;line-height:1.45}
+.christmas-town-summary>article.christmas-town-summary-value{background:linear-gradient(145deg,rgba(43,91,70,.85),rgba(22,45,39,.95));border-color:#78b99a55}
+.christmas-town-summary>article.christmas-town-summary-value strong{color:#a4f0b4}
+.christmas-town-panel{border-color:#365b4e;background:linear-gradient(145deg,rgba(21,34,35,.97),rgba(16,25,31,.98));box-shadow:0 12px 30px rgba(0,0,0,.17)}
+.christmas-town-panel-heading h2,.christmas-town-panel h2{color:#eaf4ee}
+.christmas-town-section-kicker{color:#8dcea9}
+.christmas-town-game-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.christmas-town-game-grid-daily{grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:18px}
+.christmas-town-game-tile{position:relative;isolation:isolate;overflow:hidden;display:flex;align-items:center;gap:12px;min-height:88px;padding:12px;border:1px solid #ffffff18;border-radius:10px;background:linear-gradient(145deg,#203d36,#15232a)}
+.christmas-town-game-tile:before{content:"";position:absolute;z-index:-1;inset:auto -12px -24px auto;width:105px;height:105px;border-radius:50%;background:radial-gradient(circle,rgba(129,204,160,.17),transparent 68%)}
+.christmas-town-game-art{flex:0 0 50px;width:50px;height:50px;display:grid;place-items:center;border-radius:13px;background:linear-gradient(145deg,#365d4f,#1b2b35);border:1px solid #a6d9b533;font-size:28px;filter:drop-shadow(0 5px 7px #0006)}
+.christmas-town-game-copy{display:flex;flex-direction:column;min-width:0}
+.christmas-town-game-copy small{color:#a7cdb7;font-size:8px;font-weight:800;letter-spacing:.1em;line-height:1.3}
+.christmas-town-game-copy strong{margin-top:5px;color:#f4f8ef;font:600 22px 'Space Grotesk',sans-serif}
+.christmas-town-game-copy>span{color:#9cb7a9;font-size:9px}
+.christmas-town-game-spin_the_wheel .christmas-town-game-art{background:linear-gradient(145deg,#36566c,#222d45)}
+.christmas-town-game-present_pick .christmas-town-game-art{background:linear-gradient(145deg,#76523d,#402d2b)}
+.christmas-town-subheading{margin-top:14px}
+.christmas-town-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.christmas-town-big-number strong{color:#a4edb2}
+.christmas-town-collectibles-grid{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(240px,.85fr);gap:12px;margin-top:12px}
+.christmas-town-ornament-summary{display:flex;align-items:center;gap:14px;margin:13px 0 16px;padding:13px 15px;border-radius:10px;background:linear-gradient(110deg,#203f34,#182b31);border:1px solid #94d7aa26}
+.christmas-town-ornament-summary>strong{color:#9aeca9;font:600 38px 'Space Grotesk',sans-serif;line-height:1}
+.christmas-town-ornament-summary>div{display:flex;flex-direction:column;gap:4px}
+.christmas-town-ornament-summary span{color:#e5f2e7;font-size:11px;font-weight:700}
+.christmas-town-ornament-summary small{color:#9eb9a9;font-size:9px}
+.christmas-town-ornament-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.christmas-town-ornament-tile{min-width:0;min-height:92px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;padding:8px 5px;border:1px solid #ffffff17;border-radius:9px;background:linear-gradient(155deg,#263c38,#17272d);text-align:center}
+.christmas-town-ornament-tile>span{font-size:25px;line-height:1.1;filter:drop-shadow(0 3px 4px #0008)}
+.christmas-town-ornament-tile>strong{max-width:100%;color:#e8f0e8;font-size:8px;line-height:1.3;overflow-wrap:anywhere}
+.christmas-town-ornament-tile>small{color:#a3e8ae;font-size:10px;font-weight:800}
+.christmas-town-ornament-tone-1{background:linear-gradient(155deg,#283d4c,#192c32)}
+.christmas-town-ornament-tone-2{background:linear-gradient(155deg,#4a392e,#2b2927)}
+.christmas-town-ornament-tone-3{background:linear-gradient(155deg,#3c3853,#242a3c)}
+.christmas-town-ornament-tone-4{background:linear-gradient(155deg,#30463f,#202d32)}
+.christmas-town-ornament-tone-5{background:linear-gradient(155deg,#514238,#2c3030)}
+.christmas-town-key-total{display:flex;align-items:baseline;gap:9px;margin:16px 0;padding:16px;border:1px solid #ffffff17;border-radius:10px;background:#172b2b}
+.christmas-town-key-total strong{color:#a5ecae;font:600 34px 'Space Grotesk',sans-serif}
+.christmas-town-key-total span{color:#9eb9a9;font-size:10px}
+.christmas-town-key-list{display:flex;flex-direction:column;gap:7px}
+.christmas-town-key-row{display:grid;grid-template-columns:35px minmax(0,1fr) auto;align-items:center;gap:9px;padding:12px;border:1px solid #ffffff16;border-radius:8px;background:#19282d}
+.christmas-town-key-row>span{font-size:22px;text-align:center}
+.christmas-town-key-row>strong{color:#e9f2eb;font-size:11px}
+.christmas-town-key-row>b{color:#f2f7ed;font:600 16px 'Space Grotesk',sans-serif}
+.christmas-town-key-bronze>span{color:#c9987c}
+.christmas-town-key-silver>span{color:#c8d5d5}
+.christmas-town-key-gold>span{color:#e8ca74}
+@media(max-width:900px){.christmas-town-summary{grid-template-columns:repeat(3,minmax(0,1fr))}.christmas-town-ornament-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:680px){
+  .christmas-town-heading{padding:34px 0 24px}
+  .christmas-town-heading:after{top:7px;right:0;font-size:12px;letter-spacing:.35em}
+  .christmas-town-summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;padding:8px}
+  .christmas-town-summary>article{padding:11px 10px}
+  .christmas-town-summary>article strong{font-size:19px}
+  .christmas-town-summary>article span{font-size:8px}
+  .christmas-town-game-grid,.christmas-town-game-grid-daily{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+  .christmas-town-game-tile{min-height:76px;gap:8px;padding:9px}
+  .christmas-town-game-art{width:38px;height:38px;flex-basis:38px;border-radius:10px;font-size:22px}
+  .christmas-town-game-copy small{font-size:7px}
+  .christmas-town-game-copy strong{font-size:19px}
+  .christmas-town-overview-grid,.christmas-town-collectibles-grid{grid-template-columns:minmax(0,1fr)}
+  .christmas-town-ornament-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+  .christmas-town-ornament-tile{min-height:82px}
+  .christmas-town-key-list{gap:6px}
+}
+@media(max-width:390px){.christmas-town-game-grid{grid-template-columns:minmax(0,1fr)}.christmas-town-ornament-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
