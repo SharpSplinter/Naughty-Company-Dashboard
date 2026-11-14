@@ -31,7 +31,30 @@ Daily bins (New York local midnight; first and last bins are partial):
 | Nov 13 (partial) | 4,090 |
 | **Total** | **30,540** |
 
-The telemetry usage endpoint reports account-wide events across datasets and services. This report isolates the `cloudflare-workers` dataset and `naughty-company-api` service from its breakdown rows.
+The telemetry usage endpoint reports account-wide events across datasets and services. This report isolates the `cloudflare-workers` dataset and `naughty-company-api` service from its breakdown rows. Its ABR-adjusted event count is a separate telemetry measure, not the exact request total.
+
+A second, request-level query against Cloudflare's Workers GraphQL Analytics API (`workersInvocationsAdaptive`) returned the following for `naughty-company-api` over 2026-11-07 00:00:00 UTC through 2026-11-14 00:00:00 UTC:
+
+| Metric | Value |
+|---|---:|
+| Incoming Worker requests | 30,832 |
+| Worker invocation errors | 0 |
+| Subrequests | 1,913 |
+| Request duration p50 | 537.3 ms |
+| Request duration p95 | 1,496.5 ms |
+| Request duration p99 | 2,112.0 ms |
+| Worker wall time p50 | 551.6 ms |
+| Worker wall time p95 | 1,584.3 ms |
+| Worker wall time p99 | 2,201.8 ms |
+| CPU time p50 | 5.9 ms |
+| CPU time p95 | 13.9 ms |
+| CPU time p99 | 18.8 ms |
+| Isolate memory p50 | 2.17 MB |
+| Isolate memory p95 | 2.43 MB |
+
+Cloudflare's GraphQL schema describes request duration, wall time and CPU time quantiles in microseconds; memory quantiles are bytes. Values above are converted to milliseconds/megabytes. Wall time represents the time the Worker JavaScript context remained open, including I/O waits and waitUntil work; it is not identical to time until the final response byte reaches the browser. These request-level counts supersede the approximate event count when describing incoming request volume. The two measurements use slightly different UTC window boundaries and should not be added together.
+
+Sources: [Cloudflare Workers GraphQL metrics tutorial](https://developers.cloudflare.com/analytics/graphql-api/tutorials/querying-workers-metrics/) and [Workers metrics and analytics](https://developers.cloudflare.com/workers/observability/metrics-and-analytics/).
 
 ## 3. D1 query usage
 
