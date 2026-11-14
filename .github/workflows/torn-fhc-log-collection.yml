@@ -52,12 +52,13 @@ jobs:
               await new Promise(resolve => setTimeout(resolve, delay));
             }
             const payload = await response.json().catch(() => null);
-            if (!payload || !Array.isArray(payload.data)) {
+            const pageEntries = Array.isArray(payload?.log) ? payload.log : payload?.log && typeof payload.log === 'object' ? Object.values(payload.log) : null;
+            if (!pageEntries) {
               const apiError = payload?.error && typeof payload.error === 'object' ? payload.error : {};
-              console.error('TORN_RESPONSE_DIAGNOSTIC ' + JSON.stringify({ http: response.status, contentType: response.headers.get('content-type'), topLevelKeys: payload && typeof payload === 'object' ? Object.keys(payload) : [], errorCode: apiError.code ?? null, errorMessage: apiError.error ?? apiError.message ?? null, dataType: Array.isArray(payload?.data) ? 'array' : typeof payload?.data }));
-              throw new Error('Unexpected Torn response on page ' + pageCount + '; private response content suppressed.');
+              console.error('TORN_RESPONSE_DIAGNOSTIC ' + JSON.stringify({ http: response.status, topLevelKeys: payload && typeof payload === 'object' ? Object.keys(payload) : [], logType: typeof payload?.log, logIsArray: Array.isArray(payload?.log), errorCode: apiError.code ?? null, errorMessage: apiError.error ?? apiError.message ?? null }));
+              throw new Error('Unexpected Torn log response on page ' + pageCount + '; private response content suppressed.');
             }
-            logs.push(...payload.data);
+            logs.push(...pageEntries);
             const next = payload?._metadata?.links?.next;
             if (!next) break;
             const nextUrl = new URL(next, canonical);
