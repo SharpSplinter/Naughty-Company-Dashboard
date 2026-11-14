@@ -79,7 +79,7 @@ Read-only admin page navigation and API inspection do not call Torn. The staging
 - The administrator console's full eight-section walkthrough and axe scan were performed in the desktop browser viewport. The existing eight-width responsive suite is for the Company Dashboard workspace; it is not a physical-device test of every administrator screen.
 - Manual screen-reader and physical-device review remain advisable.
 - Sustained load testing and a measured production Worker/D1 request baseline remain outstanding.
-- Issue [#117](https://github.com/SharpSplinter/Naughty-Company-Dashboard/issues/117) remains open until two subsequent real production daily lock-in cycles pass the specified historical stock/profit checks.
+- Issue [#117](https://github.com/SharpSplinter/Naughty-Company-Dashboard/issues/117) was closed by the project owner after PR #155 was merged/deployed and Trends & Charts was verified. The two-subsequent-lock-in monitoring criterion is not separately documented as completed evidence; continue normal monitoring and open a follow-up issue if production observations reveal inconsistencies.
 - Production backup verification and cutover preparation remain outstanding.
 
 No production D1 was queried or written by this review. No production Worker or Pages deployment/cutover was performed. PR #152 remains Draft and unmerged.
