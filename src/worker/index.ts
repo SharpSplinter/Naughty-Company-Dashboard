@@ -6059,6 +6059,7 @@ export default {
         totalHits: member.totalHits,
         coverage: member.coverage,
         attackMetricsStatus: member.attackMetricsStatus,
+         attackOutcomesStatus: member.attackOutcomesStatus,
         completedEventYears: [yearValue].filter(() => member.coverage === "complete"),
         metrics: metricsByPlayer.get(member.playerId) ?? null,
       }))
