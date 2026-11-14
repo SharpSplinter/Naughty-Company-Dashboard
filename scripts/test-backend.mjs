@@ -372,10 +372,11 @@ try {
       successfulAttacksWithTreats: 0,
       lostStalematedAttacks: 0,
       treatsByAttack: {},
-      expectedDoublerProcs: 0,
-      expectedTriplerProcs: 0,
-      expectedQuadruplerProcs: 0,
-      expectedQuintuplerProcs: 0,
+      doublerProcs: 0,
+      triplerProcs: 0,
+      quadruplerProcs: 0,
+      quintuplerProcs: 0,
+      unclassifiedTreatAwards: 0,
       multipackProcs: 0,
       dealWithDevilProcs: 0,
       revitalizeProcs: 0,
@@ -423,10 +424,10 @@ try {
     const metrics = calculateHalloweenEventMetrics(rows)
     assert.equal(metrics.successfulAttacksWithTreats, 5)
     assert.deepEqual(metrics.treatsByAttack, { "1": 1, "2": 1, "3": 1, "5": 1, "24": 1 })
-    assert.equal(metrics.expectedDoublerProcs, 1)
-    assert.equal(metrics.expectedTriplerProcs, 0.5)
-    assert.equal(metrics.expectedQuadruplerProcs, 0.25)
-    assert.equal(metrics.expectedQuintuplerProcs, 0.05)
+    assert.equal(metrics.doublerProcs, 1)
+    assert.equal(metrics.triplerProcs, 0.5)
+    assert.equal(metrics.quadruplerProcs, 0.25)
+    assert.equal(metrics.quintuplerProcs, 0.05)
     assert.equal(metrics.multipackProcs, 6)
     assert.equal(metrics.dealWithDevilProcs, 5)
     assert.deepEqual(sumHalloweenEventMetrics([metrics, emptyHalloweenEventMetrics()]), metrics)
