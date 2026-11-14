@@ -37,7 +37,7 @@ try {
   const output = execFileSync(process.platform === "win32" ? "npx.cmd" : "npx", [
     "wrangler", "d1", "execute", DATABASE, "--remote", "--config", CONFIG, "--file", sqlPath,
   ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: process.env });
-  assert.match(output, /fixture_refresh_ok["\\s]*:\\s*1/, "Expected exactly one synthetic staging administrator fixture to be refreshed.");
+  assert.match(output, /fixture_refresh_ok["\s]*:\s*1/, "Expected exactly one synthetic staging administrator fixture to be refreshed.");
   console.log("PASS refreshed membership freshness for the exact synthetic staging admin fixture before load testing.");
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
